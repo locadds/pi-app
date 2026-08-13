@@ -124,6 +124,16 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:workspace.sandbox.list',
   'ipc:workspace.sandbox.rename',
   'ipc:workspace.switch',
+  // 小规 Agent 集成（src/main/xiaogui/ipc-handlers.ts 注册；渲染进程经
+  // ipcClient.invoke('xiaogui.*') 调用，模式切换 / DESIGN Tool 调用 / sidecar 状态）
+  'ipc:xiaogui.mode.get',
+  'ipc:xiaogui.mode.switch',
+  'ipc:xiaogui.scope.baselineProjects',
+  'ipc:xiaogui.scope.get',
+  'ipc:xiaogui.scope.list',
+  'ipc:xiaogui.scope.set',
+  'ipc:xiaogui.sidecar.status',
+  'ipc:xiaogui.tool.invoke',
 ] as const
 
 export type IpcInvokeChannel = (typeof IPC_INVOKE_CHANNELS)[number]

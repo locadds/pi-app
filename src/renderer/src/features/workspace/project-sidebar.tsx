@@ -25,9 +25,15 @@ import { ProjectDiskRow, ProjectSessionTree, SandboxDialogRow } from './project-
 export function ProjectSidebar({
   onOpenProject,
   openProjectLabel,
+  projectFilter,
+  sessionFilter,
 }: {
   onOpenProject: () => void
   openProjectLabel: string
+  /** 可选注入（小规层）：按一级模式过滤项目/临时对话工作区；undefined = 不过滤 */
+  projectFilter?: (path: string) => boolean
+  /** 可选注入（小规层）：按一级模式过滤会话列表；undefined = 不过滤 */
+  sessionFilter?: (sessionFile: string | undefined) => boolean
 }) {
   const { t } = useTranslation()
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
@@ -164,8 +170,15 @@ export function ProjectSidebar({
   const diskPaths = useMemo(() => {
     const diskRecent = recentProjects.filter((p) => !isSandboxPath(p))
     const diskCurrent = currentWorkspace && !isSandboxPath(currentWorkspace) ? currentWorkspace : null
-    return projectFolderOrder(diskRecent, diskCurrent, recentProjectsFixedOrder)
-  }, [recentProjects, currentWorkspace, recentProjectsFixedOrder])
+    const ordered = projectFolderOrder(diskRecent, diskCurrent, recentProjectsFixedOrder)
+    return projectFilter ? ordered.filter((p) => projectFilter(p)) : ordered
+  }, [recentProjects, currentWorkspace, recentProjectsFixedOrder, projectFilter])
+
+  // 小规层模式过滤同样作用于临时对话列表（sandbox 工作区按 projectModeMap 归属）
+  const visibleSandboxes = useMemo(
+    () => (projectFilter ? sandboxes.filter((box) => projectFilter(box.path)) : sandboxes),
+    [sandboxes, projectFilter],
+  )
 
   const switchDiskProject = async (path: string) => {
     if (path === currentWorkspace && !ephemeralSandboxDraft) return
@@ -285,7 +298,7 @@ export function ProjectSidebar({
             <span className="text-[11px] font-medium tracking-wide text-foreground-secondary/75">
               {t('common:sidebar.conversations')}
             </span>
-            <span className="text-[10px] tabular-nums text-foreground-secondary/60">{sandboxes.length}</span>
+            <span className="text-[10px] tabular-nums text-foreground-secondary/60">{visibleSandboxes.length}</span>
           </button>
           <button
             type="button"
@@ -307,10 +320,10 @@ export function ProjectSidebar({
                 </div>
               </div>
             )}
-            {sandboxes.length === 0 && !ephemeralSandboxDraft ? (
+            {visibleSandboxes.length === 0 && !ephemeralSandboxDraft ? (
               <p className="px-3 py-2 text-[12px] text-foreground-secondary/80">{t('sidebar.clickToAdd')}</p>
             ) : (
-              sandboxes.map((box) => (
+              visibleSandboxes.map((box) => (
                 <SandboxDialogRow
                   key={box.path}
                   box={box}
@@ -345,7 +358,9 @@ export function ProjectSidebar({
         ) : (
           diskPaths.map((path) => {
             const open = expandedPaths.has(path)
-            const projectSessions = mergedSessionsByWorkspace[path] || []
+            const projectSessions = (mergedSessionsByWorkspace[path] || []).filter(
+              (s) => !sessionFilter || sessionFilter(s.sessionFile),
+            )
             const loading = loadingSessionPaths.has(path) && projectSessions.length === 0
             return (
               <ProjectDiskRow

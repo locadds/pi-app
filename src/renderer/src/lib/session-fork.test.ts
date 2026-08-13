@@ -1,4 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.hoisted(() => {
+  // Node 25 原生 localStorage 遮蔽 jsdom 实现（无 setItem），zustand persist
+  // 写入会在测试里炸；在模块 import 前安装内存版实现（仅当环境损坏时）。
+  const broken = typeof localStorage === 'undefined' || typeof localStorage.setItem !== 'function'
+  if (!broken) return
+  const mem = new Map<string, string>()
+  const storage = {
+    getItem: (k: string) => (mem.has(k) ? (mem.get(k) as string) : null),
+    setItem: (k: string, v: string) => void mem.set(k, String(v)),
+    removeItem: (k: string) => void mem.delete(k),
+    clear: () => void mem.clear(),
+    key: (i: number) => [...mem.keys()][i] ?? null,
+    get length() {
+      return mem.size
+    },
+  }
+  Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true })
+})
+
 import { useUIStore } from '@renderer/stores/ui-store'
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +34,7 @@ vi.mock('sonner', () => ({
 }))
 
 import { cloneCurrentSession, forkSessionFromEntry } from './session-fork'
+import { useXiaoguiStore } from '@renderer/xiaogui/stores/xiaogui-store'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -82,6 +103,48 @@ describe('session fork renderer actions', () => {
       '/sessions/clone.jsonl',
     )
     expect(useUIStore.getState().composerPrefill).toBeNull()
+  })
+
+  it('fork 成功后为新会话打当前一级模式标签（小规三模式隔离）', async () => {
+    useXiaoguiStore.setState({ mode: 'CODING' })
+    mocks.invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'session.fork') {
+        return { cancelled: false, sessionId: 'fork-session', sessionFile: '/sessions/fork.jsonl' }
+      }
+      if (channel === 'session.list') return { sessions: [] }
+      return {}
+    })
+
+    await expect(forkSessionFromEntry('user-entry')).resolves.toBe(true)
+
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith('xiaogui.scope.set', {
+        kind: 'session',
+        key: '/sessions/fork.jsonl',
+        mode: 'CODING',
+      }),
+    )
+  })
+
+  it('clone 成功后为新会话打当前一级模式标签（小规三模式隔离）', async () => {
+    useXiaoguiStore.setState({ mode: 'DESIGN' })
+    mocks.invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'session.clone') {
+        return { cancelled: false, sessionId: 'clone-session', sessionFile: '/sessions/clone.jsonl' }
+      }
+      if (channel === 'session.list') return { sessions: [] }
+      return {}
+    })
+
+    await expect(cloneCurrentSession()).resolves.toBe(true)
+
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith('xiaogui.scope.set', {
+        kind: 'session',
+        key: '/sessions/clone.jsonl',
+        mode: 'DESIGN',
+      }),
+    )
   })
 
   it('should_block_branch_mutations_in_read_only_subagent_preview', async () => {

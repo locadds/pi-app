@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { ErrorBoundary } from '@renderer/components/app/error-boundary'
 import { MainLayoutShell } from '@renderer/components/app/main-layout-shell'
 import { Sidebar, SidebarContent, SidebarItem, RightPanel } from '@renderer/components/ui/sidebar'
-import { ProjectSidebar } from '@renderer/features/workspace/project-sidebar'
+import { XiaoguiProjectSidebar } from '@renderer/xiaogui/components/XiaoguiProjectSidebar'
 import { MainColRightPanelToggle } from '@renderer/components/app/main-col-right-panel-toggle'
 import { MainColumnWithTimelineScroll } from '@renderer/components/app/main-column-with-timeline-scroll'
 import { ComposerDock } from '@renderer/components/app/composer-dock'
@@ -46,6 +46,15 @@ import { handleSdkRuntimeChanged } from '@renderer/lib/sdk-runtime-changed'
 import { prefetchAvailableModels } from '@renderer/lib/available-models-cache'
 
 import { useDoubleEscapeTree } from '@renderer/hooks/use-double-escape-tree'
+
+// 小规 Agent 集成：一级模式切换器 + 三模式首屏视图
+// （DESIGN：项目检查；WORK：工作台引导；CODING：编程说明卡）
+// （状态经 useXiaoguiStore 走 IPC 白名单通道，渲染进程不接触文件系统/Python）
+import { ModeSelector } from '@renderer/xiaogui/components/ModeSelector'
+import { ProjectInspectView } from '@renderer/xiaogui/components/ProjectInspectView'
+import { WorkHomeView } from '@renderer/xiaogui/components/WorkHomeView'
+import { CodingHomeView } from '@renderer/xiaogui/components/CodingHomeView'
+import { useXiaoguiStore } from '@renderer/xiaogui/stores/xiaogui-store'
 
 type View = 'main' | 'settings'
 
@@ -148,6 +157,10 @@ export default function App() {
     markExtensionNotifyAppReady()
     useExtensionUIStore.getState().resetForSessionContext()
     void ensureWorkspaceWorkerOnBoot()
+    // 小规：启动时与主进程对齐一级模式与 sidecar 状态
+    const xiaoguiState = useXiaoguiStore.getState()
+    void xiaoguiState.refreshMode()
+    void xiaoguiState.refreshSidecarStatus()
     void hydrateThemeFromSettings().catch(() => {})
     void hydrateCustomThemeFromSettings().catch(() => {})
     void hydrateCustomCssOverrideFromSettings().catch(() => {})
@@ -241,12 +254,20 @@ export default function App() {
   }
 
   const recentProjects = useUIStore((s) => s.recentProjects)
+  const xiaoguiMode = useXiaoguiStore((s) => s.mode)
   const PANELS = buildRightPanelTabs(rightPanelCatalog, rightPanelPrefs, t, rightPanelOrder)
   const activeCatalogItem = rightPanelCatalog.find((c) => c.id === activePanel)
 
   const isHomeMode =
     !currentSessionId && timelineItemCount === 0 && !ephemeralSandboxDraft && !historyLoading
   const showHome = (isHomeMode || ephemeralSandboxDraft) && view === 'main'
+  // 小规三模式首屏（WORK/DESIGN/CODING）是顶部对齐的说明面板，
+  // 与 Pi 原生 ProjectHomeView 的 hero 居中布局不同：
+  // 这里 Composer 必须常驻内容区底部，不能套用 hero 上移变换（否则浮在正中遮挡内容）。
+  // 注意：mode 恒为三值之一，xiaoguiHome 在 showHome 时恒真——Pi 原生
+  // ProjectHomeView 的 hero 居中态（heroMode）已被小规三模式有意关闭，非回归。
+  const xiaoguiHome =
+    showHome && (xiaoguiMode === 'WORK' || xiaoguiMode === 'DESIGN' || xiaoguiMode === 'CODING')
 
   const handleSelectProject = async (path: string) => {
     await activateWorkspace(path, { preferHome: true })
@@ -305,8 +326,13 @@ export default function App() {
         <MainLayoutShell
           left={
             <Sidebar>
+              {/* 小规 Agent：一级模式切换（WORK｜DESIGN｜CODING） */}
+              <div className="border-b border-border/50 pb-1.5">
+                <ModeSelector />
+              </div>
               <SidebarContent>
-                <ProjectSidebar
+                {/* 小规包装：侧栏列表按当前一级模式过滤（历史数据默认归 WORK） */}
+                <XiaoguiProjectSidebar
                   onOpenProject={handleOpenProject}
                   openProjectLabel={t('sidebar.openProject')}
                 />
@@ -322,7 +348,24 @@ export default function App() {
           }
           center={
             <MainColumnWithTimelineScroll className="h-full">
-              {showHome ? (
+              {xiaoguiHome ? (
+                // 小规三模式首屏：独立滚动，底部预留常驻 Composer 高度
+                <div
+                  className="min-h-0 flex-1 overflow-y-auto pb-[calc(var(--composer-dock-h,11rem)_+_0.5rem)]"
+                  data-independent-scroll
+                >
+                  {xiaoguiMode === 'DESIGN' ? (
+                    // DESIGN 模式首屏：项目检查（design.project.inspect）
+                    <ProjectInspectView />
+                  ) : xiaoguiMode === 'WORK' ? (
+                    // WORK 模式首屏：轻量工作台引导（实际工作走常驻对话框）
+                    <WorkHomeView />
+                  ) : (
+                    // CODING 模式首屏：Pi 原生编程能力说明卡
+                    <CodingHomeView />
+                  )}
+                </div>
+              ) : showHome ? (
                 <Suspense fallback={<ShellSuspenseFallback label={t('common:loading')} />}>
                   <ProjectHomeView
                     projectName={ephemeralSandboxDraft ? t('common:home.newChat') : projectName}
@@ -340,7 +383,7 @@ export default function App() {
                 <Timeline />
               )}
               <MainColRightPanelToggle />
-              <ComposerDock heroMode={showHome}>
+              <ComposerDock heroMode={showHome && !xiaoguiHome}>
                 <Composer />
               </ComposerDock>
               {rightPanelHidden && (

@@ -127,6 +127,10 @@ export async function forkSessionFromEntry(entryId: string): Promise<boolean> {
       return false
     }
 
+    // 小规：fork 产生的新会话继承当前一级模式（否则映射缺失会落回 WORK）
+    void import('@renderer/xiaogui/lib/mode-scope').then((m) =>
+      m.tagSessionWithCurrentMode(newFile),
+    )
     await refreshSidebarAndOpen(newId || newFile || '', newFile, {
       editorText: typeof res.editorText === 'string' ? res.editorText : '',
     })
@@ -193,6 +197,10 @@ export async function cloneCurrentSession(): Promise<boolean> {
       return false
     }
 
+    // 小规：clone 产生的新会话继承当前一级模式（否则映射缺失会落回 WORK）
+    void import('@renderer/xiaogui/lib/mode-scope').then((m) =>
+      m.tagSessionWithCurrentMode(newFile),
+    )
     await refreshSidebarAndOpen(newId || newFile || '', newFile, { editorText: null })
     toast.success(i18n.t('composer:toast.cloned', { defaultValue: '已 Clone 到新会话' }))
     return true

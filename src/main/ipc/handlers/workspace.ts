@@ -13,6 +13,8 @@ import {
 import { sessionPreviewProcess } from '../../session-preview-process'
 import { registerHandler, registerHandlerWithSchema } from '../registry'
 import { workspaceOpenSchema, workspaceSandboxDeleteSchema } from '../schemas'
+import { xiaogui } from '../../xiaogui/sidecar-bridge'
+import { setScope } from '../../xiaogui/scope-store'
 import { errorMessage } from '@shared/error-message'
 import { getMainWindow } from '../../window'
 import { refreshGitWorkspaceWatch } from '../../git-workspace-watch'
@@ -72,6 +74,13 @@ export function registerWorkspaceHandlers(): void {
 
   registerHandler('ipc:workspace.sandbox.create', async (req) => {
     const box = createSandboxWorkspace(req.label)
+    // 小规：sandbox 在创建处直接按当前模式打标签（主进程裁决，无渲染层轮询
+    // 竞态）；失败不影响创建本身。标签缺失时渲染层按历史数据归 WORK。
+    try {
+      setScope('project', box.path, xiaogui.getMode())
+    } catch (e) {
+      console.warn('[xiaogui] sandbox scope 打标签失败:', e)
+    }
     return { sandbox: { ...box, kind: 'sandbox' as const } }
   })
 

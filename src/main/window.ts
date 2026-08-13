@@ -88,7 +88,7 @@ export function createWindow(): BrowserWindow {
     ...(isMac && useFrameless
       ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 10 } }
       : {}),
-    title: 'pi Desktop',
+    title: '小规 Agent',
     icon: resolveAppIcon(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),

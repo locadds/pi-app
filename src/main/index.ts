@@ -9,6 +9,7 @@ import { guardAppQuit } from './window-close-guard'
 import { configStore } from './config-store'
 import { is } from '@electron-toolkit/utils'
 import { destroyAppTray, ensureAppTray } from './tray'
+
 import {
   disposeCompletionNotifications,
   initializeCompletionNotifications,
@@ -16,6 +17,7 @@ import {
 import { notifyForegroundChanged } from './completion-notification-events'
 import { focusCompletionNotificationHost } from './completion-notification-delivery'
 import { isCompletionNotificationShortcut } from './completion-notification-shortcut'
+import { initXiaogui, shutdownXiaoguiSidecar } from './xiaogui'
 // Prevent EPIPE / write errors from crashing the main process
 process.stdout?.on?.('error', () => {})
 process.stderr?.on?.('error', () => {})
@@ -28,7 +30,7 @@ process.on('uncaughtException', (err) => {
     const msg = err instanceof Error ? err.message : String(err)
     const opts = {
       type: 'error' as const,
-      title: 'pi Desktop',
+      title: '小规 Agent',
       message: 'A critical error occurred. Please restart the app.',
       detail: msg.slice(0, 500),
     }
@@ -102,6 +104,8 @@ app.whenReady().then(() => {
   }
 
   registerAllHandlers()
+  // 小规集成层：注册 xiaogui.* IPC handlers + 退出时优雅停止 Python sidecar
+  initXiaogui()
   void import('./clipboard-temp-images').then(({ pruneStaleClipboardImages }) => {
     try {
       pruneStaleClipboardImages()
@@ -162,6 +166,19 @@ async function gracefulShutdownWorkers(): Promise<void> {
     asr.stopBuiltinCodexAsrServe()
   } catch {
     /* optional */
+  }
+  // 小规：优雅停止 Python sidecar（并入本链，带超时 await，避免 app.exit(0)
+  // 竞态残留孤儿 python 进程；shutdown 内部已有超时 + SIGKILL 兜底）
+  try {
+    await Promise.race([
+      shutdownXiaoguiSidecar(),
+      new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, 8_000)
+        t.unref?.()
+      }),
+    ])
+  } catch (error) {
+    console.error('[Main] graceful xiaogui sidecar stop failed:', error)
   }
 }
 

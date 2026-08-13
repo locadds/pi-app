@@ -42,7 +42,7 @@ export function ComposerDock({ className, children, heroMode }: { className?: st
     >
       {!heroMode && (
         <div
-          className="composer-dock-fade pointer-events-none absolute inset-x-0 bottom-0 h-[calc(var(--composer-dock-h,10rem)+1.25rem)]"
+          className="composer-dock-fade pointer-events-none absolute inset-x-0 bottom-0 h-[calc(var(--composer-dock-h,11rem)_+_1.25rem)]"
           aria-hidden
         />
       )}

@@ -11,4 +11,18 @@ describe('session-file-key', () => {
   it('collapses duplicate slashes', () => {
     expect(normalizeSessionFileKey('/tmp//a//b.jsonl')).toBe('/tmp/a/b.jsonl')
   })
+
+  it('normalizes directory segment casing (与主进程 normalizePathKey 等价)', () => {
+    expect(normalizeSessionFileKey('D:/Proj/Sub\\a.jsonl')).toBe('D:/proj/sub/a.jsonl')
+    expect(sessionFilesEqual('d:/PROJ/x.jsonl', 'D:/proj/x.jsonl')).toBe(true)
+    expect(normalizeSessionFileKey('\\\\Server\\Share\\a.jsonl')).toBe('//server/share/a.jsonl')
+  })
+
+  it('strips trailing slashes but keeps drive/UNC roots', () => {
+    expect(normalizeSessionFileKey('D:/proj/')).toBe('D:/proj')
+    expect(normalizeSessionFileKey('D:/proj//')).toBe('D:/proj')
+    expect(normalizeSessionFileKey('d:/')).toBe('D:/')
+    expect(normalizeSessionFileKey('//server/share/')).toBe('//server/share')
+    expect(normalizeSessionFileKey('//server/share')).toBe('//server/share')
+  })
 })

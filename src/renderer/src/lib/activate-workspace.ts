@@ -100,6 +100,10 @@ export async function activateWorkspace(path: string, options?: ActivateWorkspac
         console.error('[activateWorkspace] settings.set currentProject failed:', error)
       })
 
+  // 小规：打开项目不再静默打标签（历史归 WORK 基线策略）——存量/历史项目
+  // 的归属由 xiaogui/lib/mode-scope 的项目基线监听统一裁决，打开行为本身
+  // 不改变任何项目的模式归属。
+
   if (options?.preferHome) {
     try {
       await openPromise

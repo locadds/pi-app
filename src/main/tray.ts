@@ -43,7 +43,7 @@ export function ensureAppTray(platform = process.platform): Tray | null {
   }
 
   appTray = new Tray(icon)
-  appTray.setToolTip('pi Desktop')
+  appTray.setToolTip('小规 Agent')
   appTray.on('click', focusMainWindow)
   appTray.on('right-click', openTrayMenu)
   return appTray

@@ -46,6 +46,7 @@ export function useComposerSend(opts: {
           toast.message(t('composer:toast.completeExtensionFirst'))
           return
         }
+
         const el = editorRef.current
         if (!el) return
         const { displayText, payload, attachments: atts, segments } = serializeRichInput(el)
@@ -111,6 +112,10 @@ export function useComposerSend(opts: {
             const { materializePendingNewSession } = await import('@renderer/lib/new-session')
             await materializePendingNewSession(store.currentWorkspace, pendMsg, (sessionFile) => {
               bindOptimisticOutgoingToSession(optimisticToken, sessionFile)
+            // 小规：新建会话打上当前一级模式标签（历史数据默认 WORK，见 xiaogui/lib/mode-scope）
+            void import('@renderer/xiaogui/lib/mode-scope').then((m) =>
+              m.tagSessionWithCurrentMode(sessionFile),
+            )
             })
             const bind = await sendPrompt()
             await afterPromptSent(bind)

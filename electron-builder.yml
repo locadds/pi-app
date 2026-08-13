@@ -1,5 +1,5 @@
-appId: com.pi.desktop
-productName: pi Desktop
+appId: com.xiaogui.agent
+productName: 小规 Agent
 directories:
   buildResources: build
   output: dist
@@ -78,7 +78,7 @@ linux:
   icon: build/icon.png
   category: Development
   artifactName: ${productName}-${version}-${arch}.${ext}
-  maintainer: pi-desktop
+  maintainer: xiaogui-agent
 
 publish:
   provider: github

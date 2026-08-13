@@ -19,6 +19,9 @@ export async function finalizeEphemeralSandboxOnFirstSend(firstMessage: string):
   const res = await ipcClient.invoke('workspace.sandbox.create', { label })
   const box = res?.sandbox as { path: string; label: string } | undefined
   if (!box?.path) throw new Error('sandbox.create failed')
+  // 小规：主进程已在创建处按当前模式打标签；立即回填渲染层本地缓存，
+  // 否则侧栏过滤会把新临时对话按"历史=WORK"兜底（当前模式下不可见）
+  void import('@renderer/xiaogui/lib/mode-scope').then((m) => m.rememberSandboxScope(box.path))
 
   store.clearEphemeralSandboxDraft()
   beginSessionNavigation()
