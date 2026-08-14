@@ -81,14 +81,14 @@ describe('Windows app tray lifecycle', () => {
     config.language = 'zh'
   })
 
-  it('creates and retains one Windows tray with the Pi tooltip', () => {
+  it('creates and retains one Windows tray with the Xiaogui Agent tooltip', () => {
     const first = ensureAppTray('win32')
     const second = ensureAppTray('win32')
 
     expect(first).toBe(second)
     expect(electron.trays).toHaveLength(1)
     expect(electron.trays[0].image).toBe(icon)
-    expect(electron.trays[0].tooltip).toBe('pi Desktop')
+    expect(electron.trays[0].tooltip).toBe('小规 Agent')
   })
 
   it('restores and focuses the current window when the tray icon is clicked', () => {

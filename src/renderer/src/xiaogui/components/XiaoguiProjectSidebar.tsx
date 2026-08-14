@@ -9,8 +9,9 @@
 import { useEffect, useMemo } from 'react'
 
 import { useTranslation } from 'react-i18next'
-import { Plus } from 'lucide-react'
 
+// 图标必须经上游图标基础设施引用（契约：lucide-react 等三方库只允许出现在 components/icons 内）
+import { Plus } from '@renderer/components/icons'
 import { ProjectSidebar } from '@renderer/features/workspace/project-sidebar'
 import { normalizeSessionFileKey } from '@renderer/lib/session-file-key'
 import { useUIStore } from '@renderer/stores/ui-store'
