@@ -40,6 +40,7 @@ export function ProjectInspectView() {
           design · pi runtime
         </p>
         <h1 className="mt-3 text-xl font-semibold text-foreground">规划设计</h1>
+        <p className="mt-1 text-[12px] text-muted-foreground">Pi Professional Runtime</p>
 
         {currentWorkspace ? (
           <p className="mt-8 text-[13px] leading-relaxed text-muted-foreground">
