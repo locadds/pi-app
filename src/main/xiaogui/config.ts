@@ -36,6 +36,12 @@ export function isXiaoguiMode(value: unknown): value is XiaoguiMode {
 }
 
 /**
+ * 执行方式（与一级工作模式正交，命名与小规仓库 src/main/xiaogui/types.ts 一致）。
+ * V0.1 仅做状态标记与策略路由接口，不实现 Plan Engine。
+ */
+export type ExecutionPhase = 'ASK' | 'PLAN' | 'EXECUTE'
+
+/**
  * 小规 Agent 代码仓库的开发机默认位置（仅回退用）。
  * 优先读环境变量 XIAOGUI_REPO / XIAOGUI_RUNTIME_DIR；两者都缺失时
  * pythonCwd 为 null，sidecar 启动处返回明确错误（不在 import 期抛异常）。

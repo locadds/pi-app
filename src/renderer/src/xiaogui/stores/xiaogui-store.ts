@@ -1,6 +1,6 @@
 /**
- * 小规 UI state：当前一级模式、sidecar 状态、design.project.inspect 结果、
- * 企业安全护栏状态。
+ * 小规 UI state：当前一级模式、执行方式（ASK/PLAN/EXECUTE）、sidecar 状态、
+ * design.project.inspect 结果、企业安全护栏状态。
  *
  * 渲染进程不直接接触文件系统/Python 进程，所有操作经 IPC 白名单通道
  * （xiaogui.mode.switch / mode.get / tool.invoke / sidecar.status /
@@ -20,6 +20,9 @@ export const XIAOGUI_MODES: { id: XiaoguiMode; zhLabel: string }[] = [
   { id: 'DESIGN', zhLabel: '规划设计' },
   { id: 'CODING', zhLabel: '编程' },
 ]
+
+/** 执行方式（与一级工作模式正交，与主进程 src/main/xiaogui/config.ts 保持一致）。 */
+export type ExecutionPhase = 'ASK' | 'PLAN' | 'EXECUTE'
 
 /** ToolResult（与小规仓库 docs/DESIGN_TOOLS.md 统一返回结构一致）。 */
 export interface XiaoguiEvidence {
@@ -69,6 +72,7 @@ export interface XiaoguiGuardStatus {
 
 interface XiaoguiStoreState {
   mode: XiaoguiMode
+  executionPhase: ExecutionPhase
   sidecar: XiaoguiSidecarStatus | null
   guardStatus: XiaoguiGuardStatus | null
   invoking: boolean
@@ -77,6 +81,8 @@ interface XiaoguiStoreState {
 
   refreshMode: () => Promise<void>
   switchMode: (mode: XiaoguiMode) => Promise<void>
+  refreshExecutionPhase: () => Promise<void>
+  switchExecutionPhase: (phase: ExecutionPhase) => Promise<void>
   refreshSidecarStatus: () => Promise<void>
   refreshGuardStatus: (workspacePath?: string) => Promise<void>
   invokeDesignProjectInspect: (path: string) => Promise<void>
@@ -85,6 +91,7 @@ interface XiaoguiStoreState {
 
 export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
   mode: 'WORK',
+  executionPhase: 'ASK',
   sidecar: null,
   guardStatus: null,
   invoking: false,
@@ -114,6 +121,27 @@ export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
     }
     // 模式切换后主动刷新会话列表，让侧栏按新模式重新过滤（小规 scope）
     void refreshWorkspaceSessionLists()
+  },
+
+  refreshExecutionPhase: async () => {
+    try {
+      const res = await ipcClient.invoke('xiaogui.phase.get')
+      const phase = res?.phase as ExecutionPhase | undefined
+      if (phase) set({ executionPhase: phase })
+    } catch (e) {
+      console.warn('[xiaogui] phase.get 失败:', e)
+    }
+  },
+
+  switchExecutionPhase: async (phase) => {
+    set({ executionPhase: phase }) // 乐观更新（执行方式不影响视图路由，无需切首屏）
+    try {
+      const res = await ipcClient.invoke('xiaogui.phase.switch', { phase })
+      if (res?.phase) set({ executionPhase: res.phase as ExecutionPhase })
+    } catch (e) {
+      console.error('[xiaogui] phase.switch 失败:', e)
+      void get().refreshExecutionPhase()
+    }
   },
 
   refreshSidecarStatus: async () => {

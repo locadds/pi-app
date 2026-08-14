@@ -19,6 +19,7 @@ import path from 'node:path'
 import {
   resolveXiaoguiConfig,
   isXiaoguiMode,
+  type ExecutionPhase,
   type XiaoguiBridgeConfig,
   type XiaoguiMode,
 } from './config'
@@ -162,6 +163,8 @@ class XiaoguiIntegration {
   private readonly config: XiaoguiBridgeConfig = resolveXiaoguiConfig()
   // 一级模式持久化在 xiaogui.json（scope-store），重启后恢复上次模式
   private mode: XiaoguiMode = loadPersistedMode()
+  // 执行方式（ASK/PLAN/EXECUTE，与一级模式正交）。V0.1 仅内存状态标记，不持久化。
+  private executionPhase: ExecutionPhase = 'ASK'
   private child: ChildProcessWithoutNullStreams | null = null
   private readonly pending = new Map<number | string, PendingRequest>()
   private nextId = 1
@@ -182,6 +185,15 @@ class XiaoguiIntegration {
     this.mode = mode
     persistMode(mode)
     return this.mode
+  }
+
+  getExecutionPhase(): ExecutionPhase {
+    return this.executionPhase
+  }
+
+  setExecutionPhase(phase: ExecutionPhase): ExecutionPhase {
+    this.executionPhase = phase
+    return this.executionPhase
   }
 
   // ---- 状态 ---------------------------------------------------------------

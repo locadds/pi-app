@@ -129,6 +129,8 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.guard.status',
   'ipc:xiaogui.mode.get',
   'ipc:xiaogui.mode.switch',
+  'ipc:xiaogui.phase.get',
+  'ipc:xiaogui.phase.switch',
   'ipc:xiaogui.scope.baselineProjects',
   'ipc:xiaogui.scope.get',
   'ipc:xiaogui.scope.list',

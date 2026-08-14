@@ -5,6 +5,8 @@
  * 通道约定（渲染进程经 ipcClient.invoke('xiaogui.*') 调用）：
  * - ipc:xiaogui.mode.switch     切换一级模式（WORK/DESIGN/CODING）
  * - ipc:xiaogui.mode.get        获取当前模式
+ * - ipc:xiaogui.phase.switch    切换执行方式（ASK/PLAN/EXECUTE）
+ * - ipc:xiaogui.phase.get       获取当前执行方式
  * - ipc:xiaogui.tool.invoke     调用 DESIGN Tool（name/action/params）
  * - ipc:xiaogui.sidecar.status  sidecar 运行状态
  * - ipc:xiaogui.scope.get       查询会话/项目的模式归属（查不到=历史数据）
@@ -22,10 +24,14 @@ import { xiaogui, type ToolInvokePayload } from './sidecar-bridge'
 import { getProjectBaseline, getScope, listScopes, recordProjectBaseline, setScope, type ScopeKind } from './scope-store'
 import { readGuardStatus } from './guard-status'
 import { ensureDesignExtensionDeployed } from './design-extension-deploy'
-import type { XiaoguiMode } from './config'
+import type { ExecutionPhase, XiaoguiMode } from './config'
 
 const ModeSwitchSchema = z.object({
   mode: z.enum(['WORK', 'DESIGN', 'CODING']),
+})
+
+const PhaseSwitchSchema = z.object({
+  phase: z.enum(['ASK', 'PLAN', 'EXECUTE']),
 })
 
 const ScopeKindSchema = z.enum(['session', 'project'])
@@ -61,6 +67,17 @@ export function registerXiaoguiHandlers(): void {
 
   registerHandler('ipc:xiaogui.mode.get', async () => {
     return { mode: xiaogui.getMode() }
+  })
+
+  // ---- 执行方式（ASK/PLAN/EXECUTE，与一级模式正交；V0.1 仅状态标记，不拦截行为） ----
+
+  registerHandlerWithSchema('ipc:xiaogui.phase.switch', PhaseSwitchSchema, async (req) => {
+    const phase = xiaogui.setExecutionPhase(req.phase as ExecutionPhase)
+    return { ok: true, phase }
+  })
+
+  registerHandler('ipc:xiaogui.phase.get', async () => {
+    return { phase: xiaogui.getExecutionPhase() }
   })
 
   registerHandlerWithSchema('ipc:xiaogui.tool.invoke', ToolInvokeSchema, async (req) => {

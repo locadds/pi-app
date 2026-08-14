@@ -50,6 +50,7 @@ import { useDoubleEscapeTree } from '@renderer/hooks/use-double-escape-tree'
 // 小规 Agent 集成：一级模式切换器 + 三模式首屏视图
 // （DESIGN：项目检查；WORK：工作台引导；CODING：编程说明卡）
 // （状态经 useXiaoguiStore 走 IPC 白名单通道，渲染进程不接触文件系统/Python）
+import { ExecutionPhaseToggle } from '@renderer/xiaogui/components/ExecutionPhaseToggle'
 import { ModeSelector } from '@renderer/xiaogui/components/ModeSelector'
 import { ProjectInspectView } from '@renderer/xiaogui/components/ProjectInspectView'
 import { WorkHomeView } from '@renderer/xiaogui/components/WorkHomeView'
@@ -157,9 +158,10 @@ export default function App() {
     markExtensionNotifyAppReady()
     useExtensionUIStore.getState().resetForSessionContext()
     void ensureWorkspaceWorkerOnBoot()
-    // 小规：启动时与主进程对齐一级模式与 sidecar 状态
+    // 小规：启动时与主进程对齐一级模式、执行方式与 sidecar 状态
     const xiaoguiState = useXiaoguiStore.getState()
     void xiaoguiState.refreshMode()
+    void xiaoguiState.refreshExecutionPhase()
     void xiaoguiState.refreshSidecarStatus()
     void hydrateThemeFromSettings().catch(() => {})
     void hydrateCustomThemeFromSettings().catch(() => {})
@@ -384,6 +386,8 @@ export default function App() {
               )}
               <MainColRightPanelToggle />
               <ComposerDock heroMode={showHome && !xiaoguiHome}>
+                {/* 小规：执行方式档位（ASK/PLAN/EXECUTE，与一级模式正交；V0.1 仅状态标记） */}
+                <ExecutionPhaseToggle />
                 <Composer />
               </ComposerDock>
               {rightPanelHidden && (
