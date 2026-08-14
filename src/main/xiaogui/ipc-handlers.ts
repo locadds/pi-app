@@ -21,6 +21,7 @@ import { configStore } from '../config-store'
 import { xiaogui, type ToolInvokePayload } from './sidecar-bridge'
 import { getProjectBaseline, getScope, listScopes, recordProjectBaseline, setScope, type ScopeKind } from './scope-store'
 import { readGuardStatus } from './guard-status'
+import { ensureDesignExtensionDeployed } from './design-extension-deploy'
 import type { XiaoguiMode } from './config'
 
 const ModeSwitchSchema = z.object({
@@ -92,6 +93,14 @@ export function registerXiaoguiHandlers(): void {
     const mode = setScope(req.kind as ScopeKind, req.key, req.mode as XiaoguiMode, {
       ifAbsent: req.ifAbsent === true,
     })
+    // 首次打标为 DESIGN 时部署扩展；worker 非 busy 则重启以加载
+    if (req.kind === 'project' && req.mode === 'DESIGN') {
+      const deployed = await ensureDesignExtensionDeployed(req.key).catch(() => false)
+      if (deployed && workerManager.cwd === req.key && !workerManager.hasActiveTurns) {
+        await workerManager.stop().catch(() => {})
+        await workerManager.start(req.key).catch(() => {})
+      }
+    }
     return { ok: true, mode }
   })
 

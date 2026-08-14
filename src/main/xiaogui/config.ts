@@ -43,6 +43,8 @@ export function isXiaoguiMode(value: unknown): value is XiaoguiMode {
 const DEFAULT_XIAOGUI_REPO = 'd:/工作文件/06AI/小试牛刀/小规agent'
 
 export interface XiaoguiBridgeConfig {
+  /** 小规 Agent 代码仓库根（DESIGN 扩展源目录派生 / worker env 注入用）。 */
+  repoRoot: string
   /** Python 可执行文件。 */
   pythonCommand: string
   /** sidecar 工作目录（需包含 xiaogui_runtime 包）；未配置时为 null。 */
@@ -65,6 +67,7 @@ export function resolveXiaoguiConfig(): XiaoguiBridgeConfig {
   const runtimeDir = process.env['XIAOGUI_RUNTIME_DIR']?.trim()
   const repoRoot = process.env['XIAOGUI_REPO']?.trim() || DEFAULT_XIAOGUI_REPO
   return {
+    repoRoot,
     pythonCommand: process.env['XIAOGUI_PYTHON']?.trim() || 'python',
     pythonCwd: runtimeDir || (repoRoot ? path.join(repoRoot, 'python') : null),
     allowedRoots,

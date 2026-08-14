@@ -14,7 +14,8 @@ import { sessionPreviewProcess } from '../../session-preview-process'
 import { registerHandler, registerHandlerWithSchema } from '../registry'
 import { workspaceOpenSchema, workspaceSandboxDeleteSchema } from '../schemas'
 import { xiaogui } from '../../xiaogui/sidecar-bridge'
-import { setScope } from '../../xiaogui/scope-store'
+import { getScope, setScope } from '../../xiaogui/scope-store'
+import { ensureDesignExtensionDeployed } from '../../xiaogui/design-extension-deploy'
 import { errorMessage } from '@shared/error-message'
 import { getMainWindow } from '../../window'
 import { refreshGitWorkspaceWatch } from '../../git-workspace-watch'
@@ -24,6 +25,10 @@ export function registerWorkspaceHandlers(): void {
     const path = String(req?.path || '').trim()
     if (!path) return { ok: false, workspaceId: '', error: 'missing path' }
     configStore.set('currentProject', path)
+    // 小规：DESIGN 项目启动 worker 前确保扩展已部署（幂等；失败不阻塞启动）
+    if (getScope('project', path) === 'DESIGN') {
+      await ensureDesignExtensionDeployed(path).catch(() => {})
+    }
     try {
       const r = await workerManager.start(path)
       refreshGitWorkspaceWatch(getMainWindow())
@@ -62,6 +67,9 @@ export function registerWorkspaceHandlers(): void {
   })
 
   registerHandler('ipc:workspace.switch', async (req) => {
+    if (getScope('project', req.workspaceId) === 'DESIGN') {
+      await ensureDesignExtensionDeployed(req.workspaceId).catch(() => {})
+    }
     const result = await workerManager.start(req.workspaceId)
     refreshGitWorkspaceWatch(getMainWindow())
     return {

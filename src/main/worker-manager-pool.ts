@@ -15,6 +15,7 @@ import { getAgentRuntimeConfig } from './wsl/runtime-config'
 import { resolveWslActiveSdk } from './wsl/sdk-resolve'
 import { syncWorkerBundleToWsl } from './wsl/worker-host'
 import { resolveUtilityEntry } from './utility-entry-path'
+import { resolveXiaoguiConfig } from './xiaogui/config'
 
 export const extensionUiDialogSource = new Map<string, WorkerSlot>()
 
@@ -356,7 +357,24 @@ export async function forkWorkerForCwd(
     })
     sdkPath = sdk.entryPath
   } else {
-    const forked = utilityProcess.fork(resolveUtilityEntry('worker.mjs'), [], { stdio: 'pipe' })
+    // 小规：向 worker 注入 DESIGN sidecar 相关 env（Runtime 目录/仓库根/Python 解释器），
+    // 供 worker 内扩展定位 Python Professional Runtime；配置异常时静默跳过。
+    const xiaoguiEnv = (() => {
+      try {
+        const cfg = resolveXiaoguiConfig()
+        return {
+          XIAOGUI_RUNTIME_DIR: cfg.pythonCwd || '',
+          XIAOGUI_REPO: cfg.repoRoot || '',
+          XIAOGUI_PYTHON: cfg.pythonCommand || 'python',
+        }
+      } catch {
+        return {}
+      }
+    })()
+    const forked = utilityProcess.fork(resolveUtilityEntry('worker.mjs'), [], {
+      stdio: 'pipe',
+      env: { ...process.env, ...xiaoguiEnv },
+    })
     transport = createUtilityProcessTransport(forked)
     const activeSdk = resolveActiveSdk(app.getPath('userData'))
     sdkPath = activeSdk.kind === 'builtin' ? null : activeSdk.entryPath
