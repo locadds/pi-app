@@ -1,44 +1,40 @@
 /**
- * CODING 模式首屏视图（小规 Agent · CODING 模式专用）。
+ * CODING 模式首屏视图（小规 Agent · Claude Code 形态极简入口）。
  *
- * 定位：信息性说明卡——CODING = Pi 原生编程能力，受企业开发规范与守卫管控。
- * 真正的编程交互仍走常驻对话框（Composer），本视图不做任何功能入口。
+ * 定位：打开即输入框——首屏主体是底部常驻的 Composer 输入框
+ * （由 app.tsx 的 ComposerDock 始终渲染），本视图只提供居中的极简引导。
+ * 企业安全护栏在后台静默工作（refreshGuardStatus 保留），不在首屏展示。
  *
- * 表述约束：当前无真实沙箱，不出现"沙箱/sandbox"字样；
- * 企业管控表述为"遵循企业开发规范 + 危险操作留痕/拦截（由企业守卫扩展提供）"。
+ * 项目归属：用户从首屏明确选择打开项目目录时（意图明确），
+ * 在 activateWorkspace 成功后显式重归属为当前模式（见 mode-scope 的
+ * setProjectModeToCurrent）。
  *
- * 仅在 CODING 模式下呈现；其他模式渲染占位提示（与 ProjectInspectView 一致）。
+ * 仅在 CODING 模式下呈现；其他模式渲染占位提示。
  */
 
+import { useEffect } from 'react'
+
+import { activateWorkspace } from '@renderer/lib/activate-workspace'
+import { useUIStore } from '@renderer/stores/ui-store'
+
+import { setProjectModeToCurrent } from '../lib/mode-scope'
 import { useXiaoguiStore } from '../stores/xiaogui-store'
-
-/** 朱砂红——与 ModeSelector / ProjectInspectView 保持同一强调色。 */
-const ACCENT = '#c0392b'
-
-/** 管控要点：信息性描述，不对应具体已装组件。 */
-const GUARD_POINTS: { mark: string; text: string }[] = [
-  {
-    mark: '§',
-    text: '遵循企业开发规范：复用优先、来源可追溯、安全信息不入库',
-  },
-  {
-    mark: '✓',
-    text: '危险操作留痕 / 拦截（由企业守卫扩展提供）',
-  },
-  {
-    mark: '≡',
-    text: '编程会话与工具调用全程可审计，写操作进入企业策略链路',
-  },
-]
 
 export function CodingHomeView() {
   const mode = useXiaoguiStore((s) => s.mode)
+  const refreshGuardStatus = useXiaoguiStore((s) => s.refreshGuardStatus)
+  const currentWorkspace = useUIStore((s) => s.currentWorkspace)
+
+  // 安全护栏状态后台运行：挂载时（以及切换项目后）拉取一次，UI 无感知
+  useEffect(() => {
+    void refreshGuardStatus(currentWorkspace ?? undefined)
+  }, [refreshGuardStatus, currentWorkspace])
 
   if (mode !== 'CODING') {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
         <p className="max-w-[26rem] leading-relaxed">
-          编程说明卡仅在 <span className="font-semibold text-foreground">CODING｜编程</span>{' '}
+          编程首屏仅在 <span className="font-semibold text-foreground">CODING｜编程</span>{' '}
           模式下呈现，请先切换模式。
         </p>
       </div>
@@ -46,62 +42,62 @@ export function CodingHomeView() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 py-8">
-      {/* ---- 标题 ---- */}
-      <header className="mb-5 flex items-baseline gap-3">
-        <h1 className="text-lg font-semibold text-foreground">编程</h1>
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+    <div className="flex h-full items-center justify-center px-6">
+      <div className="max-w-md text-center">
+        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60">
           coding · pi native
-        </span>
-      </header>
+        </p>
+        <h1 className="mt-3 text-xl font-semibold text-foreground">编程模式</h1>
+        <p className="mt-1 text-[12px] text-muted-foreground">Pi Native Coding Harness</p>
 
-      {/* ---- 说明卡（虚线测量框，与 DESIGN 视图同一观感） ---- */}
-      <section className="overflow-hidden rounded-lg border border-dashed border-border bg-background/40">
-        <div className="border-b border-border/70 px-5 py-4">
-          <p className="text-[13px] leading-relaxed text-foreground">
-            CODING 模式即{' '}
-            <span className="font-semibold" style={{ color: ACCENT }}>
-              Pi 原生编程能力
+        {currentWorkspace ? (
+          <p className="mt-8 text-[13px] leading-relaxed text-muted-foreground">
+            当前项目
+            <span className="mx-1 font-medium text-foreground">
+              {projectName(currentWorkspace)}
             </span>
-            ：读写代码、运行命令、调试与重构，全部通过下方常驻对话框完成。
-            在企业环境中，该能力受企业开发规范与守卫扩展管控。
+            ，在下方输入任务即可开始编程。
           </p>
-        </div>
-
-        {/* ---- 管控要点 ---- */}
-        <ul className="space-y-2 px-5 py-4">
-          {GUARD_POINTS.map((g) => (
-            <li key={g.text} className="flex items-start gap-3">
-              <span
-                className="mt-px inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border font-mono text-[11px] font-bold"
-                style={{ color: ACCENT, borderColor: `${ACCENT}55` }}
-                aria-hidden
+        ) : (
+          <div className="mt-8 space-y-1.5">
+            <p className="text-[13px] text-muted-foreground">在下方输入编程任务即可开始</p>
+            <p className="text-[12px] text-muted-foreground/70">
+              也可以先
+              <button
+                type="button"
+                onClick={() => void openProjectDirectory()}
+                className="mx-0.5 underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground"
               >
-                {g.mark}
-              </span>
-              <span className="text-[12px] leading-relaxed text-muted-foreground">
-                {g.text}
-              </span>
-            </li>
-          ))}
-        </ul>
-
-        {/* ---- 引导 ---- */}
-        <div className="border-t border-dashed border-border/70 px-5 py-3">
-          <p className="text-[12px] text-muted-foreground">
-            直接在下方对话框描述你的编程任务即可开始，例如：
-            <span className="font-mono text-[12px] text-foreground">
-              "帮我看懂这个函数并补上单元测试"
-            </span>
-          </p>
-        </div>
-      </section>
-
-      {/* ---- 尾注 ---- */}
-      <footer className="mt-6 flex flex-wrap justify-between gap-2 border-t border-dashed border-border/70 pt-2 font-mono text-[10px] text-muted-foreground">
-        <span>runtime: pi native coding harness</span>
-        <span>guard: enterprise policy extension</span>
-      </footer>
+                打开项目文件夹
+              </button>
+              再开始
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   )
+}
+
+/** 从路径提取项目（目录）名。 */
+function projectName(path: string): string {
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path
+}
+
+/** 打开项目流程：目录对话框 → activateWorkspace → 显式重归属为当前模式（CODING）。 */
+async function openProjectDirectory(): Promise<void> {
+  if (!window.piDesktop) {
+    console.error('piDesktop not available')
+    return
+  }
+  try {
+    const res = await window.piDesktop.invoke('ipc:dialog:openDirectory')
+    if (res?.path) {
+      await activateWorkspace(res.path, { preferHome: true })
+      // 用户明确选择打开该项目 = 意图明确：归属重设为当前模式（不带 ifAbsent）
+      await setProjectModeToCurrent(res.path)
+    }
+  } catch (e) {
+    console.error('[CodingHomeView] Failed to open project:', e)
+  }
 }

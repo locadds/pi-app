@@ -128,6 +128,34 @@ export async function tagProjectWithCurrentModeIfAbsent(
 }
 
 /**
+ * 项目归属显式重归属：无条件把该 path 的归属写为当前一级模式
+ * （不带 ifAbsent）。用于用户在首屏明确选择打开项目目录的场景——
+ * 意图明确，允许覆盖原有归属（如 CODING 模式打开 DESIGN 归属项目）。
+ * 按主进程返回的实际生效模式回填本地缓存。
+ */
+export async function setProjectModeToCurrent(
+  path: string | null | undefined,
+): Promise<void> {
+  const key = normalizeSessionFileKey(path)
+  if (!key) return
+  const mode = useXiaoguiStore.getState().mode
+  try {
+    const res = await ipcClient.invoke('xiaogui.scope.set', { kind: 'project', key, mode })
+    const effective = res?.mode
+    if (isXiaoguiModeLike(effective)) {
+      useModeScopeStore.setState((s) =>
+        s.projectModeMap[key] === effective
+          ? {}
+          : { projectModeMap: { ...s.projectModeMap, [key]: effective } },
+      )
+    }
+  } catch (e) {
+    console.warn('[xiaogui] scope.set(project, 显式重归属) 失败:', e)
+  }
+}
+
+
+/**
  * sandbox（临时对话）工作区创建后立即回填本地模式映射。
  *
  * 主进程已在 sandbox 创建处按当前模式打好标签（ground truth 在 xiaogui.json），

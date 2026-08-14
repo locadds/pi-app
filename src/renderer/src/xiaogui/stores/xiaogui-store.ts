@@ -1,13 +1,16 @@
 /**
- * 小规 UI state：当前一级模式、sidecar 状态、design.project.inspect 结果。
+ * 小规 UI state：当前一级模式、sidecar 状态、design.project.inspect 结果、
+ * 企业安全护栏状态。
  *
  * 渲染进程不直接接触文件系统/Python 进程，所有操作经 IPC 白名单通道
- * （xiaogui.mode.switch / mode.get / tool.invoke / sidecar.status）进入主进程。
+ * （xiaogui.mode.switch / mode.get / tool.invoke / sidecar.status /
+ * guard.status）进入主进程。
  */
 
 import { create } from 'zustand'
 
 import { ipcClient } from '@renderer/lib/ipc-client'
+import { navigateToModeHome } from '@renderer/xiaogui/lib/navigate-mode-home'
 import { refreshWorkspaceSessionLists } from '@renderer/lib/refresh-workspace-session-lists'
 
 export type XiaoguiMode = 'WORK' | 'DESIGN' | 'CODING'
@@ -48,9 +51,26 @@ export interface XiaoguiSidecarStatus {
   pendingRequests: number
 }
 
+/**
+ * 企业安全护栏只读状态（与主进程 src/main/xiaogui/guard-status.ts 的
+ * XiaoguiGuardStatus 保持一致；渲染层不跨进程 import，故在此重新声明）。
+ */
+export interface XiaoguiGuardStatus {
+  version: 1
+  deployed: boolean
+  enabled: boolean
+  scope: 'project' | 'global' | null
+  writeRoots: string[]
+  dangerCategories: { id: string; zhLabel: string }[]
+  audit: { logPath: string; exists: boolean; overrideByEnv: boolean }
+  workbenchEnabled: boolean
+  reserved?: Record<string, unknown>
+}
+
 interface XiaoguiStoreState {
   mode: XiaoguiMode
   sidecar: XiaoguiSidecarStatus | null
+  guardStatus: XiaoguiGuardStatus | null
   invoking: boolean
   lastResult: XiaoguiToolResult | null
   lastError: string | null
@@ -58,6 +78,7 @@ interface XiaoguiStoreState {
   refreshMode: () => Promise<void>
   switchMode: (mode: XiaoguiMode) => Promise<void>
   refreshSidecarStatus: () => Promise<void>
+  refreshGuardStatus: (workspacePath?: string) => Promise<void>
   invokeDesignProjectInspect: (path: string) => Promise<void>
   clearResult: () => void
 }
@@ -65,6 +86,7 @@ interface XiaoguiStoreState {
 export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
   mode: 'WORK',
   sidecar: null,
+  guardStatus: null,
   invoking: false,
   lastResult: null,
   lastError: null,
@@ -81,6 +103,8 @@ export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
 
   switchMode: async (mode) => {
     set({ mode }) // 乐观更新
+    // 切模式立即回到新模式首屏（只清视图绑定，后台会话继续运行）
+    navigateToModeHome()
     try {
       const res = await ipcClient.invoke('xiaogui.mode.switch', { mode })
       if (res?.mode) set({ mode: res.mode as XiaoguiMode })
@@ -98,6 +122,17 @@ export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
       set({ sidecar: res })
     } catch (e) {
       console.warn('[xiaogui] sidecar.status 失败:', e)
+    }
+  },
+
+  refreshGuardStatus: async (workspacePath) => {
+    try {
+      const status = (await ipcClient.invoke('xiaogui.guard.status', {
+        workspacePath,
+      })) as XiaoguiGuardStatus | null
+      set({ guardStatus: status })
+    } catch (e) {
+      console.warn('[xiaogui] guard.status 失败:', e)
     }
   },
 

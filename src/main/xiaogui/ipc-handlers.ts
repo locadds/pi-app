@@ -10,13 +10,17 @@
  * - ipc:xiaogui.scope.get       查询会话/项目的模式归属（查不到=历史数据）
  * - ipc:xiaogui.scope.set       写入会话/项目的模式映射（ifAbsent 可选）
  * - ipc:xiaogui.scope.list      拉取全量映射（渲染层过滤侧栏列表用）
+ * - ipc:xiaogui.guard.status    企业安全护栏只读状态（部署/启用/写入根/审计）
  */
 
 import { z } from 'zod'
 
 import { registerHandler, registerHandlerWithSchema } from '../ipc/registry'
+import { workerManager } from '../worker-manager'
+import { configStore } from '../config-store'
 import { xiaogui, type ToolInvokePayload } from './sidecar-bridge'
 import { getProjectBaseline, getScope, listScopes, recordProjectBaseline, setScope, type ScopeKind } from './scope-store'
+import { readGuardStatus } from './guard-status'
 import type { XiaoguiMode } from './config'
 
 const ModeSwitchSchema = z.object({
@@ -65,6 +69,17 @@ export function registerXiaoguiHandlers(): void {
 
   registerHandler('ipc:xiaogui.sidecar.status', async () => {
     return xiaogui.status()
+  })
+
+  // ---- 企业安全护栏状态（只读 FS/env 探测，不执行任何项目代码） ----
+
+  registerHandler('ipc:xiaogui.guard.status', async (payload) => {
+    const workspacePath =
+      (typeof payload?.workspacePath === 'string' && payload.workspacePath) ||
+      workerManager.cwd ||
+      configStore.get('currentProject')
+    if (!workspacePath) return null
+    return readGuardStatus(workspacePath)
   })
 
   // ---- 模式作用域映射（三模式独立对话/项目；查不到映射=历史数据，渲染层按 WORK 处理） ----

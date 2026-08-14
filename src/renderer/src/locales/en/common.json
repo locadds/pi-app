@@ -15,6 +15,7 @@
     "tempChat": "Temp chat",
     "newTempChat": "New temp chat",
     "newChat": "New chat",
+    "startNewChat": "New chat",
     "clickToAdd": "Click + to create",
     "removeProjectConfirm": "Remove project \"{{name}}\" from list? The folder will not be deleted.",
     "removeFailed": "Remove failed",

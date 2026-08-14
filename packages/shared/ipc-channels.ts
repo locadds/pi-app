@@ -126,6 +126,7 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:workspace.switch',
   // 小规 Agent 集成（src/main/xiaogui/ipc-handlers.ts 注册；渲染进程经
   // ipcClient.invoke('xiaogui.*') 调用，模式切换 / DESIGN Tool 调用 / sidecar 状态）
+  'ipc:xiaogui.guard.status',
   'ipc:xiaogui.mode.get',
   'ipc:xiaogui.mode.switch',
   'ipc:xiaogui.scope.baselineProjects',
