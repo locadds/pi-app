@@ -55,6 +55,8 @@ export const BRIDGE_SOURCE_VERSION = 'xiaogui-pi-app-bridge/v1'
 
 const DESIGN_PROJECT_TOOL = 'design.project'
 const RPC_METHOD_INSPECT = 'design.project.inspect'
+const RPC_METHOD_OPEN = 'design.project.open'
+const RPC_METHOD_CAPABILITIES = 'design.project.capabilities'
 const RPC_METHOD_INITIALIZE = 'runtime.initialize'
 const RPC_METHOD_SHUTDOWN = 'runtime.shutdown'
 
@@ -308,7 +310,7 @@ class XiaoguiIntegration {
 
   /**
    * 执行一次 tool call，永远返回 ToolResult（不抛业务异常）。
-   * V0.1 仅注册 design.project（inspect 真正打通，open/capabilities 显式未实现）。
+   * V0.1 仅注册 design.project（inspect / open / capabilities 均真正打通）。
    */
   async invokeTool(payload: ToolInvokePayload): Promise<ToolResult> {
     const traceId = payload.trace_id?.trim() || randomUUID()
@@ -329,16 +331,16 @@ class XiaoguiIntegration {
       )
     }
 
-    if (action !== 'inspect') {
-      return errorToolResult(
-        traceId,
-        `design.project.${action} 在 V0.1 尚未实现（当前仅支持 inspect）`,
-      )
-    }
+    const rpcMethod =
+      action === 'open'
+        ? RPC_METHOD_OPEN
+        : action === 'capabilities'
+          ? RPC_METHOD_CAPABILITIES
+          : RPC_METHOD_INSPECT
 
     try {
       await this.ensureStarted()
-      const result = await this.call(RPC_METHOD_INSPECT, params, { traceId })
+      const result = await this.call(rpcMethod, params, { traceId })
       return normalizeToolResult(result, traceId)
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err)
