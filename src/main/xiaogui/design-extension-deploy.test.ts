@@ -57,6 +57,31 @@ describe('buildDesignSystemSection / upsertDesignSystemSection（段落标记幂
     const file = `${CODING_SECTION}\n${section}\n`
     expect(upsertDesignSystemSection(file, section)).toBe(file)
   })
+
+  it('双段场景：只替换第一段，段间内容与第二段原样保留', () => {
+    const first = buildDesignSystemSection('# 第一段 DESIGN（旧）\n')
+    const second = buildDesignSystemSection('# 第二段 DESIGN\n')
+    const file = `${CODING_SECTION}\n${first}\n中间珍贵内容（应保留）\n${second}\n`
+    const next = upsertDesignSystemSection(file, section)
+    expect(next.startsWith(CODING_SECTION)).toBe(true)
+    // 第一段被替换为新 section
+    expect(next).toContain(section)
+    expect(next).not.toContain('# 第一段 DESIGN（旧）')
+    // 段间内容与第二段保留（lastIndexOf(END) 配对会连段间内容一起吞掉）
+    expect(next).toContain('中间珍贵内容（应保留）')
+    expect(next).toContain('# 第二段 DESIGN')
+    expect(next.split(DESIGN_SYSTEM_BEGIN).length - 1).toBe(2)
+  })
+
+  it('有 BEGIN 无 END（残段）：丢弃残段并补写完整标记段', () => {
+    const file = `${CODING_SECTION}\n${DESIGN_SYSTEM_BEGIN}\n# 残段无 END\n`
+    const next = upsertDesignSystemSection(file, section)
+    expect(next.startsWith(CODING_SECTION)).toBe(true)
+    expect(next).not.toContain('# 残段无 END')
+    expect(next).toContain(section)
+    // 重写后的完整标记段自带 END 锚点（补写）
+    expect(next.split(DESIGN_SYSTEM_END).length - 1).toBe(1)
+  })
 })
 
 describe('ensureDesignExtensionDeployed（临时仓库端到端）', () => {
@@ -119,6 +144,18 @@ describe('ensureDesignExtensionDeployed（临时仓库端到端）', () => {
     await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(true)
     expect(readFileSync(appendPath, 'utf8')).toBe(before)
     expect(statSync(appendPath).mtimeMs).toBe(mtimeBefore)
+  })
+
+  it('指纹逐一比对：部署后目标 rpc.ts 被单独改动，再次部署修复为与源一致', async () => {
+    process.env['XIAOGUI_REPO'] = makeFakeRepo()
+    const project = makeTempDir('xg-proj-')
+    await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(true)
+    const targetRpc = join(project, '.pi', 'extensions', 'xiaogui-design-project', 'rpc.ts')
+    expect(readFileSync(targetRpc, 'utf8')).toBe('// rpc\n')
+    // 单独篡改目标 rpc.ts（index.ts 不变）→ 仅比 index.ts 的旧指纹会误判"已最新"
+    writeFileSync(targetRpc, '// rpc tampered\n', 'utf8')
+    await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(true)
+    expect(readFileSync(targetRpc, 'utf8')).toBe('// rpc\n')
   })
 
   it('源更新后：标记段原地替换，CODING 段保留', async () => {

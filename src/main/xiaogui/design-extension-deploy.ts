@@ -12,8 +12,10 @@
  *    项目 .pi/desktop/adapters/（工具卡声明式呈现增强）。两者均幂等且
  *    容忍源缺失（旧版小规仓库无这些文件时不影响既有部署链路）。
  *
- * - 扩展：目标 index.ts 与源内容一致时跳过同步（幂等，不触碰项目文件）；
- * - 系统提示：标记段已存在且内容一致时跳过写入；存在但内容过期则原地替换；
+ * - 扩展：EXTENSION_FILES 逐一比对，全部与源内容一致才跳过同步（幂等，
+ *   不触碰项目文件；仅比 index.ts 会漏掉 rpc.ts / phase-guard.ts 单独变更）；
+ * - 系统提示：标记段已存在且内容一致时跳过写入；存在但内容过期则原地替换
+ *   （与 BEGIN 配对的是其后第一个 END，双段场景只替换第一段，段间内容保留）；
  *   不存在则追加到文件末尾。标记段之外的内容（如 CODING 企业段）原样保留；
  * - 部署时写出 .xiaogui-deploy.json 记录 runtimeDir，供扩展定位 sidecar；
  * - 任何失败仅 console.warn 并返回 false，绝不阻塞 worker 启动链路。
@@ -54,15 +56,24 @@ export function buildDesignSystemSection(source: string): string {
 /**
  * 将标记段并入 APPEND_SYSTEM.md 现有内容：
  * - 已存在完整标记段 → 原地替换该段，段外内容（如 CODING 企业段）原样保留；
+ * - 双段场景 → 与 BEGIN 配对的是其后第一个 END（正向 indexOf 配对），
+ *   只替换第一段，段间内容及后续段原样保留（若用 lastIndexOf(END) 配对，
+ *   会把第一个 BEGIN 到最后一个 END 之间的内容整体吞掉）；
+ * - 有 BEGIN 无 END（残段）→ 丢弃残段，按完整标记段重写（补写 END 锚点）；
  * - 不存在标记段 → 追加到文件末尾（保留全部既有内容）。
  */
 export function upsertDesignSystemSection(existing: string, section: string): string {
   const begin = existing.indexOf(DESIGN_SYSTEM_BEGIN)
-  const end = existing.lastIndexOf(DESIGN_SYSTEM_END)
-  if (begin !== -1 && end !== -1 && end > begin) {
-    return (
-      existing.slice(0, begin) + section + existing.slice(end + DESIGN_SYSTEM_END.length)
-    )
+  if (begin !== -1) {
+    const end = existing.indexOf(DESIGN_SYSTEM_END, begin + DESIGN_SYSTEM_BEGIN.length)
+    if (end !== -1) {
+      return (
+        existing.slice(0, begin) + section + existing.slice(end + DESIGN_SYSTEM_END.length)
+      )
+    }
+    // 有 BEGIN 无 END：从 BEGIN 处截断丢弃残段，重写完整标记段
+    const prefix = existing.slice(0, begin).trimEnd()
+    return prefix.length > 0 ? `${prefix}\n\n${section}\n` : `${section}\n`
   }
   const trimmed = existing.trimEnd()
   return trimmed.length > 0 ? `${trimmed}\n\n${section}\n` : `${section}\n`
@@ -128,11 +139,17 @@ export async function ensureDesignExtensionDeployed(projectPath: string): Promis
     const srcDir = join(repoRoot, 'src', 'design', 'design-extension')
     const targetDir = join(projectPath, '.pi', 'extensions', EXTENSION_DIR_NAME)
 
-    // 幂等（扩展）：目标 index.ts 与源内容一致即视为扩展已最新
-    const targetIndex = join(targetDir, 'index.ts')
+    // 幂等（扩展）：EXTENSION_FILES 逐一比对（index.ts 为入口必须存在，
+    // rpc.ts / phase-guard.ts 容忍源缺失，与下方复制逻辑的容忍语义一致），
+    // 全部一致才视为扩展已最新——仅比 index.ts 会漏掉其余文件单独变更的场景
     const sourceIndex = readFileSync(join(srcDir, 'index.ts'), 'utf8')
-    const extensionUpToDate =
-      existsSync(targetIndex) && readFileSync(targetIndex, 'utf8') === sourceIndex
+    const extensionUpToDate = EXTENSION_FILES.every((file) => {
+      const sourceFile = join(srcDir, file)
+      if (file !== 'index.ts' && !existsSync(sourceFile)) return true // 源缺失容忍
+      const targetFile = join(targetDir, file)
+      const sourceContent = file === 'index.ts' ? sourceIndex : readFileSync(sourceFile, 'utf8')
+      return existsSync(targetFile) && readFileSync(targetFile, 'utf8') === sourceContent
+    })
 
     // 幂等（系统提示）：并入后的内容与现状一致则无需写入
     const section = buildDesignSystemSection(

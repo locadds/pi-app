@@ -15,7 +15,7 @@ import { getAgentRuntimeConfig } from './wsl/runtime-config'
 import { resolveWslActiveSdk } from './wsl/sdk-resolve'
 import { syncWorkerBundleToWsl } from './wsl/worker-host'
 import { resolveUtilityEntry } from './utility-entry-path'
-import { resolveXiaoguiConfig } from './xiaogui/config'
+import { buildXiaoguiWorkerEnv } from './xiaogui/worker-env'
 
 export const extensionUiDialogSource = new Map<string, WorkerSlot>()
 
@@ -357,16 +357,16 @@ export async function forkWorkerForCwd(
     })
     sdkPath = sdk.entryPath
   } else {
-    // 小规：向 worker 注入 DESIGN sidecar 相关 env（Runtime 目录/仓库根/Python 解释器），
+    // 小规：向 worker 注入 DESIGN sidecar 相关 env（Runtime 目录/仓库根/Python 解释器/
+    // 执行方式 XIAOGUI_PHASE——fork 时取当时值，切换后由 phase.switch 重启 worker 生效；
+    // XIAOGUI_PHASE_GUARD 灰度开关默认不设，显式配置时透传），
     // 供 worker 内扩展定位 Python Professional Runtime；配置异常时静默跳过。
-    const xiaoguiEnv = (() => {
+    // sidecar-bridge（执行方式的单一事实来源）经动态导入读取：其 scope-store
+    // 依赖 electron-store，避免在纯函数测试链路的模块顶层级联加载。
+    const xiaoguiEnv = await (async (): Promise<Record<string, string>> => {
       try {
-        const cfg = resolveXiaoguiConfig()
-        return {
-          XIAOGUI_RUNTIME_DIR: cfg.pythonCwd || '',
-          XIAOGUI_REPO: cfg.repoRoot || '',
-          XIAOGUI_PYTHON: cfg.pythonCommand || 'python',
-        }
+        const { xiaogui } = await import('./xiaogui/sidecar-bridge')
+        return buildXiaoguiWorkerEnv({ executionPhase: xiaogui.getExecutionPhase() })
       } catch {
         return {}
       }

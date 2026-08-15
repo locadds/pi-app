@@ -1,5 +1,5 @@
 /**
- * 小规 Agent 执行方式切换器（ASK｜问询、PLAN｜规划、EXECUTE｜执行）。
+ * 小规 Agent 执行方式切换器（ASK｜问答、PLAN｜规划、EXECUTE｜工作）。
  *
  * 与一级工作模式（WORK/DESIGN/CODING）正交：模式决定"在哪个领域做事"，
  * 执行方式决定"以什么方式推进"（V0.1 仅状态标记与策略路由接口，
@@ -23,9 +23,9 @@ import { useXiaoguiStore, type ExecutionPhase } from '../stores/xiaogui-store'
 const ACCENT = '#c0392b'
 
 const PHASES: { id: ExecutionPhase; zhLabel: string; hint: string }[] = [
-  { id: 'ASK', zhLabel: '问询', hint: '只回答，不主动执行操作' },
+  { id: 'ASK', zhLabel: '问答', hint: '只回答，不主动执行操作' },
   { id: 'PLAN', zhLabel: '规划', hint: '先输出计划，用户确认后再执行' },
-  { id: 'EXECUTE', zhLabel: '执行', hint: '直接执行操作' },
+  { id: 'EXECUTE', zhLabel: '工作', hint: '直接执行操作' },
 ]
 
 export function ExecutionPhaseToggle() {

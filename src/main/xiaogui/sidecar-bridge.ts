@@ -156,6 +156,38 @@ export interface ToolInvokePayload {
 }
 
 /**
+ * 计算实际生效的项目根白名单：显式配置 ∪ 当前项目根（去空、去重、保序）。
+ * 安全默认：未显式配置 XIAOGUI_ALLOWED_ROOTS 时收敛为仅当前项目根，
+ * 避免渲染层经 tool.invoke 间接 inspect 任意目录（sidecar 侧强制执行白名单）。
+ */
+export function resolveAllowedRoots(
+  configRoots: ReadonlyArray<string>,
+  projectRoot?: string | null,
+): string[] {
+  const trimmedProject = projectRoot?.trim() ?? ''
+  const merged = [...configRoots, ...(trimmedProject.length > 0 ? [trimmedProject] : [])]
+  return [...new Set(merged.map((p) => p.trim()).filter((p) => p.length > 0))]
+}
+
+/**
+ * 构造 sidecar 子进程 env（纯函数，便于单测）：
+ * 白名单 = 显式配置 ∪ 当前项目根；其余约定与旧 buildEnv 一致。
+ */
+export function buildSidecarEnv(
+  base: NodeJS.ProcessEnv,
+  config: { allowedRoots: ReadonlyArray<string>; requestTimeoutMs: number },
+  projectRoot?: string | null,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base }
+  const roots = resolveAllowedRoots(config.allowedRoots, projectRoot)
+  if (roots.length > 0) {
+    env['XIAOGUI_ALLOWED_ROOTS'] = roots.join(path.delimiter)
+  }
+  env['XIAOGUI_REQUEST_TIMEOUT'] = String(Math.ceil(config.requestTimeoutMs / 1000))
+  return env
+}
+
+/**
  * 小规集成门面：持有当前一级模式与 sidecar 生命周期。
  * sidecar 采用惰性启动（首次 tool.invoke 时 spawn），避免拖慢应用启动。
  */
@@ -165,6 +197,9 @@ class XiaoguiIntegration {
   private mode: XiaoguiMode = loadPersistedMode()
   // 执行方式（ASK/PLAN/EXECUTE，与一级模式正交）。V0.1 仅内存状态标记，不持久化。
   private executionPhase: ExecutionPhase = 'ASK'
+  // 当前项目根（IPC handler 在 tool.invoke 时传入）：sidecar 尚未启动时并入
+  // XIAOGUI_ALLOWED_ROOTS（安全默认收敛）；已启动进程不重写 env，重启后生效
+  private projectRoot: string | null = null
   private child: ChildProcessWithoutNullStreams | null = null
   private readonly pending = new Map<number | string, PendingRequest>()
   private nextId = 1
@@ -324,7 +359,14 @@ class XiaoguiIntegration {
    * 执行一次 tool call，永远返回 ToolResult（不抛业务异常）。
    * V0.1 仅注册 design.project（inspect / open / capabilities 均真正打通）。
    */
-  async invokeTool(payload: ToolInvokePayload): Promise<ToolResult> {
+  async invokeTool(
+    payload: ToolInvokePayload,
+    opts?: { projectRoot?: string | null },
+  ): Promise<ToolResult> {
+    // 记录当前项目根（未显式配置白名单时的安全默认收敛，见 buildSidecarEnv）
+    if (opts) {
+      this.projectRoot = opts.projectRoot?.trim() || null
+    }
     const traceId = payload.trace_id?.trim() || randomUUID()
     const { tool, action } = payload
     const params = payload.params ?? {}
@@ -392,13 +434,7 @@ class XiaoguiIntegration {
   }
 
   private buildEnv(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env }
-    const roots = this.config.allowedRoots
-    if (roots.length > 0) {
-      env['XIAOGUI_ALLOWED_ROOTS'] = roots.join(path.delimiter)
-    }
-    env['XIAOGUI_REQUEST_TIMEOUT'] = String(Math.ceil(this.config.requestTimeoutMs / 1000))
-    return env
+    return buildSidecarEnv(process.env, this.config, this.projectRoot)
   }
 
   private onStdout(chunk: string): void {

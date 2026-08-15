@@ -73,6 +73,17 @@ export function registerXiaoguiHandlers(): void {
 
   registerHandlerWithSchema('ipc:xiaogui.phase.switch', PhaseSwitchSchema, async (req) => {
     const phase = xiaogui.setExecutionPhase(req.phase as ExecutionPhase)
+    // 执行方式经 worker env（XIAOGUI_PHASE）注入、fork 时固化：切换成功后重启
+    // 当前项目 worker 使新 phase 生效（遵循 scope.set 打标 DESIGN 的既有生命周期
+    // 模式）；worker busy 时不打断在途会话，重启失败仅记录、不阻断切换本身
+    if (workerManager.cwd && !workerManager.hasActiveTurns) {
+      try {
+        await workerManager.stop()
+        await workerManager.start(workerManager.cwd)
+      } catch (e) {
+        console.warn('[xiaogui] phase 切换后 worker 重启失败:', e)
+      }
+    }
     return { ok: true, phase }
   })
 
@@ -81,7 +92,10 @@ export function registerXiaoguiHandlers(): void {
   })
 
   registerHandlerWithSchema('ipc:xiaogui.tool.invoke', ToolInvokeSchema, async (req) => {
-    const result = await xiaogui.invokeTool(req as ToolInvokePayload)
+    // 安全默认：把 allowedRoots 收敛为当前项目根（workerManager.cwd → 激活项目），
+    // 显式配置 XIAOGUI_ALLOWED_ROOTS 仅作追加（配置 ∪ 当前项目根，向后兼容）
+    const projectRoot = workerManager.cwd || configStore.get('currentProject') || null
+    const result = await xiaogui.invokeTool(req as ToolInvokePayload, { projectRoot })
     return { ok: true, result }
   })
 
