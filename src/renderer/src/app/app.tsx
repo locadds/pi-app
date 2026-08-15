@@ -50,7 +50,6 @@ import { useDoubleEscapeTree } from '@renderer/hooks/use-double-escape-tree'
 // 小规 Agent 集成：一级模式切换器 + 三模式首屏视图
 // （DESIGN：项目检查；WORK：工作台引导；CODING：编程说明卡）
 // （状态经 useXiaoguiStore 走 IPC 白名单通道，渲染进程不接触文件系统/Python）
-import { ExecutionPhaseToggle } from '@renderer/xiaogui/components/ExecutionPhaseToggle'
 import { ModeSelector } from '@renderer/xiaogui/components/ModeSelector'
 import { ProjectInspectView } from '@renderer/xiaogui/components/ProjectInspectView'
 import { WorkHomeView } from '@renderer/xiaogui/components/WorkHomeView'
@@ -386,8 +385,9 @@ export default function App() {
               )}
               <MainColRightPanelToggle />
               <ComposerDock heroMode={showHome && !xiaoguiHome}>
-                {/* 小规：执行方式档位（ASK/PLAN/EXECUTE，与一级模式正交；V0.1 仅状态标记） */}
-                <ExecutionPhaseToggle />
+                {/* 小规 M0：ASK/PLAN/EXECUTE 执行方式控件暂不渲染——后端尚不能兑现
+                    “只回答/确认后执行”承诺。执行方式组件、状态与 IPC 接口保留在
+                    xiaogui 目录，作为未来真实策略实现的不可见预留接口。 */}
                 <Composer />
               </ComposerDock>
               {rightPanelHidden && (
