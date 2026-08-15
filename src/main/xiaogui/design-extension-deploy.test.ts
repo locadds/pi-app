@@ -104,6 +104,7 @@ describe('ensureDesignExtensionDeployed（临时仓库端到端）', () => {
     mkdirSync(ctxDir, { recursive: true })
     writeFileSync(join(extDir, 'index.ts'), '// design extension v1\n', 'utf8')
     writeFileSync(join(extDir, 'rpc.ts'), '// rpc\n', 'utf8')
+    writeFileSync(join(extDir, 'phase-guard.ts'), '// phase guard\n', 'utf8')
     writeFileSync(join(ctxDir, 'DESIGN_SYSTEM.md'), '# DESIGN 系统提示 v1\n', 'utf8')
     return repo
   }
@@ -130,6 +131,14 @@ describe('ensureDesignExtensionDeployed（临时仓库端到端）', () => {
     expect(readFileSync(join(project, '.pi', 'extensions', 'xiaogui-design-project', 'index.ts'), 'utf8')).toBe(
       '// design extension v1\n',
     )
+    const manifest = JSON.parse(
+      readFileSync(join(project, '.pi', 'extensions', 'xiaogui-design-project', '.xiaogui-deploy.json'), 'utf8'),
+    ) as {
+      files: Record<string, { sha256: string }>
+    }
+    expect(manifest.files['index.ts'].sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(manifest.files['rpc.ts'].sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(manifest.files['phase-guard.ts'].sha256).toMatch(/^[a-f0-9]{64}$/)
     const append = readFileSync(join(project, '.pi', 'APPEND_SYSTEM.md'), 'utf8')
     expect(append.startsWith(CODING_SECTION)).toBe(true)
     expect(append).toContain(DESIGN_SYSTEM_BEGIN)

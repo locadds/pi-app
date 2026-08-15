@@ -163,7 +163,7 @@ export interface SidecarIdentity {
   allowedRoots: string[]
 }
 
-export type SidecarLifecycleDecision = 'reuse' | 'start' | 'restart' | 'reject'
+export type SidecarLifecycleDecision = 'reuse' | 'start' | 'restart' | 'await-starting' | 'reject'
 
 /**
  * 计算实际生效的项目根白名单：显式配置 ∪ 当前项目根（去空、去重、保序）。
@@ -215,7 +215,13 @@ export function planSidecarLifecycle(params: {
   activeIdentityKey: string | null
   nextIdentityKey: string
   pendingRequests: number
+  startingIdentityKey?: string | null
+  shuttingDown?: boolean
 }): SidecarLifecycleDecision {
+  if (params.shuttingDown) return 'reject'
+  if (params.startingIdentityKey) {
+    return params.startingIdentityKey === params.nextIdentityKey ? 'await-starting' : 'reject'
+  }
   if (!params.running) return 'start'
   if (params.activeIdentityKey === params.nextIdentityKey) return 'reuse'
   if (params.pendingRequests > 0) return 'reject'
@@ -239,14 +245,31 @@ export function buildSidecarEnv(
   return env
 }
 
+export interface XiaoguiIntegrationDeps {
+  config?: XiaoguiBridgeConfig
+  mode?: XiaoguiMode
+  spawnSidecar?: (
+    command: string,
+    args: string[],
+    options: Parameters<typeof spawn>[2],
+  ) => ChildProcessWithoutNullStreams
+}
+
+export interface XiaoguiIntegrationTestInstance {
+  status(): XiaoguiStatus
+  shutdown(): Promise<void>
+  invokeTool(payload: ToolInvokePayload, opts?: { projectRoot?: string | null }): Promise<ToolResult>
+}
+
 /**
  * 小规集成门面：持有当前一级模式与 sidecar 生命周期。
  * sidecar 采用惰性启动（首次 tool.invoke 时 spawn），避免拖慢应用启动。
  */
 class XiaoguiIntegration {
-  private readonly config: XiaoguiBridgeConfig = resolveXiaoguiConfig()
+  private readonly config: XiaoguiBridgeConfig
+  private readonly spawnSidecar: NonNullable<XiaoguiIntegrationDeps['spawnSidecar']>
   // 一级模式持久化在 xiaogui.json（scope-store），重启后恢复上次模式
-  private mode: XiaoguiMode = loadPersistedMode()
+  private mode: XiaoguiMode
   // 执行方式（ASK/PLAN/EXECUTE，与一级模式正交）。V0.1 仅内存状态标记，不持久化。
   private executionPhase: ExecutionPhase = 'ASK'
   // 当前项目根（IPC handler 在 tool.invoke 时传入）：sidecar 尚未启动时并入
@@ -262,7 +285,18 @@ class XiaoguiIntegration {
   private shuttingDown = false
   private starting: Promise<void> | null = null
   private startingIdentity: SidecarIdentity | null = null
+  private cancelStarting: ((error: Error) => void) | null = null
+  private startingCanceled = false
   private lastError: string | null = null
+
+  constructor(deps: XiaoguiIntegrationDeps = {}) {
+    this.config = deps.config ?? resolveXiaoguiConfig()
+    this.spawnSidecar =
+      deps.spawnSidecar ??
+      ((command, args, options) =>
+        spawn(command, args, options) as ChildProcessWithoutNullStreams)
+    this.mode = deps.mode ?? loadPersistedMode()
+  }
 
   // ---- 模式 ---------------------------------------------------------------
 
@@ -308,32 +342,30 @@ class XiaoguiIntegration {
 
   /** 确保 sidecar 已启动并完成 initialize 握手（并发调用共享同一 Promise）。 */
   private async ensureStarted(identity: SidecarIdentity): Promise<void> {
-    if (this.isRunning()) {
-      const decision = planSidecarLifecycle({
-        running: true,
-        activeIdentityKey: this.activeIdentity?.key ?? null,
-        nextIdentityKey: identity.key,
-        pendingRequests: this.pending.size,
-      })
-      if (decision === 'reuse') return
-      if (decision === 'reject') {
-        throw new SidecarBridgeError('sidecar 白名单/运行时正在切换，但仍有请求未完成；本次项目工具调用已拒绝，请稍后重试')
-      }
-      await this.shutdown()
-    }
+    const decision = planSidecarLifecycle({
+      running: this.isRunning(),
+      activeIdentityKey: this.activeIdentity?.key ?? null,
+      nextIdentityKey: identity.key,
+      pendingRequests: this.pending.size,
+      startingIdentityKey: this.starting ? this.startingIdentity?.key ?? null : null,
+      shuttingDown: this.shuttingDown,
+    })
 
-    // 若已有启动中的 Promise 且身份不同，先等待其完成再按新身份重新决策
-    // （避免并发调用拿到旧身份的 sidecar/白名单）。
-    if (this.starting) {
-      if (this.startingIdentity?.key === identity.key) return this.starting
-      await this.starting
-      return this.ensureStarted(identity)
+    if (decision === 'reuse') return
+    if (decision === 'await-starting') return this.starting!
+    if (decision === 'reject') {
+      throw new SidecarBridgeError('sidecar 白名单/运行时正在切换；本次项目工具调用已拒绝，请稍后重试')
+    }
+    if (decision === 'restart') {
+      await this.shutdown()
     }
 
     this.startingIdentity = identity
     this.starting = this.doStart(identity).finally(() => {
       this.starting = null
       this.startingIdentity = null
+      this.cancelStarting = null
+      this.startingCanceled = false
     })
     return this.starting
   }
@@ -342,7 +374,7 @@ class XiaoguiIntegration {
     const { pythonCommand } = this.config
     const env = this.buildEnv(identity)
 
-    const child = spawn(pythonCommand, ['-m', 'xiaogui_runtime'], {
+    const child = this.spawnSidecar(pythonCommand, ['-m', 'xiaogui_runtime'], {
       cwd: identity.runtimeDir,
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
@@ -352,30 +384,57 @@ class XiaoguiIntegration {
     this.child = child
     this.activeIdentity = identity
     this.shuttingDown = false
+    this.startingCanceled = false
     this.stdoutBuffer = ''
     this.stderrBuffer = ''
 
     try {
       await new Promise<void>((resolve, reject) => {
-        child.once('spawn', () => resolve())
+        this.cancelStarting = (error) => {
+          this.startingCanceled = true
+          reject(error)
+        }
+        child.once('spawn', () => {
+          if (this.child !== child || this.startingCanceled) {
+            this.killChild(child, 'sidecar 启动取消后迟到 spawn kill 失败')
+            return
+          }
+          resolve()
+        })
         child.once('error', (err) => {
           reject(new SidecarBridgeError(`sidecar 启动失败（command=${pythonCommand}）: ${err.message}`))
         })
       })
     } catch (err) {
-      this.child = null
-      this.activeIdentity = null
+      if (this.child === child) {
+        this.child = null
+        this.activeIdentity = null
+      }
       this.lastError = err instanceof Error ? err.message : String(err)
       throw err
     }
 
+    if (this.startingCanceled || this.child !== child) {
+      const err = 'sidecar 启动已被 shutdown 取消'
+      if (this.child === child) {
+        this.child = null
+        this.activeIdentity = null
+      }
+      this.lastError = err
+      throw new SidecarBridgeError(err)
+    }
+
     this.running = true
-    // 若在 spawn 与 running=true 之间 sidecar 已退出，exit handler 已记录 lastError 并清空 child，
-    // 此时应把启动视为失败，而不是带着已退出的子进程继续。
+    // 若在 spawn 与 running=true 之间 sidecar 已退出，应把启动视为失败；
+    // 但只能清理当前 child，避免旧 child 的迟到状态污染新进程。
     if (!this.isRunning()) {
-      const err = this.lastError || 'sidecar 启动后立刻退出'
-      this.running = false
-      this.activeIdentity = null
+      const err = this.lastError || `sidecar 启动后立刻退出（code=${child.exitCode ?? 'null'}）`
+      if (this.child === child) {
+        this.running = false
+        this.child = null
+        this.activeIdentity = null
+      }
+      this.lastError = err
       throw new SidecarBridgeError(err)
     }
     this.lastError = null
@@ -383,9 +442,14 @@ class XiaoguiIntegration {
     child.stdin.on('error', () => undefined)
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
-    child.stdout.on('data', (chunk: string) => this.onStdout(chunk))
-    child.stderr.on('data', (chunk: string) => this.onStderr(chunk))
+    child.stdout.on('data', (chunk: string) => {
+      if (this.child === child) this.onStdout(chunk)
+    })
+    child.stderr.on('data', (chunk: string) => {
+      if (this.child === child) this.onStderr(chunk)
+    })
     child.on('exit', (code, signal) => {
+      if (this.child !== child) return
       this.running = false
       this.failAllPending(
         new SidecarBridgeError(`sidecar 进程已退出（code=${code} signal=${signal ?? 'null'}）`),
@@ -410,9 +474,25 @@ class XiaoguiIntegration {
   /** 优雅停止：runtime.shutdown + 等待退出，超时 kill。退出 app 时调用。 */
   async shutdown(): Promise<void> {
     const child = this.child
+    const starting = this.starting
+    if (this.starting && !this.running) {
+      this.shuttingDown = true
+      this.startingCanceled = true
+      this.cancelStarting?.(new SidecarBridgeError('sidecar 启动已被 shutdown 取消'))
+      if (child) this.killChild(child, 'sidecar 启动取消 kill 失败')
+      await starting?.catch(() => undefined)
+      if (this.child === child) {
+        this.running = false
+        this.child = null
+        this.activeIdentity = null
+      }
+      this.shuttingDown = false
+      return
+    }
     if (!this.isRunning() || !child) {
       this.running = false
       this.activeIdentity = null
+      this.shuttingDown = false
       return
     }
     this.shuttingDown = true
@@ -427,7 +507,7 @@ class XiaoguiIntegration {
         return
       }
       const timer = setTimeout(() => {
-        if (this.running && this.child) this.child.kill('SIGKILL')
+        if (this.running && this.child) this.killChild(this.child, 'sidecar shutdown kill 失败')
         resolve()
       }, this.config.shutdownTimeoutMs)
       timer.unref?.()
@@ -436,9 +516,14 @@ class XiaoguiIntegration {
         resolve()
       })
     })
-    this.running = false
-    this.child = null
-    this.activeIdentity = null
+    if (this.child === child) {
+      this.failAllPending(new SidecarBridgeError('sidecar 正在关闭，未完成请求已取消'))
+      this.running = false
+      this.child = null
+      this.activeIdentity = null
+    }
+    await starting?.catch(() => undefined)
+    this.shuttingDown = false
   }
 
   // ---- Tool 调用（与 ToolGateway 语义一致）----------------------------------
@@ -591,10 +676,25 @@ class XiaoguiIntegration {
       this.pending.delete(id)
     }
   }
+
+  private killChild(child: ChildProcessWithoutNullStreams, errorPrefix: string): void {
+    if (child.exitCode !== null) return
+    try {
+      child.kill('SIGKILL')
+    } catch (err) {
+      this.lastError = `${errorPrefix}: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
 }
 
 /** 全局单例：被 ipc-handlers / initXiaogui 引用。 */
 export const xiaogui = new XiaoguiIntegration()
+
+export function createXiaoguiIntegrationForTest(
+  deps: XiaoguiIntegrationDeps,
+): XiaoguiIntegrationTestInstance {
+  return new XiaoguiIntegration(deps)
+}
 
 /** 校验 mode 字符串（供 IPC handler 复用）。 */
 export { isXiaoguiMode }

@@ -196,13 +196,17 @@ export async function ensureDesignExtensionDeployed(projectPath: string): Promis
     // 幂等（扩展）：EXTENSION_FILES 逐一比对（index.ts 为入口必须存在，
     // rpc.ts / phase-guard.ts 容忍源缺失，与下方复制逻辑的容忍语义一致），
     // 全部一致才视为扩展已最新——仅比 index.ts 会漏掉其余文件单独变更的场景。
-    // 首次采集延迟到 every 循环内部，避免在已幂等时仍提前读取 index.ts。
     const extensionSources: Partial<Record<(typeof EXTENSION_FILES)[number], string>> = {}
-    const extensionUpToDate = EXTENSION_FILES.every((file) => {
+    for (const file of EXTENSION_FILES) {
       const sourceFile = join(srcDir, file)
-      if (!existsSync(sourceFile)) return file !== 'index.ts' // index.ts 必须存在
+      if (existsSync(sourceFile)) {
+        extensionSources[file] = readFileSync(sourceFile, 'utf8')
+      }
+    }
+    const extensionUpToDate = EXTENSION_FILES.every((file) => {
+      const sourceContent = extensionSources[file]
+      if (sourceContent === undefined) return file !== 'index.ts' // index.ts 必须存在
       const targetFile = join(targetDir, file)
-      const sourceContent = (extensionSources[file] = readFileSync(sourceFile, 'utf8'))
       return existsSync(targetFile) && readFileSync(targetFile, 'utf8') === sourceContent
     })
 
