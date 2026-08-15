@@ -19,7 +19,7 @@ import {
   type SandboxEntry,
   type SessionItem,
 } from './project-sidebar-types'
-import { projectFolderOrder } from './project-folder-order'
+import { dedupeByPathKey, projectFolderOrder } from './project-folder-order'
 import { ProjectDiskRow, ProjectSessionTree, SandboxDialogRow } from './project-sidebar-rows'
 
 export function ProjectSidebar({
@@ -171,7 +171,10 @@ export function ProjectSidebar({
     const diskRecent = recentProjects.filter((p) => !isSandboxPath(p))
     const diskCurrent = currentWorkspace && !isSandboxPath(currentWorkspace) ? currentWorkspace : null
     const ordered = projectFolderOrder(diskRecent, diskCurrent, recentProjectsFixedOrder)
-    return projectFilter ? ordered.filter((p) => projectFilter(p)) : ordered
+    // Windows 路径大小写不敏感：上游 recentProjects 可能同目录存入 D:\x 与 d:\x
+    // 两种写法，字面去重失效导致侧栏重复条目（仅 title 盘符大小写不同）。
+    const deduped = dedupeByPathKey(ordered, currentWorkspace)
+    return projectFilter ? deduped.filter((p) => projectFilter(p)) : deduped
   }, [recentProjects, currentWorkspace, recentProjectsFixedOrder, projectFilter])
 
   // 小规层模式过滤同样作用于临时对话列表（sandbox 工作区按 projectModeMap 归属）

@@ -16,8 +16,12 @@ test('main chat paper surface casts outward onto the sidebar and top chrome', ()
   const surfaceRule = cssRule('.shell-track-center .main-chat-column')
 
   assert.match(css, /--main-chat-surface-radius:\s*16px/)
-  assert.match(css, /--main-chat-surface-shadow:\s*\n\s*-3px 0 8px -4px rgba\(18, 24, 40, 0\.14\),\s*\n\s*0 -2px 6px -3px rgba\(18, 24, 40, 0\.1\)/)
-  assert.match(css, /\.dark[^{]*\{[^}]*--main-chat-surface-shadow:\s*\n\s*-3px 0 8px -4px rgba\(0, 0, 0, 0\.28\),\s*\n\s*0 -2px 6px -3px rgba\(0, 0, 0, 0\.2\)/s)
+  // 上游 d496891 起：纸面顶阴影拆为独立变量 --main-chat-surface-shadow-top，
+  // --main-chat-surface-shadow 第二段改为 var() 复用（展开右栏亦直接引用该顶阴影变量）。
+  assert.match(css, /--main-chat-surface-shadow-top:\s*0 -2px 6px -3px rgba\(18, 24, 40, 0\.1\)/)
+  assert.match(css, /--main-chat-surface-shadow:\s*-3px 0 8px -4px rgba\(18, 24, 40, 0\.14\),\s*var\(--main-chat-surface-shadow-top\)/)
+  assert.match(css, /\.dark[^{]*\{[^}]*--main-chat-surface-shadow-top:\s*0 -2px 6px -3px rgba\(0, 0, 0, 0\.2\)/s)
+  assert.match(css, /\.dark[^{]*\{[^}]*--main-chat-surface-shadow:\s*-3px 0 8px -4px rgba\(0, 0, 0, 0\.28\),\s*var\(--main-chat-surface-shadow-top\)/s)
   assert.doesNotMatch(css, /--main-chat-surface-shadow:[^;]*\binset\b/s)
   assert.match(shellRule, /position:\s*relative/)
   assert.match(shellRule, /z-index:\s*30/)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { projectFolderOrder } from './project-folder-order'
+import { dedupeByPathKey, projectFolderOrder } from './project-folder-order'
 
 describe('projectFolderOrder', () => {
   it('MRU mode (default): pins the current workspace to the top, then stored order', () => {
@@ -19,5 +19,20 @@ describe('projectFolderOrder', () => {
     expect(projectFolderOrder(['a', 'a', 'b'], 'a', false)).toEqual(['a', 'b'])
     expect(projectFolderOrder(['a', 'b'], null, false)).toEqual(['a', 'b'])
     expect(projectFolderOrder(['', 'a'], null, true)).toEqual(['a'])
+  })
+})
+
+describe('dedupeByPathKey（Windows 盘符/大小写规范化去重）', () => {
+  it('同目录仅盘符大小写或写法不同的条目只保留一条（首个出现）', () => {
+    expect(dedupeByPathKey(['D:\\proj\\a', 'd:\\proj\\a'], null)).toEqual(['D:\\proj\\a'])
+    expect(dedupeByPathKey(['D:/Proj/A', 'd:/proj/a/', 'D:\\other'], null)).toEqual([
+      'D:/Proj/A',
+      'D:\\other',
+    ])
+  })
+
+  it('重复条目命中 currentWorkspace 原样写法时替换保留，保住 active 高亮', () => {
+    expect(dedupeByPathKey(['D:\\proj\\a', 'd:\\proj\\a'], 'd:\\proj\\a')).toEqual(['d:\\proj\\a'])
+    expect(dedupeByPathKey(['D:\\proj\\a', 'd:\\proj\\a'], 'D:\\proj\\a')).toEqual(['D:\\proj\\a'])
   })
 })
