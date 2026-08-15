@@ -21,7 +21,12 @@ vi.mock('electron-store', () => {
   return { default: FakeStore }
 })
 
-import { buildSidecarEnv, resolveAllowedRoots } from './sidecar-bridge'
+import {
+  buildSidecarEnv,
+  planSidecarLifecycle,
+  resolveAllowedRoots,
+  resolveSidecarIdentity,
+} from './sidecar-bridge'
 
 describe('resolveAllowedRoots（白名单默认收敛）', () => {
   it('未显式配置时收敛为 [当前项目根]', () => {
@@ -58,14 +63,124 @@ describe('buildSidecarEnv（sidecar 子进程 env 构造）', () => {
     expect(env['XIAOGUI_ALLOWED_ROOTS']).toBe(['D:/x', 'D:/proj/demo'].join(path.delimiter))
   })
 
-  it('两者皆空时不设置 XIAOGUI_ALLOWED_ROOTS（保持 sidecar 侧既有语义）', () => {
+  it('两者皆空时显式传空白名单，调用层必须先 fail-closed', () => {
     const env = buildSidecarEnv({}, { allowedRoots: [], requestTimeoutMs: 30_000 }, null)
-    expect(env['XIAOGUI_ALLOWED_ROOTS']).toBeUndefined()
+    expect(env['XIAOGUI_ALLOWED_ROOTS']).toBe('')
   })
 
   it('透传 base env 并注入 XIAOGUI_REQUEST_TIMEOUT（秒）', () => {
     const env = buildSidecarEnv({ FOO: 'bar' }, { allowedRoots: [], requestTimeoutMs: 30_000 })
     expect(env['FOO']).toBe('bar')
     expect(env['XIAOGUI_REQUEST_TIMEOUT']).toBe('30')
+  })
+
+  it('传入 effectiveAllowedRoots 时直接采用，不再解析 projectRoot/configRoots', () => {
+    const env = buildSidecarEnv(
+      {},
+      { allowedRoots: ['D:/ignored'], requestTimeoutMs: 30_000 },
+      'D:/ignored-project',
+      ['D:/effective'],
+    )
+    expect(env['XIAOGUI_ALLOWED_ROOTS']).toBe('D:/effective')
+  })
+})
+
+describe('resolveSidecarIdentity（启动身份与 fail-closed）', () => {
+  it('没有 runtime 时返回结构化错误，不启动 sidecar', () => {
+    const result = resolveSidecarIdentity(
+      {
+        pythonCwd: null,
+        runtimeError: 'runtime missing',
+        allowedRoots: [],
+      },
+      'D:/proj/demo',
+    )
+    expect(result).toEqual({ ok: false, error: 'runtime missing' })
+  })
+
+  it('没有项目根且没有显式白名单时拒绝项目工具', () => {
+    const result = resolveSidecarIdentity(
+      {
+        pythonCwd: 'D:/runtime',
+        runtimeError: null,
+        allowedRoots: [],
+      },
+      null,
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain('空白名单')
+  })
+
+  it('没有项目根但有显式白名单时允许项目工具', () => {
+    const result = resolveSidecarIdentity(
+      {
+        pythonCwd: 'D:/runtime',
+        runtimeError: null,
+        allowedRoots: ['D:/allowed'],
+      },
+      null,
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.identity.allowedRoots).toEqual(['D:/allowed'])
+      expect(result.identity.runtimeDir).toBe('D:/runtime')
+    }
+  })
+
+  it('启动身份包含 runtimeDir 与白名单；项目 A/B key 不同', () => {
+    const base = {
+      pythonCwd: 'D:/runtime',
+      runtimeError: null,
+      allowedRoots: [],
+    }
+    const a = resolveSidecarIdentity(base, 'D:/proj/a')
+    const b = resolveSidecarIdentity(base, 'D:/proj/b')
+    expect(a.ok).toBe(true)
+    expect(b.ok).toBe(true)
+    if (a.ok && b.ok) {
+      expect(a.identity.allowedRoots).toEqual(['D:/proj/a'])
+      expect(b.identity.allowedRoots).toEqual(['D:/proj/b'])
+      expect(a.identity.key).not.toBe(b.identity.key)
+    }
+  })
+})
+
+describe('planSidecarLifecycle（项目切换生命周期策略）', () => {
+  it('未运行时启动；身份相同时复用', () => {
+    expect(
+      planSidecarLifecycle({
+        running: false,
+        activeIdentityKey: null,
+        nextIdentityKey: 'a',
+        pendingRequests: 0,
+      }),
+    ).toBe('start')
+    expect(
+      planSidecarLifecycle({
+        running: true,
+        activeIdentityKey: 'a',
+        nextIdentityKey: 'a',
+        pendingRequests: 0,
+      }),
+    ).toBe('reuse')
+  })
+
+  it('项目 A 切到 B：无挂起请求时重启，有挂起请求时确定性拒绝', () => {
+    expect(
+      planSidecarLifecycle({
+        running: true,
+        activeIdentityKey: 'project-a',
+        nextIdentityKey: 'project-b',
+        pendingRequests: 0,
+      }),
+    ).toBe('restart')
+    expect(
+      planSidecarLifecycle({
+        running: true,
+        activeIdentityKey: 'project-a',
+        nextIdentityKey: 'project-b',
+        pendingRequests: 1,
+      }),
+    ).toBe('reject')
   })
 })

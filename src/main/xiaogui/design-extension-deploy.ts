@@ -21,6 +21,7 @@
  * - 任何失败仅 console.warn 并返回 false，绝不阻塞 worker 启动链路。
  */
 
+import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -28,6 +29,11 @@ import { resolveXiaoguiConfig } from './config'
 
 /** 项目内扩展安装目录名（Pi 扩展包加载约定）。 */
 const EXTENSION_DIR_NAME = 'xiaogui-design-project'
+
+/** 部署清单 schema：v1 仅有 runtimeDir；v2 加入源身份和内容哈希。 */
+const DEPLOY_MANIFEST_SCHEMA_VERSION = 2
+
+const DEPLOY_MANIFEST_FILE = '.xiaogui-deploy.json'
 
 /** 需要同步的扩展源文件（阶段 5A：phase-guard.ts 被 index.ts import）。 */
 const EXTENSION_FILES = ['index.ts', 'rpc.ts', 'phase-guard.ts'] as const
@@ -51,6 +57,49 @@ export const DESIGN_SYSTEM_END = '<!-- XIAOGUI:DESIGN:END -->'
 export function buildDesignSystemSection(source: string): string {
   const normalized = source.replace(/\r\n/g, '\n').trimEnd()
   return `${DESIGN_SYSTEM_BEGIN}\n${normalized}\n${DESIGN_SYSTEM_END}`
+}
+
+function sha256(content: string): string {
+  return createHash('sha256').update(content).digest('hex')
+}
+
+function readUtf8IfExists(path: string): string | null {
+  return existsSync(path) ? readFileSync(path, 'utf8') : null
+}
+
+function buildDeployManifest(params: {
+  repoRoot: string
+  runtimeDir: string | null
+  extensionSourceDir: string
+  designSystemSource: string
+  extensionSources: Partial<Record<(typeof EXTENSION_FILES)[number], string>>
+}): string {
+  const files = Object.fromEntries(
+    EXTENSION_FILES.flatMap((file) => {
+      const content = params.extensionSources[file]
+      return content === undefined ? [] : [[file, { sha256: sha256(content) }]]
+    }),
+  )
+
+  return (
+    JSON.stringify(
+      {
+        schemaVersion: DEPLOY_MANIFEST_SCHEMA_VERSION,
+        runtimeDir: params.runtimeDir,
+        source: {
+          repoRoot: params.repoRoot,
+          extensionDir: params.extensionSourceDir,
+          designSystem: DESIGN_SYSTEM_SOURCE,
+        },
+        files,
+        designSystem: {
+          sha256: sha256(params.designSystemSource),
+        },
+      },
+      null,
+      2,
+    ) + '\n'
+  )
 }
 
 /**
@@ -136,35 +185,50 @@ function syncAuxiliaryAssets(repoRoot: string, projectPath: string): boolean {
 export async function ensureDesignExtensionDeployed(projectPath: string): Promise<boolean> {
   try {
     const { repoRoot, pythonCwd } = resolveXiaoguiConfig()
+    if (!repoRoot) {
+      // DESIGN 扩展源必须来自小规仓库根；仅有 runtime 目录无法定位扩展源。
+      console.warn('[xiaogui] DESIGN 扩展部署 skipped：未配置 XIAOGUI_REPO，无法定位扩展源')
+      return false
+    }
     const srcDir = join(repoRoot, 'src', 'design', 'design-extension')
     const targetDir = join(projectPath, '.pi', 'extensions', EXTENSION_DIR_NAME)
 
     // 幂等（扩展）：EXTENSION_FILES 逐一比对（index.ts 为入口必须存在，
     // rpc.ts / phase-guard.ts 容忍源缺失，与下方复制逻辑的容忍语义一致），
-    // 全部一致才视为扩展已最新——仅比 index.ts 会漏掉其余文件单独变更的场景
-    const sourceIndex = readFileSync(join(srcDir, 'index.ts'), 'utf8')
+    // 全部一致才视为扩展已最新——仅比 index.ts 会漏掉其余文件单独变更的场景。
+    // 首次采集延迟到 every 循环内部，避免在已幂等时仍提前读取 index.ts。
+    const extensionSources: Partial<Record<(typeof EXTENSION_FILES)[number], string>> = {}
     const extensionUpToDate = EXTENSION_FILES.every((file) => {
       const sourceFile = join(srcDir, file)
-      if (file !== 'index.ts' && !existsSync(sourceFile)) return true // 源缺失容忍
+      if (!existsSync(sourceFile)) return file !== 'index.ts' // index.ts 必须存在
       const targetFile = join(targetDir, file)
-      const sourceContent = file === 'index.ts' ? sourceIndex : readFileSync(sourceFile, 'utf8')
+      const sourceContent = (extensionSources[file] = readFileSync(sourceFile, 'utf8'))
       return existsSync(targetFile) && readFileSync(targetFile, 'utf8') === sourceContent
     })
 
     // 幂等（系统提示）：并入后的内容与现状一致则无需写入
-    const section = buildDesignSystemSection(
-      readFileSync(join(repoRoot, DESIGN_SYSTEM_SOURCE), 'utf8'),
-    )
+    const designSystemSource = readFileSync(join(repoRoot, DESIGN_SYSTEM_SOURCE), 'utf8')
+    const section = buildDesignSystemSection(designSystemSource)
     const appendSystemPath = join(projectPath, '.pi', 'APPEND_SYSTEM.md')
     const existing = existsSync(appendSystemPath)
       ? readFileSync(appendSystemPath, 'utf8')
       : ''
     const next = upsertDesignSystemSection(existing, section)
 
+    const deployManifest = buildDeployManifest({
+      repoRoot,
+      runtimeDir: pythonCwd,
+      extensionSourceDir: srcDir,
+      designSystemSource,
+      extensionSources,
+    })
+    const deployManifestPath = join(targetDir, DEPLOY_MANIFEST_FILE)
+    const manifestUpToDate = readUtf8IfExists(deployManifestPath) === deployManifest
+
     // 阶段 5A：skills + 桌面 adapter 同步（幂等、容忍源缺失）
     const auxOk = syncAuxiliaryAssets(repoRoot, projectPath)
 
-    if (extensionUpToDate && next === existing && auxOk) {
+    if (extensionUpToDate && manifestUpToDate && next === existing && auxOk) {
       return true
     }
 
@@ -176,12 +240,11 @@ export async function ensureDesignExtensionDeployed(projectPath: string): Promis
         if (!existsSync(sourceFile)) continue
         copyFileSync(sourceFile, join(targetDir, file))
       }
-      // runtimeDir 指向小规仓库 python/（含 xiaogui_runtime 包），扩展据此拉起 sidecar
-      writeFileSync(
-        join(targetDir, '.xiaogui-deploy.json'),
-        JSON.stringify({ runtimeDir: pythonCwd }, null, 2) + '\n',
-        'utf8',
-      )
+    }
+
+    if (!manifestUpToDate) {
+      mkdirSync(targetDir, { recursive: true })
+      writeFileSync(deployManifestPath, deployManifest, 'utf8')
     }
 
     if (next !== existing) {

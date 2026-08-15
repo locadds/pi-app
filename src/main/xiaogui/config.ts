@@ -9,11 +9,14 @@
  * 所有配置均可用环境变量覆盖，便于开发/测试与未来部署调整：
  * - XIAOGUI_PYTHON        Python 可执行文件（默认 'python'）
  * - XIAOGUI_RUNTIME_DIR   sidecar 工作目录（需包含 xiaogui_runtime 包）
- * - XIAOGUI_REPO          小规 Agent 代码仓库根（派生 <repo>/python；
- *                         未设置时回退开发机默认位置）
+ * - XIAOGUI_REPO          小规 Agent 代码仓库根（派生 <repo>/python）
  * - XIAOGUI_ALLOWED_ROOTS 项目根白名单（path.delimiter 分隔）
+ *
+ * 未显式配置时仅回退到打包资源 process.resourcesPath/xiaogui。
+ * 禁止内置开发机绝对路径默认值。
  */
 
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 /** 一级工作模式（与小规产品定义一致，禁止使用 PLANNING 命名）。 */
@@ -41,12 +44,16 @@ export function isXiaoguiMode(value: unknown): value is XiaoguiMode {
  */
 export type ExecutionPhase = 'ASK' | 'PLAN' | 'EXECUTE'
 
-/**
- * 小规 Agent 代码仓库的开发机默认位置（仅回退用）。
- * 优先读环境变量 XIAOGUI_REPO / XIAOGUI_RUNTIME_DIR；两者都缺失时
- * pythonCwd 为 null，sidecar 启动处返回明确错误（不在 import 期抛异常）。
- */
-const DEFAULT_XIAOGUI_REPO = 'd:/工作文件/06AI/小试牛刀/小规agent'
+const BUNDLED_XIAOGUI_DIR = 'xiaogui'
+
+export type XiaoguiRuntimeSource = 'env-runtime-dir' | 'env-repo' | 'bundled-resource' | 'missing'
+
+export interface XiaoguiRuntimeResolution {
+  source: XiaoguiRuntimeSource
+  repoRoot: string
+  pythonCwd: string | null
+  error: string | null
+}
 
 export interface XiaoguiBridgeConfig {
   /** 小规 Agent 代码仓库根（DESIGN 扩展源目录派生 / worker env 注入用）。 */
@@ -55,12 +62,64 @@ export interface XiaoguiBridgeConfig {
   pythonCommand: string
   /** sidecar 工作目录（需包含 xiaogui_runtime 包）；未配置时为 null。 */
   pythonCwd: string | null
+  /** runtime 来源，用于状态呈现、部署清单和诊断。 */
+  runtimeSource: XiaoguiRuntimeSource
+  /** 未能解析 runtime 时的结构化错误，不在 import 期抛出。 */
+  runtimeError: string | null
   /** 项目根白名单；空数组表示不启用（sidecar 侧语义）。 */
   allowedRoots: string[]
   /** 单请求超时（毫秒）。 */
   requestTimeoutMs: number
   /** stop() 等待优雅退出的超时（毫秒）。 */
   shutdownTimeoutMs: number
+}
+
+function resourcesPath(): string | null {
+  const value = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath?.trim()
+  return value && existsSync(value) ? value : null
+}
+
+export function resolveXiaoguiRuntime(): XiaoguiRuntimeResolution {
+  const runtimeDir = process.env['XIAOGUI_RUNTIME_DIR']?.trim()
+  const repoRootEnv = process.env['XIAOGUI_REPO']?.trim()
+
+  if (runtimeDir) {
+    return {
+      source: 'env-runtime-dir',
+      repoRoot: repoRootEnv || '',
+      pythonCwd: runtimeDir,
+      error: null,
+    }
+  }
+
+  if (repoRootEnv) {
+    return {
+      source: 'env-repo',
+      repoRoot: repoRootEnv,
+      pythonCwd: path.join(repoRootEnv, 'python'),
+      error: null,
+    }
+  }
+
+  const bundledResourcesPath = resourcesPath()
+  const bundledRoot = bundledResourcesPath ? path.join(bundledResourcesPath, BUNDLED_XIAOGUI_DIR) : null
+  const bundledPython = bundledRoot ? path.join(bundledRoot, 'python') : null
+  if (bundledRoot && bundledPython && existsSync(bundledPython)) {
+    return {
+      source: 'bundled-resource',
+      repoRoot: bundledRoot,
+      pythonCwd: bundledPython,
+      error: null,
+    }
+  }
+
+  return {
+    source: 'missing',
+    repoRoot: '',
+    pythonCwd: null,
+    error:
+      '小规 runtime 未配置：请设置 XIAOGUI_RUNTIME_DIR 或 XIAOGUI_REPO；发布包需包含 resources/xiaogui/python',
+  }
 }
 
 /** 解析当前生效的 sidecar 配置（环境变量优先）。 */
@@ -70,12 +129,13 @@ export function resolveXiaoguiConfig(): XiaoguiBridgeConfig {
     .map((p) => p.trim())
     .filter((p) => p.length > 0)
 
-  const runtimeDir = process.env['XIAOGUI_RUNTIME_DIR']?.trim()
-  const repoRoot = process.env['XIAOGUI_REPO']?.trim() || DEFAULT_XIAOGUI_REPO
+  const runtime = resolveXiaoguiRuntime()
   return {
-    repoRoot,
+    repoRoot: runtime.repoRoot,
     pythonCommand: process.env['XIAOGUI_PYTHON']?.trim() || 'python',
-    pythonCwd: runtimeDir || (repoRoot ? path.join(repoRoot, 'python') : null),
+    pythonCwd: runtime.pythonCwd,
+    runtimeSource: runtime.source,
+    runtimeError: runtime.error,
     allowedRoots,
     requestTimeoutMs: 30_000,
     shutdownTimeoutMs: 5_000,

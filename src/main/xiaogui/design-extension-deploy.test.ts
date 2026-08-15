@@ -86,6 +86,7 @@ describe('buildDesignSystemSection / upsertDesignSystemSection（段落标记幂
 
 describe('ensureDesignExtensionDeployed（临时仓库端到端）', () => {
   const prevRepo = process.env['XIAOGUI_REPO']
+  const prevRuntimeDir = process.env['XIAOGUI_RUNTIME_DIR']
   const dirs: string[] = []
 
   function makeTempDir(prefix: string): string {
@@ -110,6 +111,8 @@ describe('ensureDesignExtensionDeployed（临时仓库端到端）', () => {
   afterEach(() => {
     if (prevRepo === undefined) delete process.env['XIAOGUI_REPO']
     else process.env['XIAOGUI_REPO'] = prevRepo
+    if (prevRuntimeDir === undefined) delete process.env['XIAOGUI_RUNTIME_DIR']
+    else process.env['XIAOGUI_RUNTIME_DIR'] = prevRuntimeDir
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -144,6 +147,56 @@ describe('ensureDesignExtensionDeployed（临时仓库端到端）', () => {
     await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(true)
     expect(readFileSync(appendPath, 'utf8')).toBe(before)
     expect(statSync(appendPath).mtimeMs).toBe(mtimeBefore)
+  })
+
+  it('清单指纹：扩展内容相同但小规仓库来源变化时仍刷新部署清单', async () => {
+    const repo1 = makeFakeRepo()
+    const repo2 = makeFakeRepo()
+    const project = makeTempDir('xg-proj-')
+    process.env['XIAOGUI_REPO'] = repo1
+    await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(true)
+
+    const manifestPath = join(project, '.pi', 'extensions', 'xiaogui-design-project', '.xiaogui-deploy.json')
+    const before = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      schemaVersion: number
+      runtimeDir: string
+      source: { repoRoot: string }
+      files: Record<string, { sha256: string }>
+      designSystem: { sha256: string }
+    }
+    expect(before.schemaVersion).toBe(2)
+    expect(before.source.repoRoot).toBe(repo1)
+    expect(before.runtimeDir).toBe(join(repo1, 'python'))
+    expect(before.files['index.ts'].sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(before.designSystem.sha256).toMatch(/^[a-f0-9]{64}$/)
+
+    process.env['XIAOGUI_REPO'] = repo2
+    await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(true)
+
+    const after = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      runtimeDir: string
+      source: { repoRoot: string }
+      files: Record<string, { sha256: string }>
+    }
+    expect(after.source.repoRoot).toBe(repo2)
+    expect(after.runtimeDir).toBe(join(repo2, 'python'))
+    expect(after.files['index.ts'].sha256).toBe(before.files['index.ts'].sha256)
+  })
+
+  it('清单指纹：扩展内容相同但 runtimeDir 变化时仍刷新部署清单', async () => {
+    const repo = makeFakeRepo()
+    const project = makeTempDir('xg-proj-')
+    process.env['XIAOGUI_REPO'] = repo
+    process.env['XIAOGUI_RUNTIME_DIR'] = join(repo, 'runtime-a')
+    await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(true)
+
+    const manifestPath = join(project, '.pi', 'extensions', 'xiaogui-design-project', '.xiaogui-deploy.json')
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).runtimeDir).toBe(join(repo, 'runtime-a'))
+
+    process.env['XIAOGUI_RUNTIME_DIR'] = join(repo, 'runtime-b')
+    await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(true)
+
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).runtimeDir).toBe(join(repo, 'runtime-b'))
   })
 
   it('指纹逐一比对：部署后目标 rpc.ts 被单独改动，再次部署修复为与源一致', async () => {
@@ -184,6 +237,13 @@ describe('ensureDesignExtensionDeployed（临时仓库端到端）', () => {
   it('源缺失时返回 false 不抛异常（不阻塞 worker 启动链路）', async () => {
     const repo = makeTempDir('xg-empty-repo-') // 空仓库：无扩展源文件
     process.env['XIAOGUI_REPO'] = repo
+    const project = makeTempDir('xg-proj-')
+    await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(false)
+  })
+
+  it('仅配置 XIAOGUI_RUNTIME_DIR 而无 XIAOGUI_REPO 时跳过部署，不读取空路径', async () => {
+    delete process.env['XIAOGUI_REPO']
+    process.env['XIAOGUI_RUNTIME_DIR'] = 'D:/runtime-only'
     const project = makeTempDir('xg-proj-')
     await expect(ensureDesignExtensionDeployed(project)).resolves.toBe(false)
   })

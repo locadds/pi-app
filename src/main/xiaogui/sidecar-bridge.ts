@@ -144,6 +144,8 @@ export interface XiaoguiStatus {
   mode: XiaoguiMode
   pythonCommand: string
   pythonCwd: string | null
+  runtimeSource: XiaoguiBridgeConfig['runtimeSource']
+  activeAllowedRoots: string[]
   lastError: string | null
   pendingRequests: number
 }
@@ -154,6 +156,14 @@ export interface ToolInvokePayload {
   params?: Record<string, unknown>
   trace_id?: string
 }
+
+export interface SidecarIdentity {
+  key: string
+  runtimeDir: string
+  allowedRoots: string[]
+}
+
+export type SidecarLifecycleDecision = 'reuse' | 'start' | 'restart' | 'reject'
 
 /**
  * 计算实际生效的项目根白名单：显式配置 ∪ 当前项目根（去空、去重、保序）。
@@ -169,6 +179,49 @@ export function resolveAllowedRoots(
   return [...new Set(merged.map((p) => p.trim()).filter((p) => p.length > 0))]
 }
 
+export function resolveSidecarIdentity(
+  config: Pick<XiaoguiBridgeConfig, 'pythonCwd' | 'runtimeError' | 'allowedRoots'>,
+  projectRoot?: string | null,
+): { ok: true; identity: SidecarIdentity } | { ok: false; error: string } {
+  if (!config.pythonCwd) {
+    return {
+      ok: false,
+      error:
+        config.runtimeError ||
+        'sidecar 工作目录未配置：请设置 XIAOGUI_REPO 或 XIAOGUI_RUNTIME_DIR，或使用包含 resources/xiaogui/python 的发布包',
+    }
+  }
+
+  const roots = resolveAllowedRoots(config.allowedRoots, projectRoot)
+  if (roots.length === 0) {
+    return {
+      ok: false,
+      error: '项目工具已拒绝执行：当前没有项目根或 XIAOGUI_ALLOWED_ROOTS 白名单，不能以空白名单启动 sidecar',
+    }
+  }
+
+  return {
+    ok: true,
+    identity: {
+      key: JSON.stringify({ runtimeDir: config.pythonCwd, allowedRoots: roots }),
+      runtimeDir: config.pythonCwd,
+      allowedRoots: roots,
+    },
+  }
+}
+
+export function planSidecarLifecycle(params: {
+  running: boolean
+  activeIdentityKey: string | null
+  nextIdentityKey: string
+  pendingRequests: number
+}): SidecarLifecycleDecision {
+  if (!params.running) return 'start'
+  if (params.activeIdentityKey === params.nextIdentityKey) return 'reuse'
+  if (params.pendingRequests > 0) return 'reject'
+  return 'restart'
+}
+
 /**
  * 构造 sidecar 子进程 env（纯函数，便于单测）：
  * 白名单 = 显式配置 ∪ 当前项目根；其余约定与旧 buildEnv 一致。
@@ -177,12 +230,11 @@ export function buildSidecarEnv(
   base: NodeJS.ProcessEnv,
   config: { allowedRoots: ReadonlyArray<string>; requestTimeoutMs: number },
   projectRoot?: string | null,
+  effectiveAllowedRoots?: ReadonlyArray<string>,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base }
-  const roots = resolveAllowedRoots(config.allowedRoots, projectRoot)
-  if (roots.length > 0) {
-    env['XIAOGUI_ALLOWED_ROOTS'] = roots.join(path.delimiter)
-  }
+  const roots = effectiveAllowedRoots ?? resolveAllowedRoots(config.allowedRoots, projectRoot)
+  env['XIAOGUI_ALLOWED_ROOTS'] = roots.join(path.delimiter)
   env['XIAOGUI_REQUEST_TIMEOUT'] = String(Math.ceil(config.requestTimeoutMs / 1000))
   return env
 }
@@ -200,6 +252,7 @@ class XiaoguiIntegration {
   // 当前项目根（IPC handler 在 tool.invoke 时传入）：sidecar 尚未启动时并入
   // XIAOGUI_ALLOWED_ROOTS（安全默认收敛）；已启动进程不重写 env，重启后生效
   private projectRoot: string | null = null
+  private activeIdentity: SidecarIdentity | null = null
   private child: ChildProcessWithoutNullStreams | null = null
   private readonly pending = new Map<number | string, PendingRequest>()
   private nextId = 1
@@ -208,6 +261,7 @@ class XiaoguiIntegration {
   private running = false
   private shuttingDown = false
   private starting: Promise<void> | null = null
+  private startingIdentity: SidecarIdentity | null = null
   private lastError: string | null = null
 
   // ---- 模式 ---------------------------------------------------------------
@@ -239,6 +293,8 @@ class XiaoguiIntegration {
       mode: this.mode,
       pythonCommand: this.config.pythonCommand,
       pythonCwd: this.config.pythonCwd,
+      runtimeSource: this.config.runtimeSource,
+      activeAllowedRoots: this.activeIdentity?.allowedRoots ?? [],
       lastError: this.lastError,
       pendingRequests: this.pending.size,
     }
@@ -251,32 +307,50 @@ class XiaoguiIntegration {
   // ---- sidecar 生命周期 ----------------------------------------------------
 
   /** 确保 sidecar 已启动并完成 initialize 握手（并发调用共享同一 Promise）。 */
-  private async ensureStarted(): Promise<void> {
-    if (this.isRunning()) return
-    if (this.starting) return this.starting
-    this.starting = this.doStart().finally(() => {
+  private async ensureStarted(identity: SidecarIdentity): Promise<void> {
+    if (this.isRunning()) {
+      const decision = planSidecarLifecycle({
+        running: true,
+        activeIdentityKey: this.activeIdentity?.key ?? null,
+        nextIdentityKey: identity.key,
+        pendingRequests: this.pending.size,
+      })
+      if (decision === 'reuse') return
+      if (decision === 'reject') {
+        throw new SidecarBridgeError('sidecar 白名单/运行时正在切换，但仍有请求未完成；本次项目工具调用已拒绝，请稍后重试')
+      }
+      await this.shutdown()
+    }
+
+    // 若已有启动中的 Promise 且身份不同，先等待其完成再按新身份重新决策
+    // （避免并发调用拿到旧身份的 sidecar/白名单）。
+    if (this.starting) {
+      if (this.startingIdentity?.key === identity.key) return this.starting
+      await this.starting
+      return this.ensureStarted(identity)
+    }
+
+    this.startingIdentity = identity
+    this.starting = this.doStart(identity).finally(() => {
       this.starting = null
+      this.startingIdentity = null
     })
     return this.starting
   }
 
-  private async doStart(): Promise<void> {
-    const { pythonCommand, pythonCwd } = this.config
-    if (!pythonCwd) {
-      throw new SidecarBridgeError(
-        'sidecar 工作目录未配置：请设置环境变量 XIAOGUI_REPO（小规仓库根）或 XIAOGUI_RUNTIME_DIR（runtime 目录）',
-      )
-    }
-    const env = this.buildEnv()
+  private async doStart(identity: SidecarIdentity): Promise<void> {
+    const { pythonCommand } = this.config
+    const env = this.buildEnv(identity)
 
     const child = spawn(pythonCommand, ['-m', 'xiaogui_runtime'], {
-      cwd: pythonCwd,
+      cwd: identity.runtimeDir,
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       windowsHide: true,
     })
 
     this.child = child
+    this.activeIdentity = identity
     this.shuttingDown = false
     this.stdoutBuffer = ''
     this.stderrBuffer = ''
@@ -290,11 +364,20 @@ class XiaoguiIntegration {
       })
     } catch (err) {
       this.child = null
+      this.activeIdentity = null
       this.lastError = err instanceof Error ? err.message : String(err)
       throw err
     }
 
     this.running = true
+    // 若在 spawn 与 running=true 之间 sidecar 已退出，exit handler 已记录 lastError 并清空 child，
+    // 此时应把启动视为失败，而不是带着已退出的子进程继续。
+    if (!this.isRunning()) {
+      const err = this.lastError || 'sidecar 启动后立刻退出'
+      this.running = false
+      this.activeIdentity = null
+      throw new SidecarBridgeError(err)
+    }
     this.lastError = null
 
     child.stdin.on('error', () => undefined)
@@ -312,6 +395,7 @@ class XiaoguiIntegration {
         this.lastError = `sidecar 非预期退出（code=${code ?? 'null'}）`
       }
       this.child = null
+      this.activeIdentity = null
     })
 
     // 握手：runtime.initialize（失败不阻断，仅记录；inspect 仍可重试）
@@ -328,6 +412,7 @@ class XiaoguiIntegration {
     const child = this.child
     if (!this.isRunning() || !child) {
       this.running = false
+      this.activeIdentity = null
       return
     }
     this.shuttingDown = true
@@ -351,6 +436,9 @@ class XiaoguiIntegration {
         resolve()
       })
     })
+    this.running = false
+    this.child = null
+    this.activeIdentity = null
   }
 
   // ---- Tool 调用（与 ToolGateway 语义一致）----------------------------------
@@ -393,7 +481,11 @@ class XiaoguiIntegration {
           : RPC_METHOD_INSPECT
 
     try {
-      await this.ensureStarted()
+      const identity = resolveSidecarIdentity(this.config, this.projectRoot)
+      if (!identity.ok) {
+        return errorToolResult(traceId, identity.error)
+      }
+      await this.ensureStarted(identity.identity)
       const result = await this.call(rpcMethod, params, { traceId })
       return normalizeToolResult(result, traceId)
     } catch (err) {
@@ -433,8 +525,8 @@ class XiaoguiIntegration {
     })
   }
 
-  private buildEnv(): NodeJS.ProcessEnv {
-    return buildSidecarEnv(process.env, this.config, this.projectRoot)
+  private buildEnv(identity: SidecarIdentity): NodeJS.ProcessEnv {
+    return buildSidecarEnv(process.env, this.config, null, identity.allowedRoots)
   }
 
   private onStdout(chunk: string): void {
