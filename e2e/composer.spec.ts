@@ -1,28 +1,9 @@
-import { test, expect, _electron as electron } from '@playwright/test'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { createRequire } from 'node:module'
-
-const require = createRequire(import.meta.url)
-const electronExecutable = require('electron') as string
-const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-const mainEntry = path.join(root, 'out/main/index.js')
-
-const baseEnv = {
-  ...process.env,
-  PI_E2E: '1',
-  ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
-  ELECTRON_NO_ATTACH_CONSOLE: '1',
-}
+import { test, expect } from '@playwright/test'
+import { launchApp, expectXiaoguiTitle } from './helpers'
 
 test.describe('composer', () => {
   test('input area is focusable when present', async () => {
-    const app = await electron.launch({
-      executablePath: electronExecutable,
-      args: [mainEntry],
-      env: baseEnv,
-      timeout: 60_000,
-    })
+    const app = await launchApp()
     try {
       const window = await app.firstWindow({ timeout: 45_000 })
       await window.waitForLoadState('domcontentloaded', { timeout: 45_000 })
@@ -39,29 +20,19 @@ test.describe('composer', () => {
     }
   })
 
-  test('window title contains pi after launch', async () => {
-    const app = await electron.launch({
-      executablePath: electronExecutable,
-      args: [mainEntry],
-      env: baseEnv,
-      timeout: 60_000,
-    })
+  test('window title shows 小规 Agent brand', async () => {
+    const app = await launchApp()
     try {
       const window = await app.firstWindow({ timeout: 45_000 })
       await window.waitForLoadState('domcontentloaded', { timeout: 45_000 })
-      expect((await window.title()).toLowerCase()).toContain('pi')
+      await expectXiaoguiTitle(window)
     } finally {
       await app.close()
     }
   })
 
   test('body element exists in renderer', async () => {
-    const app = await electron.launch({
-      executablePath: electronExecutable,
-      args: [mainEntry],
-      env: baseEnv,
-      timeout: 60_000,
-    })
+    const app = await launchApp()
     try {
       const window = await app.firstWindow({ timeout: 45_000 })
       await window.waitForLoadState('domcontentloaded', { timeout: 45_000 })
