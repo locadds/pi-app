@@ -61,7 +61,9 @@ vi.mock('../../worker-manager', () => ({
   },
 }))
 
-vi.mock('../../config-store', () => ({ configStore: { get: vi.fn(() => '/workspace') } }))
+vi.mock('../../config-store', () => ({
+  configStore: { get: vi.fn(() => '/workspace') },
+}))
 vi.mock('../../session-bind-state', () => ({
   ensureWorkerSessionBound: vi.fn(),
   getPendingWorkerSessionFile: vi.fn(),
@@ -78,25 +80,33 @@ vi.mock('../../xiaogui/scope-service', () => ({
 vi.mock('../../xiaogui/sidecar-bridge', () => ({
   xiaogui: { setMode: mocks.setMode, getMode: mocks.getMode },
 }))
-vi.mock('../../session-prepare', () => ({ resolvePreparedSessionFile: vi.fn() }))
+vi.mock('../../session-prepare', () => ({
+  resolvePreparedSessionFile: vi.fn(),
+}))
 vi.mock('../../session-display-names', () => ({
   clearSessionDisplayName: vi.fn(),
   resolveSessionListTitle: vi.fn((_file, fallback) => fallback),
 }))
-vi.mock('../../rename-pi-session', () => ({ renamePiSessionOnDisk: mocks.renamePiSessionOnDisk }))
+vi.mock('../../rename-pi-session', () => ({
+  renamePiSessionOnDisk: mocks.renamePiSessionOnDisk,
+}))
 vi.mock('../../sandbox-workspaces', () => ({
   bindSandboxSession: vi.fn(),
   isSandboxWorkspacePath: vi.fn(() => false),
   renameSandboxWorkspace: vi.fn(),
 }))
 vi.mock('../../pi-rewind-read', () => ({ listRewindCheckpoints: vi.fn() }))
-vi.mock('../../session-branch-anchors', () => ({ listMessageAnchorsFromSessionFile: vi.fn() }))
+vi.mock('../../session-branch-anchors', () => ({
+  listMessageAnchorsFromSessionFile: vi.fn(),
+}))
 vi.mock('../../session-file-meta', () => ({ readSessionIdFromFile: vi.fn() }))
 vi.mock('../../session-leaf-override', () => ({
   getSessionLeafOverride: vi.fn(),
   setSessionLeafOverride: vi.fn(),
 }))
-vi.mock('../../session-fork-candidates', () => ({ listForkCandidatesFromSessionFile: vi.fn() }))
+vi.mock('../../session-fork-candidates', () => ({
+  listForkCandidatesFromSessionFile: vi.fn(),
+}))
 vi.mock('../../trusted-workspace', () => ({
   authorizeTrustedSessionFile: mocks.authorizeTrustedSessionFile,
 }))
@@ -126,7 +136,10 @@ describe('session list preview invalidation', () => {
     })
     mocks.cloneSession.mockReset()
     mocks.cloneSession.mockImplementation(async (options) => {
-      const result = { sessionId: 'clone', sessionFile: '/sessions/clone.jsonl' }
+      const result = {
+        sessionId: 'clone',
+        sessionFile: '/sessions/clone.jsonl',
+      }
       await options?.beforeActivate?.(result)
       return result
     })
@@ -164,14 +177,32 @@ describe('session list preview invalidation', () => {
 
   it.each([
     ['ipc:session.new', { workspaceId: '/workspace' }],
-    ['ipc:session.fork', { workspaceId: '/workspace', sessionFile: '/sessions/source.jsonl', entryId: 'entry' }],
+    [
+      'ipc:session.fork',
+      {
+        workspaceId: '/workspace',
+        sessionFile: '/sessions/source.jsonl',
+        entryId: 'entry',
+      },
+    ],
     ['ipc:session.clone', { workspaceId: '/workspace', sessionFile: '/sessions/source.jsonl' }],
-    ['ipc:session.rename', { workspaceId: '/workspace', sessionFile: '/sessions/source.jsonl', title: 'renamed' }],
+    [
+      'ipc:session.rename',
+      {
+        workspaceId: '/workspace',
+        sessionFile: '/sessions/source.jsonl',
+        title: 'renamed',
+      },
+    ],
     ['ipc:session.delete', { workspaceId: '/workspace', sessionFile: '/sessions/source.jsonl' }],
   ])('refreshes list immediately after successful %s', async (channel, request) => {
-    const before = await mocks.handlers.get('ipc:session.list')!({ workspaceId: '/workspace' })
+    const before = await mocks.handlers.get('ipc:session.list')!({
+      workspaceId: '/workspace',
+    })
     await mocks.handlers.get(channel)!(request)
-    const after = await mocks.handlers.get('ipc:session.list')!({ workspaceId: '/workspace' })
+    const after = await mocks.handlers.get('ipc:session.list')!({
+      workspaceId: '/workspace',
+    })
 
     expect(before).toMatchObject({ sessions: [{ sessionId: 'before' }] })
     expect(after).toMatchObject({ sessions: [{ sessionId: 'after' }] })
@@ -185,7 +216,9 @@ describe('session list preview invalidation', () => {
   })
 
   it('projects canonical scopes in list results', async () => {
-    const result = await mocks.handlers.get('ipc:session.list')!({ workspaceId: '/workspace' })
+    const result = await mocks.handlers.get('ipc:session.list')!({
+      workspaceId: '/workspace',
+    })
 
     expect(result).toMatchObject({
       sessions: [{ canonicalScope: { sessionMode: 'WORK' } }],
@@ -210,9 +243,7 @@ describe('session list preview invalidation', () => {
     })
 
     expect(result).toMatchObject({ canonicalScope: { sessionMode: 'CODING' } })
-    expect(mocks.resolveScope.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.setMode.mock.invocationCallOrder[0],
-    )
+    expect(mocks.resolveScope.mock.invocationCallOrder[0]).toBeLessThan(mocks.setMode.mock.invocationCallOrder[0])
     expect(mocks.setMode.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.setPendingWorkerSessionFile.mock.invocationCallOrder[0],
     )
@@ -231,33 +262,71 @@ describe('session list preview invalidation', () => {
       { rootPath: '/workspace', sessionFile: '/sessions/new.jsonl' },
       'DESIGN',
     )
-    expect(result).toMatchObject({ session: { canonicalScope: { sessionMode: 'DESIGN' } } })
+    expect(result).toMatchObject({
+      session: { canonicalScope: { sessionMode: 'DESIGN' } },
+    })
+    expect(mocks.authorizeTrustedSessionFile).not.toHaveBeenCalled()
   })
 
   it.each([
-    ['ipc:session.fork', { workspaceId: '/workspace', sessionFile: '/sessions/source.jsonl', entryId: 'entry' }, 'FORK'],
+    [
+      'ipc:session.fork',
+      {
+        workspaceId: '/workspace',
+        sessionFile: '/sessions/source.jsonl',
+        entryId: 'entry',
+      },
+      'FORK',
+    ],
     ['ipc:session.clone', { workspaceId: '/workspace', sessionFile: '/sessions/source.jsonl' }, 'CLONE'],
   ])('derives canonical scope for successful %s before returning target', async (channel, request, kind) => {
     const result = await mocks.handlers.get(channel)!(request)
 
     expect(mocks.deriveScope).toHaveBeenCalledWith({
       kind,
-      source: { rootPath: '/workspace', sessionFile: '/sessions/source.jsonl' },
+      source: {
+        rootPath: '/workspace',
+        sessionFile: '/sessions/source.jsonl',
+      },
       target: {
         rootPath: '/workspace',
         sessionFile: channel.endsWith('fork') ? '/sessions/fork.jsonl' : '/sessions/clone.jsonl',
       },
     })
-    expect(result).toMatchObject({ session: { canonicalScope: { sessionMode: 'CODING' } } })
+    expect(result).toMatchObject({
+      session: { canonicalScope: { sessionMode: 'CODING' } },
+    })
+    expect(mocks.authorizeTrustedSessionFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a relative worker-issued session target before scope persistence', async () => {
+    mocks.newSession.mockImplementationOnce(async (_workspaceId, options) => {
+      const result = {
+        sessionId: 'new',
+        sessionFile: 'relative-session.jsonl',
+      }
+      await options?.beforeActivate?.(result)
+      return result
+    })
+
+    await expect(
+      mocks.handlers.get('ipc:session.new')!({
+        workspaceId: '/workspace',
+        mode: 'WORK',
+      }),
+    ).rejects.toThrow('invalid_runtime_session_path')
+    expect(mocks.registerNewScope).not.toHaveBeenCalled()
   })
 
   it('does not bind or focus an existing session when scope persistence fails', async () => {
     mocks.resolveScope.mockRejectedValueOnce(new Error('SCOPE_PERSISTENCE_FAILED'))
 
-    await expect(mocks.handlers.get('ipc:session.setPendingBind')!({
-      workspaceId: '/workspace',
-      sessionFile: '/sessions/source.jsonl',
-    })).rejects.toThrow('SCOPE_PERSISTENCE_FAILED')
+    await expect(
+      mocks.handlers.get('ipc:session.setPendingBind')!({
+        workspaceId: '/workspace',
+        sessionFile: '/sessions/source.jsonl',
+      }),
+    ).rejects.toThrow('SCOPE_PERSISTENCE_FAILED')
 
     expect(mocks.setMode).not.toHaveBeenCalled()
     expect(mocks.setPendingWorkerSessionFile).not.toHaveBeenCalled()

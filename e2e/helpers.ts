@@ -17,10 +17,10 @@ const baseEnv = {
   ELECTRON_NO_ATTACH_CONSOLE: '1',
 }
 
-export async function launchApp(extraEnv: Record<string, string> = {}) {
+export async function launchApp(extraEnv: Record<string, string> = {}, extraArgs: string[] = []) {
   return electron.launch({
     executablePath: electronExecutable,
-    args: [mainEntry],
+    args: [mainEntry, ...extraArgs],
     env: { ...baseEnv, ...extraEnv },
     timeout: 60_000,
   })
