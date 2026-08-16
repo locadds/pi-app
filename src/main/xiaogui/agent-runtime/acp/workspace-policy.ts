@@ -11,6 +11,7 @@ export interface PreparedKimiAcpWorkspacePolicyV1 {
   readonly rootPath: string
   readonly allowedRelativePaths: readonly string[]
   readTextFile(requestedPath: string): { content: string; contentDigest: string }
+  preflightWriteTextFile(requestedPath: string, content: string): { targetDigest: string; contentDigest: string }
   writeTextFile(requestedPath: string, content: string): { contentDigest: string; candidateDigest: string }
 }
 
@@ -57,6 +58,13 @@ export function prepareKimiAcpWorkspacePolicy(
       const identity = verifyAllowed(policy, requestedPath)
       const buffer = readFileSync(identity.realPath)
       return { content: buffer.toString('utf8'), contentDigest: digestBytes(buffer) }
+    },
+    preflightWriteTextFile(requestedPath: string, content: string) {
+      const before = verifyAllowed(policy, requestedPath)
+      return {
+        targetDigest: digestTarget(before),
+        contentDigest: digestBytes(Buffer.from(content, 'utf8')),
+      }
     },
     writeTextFile(requestedPath: string, content: string) {
       const before = verifyAllowed(policy, requestedPath)
@@ -205,4 +213,13 @@ export function digestBytes(bytes: Uint8Array): string {
 
 function digestJson(value: unknown): string {
   return digestBytes(Buffer.from(JSON.stringify(value), 'utf8'))
+}
+
+function digestTarget(identity: FileIdentity): string {
+  return digestJson({
+    realPath: identity.realPath,
+    dev: identity.dev.toString(),
+    ino: identity.ino.toString(),
+    contentDigest: identity.contentDigest,
+  })
 }

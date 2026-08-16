@@ -4,7 +4,11 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { isRuntimeContractTestSelectionAllowed } from '@shared/xiaogui-agent-runtime'
+import {
+  isRuntimeContractTestSelectionAllowed,
+  validateRuntimeContractTestCreateRequestShapeV1,
+  validateRuntimeProductionCreateRequestShapeV1,
+} from '@shared/xiaogui-agent-runtime'
 import type {
   AgentRuntimeAdapterV1,
   AgentRuntimeContractTestAdapterV1,
@@ -72,17 +76,32 @@ interface RuntimeSessionState {
   outcome: RuntimeOutcomeV1 | null
   disconnected: boolean
   released: boolean
+  promptInFlight: boolean
+  promptQueue: string[]
+  cancellationRequested: boolean
+  writeSequence: number
   pendingPermissions: Map<string, PendingPermission>
   candidateDigest?: string
 }
 
-interface PendingPermission {
+type PendingPermission = VendorPendingPermission | WritePendingPermission
+
+interface BasePendingPermission {
   challengeDigest: string
+  consumed: boolean
+  consumedBy?: string
+}
+
+interface VendorPendingPermission extends BasePendingPermission {
+  kind: 'vendor'
   allowOnceOptionId: string
   rejectOptionId?: string
   resolve: (value: AcpRequestPermissionResultV1) => void
-  consumed: boolean
-  consumedBy?: string
+}
+
+interface WritePendingPermission extends BasePendingPermission {
+  kind: 'write'
+  resolve: (value: boolean) => void
 }
 
 interface IdempotencyRecord {
@@ -107,6 +126,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   private readonly sessions = new Map<string, RuntimeSessionState>()
   private readonly idempotency = new Map<string, IdempotencyRecord>()
   private readonly permissionDecisions = new Map<string, PermissionDecisionRecord>()
+  private readonly consumedProofs = new Map<string, string>()
 
   constructor(private readonly options: KimiAcpRuntimeAdapterOptionsV1) {
     this.probe = options.probe ?? new KimiAcpCliProbeV1()
@@ -125,7 +145,12 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   async createOrResume(request: RuntimeCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1>
   async createOrResume(request: RuntimeContractTestCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1>
   async createOrResume(request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1> {
-    if (!isContractTestCreateRequestShape(request)) return failed('runtime-unbound', 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST')
+    if (!isContractTestCreateRequestShape(request)) {
+      const productionShape = validateRuntimeProductionCreateRequestShapeV1(request)
+      return failed('runtime-unbound', productionShape.ok ? 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST' : productionShape.reasonCode)
+    }
+    const shape = validateRuntimeContractTestCreateRequestShapeV1(request)
+    if (!shape.ok) return failed('runtime-unbound', shape.reasonCode)
     const probe = await this.probe.findExecutable()
     if (!probe.available) return failed('runtime-unbound', probe.reasonCode)
     const selection = isRuntimeContractTestSelectionAllowed(request.selection, request.contractTestPolicy)
@@ -160,13 +185,16 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       const result = policy.readTextFile(extractPath(params))
       return { content: result.content }
     })
-    requestHandlers.set('fs/write_text_file', (params) => {
+    requestHandlers.set('fs/write_text_file', async (params) => {
       const write = extractWrite(params)
+      if (!state || state.disconnected || state.outcome || state.cancellationRequested) throw new KimiAcpWorkspacePolicyError('ACP_FS_WRITE_NOT_RUNNING')
+      const preflight = policy.preflightWriteTextFile(write.path, write.content)
+      const granted = await this.requestWritePermission(state, preflight)
+      if (!granted) throw new KimiAcpWorkspacePolicyError('ACP_FS_WRITE_DENIED')
+      if (state.disconnected || state.outcome || state.cancellationRequested) throw new KimiAcpWorkspacePolicyError('ACP_FS_WRITE_NOT_RUNNING')
       const result = policy.writeTextFile(write.path, write.content)
-      if (state) {
-        state.candidateDigest = result.candidateDigest
-        pushEvent(state, { type: 'CANDIDATE_PRODUCED', runtimeSessionId: state.publicRuntimeSessionId, candidateDigest: result.candidateDigest })
-      }
+      state.candidateDigest = result.candidateDigest
+      pushEvent(state, { type: 'CANDIDATE_PRODUCED', runtimeSessionId: state.publicRuntimeSessionId, candidateDigest: result.candidateDigest })
       return { contentDigest: result.contentDigest }
     })
     for (const method of ['terminal/create', 'terminal/wait_for_exit', 'terminal/output', 'terminal/release', 'terminal/kill']) {
@@ -211,15 +239,16 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
         outcome: null,
         disconnected: false,
         released: false,
+        promptInFlight: false,
+        promptQueue: [],
+        cancellationRequested: false,
+        writeSequence: 0,
         pendingPermissions: new Map(),
       }
       this.sessions.set(publicRuntimeSessionId, state)
       pushEvent(state, { type: 'SESSION_READY', runtimeSessionId: publicRuntimeSessionId })
 
-      void transport.prompt(vendorSessionId, [{ type: 'text', text: prompt }]).then(
-        (result) => settleFromPrompt(state!, result.stopReason),
-        () => markUnknown(state!, 'PROCESS_DISCONNECTED'),
-      )
+      enqueuePromptTurn(state, prompt)
       const outcome = { state: 'READY', runtimeSessionId: publicRuntimeSessionId } as const
       this.idempotency.set(idemKey, { payloadDigest, outcome })
       return outcome
@@ -234,7 +263,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   async send(request: RuntimeSendRequestV1): Promise<{ accepted: true; requestId: string } | { accepted: false; reasonCode: string }> {
     const state = this.sessions.get(request.runtimeSessionId)
     if (!state) return { accepted: false, reasonCode: 'RUNTIME_SESSION_NOT_FOUND' }
-    if (state.disconnected || state.outcome) return { accepted: false, reasonCode: terminalReason(state.outcome) ?? 'RUNTIME_NOT_RUNNING' }
+    if (state.disconnected || state.outcome || state.cancellationRequested) return { accepted: false, reasonCode: inactiveSessionReason(state) }
     let message: string
     try {
       if (request.messageEnvelopeRef.mediaType !== 'application/vnd.xiaogui.runtime-message+json') return { accepted: false, reasonCode: 'MESSAGE_MEDIA_TYPE_UNSUPPORTED' }
@@ -251,10 +280,8 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     } catch {
       return { accepted: false, reasonCode: 'MESSAGE_RESOLVE_FAILED' }
     }
-    void state.transport.prompt(state.vendorSessionId, [{ type: 'text', text: message }]).then(
-      (result) => settleFromPrompt(state, result.stopReason),
-      () => markUnknown(state, 'PROCESS_DISCONNECTED'),
-    )
+    if (state.disconnected || state.outcome || state.cancellationRequested) return { accepted: false, reasonCode: inactiveSessionReason(state) }
+    enqueuePromptTurn(state, message)
     return { accepted: true, requestId: request.requestId }
   }
 
@@ -272,6 +299,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   async permission(decision: RuntimePermissionDecisionV1): Promise<{ accepted: boolean; reasonCode?: string }> {
     const state = this.sessions.get(decision.runtimeSessionId)
     if (!state) return { accepted: false, reasonCode: 'RUNTIME_SESSION_NOT_FOUND' }
+    if (state.disconnected || state.outcome || state.cancellationRequested) return { accepted: false, reasonCode: inactiveSessionReason(state) }
     const decisionDigest = digestJson(decision)
     const existing = this.permissionDecisions.get(decision.decisionRequestId)
     if (existing) {
@@ -294,15 +322,27 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       this.permissionDecisions.set(decision.decisionRequestId, { decisionDigest, result })
       return result
     }
+    if (decision.type === 'ALLOW_ONCE') {
+      const key = permissionProofKey(decision)
+      const proofConsumedBy = this.consumedProofs.get(key)
+      if (proofConsumedBy && proofConsumedBy !== decision.decisionRequestId) {
+        const result = { accepted: false, reasonCode: 'PERMISSION_PROOF_REPLAYED' }
+        this.permissionDecisions.set(decision.decisionRequestId, { decisionDigest, result })
+        return result
+      }
+      this.consumedProofs.set(key, decision.decisionRequestId)
+    }
     pending.consumed = true
     pending.consumedBy = decision.decisionRequestId
     if (decision.type === 'DENY') {
-      pending.resolve(pending.rejectOptionId ? { outcome: { outcome: 'selected', optionId: pending.rejectOptionId } } : { outcome: { outcome: 'cancelled' } })
+      if (pending.kind === 'vendor') pending.resolve(pending.rejectOptionId ? { outcome: { outcome: 'selected', optionId: pending.rejectOptionId } } : { outcome: { outcome: 'cancelled' } })
+      else pending.resolve(false)
       const result = { accepted: true }
       this.permissionDecisions.set(decision.decisionRequestId, { decisionDigest, result })
       return result
     }
-    pending.resolve({ outcome: { outcome: 'selected', optionId: pending.allowOnceOptionId } })
+    if (pending.kind === 'vendor') pending.resolve({ outcome: { outcome: 'selected', optionId: pending.allowOnceOptionId } })
+    else pending.resolve(true)
     const result = { accepted: true }
     this.permissionDecisions.set(decision.decisionRequestId, { decisionDigest, result })
     return result
@@ -313,6 +353,9 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     if (!state) return { requested: false, reasonCode: 'RUNTIME_SESSION_NOT_FOUND' }
     if (state.outcome) return { requested: false, reasonCode: terminalReason(state.outcome) ?? 'RUNTIME_ALREADY_SETTLED' }
     if (state.disconnected) return { requested: false, reasonCode: 'PROCESS_DISCONNECTED' }
+    state.cancellationRequested = true
+    state.promptQueue = []
+    clearPendingPermissions(state)
     await state.transport.cancel(state.vendorSessionId)
     return { requested: true }
   }
@@ -370,7 +413,31 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       decisionRequired: 'ALLOW_ONCE_OR_DENY',
     })
     return new Promise((resolve) => {
-      state.pendingPermissions.set(permissionRequestId, { challengeDigest, allowOnceOptionId: allowOnce[0].optionId, rejectOptionId: rejectOnce?.optionId, resolve, consumed: false })
+      state.pendingPermissions.set(permissionRequestId, { kind: 'vendor', challengeDigest, allowOnceOptionId: allowOnce[0].optionId, rejectOptionId: rejectOnce?.optionId, resolve, consumed: false })
+    })
+  }
+
+  private requestWritePermission(state: RuntimeSessionState, preflight: { targetDigest: string; contentDigest: string }): Promise<boolean> {
+    state.writeSequence += 1
+    const writeSequence = state.writeSequence
+    const challengeDigest = digestJson({
+      domain: 'xiaogui.kimi-acp.write-permission-challenge.v1',
+      runtimeSessionId: state.publicRuntimeSessionId,
+      writeSequence,
+      targetDigest: preflight.targetDigest,
+      contentDigest: preflight.contentDigest,
+    })
+    const permissionRequestId = `write-perm-${digestJson({ runtimeSessionId: state.publicRuntimeSessionId, writeSequence, challengeDigest }).slice(7, 23)}`
+    pushEvent(state, {
+      type: 'PERMISSION_REQUESTED',
+      permissionRequestId,
+      runtimeSessionId: state.publicRuntimeSessionId,
+      scope: state.request.scope,
+      challengeDigest,
+      decisionRequired: 'ALLOW_ONCE_OR_DENY',
+    })
+    return new Promise((resolve) => {
+      state.pendingPermissions.set(permissionRequestId, { kind: 'write', challengeDigest, resolve, consumed: false })
     })
   }
 }
@@ -395,7 +462,9 @@ export function kimiAcpCapabilityDigestForVersionV1(version: string | undefined)
     protocol: 'ACP',
     version: version ?? 'unknown',
     fs: 'host-mediated',
+    writePermission: 'adapter-owned-allow-once-per-write',
     terminal: 'host-deny',
+    promptTurns: 'strict-fifo',
     sourceBaseline: 'task-hub@4c9f81c05310b7771d6cf320293ad3af46a256b7',
   })
 }
@@ -425,6 +494,29 @@ function handleSessionUpdate(state: RuntimeSessionState, params: { update?: { se
   }
 }
 
+function enqueuePromptTurn(state: RuntimeSessionState, prompt: string): void {
+  if (state.outcome || state.disconnected || state.cancellationRequested) return
+  state.promptQueue.push(prompt)
+  drainPromptQueue(state)
+}
+
+function drainPromptQueue(state: RuntimeSessionState): void {
+  if (state.promptInFlight || state.outcome || state.disconnected || state.cancellationRequested) return
+  const prompt = state.promptQueue.shift()
+  if (prompt === undefined) return
+  state.promptInFlight = true
+  void state.transport.prompt(state.vendorSessionId, [{ type: 'text', text: prompt }]).then(
+    (result) => {
+      state.promptInFlight = false
+      settleFromPrompt(state, result.stopReason)
+    },
+    () => {
+      state.promptInFlight = false
+      markUnknown(state, 'PROCESS_DISCONNECTED')
+    },
+  )
+}
+
 function settleFromPrompt(state: RuntimeSessionState, stopReason: string | undefined): void {
   if (state.outcome) return
   if (stopReason === 'cancelled') {
@@ -433,6 +525,10 @@ function settleFromPrompt(state: RuntimeSessionState, stopReason: string | undef
   }
   if (stopReason !== 'end_turn') {
     markUnknown(state, 'ACP_STOP_REASON_UNKNOWN')
+    return
+  }
+  if (state.promptQueue.length > 0) {
+    drainPromptQueue(state)
     return
   }
   if (!state.candidateDigest) {
@@ -455,6 +551,7 @@ function markUnknown(state: RuntimeSessionState, reasonCode: string): void {
 function markDisconnected(state: RuntimeSessionState, reasonCode: string): void {
   if (state.disconnected) return
   state.disconnected = true
+  state.promptQueue = []
   if (!state.outcome) markOutcome(state, unknown(state.publicRuntimeSessionId, reasonCode))
   else releaseTransport(state)
 }
@@ -462,6 +559,7 @@ function markDisconnected(state: RuntimeSessionState, reasonCode: string): void 
 function markOutcome(state: RuntimeSessionState, outcome: RuntimeOutcomeV1): void {
   if (state.outcome) return
   state.outcome = outcome
+  state.promptQueue = []
   clearPendingPermissions(state)
   if (outcome.state === 'OUTCOME_UNKNOWN') {
     pushEvent(state, { type: 'OUTCOME_UNKNOWN', runtimeSessionId: state.publicRuntimeSessionId, reasonCode: outcome.reasonCode })
@@ -473,7 +571,10 @@ function markOutcome(state: RuntimeSessionState, outcome: RuntimeOutcomeV1): voi
 
 function clearPendingPermissions(state: RuntimeSessionState): void {
   for (const pending of state.pendingPermissions.values()) {
-    if (!pending.consumed) pending.resolve({ outcome: { outcome: 'cancelled' } })
+    if (!pending.consumed) {
+      if (pending.kind === 'vendor') pending.resolve({ outcome: { outcome: 'cancelled' } })
+      else pending.resolve(false)
+    }
     pending.consumed = true
   }
   state.pendingPermissions.clear()
@@ -560,6 +661,22 @@ function terminalReason(outcome: RuntimeOutcomeV1 | null): string | undefined {
   return outcome.state === 'SUCCEEDED' ? undefined : outcome.reasonCode
 }
 
+function inactiveSessionReason(state: RuntimeSessionState): string {
+  if (state.outcome) return state.outcome.state === 'SUCCEEDED' ? 'RUNTIME_ALREADY_SETTLED' : state.outcome.reasonCode
+  if (state.disconnected) return 'PROCESS_DISCONNECTED'
+  if (state.cancellationRequested) return 'RUNTIME_CANCEL_REQUESTED'
+  return 'RUNTIME_NOT_RUNNING'
+}
+
+function permissionProofKey(decision: Extract<RuntimePermissionDecisionV1, { type: 'ALLOW_ONCE' }>): string {
+  return [
+    decision.runtimeSessionId,
+    decision.proofId,
+    decision.proofDigest,
+    digestJson(decision.scope),
+  ].join('|')
+}
+
 function createIdempotencyKey(request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1): string {
   return [
     request.requestId,
@@ -573,7 +690,11 @@ function createIdempotencyKey(request: RuntimeCreateOrResumeRequestV1 | RuntimeC
 }
 
 function isContractTestCreateRequestShape(value: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1): value is RuntimeContractTestCreateOrResumeRequestV1 {
-  return 'executionMode' in value && value.executionMode === 'CONTRACT_TEST'
+  try {
+    return typeof value === 'object' && value !== null && !Array.isArray(value) && (value as { executionMode?: unknown }).executionMode === 'CONTRACT_TEST'
+  } catch {
+    return false
+  }
 }
 
 async function findOnPath(name: string): Promise<string | undefined> {

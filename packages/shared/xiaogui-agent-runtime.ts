@@ -249,6 +249,48 @@ export interface AgentRuntimeContractTestAdapterV1 {
 
 export type RuntimeValidationResultV1 = { ok: true } | { ok: false; reasonCode: string }
 
+export function validateRuntimeProductionCreateRequestShapeV1(value: unknown): RuntimeValidationResultV1 {
+  try {
+    if (!isPlainRecord(value)) return invalidCreateRequest()
+    if (hasOwn(value, 'executionMode') || hasOwn(value, 'contractTestPolicy')) return invalidCreateRequest()
+    if (
+      !isNonEmptyString(value.requestId) ||
+      !isRuntimeScopeBindingShape(value.scope) ||
+      !isRuntimeWorkspaceBindingShape(value.workspace) ||
+      !isRuntimeProductionSelectionShape(value.selection) ||
+      !isRuntimeProductionPolicyShape(value.productionPolicy) ||
+      !isPromptEnvelopeRefShape(value.promptEnvelopeRef) ||
+      !isOptionalDigest(value.resumeTokenDigest)
+    ) {
+      return invalidCreateRequest()
+    }
+    return { ok: true }
+  } catch {
+    return invalidCreateRequest()
+  }
+}
+
+export function validateRuntimeContractTestCreateRequestShapeV1(value: unknown): RuntimeValidationResultV1 {
+  try {
+    if (!isPlainRecord(value)) return invalidCreateRequest()
+    if (value.executionMode !== 'CONTRACT_TEST' || hasOwn(value, 'productionPolicy')) return invalidCreateRequest()
+    if (
+      !isNonEmptyString(value.requestId) ||
+      !isRuntimeScopeBindingShape(value.scope) ||
+      !isRuntimeWorkspaceBindingShape(value.workspace) ||
+      !isRuntimeContractTestSelectionShape(value.selection) ||
+      !isRuntimeContractTestPolicyShape(value.contractTestPolicy) ||
+      !isPromptEnvelopeRefShape(value.promptEnvelopeRef) ||
+      !isOptionalDigest(value.resumeTokenDigest)
+    ) {
+      return invalidCreateRequest()
+    }
+    return { ok: true }
+  } catch {
+    return invalidCreateRequest()
+  }
+}
+
 export function isRuntimeSelectionAllowed(
   selection: RuntimeAdapterSelectionV1 | RuntimeCapabilityV1,
   policy: RuntimeProductionPolicyV1,
@@ -298,7 +340,11 @@ export function runtimeSelectionKey(selection: RuntimeAdapterSelectionV1 | Runti
 }
 
 export function validateRuntimePublicDto(value: unknown): RuntimeValidationResultV1 {
-  return scanPublicDto(value) ? { ok: false, reasonCode: 'PUBLIC_DTO_LEAK' } : { ok: true }
+  try {
+    return scanPublicDto(value) ? { ok: false, reasonCode: 'PUBLIC_DTO_LEAK' } : { ok: true }
+  } catch {
+    return { ok: false, reasonCode: 'PUBLIC_DTO_LEAK' }
+  }
 }
 
 export function isRuntimePublicSessionId(value: string): boolean {
@@ -335,4 +381,125 @@ function isSensitivePublicString(value: string): boolean {
   if (/"?(token|api[_-]?key|secret|password)"?\s*[:：]\s*"?.{4,}"?/i.test(value)) return true
   if (/\b(ghp|github_pat|sk|xox[baprs])-?[A-Za-z0-9_]{16,}\b/.test(value)) return true
   return false
+}
+
+function invalidCreateRequest(): RuntimeValidationResultV1 {
+  return { ok: false, reasonCode: 'RUNTIME_CREATE_REQUEST_INVALID' }
+}
+
+function isRuntimeScopeBindingShape(value: unknown): value is RuntimeScopeBindingV1 {
+  return (
+    isPlainRecord(value) &&
+    isNonEmptyString(value.projectId) &&
+    isNonEmptyString(value.sessionKey) &&
+    value.sessionMode === 'CODING' &&
+    isNonEmptyString(value.flowId) &&
+    isNonEmptyString(value.taskRunId) &&
+    isNonEmptyString(value.attemptId) &&
+    isDigest(value.attemptDigest) &&
+    isNonEmptyString(value.workspaceReceiptId) &&
+    isDigest(value.workspaceReceiptDigest)
+  )
+}
+
+function isRuntimeWorkspaceBindingShape(value: unknown): value is RuntimeWorkspaceBindingV1 {
+  return (
+    isPlainRecord(value) &&
+    isNonEmptyString(value.attemptWorktreeId) &&
+    isDigest(value.worktreeRootDigest) &&
+    isDigest(value.baseRevisionDigest) &&
+    isDigest(value.targetProjectRootDigest) &&
+    value.writePolicy === 'ATTEMPT_WORKTREE_ONLY'
+  )
+}
+
+function isRuntimeProductionPolicyShape(value: unknown): value is RuntimeProductionPolicyV1 {
+  return (
+    isPlainRecord(value) &&
+    value.rejectDiagnosticOnly === true &&
+    Array.isArray(value.allowedSelections) &&
+    value.allowedSelections.length > 0 &&
+    value.allowedSelections.every(isRuntimeProductionSelectionShape)
+  )
+}
+
+function isRuntimeContractTestPolicyShape(value: unknown): value is RuntimeContractTestPolicyV1 {
+  return (
+    isPlainRecord(value) &&
+    typeof value.rejectDiagnosticOnly === 'boolean' &&
+    typeof value.workspacePolicy === 'string' &&
+    typeof value.productEnablement === 'boolean' &&
+    Array.isArray(value.allowedSelections) &&
+    value.allowedSelections.length === 1 &&
+    value.allowedSelections.every(isRuntimeContractTestSelectionShape)
+  )
+}
+
+function isRuntimeProductionSelectionShape(value: unknown): value is RuntimeAdapterSelectionV1 {
+  return isRuntimeSelectionShape(value, 'APPROVED_FOR_PRODUCTION')
+}
+
+function isRuntimeContractTestSelectionShape(value: unknown): value is RuntimeTestAdapterSelectionV1 {
+  return isRuntimeSelectionShape(value, 'APPROVED_FOR_TEST')
+}
+
+function isRuntimeSelectionShape(value: unknown, approvalStatus: RuntimeAdapterSelectionV1['approvalStatus'] | RuntimeTestAdapterSelectionV1['approvalStatus']): boolean {
+  return (
+    isPlainRecord(value) &&
+    isNonEmptyString(value.adapterId) &&
+    isRuntimeKind(value.runtimeKind) &&
+    isRuntimeProtocol(value.protocol) &&
+    isDigest(value.capabilityDigest) &&
+    value.approvalStatus === approvalStatus &&
+    value.diagnosticOnly === false &&
+    (value.stream === 'POLL' || value.stream === 'PUSH') &&
+    (value.interrupt === 'BEST_EFFORT' || value.interrupt === 'ACKED') &&
+    (value.inspect === 'SNAPSHOT' || value.inspect === 'RECONCILE')
+  )
+}
+
+function isPromptEnvelopeRefShape(value: unknown): value is PromptEnvelopeRefV1 {
+  return (
+    isPlainRecord(value) &&
+    isNonEmptyString(value.refId) &&
+    isDigest(value.digest) &&
+    value.mediaType === 'application/vnd.xiaogui.runtime-prompt+json'
+  )
+}
+
+function isOptionalDigest(value: unknown): boolean {
+  return value === undefined || isDigest(value)
+}
+
+function isDigest(value: unknown): value is RuntimeDigestV1 | string {
+  return isNonEmptyString(value)
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim()
+}
+
+function isRuntimeKind(value: unknown): value is RuntimeKindV1 {
+  return value === 'KIMI' || value === 'QODER' || value === 'OTHER'
+}
+
+function isRuntimeProtocol(value: unknown): value is RuntimeProtocolV1 {
+  return (
+    value === 'ACP' ||
+    value === 'HEADLESS' ||
+    value === 'SDK' ||
+    value === 'REMOTE_CONTROL' ||
+    value === 'CLOUD_REMOTE' ||
+    value === 'NON_INTERACTIVE_CLI_DIAGNOSTIC'
+  )
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key)
 }

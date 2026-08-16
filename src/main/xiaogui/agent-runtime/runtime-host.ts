@@ -4,6 +4,8 @@ import {
   isRuntimePublicSessionId,
   isRuntimeContractTestSelectionAllowed,
   isRuntimeSelectionAllowed,
+  validateRuntimeContractTestCreateRequestShapeV1,
+  validateRuntimeProductionCreateRequestShapeV1,
   validateRuntimePublicDto,
   type AgentRuntimeContractTestAdapterV1,
   type AgentRuntimeAdapterV1,
@@ -242,6 +244,8 @@ function validateProductionCreateRequest(request: RuntimeCreateOrResumeRequestV1
   if (isContractTestCreateRequestShape(request)) {
     return { ok: false, outcome: failed('', 'RUNTIME_CONTRACT_TEST_REQUEST_NOT_ALLOWED', 'runtime-contract-test-request-not-allowed') }
   }
+  const shape = validateRuntimeProductionCreateRequestShapeV1(request)
+  if (!shape.ok) return { ok: false, outcome: failed('', shape.reasonCode, 'runtime-create-request-invalid') }
   const publicRequest = validateRuntimePublicDto(request)
   if (!publicRequest.ok) return { ok: false, outcome: unknown('', publicRequest.reasonCode, 'public-dto-leak') }
   const selection = isRuntimeSelectionAllowed(request.selection, request.productionPolicy)
@@ -249,9 +253,9 @@ function validateProductionCreateRequest(request: RuntimeCreateOrResumeRequestV1
 }
 
 function validateContractTestCreateRequest(request: RuntimeContractTestCreateOrResumeRequestV1): RuntimeCreateValidationResult {
-  if (!isContractTestCreateRequestShape(request)) {
-    return { ok: false, outcome: failed('', 'RUNTIME_CONTRACT_TEST_REQUEST_REQUIRED', 'runtime-contract-test-request-required') }
-  }
+  if (!isContractTestCreateRequestShape(request)) return { ok: false, outcome: failed('', 'RUNTIME_CONTRACT_TEST_REQUEST_REQUIRED', 'runtime-contract-test-request-required') }
+  const shape = validateRuntimeContractTestCreateRequestShapeV1(request)
+  if (!shape.ok) return { ok: false, outcome: failed('', shape.reasonCode, 'runtime-create-request-invalid') }
   const publicRequest = validateRuntimePublicDto(request)
   if (!publicRequest.ok) return { ok: false, outcome: unknown('', publicRequest.reasonCode, 'public-dto-leak') }
   if (request.workspace.writePolicy !== request.contractTestPolicy.workspacePolicy) {
@@ -356,12 +360,16 @@ function validateOutcome(runtimeSessionId: string, outcome: RuntimeOutcomeV1): R
 }
 
 function isContractTestCreateRequestShape(value: unknown): value is RuntimeContractTestCreateOrResumeRequestV1 {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !Array.isArray(value) &&
-    (value as { executionMode?: unknown }).executionMode === 'CONTRACT_TEST'
-  )
+  try {
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value) &&
+      (value as { executionMode?: unknown }).executionMode === 'CONTRACT_TEST'
+    )
+  } catch {
+    return false
+  }
 }
 
 function sanitizePermissionResult(result: { accepted: boolean; reasonCode?: string }): { accepted: boolean; reasonCode?: string } {
