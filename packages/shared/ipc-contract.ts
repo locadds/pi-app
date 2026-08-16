@@ -11,6 +11,15 @@ import type {
   SessionMode,
   SessionScopeLookupResultV1,
 } from './xiaogui-session-scope'
+import type {
+  WorkDocxConfirmRequestV1,
+  WorkDocxDiscoverRequestV1,
+  WorkDocxDiscoverResultV1,
+  WorkDocxOutcomeV1,
+  WorkDocxPrepareRequestV1,
+  WorkDocxPrepareResultV1,
+  WorkDocxPublishedResultV1,
+} from './xiaogui-work-docx'
 
 // ── Workspace ──
 export interface WorkspaceOpenRequest { path?: string; awaitWorker?: boolean }
@@ -315,6 +324,18 @@ export interface IpcMethodMap {
   'session.forkCandidates': { request: SessionForkCandidatesRequest; response: SessionForkCandidatesResponse }
   'session.clone': { request: SessionCloneRequest; response: SessionCloneResponse }
   'xiaogui.scope.lookup': { request: SessionScopeLookupRequest; response: SessionScopeLookupResponse }
+  'xiaogui.work.docx.discover': {
+    request: WorkDocxDiscoverRequestV1
+    response: WorkDocxOutcomeV1<WorkDocxDiscoverResultV1>
+  }
+  'xiaogui.work.docx.prepare': {
+    request: WorkDocxPrepareRequestV1
+    response: WorkDocxOutcomeV1<WorkDocxPrepareResultV1>
+  }
+  'xiaogui.work.docx.confirm': {
+    request: WorkDocxConfirmRequestV1
+    response: WorkDocxOutcomeV1<WorkDocxPublishedResultV1>
+  }
   'session.rename': { request: SessionRenameRequest; response: SessionRenameResponse }
   'session.compact': { request: SessionCompactRequest; response: SessionCompactResponse }
   'session.export': { request: SessionExportRequest; response: SessionExportResponse }

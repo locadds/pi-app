@@ -11,6 +11,7 @@
 
 import { registerXiaoguiHandlers } from './ipc-handlers'
 import { xiaogui } from './sidecar-bridge'
+import { registerWorkDocxHandlers } from './work-docx-ipc'
 
 let initialized = false
 
@@ -19,6 +20,7 @@ export function initXiaogui(): void {
   initialized = true
 
   registerXiaoguiHandlers()
+  registerWorkDocxHandlers()
 
   console.log('[xiaogui] 集成层已初始化（sidecar 惰性启动：首次 tool.invoke 时 spawn）')
 }

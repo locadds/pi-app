@@ -138,6 +138,9 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.scope.set',
   'ipc:xiaogui.sidecar.status',
   'ipc:xiaogui.tool.invoke',
+  'ipc:xiaogui.work.docx.confirm',
+  'ipc:xiaogui.work.docx.discover',
+  'ipc:xiaogui.work.docx.prepare',
 ] as const
 
 export type IpcInvokeChannel = (typeof IPC_INVOKE_CHANNELS)[number]
