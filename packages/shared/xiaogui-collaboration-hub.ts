@@ -112,6 +112,7 @@ export interface PlanRevisionProjectionV1 {
   revisionId: PlanRevisionId
   status: PlanRevisionStatusV1
   digest: string
+  draft: EditablePlanDraftV1
 }
 
 export interface TaskSpecProjectionV1 {

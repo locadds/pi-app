@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+
 import { cn } from '@renderer/lib/utils'
 
 export function RightPanelTabs({
@@ -9,6 +11,13 @@ export function RightPanelTabs({
   activePanel: string
   setActivePanel: (p: string) => void
 }) {
+  const activeTabRef = useRef<HTMLButtonElement | null>(null)
+  const panelKeys = panels.map((panel) => panel.key).join('\u0000')
+
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activePanel, panelKeys])
+
   return (
     <div className="right-panel-tabs-wrap flex h-11 shrink-0 items-center border-b border-border/40 px-2">
       <div className="right-panel-tabs-scroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist">
@@ -17,6 +26,7 @@ export function RightPanelTabs({
           return (
             <button
               key={panel.key}
+              ref={active ? activeTabRef : undefined}
               type="button"
               role="tab"
               aria-selected={active}

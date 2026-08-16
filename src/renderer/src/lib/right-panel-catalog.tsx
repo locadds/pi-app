@@ -21,6 +21,7 @@ const CORE_PANEL_ICONS: Record<string, AppIconComponent> = {
   tree: ListTree,
   files: FolderTree,
   intercom: Network,
+  collaboration: Network,
 }
 
 export function resolveRightPanelIconName(name?: string): AppIconName {

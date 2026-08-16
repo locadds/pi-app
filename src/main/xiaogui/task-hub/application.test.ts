@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -16,6 +17,7 @@ import type {
 } from '@shared/xiaogui-collaboration-hub'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { createCollaborationHubApplicationV1 } from './application'
+import { digestJson } from './digest'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 
 const ADDRESS = {
@@ -55,6 +57,17 @@ function draft(): InitialPlanDraftInputV1 {
       { taskKey: 'scope', title: '复用 M1 会话作用域' },
       { taskKey: 'journal', title: '写入 SQLite Journal', dependsOn: ['scope'] },
       { taskKey: 'projection', title: '生成只读任务投影', dependsOn: ['journal'] },
+    ],
+  }
+}
+
+function canonicalDraft(): InitialPlanDraftInputV1 {
+  return {
+    objective: '完成小规协作中枢后端最小闭环',
+    tasks: [
+      { taskKey: 'journal', title: '写入 SQLite Journal', dependsOn: ['scope'] },
+      { taskKey: 'projection', title: '生成只读任务投影', dependsOn: ['journal'] },
+      { taskKey: 'scope', title: '复用 M1 会话作用域', dependsOn: [] },
     ],
   }
 }
@@ -120,7 +133,8 @@ describe('M2A collaboration hub application', () => {
 
     const result = await start(app)
     expect(result).toMatchObject({ ok: true, value: { sessionVersion: 1, flowId: 'xhbf_flow', revisionId: 'xhbr_rev' } })
-    await expect(app.observe(ADDRESS)).resolves.toMatchObject({
+    const observed = await app.observe(ADDRESS)
+    expect(observed).toMatchObject({
       ok: true,
       value: {
         sessionVersion: 1,
@@ -129,6 +143,9 @@ describe('M2A collaboration hub application', () => {
         availableActions: ['plan.revision.submit', 'flow.cancel'],
       },
     })
+    if (!observed.ok || !observed.value.activeRevision) throw new Error('expected active draft revision projection')
+    expect(observed.value.activeRevision.draft).toEqual(canonicalDraft())
+    expect(observed.value.activeRevision.digest).toBe(digestJson(canonicalDraft()))
     await expect(app.readEvents(ADDRESS)).resolves.toMatchObject({ ok: true, value: [{ sessionVersion: 1 }] })
     app.close()
   })
@@ -276,7 +293,8 @@ describe('M2A collaboration hub application', () => {
       },
     })
     expect(submitted).toMatchObject({ ok: true, value: { sessionVersion: 2 } })
-    await expect(app.observe(ADDRESS)).resolves.toMatchObject({
+    const observed = await app.observe(ADDRESS)
+    expect(observed).toMatchObject({
       ok: true,
       value: {
         sessionVersion: 2,
@@ -287,6 +305,9 @@ describe('M2A collaboration hub application', () => {
         availableActions: ['flow.cancel'],
       },
     })
+    if (!observed.ok || !observed.value.activeRevision) throw new Error('expected active plan revision projection')
+    expect(observed.value.activeRevision.draft).toEqual(canonicalDraft())
+    expect(observed.value.activeRevision.digest).toBe(digestJson(canonicalDraft()))
     app.close()
   })
 
@@ -376,10 +397,52 @@ describe('M2A collaboration hub application', () => {
     first.close()
 
     const second = appFor(dbPath)
-    await expect(second.observe(ADDRESS)).resolves.toMatchObject({ ok: true, value: { sessionVersion: 1, activeFlow: { flowId: 'xhbf_flow' } } })
+    const observed = await second.observe(ADDRESS)
+    expect(observed).toMatchObject({ ok: true, value: { sessionVersion: 1, activeFlow: { flowId: 'xhbf_flow' } } })
+    if (!observed.ok || !observed.value.activeRevision) throw new Error('expected reopened draft revision projection')
+    expect(observed.value.activeRevision.draft).toEqual(canonicalDraft())
+    expect(observed.value.activeRevision.digest).toBe(digestJson(canonicalDraft()))
     await expect(start(second, 'req-restart')).resolves.toEqual(started)
     await expect(second.readEvents(ADDRESS)).resolves.toMatchObject({ ok: true, value: [{ eventType: 'flow.started.with_draft' }] })
     second.close()
+  })
+
+  it('hydrates a pre-M3A projection draft from the existing revision record without migrating the database', async () => {
+    const dbPath = await tempDb()
+    const first = appFor(dbPath)
+    await start(first, 'req-legacy-projection')
+    first.close()
+
+    const legacyDb = new DatabaseSync(dbPath)
+    const row = legacyDb
+      .prepare('select projection_json from session_projection where project_id = ? and session_key = ?')
+      .get(ADDRESS.projectId, ADDRESS.sessionKey) as { projection_json: string }
+    const legacyProjection = JSON.parse(row.projection_json) as {
+      activeRevision: { draft?: InitialPlanDraftInputV1 } | null
+    }
+    if (!legacyProjection.activeRevision) throw new Error('expected legacy active revision')
+    delete legacyProjection.activeRevision.draft
+    legacyDb
+      .prepare('update session_projection set projection_json = ? where project_id = ? and session_key = ?')
+      .run(JSON.stringify(legacyProjection), ADDRESS.projectId, ADDRESS.sessionKey)
+    legacyDb.close()
+
+    const reopened = appFor(dbPath)
+    const observed = await reopened.observe(ADDRESS)
+    reopened.close()
+    expect(observed).toMatchObject({ ok: true, value: { sessionVersion: 1 } })
+    if (!observed.ok || !observed.value.activeRevision) throw new Error('expected hydrated legacy active revision')
+    expect(observed.value.activeRevision.draft).toEqual(canonicalDraft())
+    expect(observed.value.activeRevision.digest).toBe(digestJson(canonicalDraft()))
+
+    const unchangedDb = new DatabaseSync(dbPath)
+    const stored = unchangedDb
+      .prepare('select projection_json from session_projection where project_id = ? and session_key = ?')
+      .get(ADDRESS.projectId, ADDRESS.sessionKey) as { projection_json: string }
+    const migration = unchangedDb.prepare('select max(version) as version from schema_migrations').get() as { version: number }
+    unchangedDb.close()
+    expect(JSON.parse(stored.projection_json).activeRevision).not.toHaveProperty('draft')
+    expect(migration.version).toBe(1)
   })
 
   it('keeps public DTO and persisted event payload free from path-like field names and values', async () => {

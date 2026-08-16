@@ -44,6 +44,7 @@ import { useComposerKeyDown } from './use-composer-keydown'
 import { useComposerFileSearch } from './use-composer-file-search'
 import { ComposerFilePopover } from './composer-file-popover'
 import { ComposerAgentActivity } from './composer-agent-activity'
+import { ComposerCollaborationButton } from '@renderer/xiaogui/components/ComposerCollaborationButton'
 import { isSubagentSessionPreview } from '@renderer/lib/subagent-session-preview'
 import {
   composerDraftContextKey,
@@ -479,6 +480,7 @@ export function Composer() {
             >
               <Plus className="h-[15px] w-[15px]" strokeWidth={2} />
             </button>
+            <ComposerCollaborationButton />
             {canCompose && (
               <ComposerMetricsInline metrics={metrics} isRunning={showComposerStop || isRunning} />
             )}

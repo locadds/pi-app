@@ -321,7 +321,7 @@ function projectionForDraft(
   return {
     ...emptyProjection(address, mode),
     activeFlow: { flowId, status: 'AWAITING_PLAN_APPROVAL', activeRevisionId: revisionId, objective: draft.objective },
-    activeRevision: { revisionId, status: 'DRAFT', digest },
+    activeRevision: { revisionId, status: 'DRAFT', digest, draft },
     availableActions: ['plan.revision.submit', 'flow.cancel'],
   }
 }
@@ -353,7 +353,7 @@ function projectionForActivePlan(
   return {
     ...emptyProjection(address, mode),
     activeFlow: { flowId, status: 'PLAN_ACTIVE', activeRevisionId: revisionId, objective: draft.objective },
-    activeRevision: { revisionId, status: 'ACTIVE', digest },
+    activeRevision: { revisionId, status: 'ACTIVE', digest, draft },
     taskSpecs,
     taskRuns,
     availableActions: ['flow.cancel'],

@@ -31,6 +31,14 @@ interface IdempotencyRecord {
   receipt_json: string
 }
 
+type ReadableProjectionV1 = Omit<SessionCollaborationProjectionV1, 'activeRevision'> & {
+  activeRevision:
+    | (Omit<NonNullable<SessionCollaborationProjectionV1['activeRevision']>, 'draft'> & {
+        draft?: CanonicalPlanDraftV1
+      })
+    | null
+}
+
 export interface StartDraftRecordV1 {
   flowId: FlowId
   revisionId: PlanRevisionId
@@ -78,7 +86,27 @@ export class CollaborationHubSqliteStoreV1 {
     const row = this.db
       .prepare('select projection_json from session_projection where project_id = ? and session_key = ?')
       .get(address.projectId, address.sessionKey) as { projection_json: string } | undefined
-    return row ? (JSON.parse(row.projection_json) as SessionCollaborationProjectionV1) : null
+    if (!row) return null
+
+    const projection = JSON.parse(row.projection_json) as ReadableProjectionV1
+    const activeRevision = projection.activeRevision
+    if (!activeRevision || activeRevision.draft !== undefined) {
+      return projection as SessionCollaborationProjectionV1
+    }
+
+    // M2A 在 M3A 补洞前写入的 projection 不含 draft；权威草稿已存在
+    // plan_revisions.draft_json。只在读取时补齐，不写回、不迁移 schema。
+    const revision = this.revision(activeRevision.revisionId)
+    if (!revision || revision.digest !== activeRevision.digest) {
+      throw new Error('active revision projection is inconsistent with its revision record')
+    }
+    return {
+      ...projection,
+      activeRevision: {
+        ...activeRevision,
+        draft: JSON.parse(revision.draft_json) as CanonicalPlanDraftV1,
+      },
+    }
   }
 
   readEvents(address: HubAddressV1, request: HubReadEventsRequestV1 = {}): HubEventEnvelopeV1[] {
