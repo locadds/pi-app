@@ -92,13 +92,9 @@ export function useComposerSend(opts: {
               attachments: atts,
               segments,
             })
-            const { finalizeEphemeralSandboxOnFirstSend } =
-              await import('@renderer/lib/ephemeral-sandbox')
+            const { finalizeEphemeralSandboxOnFirstSend } = await import('@renderer/lib/ephemeral-sandbox')
             await finalizeEphemeralSandboxOnFirstSend(pendMsg)
-            bindOptimisticOutgoingToSession(
-              optimisticToken,
-              useUIStore.getState().historySessionFile,
-            )
+            bindOptimisticOutgoingToSession(optimisticToken, useUIStore.getState().historySessionFile)
             const bind = await sendPrompt()
             await afterPromptSent(bind)
             return
@@ -110,13 +106,15 @@ export function useComposerSend(opts: {
               segments,
             })
             const { materializePendingNewSession } = await import('@renderer/lib/new-session')
-            await materializePendingNewSession(store.currentWorkspace, pendMsg, (sessionFile) => {
-              bindOptimisticOutgoingToSession(optimisticToken, sessionFile)
-            // 小规：新建会话打上当前一级模式标签（历史数据默认 WORK，见 xiaogui/lib/mode-scope）
-            void import('@renderer/xiaogui/lib/mode-scope').then((m) =>
-              m.tagSessionWithCurrentMode(sessionFile),
+            const { useXiaoguiStore } = await import('@renderer/xiaogui/stores/xiaogui-store')
+            await materializePendingNewSession(
+              store.currentWorkspace,
+              pendMsg,
+              (sessionFile) => {
+                bindOptimisticOutgoingToSession(optimisticToken, sessionFile)
+              },
+              useXiaoguiStore.getState().mode,
             )
-            })
             const bind = await sendPrompt()
             await afterPromptSent(bind)
             return
@@ -132,7 +130,10 @@ export function useComposerSend(opts: {
             }
             return
           }
-          optimisticToken = appendOptimisticOutgoingMessage(pendMsg, { attachments: atts, segments })
+          optimisticToken = appendOptimisticOutgoingMessage(pendMsg, {
+            attachments: atts,
+            segments,
+          })
           const bind = await sendPrompt()
           await afterPromptSent(bind)
         } catch (e) {
@@ -172,22 +173,16 @@ export function useComposerSend(opts: {
       }
     }
     await sendCurrent(showComposerStop || isRunning ? { queue: 'steer' } : undefined)
-  }, [
-    attachments.length,
-    clearEditor,
-    isRunning,
-    refreshCommands,
-    sendCurrent,
-    showComposerStop,
-    t,
-    text,
-  ])
+  }, [attachments.length, clearEditor, isRunning, refreshCommands, sendCurrent, showComposerStop, t, text])
 
   const runComposerAbort = useCallback(
     async (currentText: string) => {
       const { dismissExtensionDialogState } = await import('@renderer/lib/extension-ui-channel')
       dismissExtensionDialogState()
-      await abortAgentTurn({ restoreEditorText: currentText, setEditorText: setContent })
+      await abortAgentTurn({
+        restoreEditorText: currentText,
+        setEditorText: setContent,
+      })
     },
     [setContent],
   )

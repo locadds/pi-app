@@ -1,75 +1,50 @@
-/**
- * 小规包装组件：给上游 ProjectSidebar 挂上「一级模式作用域过滤」。
- *
- * 上游会话/项目数据一律不改；过滤发生在渲染前（可选 projectFilter /
- * sessionFilter prop 注入）。过滤实现全部在小规层（xiaogui/lib/mode-scope），
- * 查不到映射的旧记录 = 历史数据，一律按 WORK 处理（仅 WORK 模式可见）。
- */
+/** 小规包装：项目共享；会话只按主进程签发的规范作用域分组。 */
 
-import { useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 
 import { useTranslation } from 'react-i18next'
 
 // 图标必须经上游图标基础设施引用（契约：lucide-react 等三方库只允许出现在 components/icons 内）
 import { Plus } from '@renderer/components/icons'
 import { ProjectSidebar } from '@renderer/features/workspace/project-sidebar'
-import { normalizeSessionFileKey } from '@renderer/lib/session-file-key'
+import type { ProjectSessionDisplayStrategy, SessionItem } from '@renderer/features/workspace/project-sidebar-types'
 import { useUIStore } from '@renderer/stores/ui-store'
 
+import { groupCanonicalSessionsByMode } from '../lib/canonical-session-display'
+import { prepareCanonicalSessionOpen } from '../lib/canonical-session-open'
 import { navigateToModeHome } from '../lib/navigate-mode-home'
 
-import {
-  refreshModeScope,
-  startProjectBaselineWatcher,
-  useModeScopeStore,
-} from '../lib/mode-scope'
-import { useXiaoguiStore } from '../stores/xiaogui-store'
-
-export function XiaoguiProjectSidebar(props: {
-  onOpenProject: () => void
-  openProjectLabel: string
-}) {
+export function XiaoguiProjectSidebar(props: { onOpenProject: () => void; openProjectLabel: string }) {
   const { t } = useTranslation()
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
-  const mode = useXiaoguiStore((s) => s.mode)
-  const sessionModeMap = useModeScopeStore((s) => s.sessionModeMap)
-  const projectModeMap = useModeScopeStore((s) => s.projectModeMap)
-  const currentWorkspace = useUIStore((s) => s.currentWorkspace)
+  const sessionDisplayStrategy = useMemo<ProjectSessionDisplayStrategy>(
+    () => ({
+      projectSessions: (sessions) => {
+        const canonical = sessions.flatMap((session) =>
+          session.canonicalScope ? [{ item: session, scope: session.canonicalScope }] : [],
+        )
+        const grouped = groupCanonicalSessionsByMode(canonical)
+        const displayed = grouped.flatMap((group) =>
+          group.items.map((session, index) => ({
+            session,
+            groupKey: group.key,
+            groupLabel: index === 0 ? group.label : undefined,
+          })),
+        )
 
-  // 当前活跃工作区的规范化 key（projectFilter 豁免用）
-  const currentWorkspaceKey = useMemo(
-    () => normalizeSessionFileKey(currentWorkspace),
-    [currentWorkspace],
-  )
-
-  // 挂载时拉取 scope 映射一次，并上报项目基线 + 监听新增项目
-  // （sandbox 的打标签裁决在主进程创建处完成，渲染层不再轮询）
-  useEffect(() => {
-    void refreshModeScope()
-    return startProjectBaselineWatcher()
-  }, [])
-
-  // 会话过滤：映射缺失 = 历史数据 = WORK（仅 WORK 模式可见）
-  const sessionFilter = useMemo(
-    () => (sessionFile: string | undefined) => {
-      const key = normalizeSessionFileKey(sessionFile)
-      if (!key) return mode === 'WORK'
-      return (sessionModeMap[key] ?? 'WORK') === mode
-    },
-    [sessionModeMap, mode],
-  )
-
-  // 项目过滤（含临时对话 sandbox 工作区）：同上。
-  // 豁免：当前活跃工作区始终显示——用户已明确打开/正在使用，
-  // 不因模式归属把整个项目藏掉（修复 CODING 打开 DESIGN 归属项目后侧栏不显示的问题）。
-  const projectFilter = useMemo(
-    () => (path: string) => {
-      const key = normalizeSessionFileKey(path)
-      if (!key) return mode === 'WORK'
-      if (currentWorkspaceKey && key === currentWorkspaceKey) return true
-      return (projectModeMap[key] ?? 'WORK') === mode
-    },
-    [projectModeMap, mode, currentWorkspaceKey],
+        // Missing scope is an exceptional partial-upgrade state. Keep the row
+        // visible, but beforeOpenSession below refuses to infer a mode for it.
+        const unresolved = sessions
+          .filter((session) => !session.canonicalScope)
+          .map((session: SessionItem) => ({ session }))
+        return [...displayed, ...unresolved]
+      },
+      beforeOpenSession: async (session) => {
+        if (!session.canonicalScope) throw new Error('canonical_session_scope_missing')
+        await prepareCanonicalSessionOpen(session.canonicalScope)
+      },
+    }),
+    [],
   )
 
   // 「新建对话」按钮（任务 #34）：位于「打开文件夹」上方，
@@ -101,7 +76,7 @@ export function XiaoguiProjectSidebar(props: {
   return (
     <>
       {newChatButton}
-      <ProjectSidebar {...props} projectFilter={projectFilter} sessionFilter={sessionFilter} />
+      <ProjectSidebar {...props} sessionDisplayStrategy={sessionDisplayStrategy} />
     </>
   )
 }

@@ -4,11 +4,6 @@
  * 定位：打开即输入框——首屏主体是底部常驻的 Composer 输入框
  * （由 app.tsx 的 ComposerDock 始终渲染），本视图只提供居中的极简引导。
  * 企业安全护栏在后台静默工作（refreshGuardStatus 保留），不在首屏展示。
- *
- * 项目归属：用户从首屏明确选择打开项目目录时（意图明确），
- * 在 activateWorkspace 成功后显式重归属为当前模式（见 mode-scope 的
- * setProjectModeToCurrent）。
- *
  * 仅在 CODING 模式下呈现；其他模式渲染占位提示。
  */
 
@@ -17,7 +12,6 @@ import { useEffect } from 'react'
 import { activateWorkspace } from '@renderer/lib/activate-workspace'
 import { useUIStore } from '@renderer/stores/ui-store'
 
-import { setProjectModeToCurrent } from '../lib/mode-scope'
 import { useXiaoguiStore } from '../stores/xiaogui-store'
 
 export function CodingHomeView() {
@@ -34,8 +28,7 @@ export function CodingHomeView() {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
         <p className="max-w-[26rem] leading-relaxed">
-          编程首屏仅在 <span className="font-semibold text-foreground">CODING｜编程</span>{' '}
-          模式下呈现，请先切换模式。
+          编程首屏仅在 <span className="font-semibold text-foreground">CODING｜编程</span> 模式下呈现，请先切换模式。
         </p>
       </div>
     )
@@ -44,18 +37,14 @@ export function CodingHomeView() {
   return (
     <div className="flex h-full items-center justify-center px-6">
       <div className="max-w-md text-center">
-        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60">
-          coding · pi native
-        </p>
+        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60">coding · pi native</p>
         <h1 className="mt-3 text-xl font-semibold text-foreground">编程模式</h1>
         <p className="mt-1 text-[12px] text-muted-foreground">Pi Native Coding Harness</p>
 
         {currentWorkspace ? (
           <p className="mt-8 text-[13px] leading-relaxed text-muted-foreground">
             当前项目
-            <span className="mx-1 font-medium text-foreground">
-              {projectName(currentWorkspace)}
-            </span>
+            <span className="mx-1 font-medium text-foreground">{projectName(currentWorkspace)}</span>
             ，在下方输入任务即可开始编程。
           </p>
         ) : (
@@ -81,10 +70,15 @@ export function CodingHomeView() {
 
 /** 从路径提取项目（目录）名。 */
 function projectName(path: string): string {
-  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path
+  return (
+    path
+      .replace(/[\\/]+$/, '')
+      .split(/[\\/]/)
+      .pop() || path
+  )
 }
 
-/** 打开项目流程：目录对话框 → activateWorkspace → 显式重归属为当前模式（CODING）。 */
+/** 项目跨模式共享；打开目录不改变任何会话归属。 */
 async function openProjectDirectory(): Promise<void> {
   if (!window.piDesktop) {
     console.error('piDesktop not available')
@@ -94,8 +88,6 @@ async function openProjectDirectory(): Promise<void> {
     const res = await window.piDesktop.invoke('ipc:dialog:openDirectory')
     if (res?.path) {
       await activateWorkspace(res.path, { preferHome: true })
-      // 用户明确选择打开该项目 = 意图明确：归属重设为当前模式（不带 ifAbsent）
-      await setProjectModeToCurrent(res.path)
     }
   } catch (e) {
     console.error('[CodingHomeView] Failed to open project:', e)

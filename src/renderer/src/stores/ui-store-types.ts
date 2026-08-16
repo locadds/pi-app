@@ -4,6 +4,7 @@ import type { ToolCallDetail } from '@shared/tool-call-detail'
 import type { RightPanelCatalogItem, RightPanelPrefs } from '@shared/right-panels'
 import type { WorkerLiveSnapshot } from '@renderer/lib/session-worker-sync'
 import type { SubagentSessionGroup } from '@renderer/lib/subagent-session-types'
+import type { CanonicalSessionAddressScopeV1 } from '@shared/xiaogui-session-scope'
 
 export interface SessionItem {
   sessionId: string
@@ -12,6 +13,7 @@ export interface SessionItem {
   updatedAt: number
   messageCount?: number
   modelId: string
+  canonicalScope?: CanonicalSessionAddressScopeV1
 }
 
 /** Tool row in timeline (looser than TimelineItem for display pipeline). */
@@ -178,21 +180,35 @@ export interface UIState {
   rightPanelOrder: string[]
   applyRightPanelRuntime: (catalog: RightPanelCatalogItem[], prefs: RightPanelPrefs, order?: string[]) => void
   rewindKey: string
-  rewindCheckpoints: Array<{ id: string; trigger: string; description?: string; branch: string; timestamp: number }>
-  rewindTreeNodes: Array<{ id: string; depth: number; label?: string; entryType: string; isLeaf: boolean }>
+  rewindCheckpoints: Array<{
+    id: string
+    trigger: string
+    description?: string
+    branch: string
+    timestamp: number
+  }>
+  rewindTreeNodes: Array<{
+    id: string
+    depth: number
+    label?: string
+    entryType: string
+    isLeaf: boolean
+  }>
   rewindWorkerBound: boolean
   rewindLoadingCheckpoints: boolean
   rewindLoadingTree: boolean
   rewindTreeError?: string
-  setRewindMeta: (patch: Partial<{
-    rewindKey: string
-    checkpoints: UIState['rewindCheckpoints']
-    treeNodes: UIState['rewindTreeNodes']
-    workerBound: boolean
-    loadingCheckpoints: boolean
-    loadingTree: boolean
-    treeError: string
-  }>) => void
+  setRewindMeta: (
+    patch: Partial<{
+      rewindKey: string
+      checkpoints: UIState['rewindCheckpoints']
+      treeNodes: UIState['rewindTreeNodes']
+      workerBound: boolean
+      loadingCheckpoints: boolean
+      loadingTree: boolean
+      treeError: string
+    }>,
+  ) => void
   theme: 'light' | 'dark' | 'system'
   setTheme: (t: 'light' | 'dark' | 'system') => void
   /** sessionFile → running (sidebar spinner) */

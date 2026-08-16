@@ -16,6 +16,7 @@ import { refreshWorkspaceSessionLists } from '@renderer/lib/refresh-workspace-se
 import {
   diskProjectName,
   isSandboxPath,
+  type ProjectSessionDisplayStrategy,
   type SandboxEntry,
   type SessionItem,
 } from './project-sidebar-types'
@@ -25,15 +26,12 @@ import { ProjectDiskRow, ProjectSessionTree, SandboxDialogRow } from './project-
 export function ProjectSidebar({
   onOpenProject,
   openProjectLabel,
-  projectFilter,
-  sessionFilter,
+  sessionDisplayStrategy,
 }: {
   onOpenProject: () => void
   openProjectLabel: string
-  /** 可选注入（小规层）：按一级模式过滤项目/临时对话工作区；undefined = 不过滤 */
-  projectFilter?: (path: string) => boolean
-  /** 可选注入（小规层）：按一级模式过滤会话列表；undefined = 不过滤 */
-  sessionFilter?: (sessionFile: string | undefined) => boolean
+  /** Optional product projection; native Pi remains a flat session list. */
+  sessionDisplayStrategy?: ProjectSessionDisplayStrategy
 }) {
   const { t } = useTranslation()
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
@@ -161,7 +159,10 @@ export function ProjectSidebar({
         workspaceId: string
         sessions: SessionItem[]
       }
-      setSessionsByWorkspace((previous) => ({ ...previous, [workspaceId]: list }))
+      setSessionsByWorkspace((previous) => ({
+        ...previous,
+        [workspaceId]: list,
+      }))
     }
     window.addEventListener('pi-desktop:workspace-sessions', onWorkspaceSessions)
     return () => window.removeEventListener('pi-desktop:workspace-sessions', onWorkspaceSessions)
@@ -173,15 +174,8 @@ export function ProjectSidebar({
     const ordered = projectFolderOrder(diskRecent, diskCurrent, recentProjectsFixedOrder)
     // Windows 路径大小写不敏感：上游 recentProjects 可能同目录存入 D:\x 与 d:\x
     // 两种写法，字面去重失效导致侧栏重复条目（仅 title 盘符大小写不同）。
-    const deduped = dedupeByPathKey(ordered, currentWorkspace)
-    return projectFilter ? deduped.filter((p) => projectFilter(p)) : deduped
-  }, [recentProjects, currentWorkspace, recentProjectsFixedOrder, projectFilter])
-
-  // 小规层模式过滤同样作用于临时对话列表（sandbox 工作区按 projectModeMap 归属）
-  const visibleSandboxes = useMemo(
-    () => (projectFilter ? sandboxes.filter((box) => projectFilter(box.path)) : sandboxes),
-    [sandboxes, projectFilter],
-  )
+    return dedupeByPathKey(ordered, currentWorkspace)
+  }, [recentProjects, currentWorkspace, recentProjectsFixedOrder])
 
   const switchDiskProject = async (path: string) => {
     if (path === currentWorkspace && !ephemeralSandboxDraft) return
@@ -202,7 +196,9 @@ export function ProjectSidebar({
       let sessionId = box.sessionId
       let sessionFile = box.sessionFile
       if (!sessionId || !sessionFile) {
-        const listRes = await ipcClient.invoke('session.list', { workspaceId: box.path })
+        const listRes = await ipcClient.invoke('session.list', {
+          workspaceId: box.path,
+        })
         const latest = ((listRes?.sessions || []) as SessionItem[]).find((s) => s.sessionId && s.sessionFile)
         if (!latest?.sessionFile) {
           refreshSandboxes()
@@ -301,7 +297,7 @@ export function ProjectSidebar({
             <span className="text-[11px] font-medium tracking-wide text-foreground-secondary/75">
               {t('common:sidebar.conversations')}
             </span>
-            <span className="text-[10px] tabular-nums text-foreground-secondary/60">{visibleSandboxes.length}</span>
+            <span className="text-[10px] tabular-nums text-foreground-secondary/60">{sandboxes.length}</span>
           </button>
           <button
             type="button"
@@ -323,10 +319,10 @@ export function ProjectSidebar({
                 </div>
               </div>
             )}
-            {visibleSandboxes.length === 0 && !ephemeralSandboxDraft ? (
+            {sandboxes.length === 0 && !ephemeralSandboxDraft ? (
               <p className="px-3 py-2 text-[12px] text-foreground-secondary/80">{t('sidebar.clickToAdd')}</p>
             ) : (
-              visibleSandboxes.map((box) => (
+              sandboxes.map((box) => (
                 <SandboxDialogRow
                   key={box.path}
                   box={box}
@@ -361,9 +357,7 @@ export function ProjectSidebar({
         ) : (
           diskPaths.map((path) => {
             const open = expandedPaths.has(path)
-            const projectSessions = (mergedSessionsByWorkspace[path] || []).filter(
-              (s) => !sessionFilter || sessionFilter(s.sessionFile),
-            )
+            const projectSessions = mergedSessionsByWorkspace[path] || []
             const loading = loadingSessionPaths.has(path) && projectSessions.length === 0
             return (
               <ProjectDiskRow
@@ -394,6 +388,7 @@ export function ProjectSidebar({
                     loading={loading}
                     currentWorkspace={currentWorkspace}
                     currentSessionId={currentSessionId}
+                    displayStrategy={sessionDisplayStrategy}
                     onSessionContextMenu={(e, payload) => sessionMenu.open(e, payload)}
                   />
                 }

@@ -61,7 +61,11 @@ export async function activateWorkspace(path: string, options?: ActivateWorkspac
   } else if (options?.preferHome) {
     store.clearTimeline()
     store.setCurrentSession(null)
-    store.setWorkerLiveSnapshot({ sessionId: null, sessionFile: null, status: 'idle' })
+    store.setWorkerLiveSnapshot({
+      sessionId: null,
+      sessionFile: null,
+      status: 'idle',
+    })
     store.setHistoryMeta(0, 0, null)
     store.setHistoryLoading(false)
   } else {
@@ -77,14 +81,22 @@ export async function activateWorkspace(path: string, options?: ActivateWorkspac
         if (!assertSessionNavigation(navToken)) return
         const rows = listRes?.sessions || []
         store.setSessions(
-          rows.map((s: WorkspaceSessionChoice & { messageCount?: number; modelId?: string }) => ({
-            sessionId: s.sessionId,
-            sessionFile: s.sessionFile,
-            title: s.title ?? s.sessionId.slice(0, 8),
-            updatedAt: s.updatedAt ?? 0,
-            messageCount: s.messageCount,
-            modelId: s.modelId ?? '',
-          })),
+          rows.map(
+            (
+              s: WorkspaceSessionChoice & {
+                messageCount?: number
+                modelId?: string
+              },
+            ) => ({
+              sessionId: s.sessionId,
+              sessionFile: s.sessionFile,
+              title: s.title ?? s.sessionId.slice(0, 8),
+              updatedAt: s.updatedAt ?? 0,
+              messageCount: s.messageCount,
+              modelId: s.modelId ?? '',
+              canonicalScope: s.canonicalScope,
+            }),
+          ),
         )
       })
       .catch((e) => console.error('[activateWorkspace] session.list failed:', e))
@@ -100,10 +112,6 @@ export async function activateWorkspace(path: string, options?: ActivateWorkspac
         console.error('[activateWorkspace] settings.set currentProject failed:', error)
       })
 
-  // 小规：打开项目不再静默打标签（历史归 WORK 基线策略）——存量/历史项目
-  // 的归属由 xiaogui/lib/mode-scope 的项目基线监听统一裁决，打开行为本身
-  // 不改变任何项目的模式归属。
-
   if (options?.preferHome) {
     try {
       await openPromise
@@ -114,7 +122,11 @@ export async function activateWorkspace(path: string, options?: ActivateWorkspac
     }
     store.clearPendingNewSessionPlaceholder()
     store.setCurrentSession(null)
-    store.setWorkerLiveSnapshot({ sessionId: null, sessionFile: null, status: 'idle' })
+    store.setWorkerLiveSnapshot({
+      sessionId: null,
+      sessionFile: null,
+      status: 'idle',
+    })
     store.setHistoryMeta(0, 0, null)
     store.setHistoryLoading(false)
     reportVisibleSession(null)
@@ -149,7 +161,9 @@ export async function activateWorkspace(path: string, options?: ActivateWorkspac
   try {
     await openPromise
     if (!assertSessionNavigation(navToken)) return
-    const listRes = await ipcClient.invoke('session.list', { workspaceId: path })
+    const listRes = await ipcClient.invoke('session.list', {
+      workspaceId: path,
+    })
     if (!assertSessionNavigation(navToken)) return
     sessions = listRes?.sessions || []
     store.setSessions(
@@ -160,6 +174,7 @@ export async function activateWorkspace(path: string, options?: ActivateWorkspac
         updatedAt: s.updatedAt ?? 0,
         messageCount: (s as { messageCount?: number }).messageCount,
         modelId: (s as { modelId?: string }).modelId ?? '',
+        canonicalScope: s.canonicalScope,
       })),
     )
   } catch (error) {

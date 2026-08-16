@@ -6,6 +6,8 @@ import type { SessionItem } from '@renderer/stores/ui-store-types'
 import { openSessionIntoWorker } from '@renderer/lib/open-session'
 import { composerTurnActive } from '@renderer/lib/session-worker-sync'
 import { isCurrentSubagentSessionPreview } from '@renderer/lib/subagent-session-preview'
+import { prepareCanonicalSessionOpen } from '@renderer/xiaogui/lib/canonical-session-open'
+import type { CanonicalSessionAddressScopeV1 } from '@shared/xiaogui-session-scope'
 
 function resolveSourceSessionFile(): string | null {
   const store = useUIStore.getState()
@@ -27,9 +29,11 @@ function assertIdleForBranchAction(): boolean {
     sessionRuntimeRunning: store.sessionRuntimeRunning,
   })
   if (busy) {
-    toast.warning(i18n.t('composer:toast.sessionBusyBranch', {
-      defaultValue: 'Agent 运行中，请先停止后再 Fork / Clone / 跳转',
-    }))
+    toast.warning(
+      i18n.t('composer:toast.sessionBusyBranch', {
+        defaultValue: 'Agent 运行中，请先停止后再 Fork / Clone / 跳转',
+      }),
+    )
     return false
   }
   return true
@@ -38,6 +42,7 @@ function assertIdleForBranchAction(): boolean {
 async function refreshSidebarAndOpen(
   sessionId: string,
   sessionFile: string | undefined,
+  canonicalScope: CanonicalSessionAddressScopeV1,
   opts?: { editorText?: string | null },
 ): Promise<void> {
   const store = useUIStore.getState()
@@ -46,7 +51,11 @@ async function refreshSidebarAndOpen(
     try {
       const listRes = await ipcClient.invoke('session.list', { workspaceId })
       let sessions = (listRes?.sessions || []) as SessionItem[]
-      if (sessionId && sessionFile && !sessions.some((s) => s.sessionId === sessionId || s.sessionFile === sessionFile)) {
+      if (
+        sessionId &&
+        sessionFile &&
+        !sessions.some((s) => s.sessionId === sessionId || s.sessionFile === sessionFile)
+      ) {
         sessions = [
           {
             sessionId,
@@ -55,6 +64,7 @@ async function refreshSidebarAndOpen(
             updatedAt: Date.now(),
             messageCount: 0,
             modelId: '',
+            canonicalScope,
           } as SessionItem,
           ...sessions,
         ]
@@ -65,6 +75,7 @@ async function refreshSidebarAndOpen(
     }
   }
 
+  await prepareCanonicalSessionOpen(canonicalScope)
   await openSessionIntoWorker(sessionId, sessionFile)
   if (opts?.editorText != null && opts.editorText.length > 0) {
     useUIStore.getState().setComposerPrefill(opts.editorText)
@@ -81,7 +92,11 @@ export async function forkSessionFromEntry(entryId: string): Promise<boolean> {
   if (!assertIdleForBranchAction()) return false
   const sessionFile = resolveSourceSessionFile()
   if (!sessionFile) {
-    toast.warning(i18n.t('composer:toast.needSessionFile', { defaultValue: '未找到会话文件' }))
+    toast.warning(
+      i18n.t('composer:toast.needSessionFile', {
+        defaultValue: '未找到会话文件',
+      }),
+    )
     return false
   }
   if (!entryId?.trim()) {
@@ -101,7 +116,12 @@ export async function forkSessionFromEntry(entryId: string): Promise<boolean> {
       editorText?: string
       sessionId?: string
       sessionFile?: string
-      session?: { sessionId?: string; sessionFile?: string; error?: string }
+      session?: {
+        sessionId?: string
+        sessionFile?: string
+        error?: string
+        canonicalScope?: CanonicalSessionAddressScopeV1
+      }
     }
 
     if (res?.cancelled) {
@@ -111,9 +131,11 @@ export async function forkSessionFromEntry(entryId: string): Promise<boolean> {
     const err = res?.error || res?.session?.error
     if (err) {
       if (err === 'SESSION_BUSY') {
-        toast.warning(i18n.t('composer:toast.sessionBusyBranch', {
-          defaultValue: 'Agent 运行中，请先停止后再 Fork / Clone / 跳转',
-        }))
+        toast.warning(
+          i18n.t('composer:toast.sessionBusyBranch', {
+            defaultValue: 'Agent 运行中，请先停止后再 Fork / Clone / 跳转',
+          }),
+        )
       } else {
         toast.error(err)
       }
@@ -126,12 +148,13 @@ export async function forkSessionFromEntry(entryId: string): Promise<boolean> {
       toast.error(i18n.t('composer:toast.forkFailed', { defaultValue: 'Fork 失败' }))
       return false
     }
+    const canonicalScope = res.session?.canonicalScope
+    if (!canonicalScope) {
+      toast.error('canonical_session_scope_missing')
+      return false
+    }
 
-    // 小规：fork 产生的新会话继承当前一级模式（否则映射缺失会落回 WORK）
-    void import('@renderer/xiaogui/lib/mode-scope').then((m) =>
-      m.tagSessionWithCurrentMode(newFile),
-    )
-    await refreshSidebarAndOpen(newId || newFile || '', newFile, {
+    await refreshSidebarAndOpen(newId || newFile || '', newFile, canonicalScope, {
       editorText: typeof res.editorText === 'string' ? res.editorText : '',
     })
     toast.success(
@@ -154,7 +177,11 @@ export async function cloneCurrentSession(): Promise<boolean> {
   if (!assertIdleForBranchAction()) return false
   const sessionFile = resolveSourceSessionFile()
   if (!sessionFile) {
-    toast.warning(i18n.t('composer:toast.needSessionFile', { defaultValue: '未找到会话文件' }))
+    toast.warning(
+      i18n.t('composer:toast.needSessionFile', {
+        defaultValue: '未找到会话文件',
+      }),
+    )
     return false
   }
 
@@ -167,11 +194,20 @@ export async function cloneCurrentSession(): Promise<boolean> {
       error?: string
       sessionId?: string
       sessionFile?: string
-      session?: { sessionId?: string; sessionFile?: string; error?: string }
+      session?: {
+        sessionId?: string
+        sessionFile?: string
+        error?: string
+        canonicalScope?: CanonicalSessionAddressScopeV1
+      }
     }
 
     if (res?.cancelled) {
-      toast.info(i18n.t('composer:toast.cloneCancelled', { defaultValue: '已取消 Clone' }))
+      toast.info(
+        i18n.t('composer:toast.cloneCancelled', {
+          defaultValue: '已取消 Clone',
+        }),
+      )
       return false
     }
     const err = res?.error || res?.session?.error
@@ -179,7 +215,9 @@ export async function cloneCurrentSession(): Promise<boolean> {
       if (err === 'SESSION_BUSY' || err === 'nothing_to_clone') {
         toast.warning(
           err === 'nothing_to_clone'
-            ? i18n.t('composer:toast.nothingToClone', { defaultValue: '当前没有可 Clone 的内容' })
+            ? i18n.t('composer:toast.nothingToClone', {
+                defaultValue: '当前没有可 Clone 的内容',
+              })
             : i18n.t('composer:toast.sessionBusyBranch', {
                 defaultValue: 'Agent 运行中，请先停止后再 Fork / Clone / 跳转',
               }),
@@ -196,12 +234,13 @@ export async function cloneCurrentSession(): Promise<boolean> {
       toast.error(i18n.t('composer:toast.cloneFailed', { defaultValue: 'Clone 失败' }))
       return false
     }
+    const canonicalScope = res.session?.canonicalScope
+    if (!canonicalScope) {
+      toast.error('canonical_session_scope_missing')
+      return false
+    }
 
-    // 小规：clone 产生的新会话继承当前一级模式（否则映射缺失会落回 WORK）
-    void import('@renderer/xiaogui/lib/mode-scope').then((m) =>
-      m.tagSessionWithCurrentMode(newFile),
-    )
-    await refreshSidebarAndOpen(newId || newFile || '', newFile, { editorText: null })
+    await refreshSidebarAndOpen(newId || newFile || '', newFile, canonicalScope, { editorText: null })
     toast.success(i18n.t('composer:toast.cloned', { defaultValue: '已 Clone 到新会话' }))
     return true
   } catch (e: unknown) {
@@ -216,7 +255,9 @@ export async function loadForkCandidates(): Promise<Array<{ entryId: string; tex
   const sessionFile = resolveSourceSessionFile()
   if (!sessionFile) return []
   try {
-    const res = (await ipcClient.invoke('session.forkCandidates', { sessionFile })) as {
+    const res = (await ipcClient.invoke('session.forkCandidates', {
+      sessionFile,
+    })) as {
       messages?: Array<{ entryId: string; text: string }>
     }
     return res?.messages || []
