@@ -15,8 +15,24 @@
 
 import Store from 'electron-store'
 
+import type {
+  ProjectId,
+  SandboxKeyV1,
+  SessionAddressV1,
+  SessionKey,
+  SessionMode,
+  SessionScopeLookupResultV1,
+} from '@shared/xiaogui-session-scope'
+
 import { isXiaoguiMode, type XiaoguiMode } from './config'
 import { normalizePathKey } from './path-key'
+import type { CanonicalInputFingerprintV1 } from './scope-derive'
+import {
+  SessionScopeResolutionError,
+  type SandboxBindingCommitV1,
+  type SessionBindingCommitV1,
+  type SessionScopePersistenceV1,
+} from './scope-resolver'
 
 export type ScopeKind = 'session' | 'project'
 
@@ -31,6 +47,33 @@ interface XiaoguiScopeSchema {
    * 新出现的项目才打当前模式标签——打开历史项目不静默改归属。
    */
   projectBaseline: string[]
+  canonicalScopeBindings: CanonicalScopeBindingsV1
+}
+
+interface PersistedProjectBindingV1 {
+  canonicalInputFingerprint: CanonicalInputFingerprintV1
+}
+
+interface PersistedSessionBindingV1 {
+  projectId: ProjectId
+  canonicalInputFingerprint: CanonicalInputFingerprintV1
+  sessionMode: SessionMode
+}
+
+interface PersistedSandboxBindingV1 {
+  projectId: ProjectId
+  canonicalInputFingerprint: CanonicalInputFingerprintV1
+}
+
+interface CanonicalScopeBindingsV1 {
+  version: 1
+  projects: Record<string, PersistedProjectBindingV1>
+  sessions: Record<string, PersistedSessionBindingV1>
+  sandboxes: Record<string, PersistedSandboxBindingV1>
+}
+
+function emptyCanonicalScopeBindings(): CanonicalScopeBindingsV1 {
+  return { version: 1, projects: {}, sessions: {}, sandboxes: {} }
 }
 
 const store = new Store<XiaoguiScopeSchema>({
@@ -44,8 +87,227 @@ const store = new Store<XiaoguiScopeSchema>({
     sessionModeMap: {},
     projectModeMap: {},
     projectBaseline: [],
+    canonicalScopeBindings: emptyCanonicalScopeBindings(),
   },
 })
+
+const PROJECT_ID_PATTERN = /^xgp1_[0-9a-f]{64}$/
+const SESSION_KEY_PATTERN = /^xgs1_[0-9a-f]{64}$/
+const SANDBOX_KEY_PATTERN = /^xgb1_[0-9a-f]{64}$/
+const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function corruptStore(): never {
+  throw new SessionScopeResolutionError('CANONICAL_SCOPE_STORE_CORRUPT')
+}
+
+function readCanonicalScopeBindings(): CanonicalScopeBindingsV1 {
+  const raw = store.get('canonicalScopeBindings') as unknown
+  if (!isRecord(raw) || raw.version !== 1) corruptStore()
+  if (!isRecord(raw.projects) || !isRecord(raw.sessions) || !isRecord(raw.sandboxes)) {
+    corruptStore()
+  }
+
+  const projects: CanonicalScopeBindingsV1['projects'] = {}
+  for (const [projectId, value] of Object.entries(raw.projects)) {
+    if (
+      !PROJECT_ID_PATTERN.test(projectId) ||
+      !isRecord(value) ||
+      !FINGERPRINT_PATTERN.test(String(value.canonicalInputFingerprint ?? ''))
+    ) {
+      corruptStore()
+    }
+    projects[projectId] = {
+      canonicalInputFingerprint: value.canonicalInputFingerprint as CanonicalInputFingerprintV1,
+    }
+  }
+
+  const sessions: CanonicalScopeBindingsV1['sessions'] = {}
+  for (const [sessionKey, value] of Object.entries(raw.sessions)) {
+    if (
+      !SESSION_KEY_PATTERN.test(sessionKey) ||
+      !isRecord(value) ||
+      !PROJECT_ID_PATTERN.test(String(value.projectId ?? '')) ||
+      !FINGERPRINT_PATTERN.test(String(value.canonicalInputFingerprint ?? '')) ||
+      !isXiaoguiMode(value.sessionMode)
+    ) {
+      corruptStore()
+    }
+    sessions[sessionKey] = {
+      projectId: value.projectId as ProjectId,
+      canonicalInputFingerprint: value.canonicalInputFingerprint as CanonicalInputFingerprintV1,
+      sessionMode: value.sessionMode,
+    }
+  }
+
+  const sandboxes: CanonicalScopeBindingsV1['sandboxes'] = {}
+  for (const [sandboxKey, value] of Object.entries(raw.sandboxes)) {
+    if (
+      !SANDBOX_KEY_PATTERN.test(sandboxKey) ||
+      !isRecord(value) ||
+      !PROJECT_ID_PATTERN.test(String(value.projectId ?? '')) ||
+      !FINGERPRINT_PATTERN.test(String(value.canonicalInputFingerprint ?? ''))
+    ) {
+      corruptStore()
+    }
+    sandboxes[sandboxKey] = {
+      projectId: value.projectId as ProjectId,
+      canonicalInputFingerprint: value.canonicalInputFingerprint as CanonicalInputFingerprintV1,
+    }
+  }
+
+  for (const session of Object.values(sessions)) {
+    if (!projects[session.projectId]) corruptStore()
+  }
+  for (const sandbox of Object.values(sandboxes)) {
+    if (!projects[sandbox.projectId]) corruptStore()
+  }
+
+  return { version: 1, projects, sessions, sandboxes }
+}
+
+function validateIncomingId(value: string, pattern: RegExp): void {
+  if (!pattern.test(value)) {
+    throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+  }
+}
+
+function validateIncomingFingerprint(value: CanonicalInputFingerprintV1): void {
+  if (!FINGERPRINT_PATTERN.test(value)) {
+    throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+  }
+}
+
+function assertProjectBinding(input: SessionBindingCommitV1['project']): void {
+  validateIncomingId(input.opaqueId, PROJECT_ID_PATTERN)
+  validateIncomingFingerprint(input.canonicalInputFingerprint)
+}
+
+function assertProjectCompatible(
+  existing: PersistedProjectBindingV1 | undefined,
+  input: SessionBindingCommitV1['project'],
+): void {
+  if (existing && existing.canonicalInputFingerprint !== input.canonicalInputFingerprint) {
+    throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
+  }
+}
+
+function writeCanonicalScopeBindings(bindings: CanonicalScopeBindingsV1): void {
+  store.set('canonicalScopeBindings', bindings)
+}
+
+function lookupCanonicalSession(address: SessionAddressV1): SessionScopeLookupResultV1 {
+  const bindings = readCanonicalScopeBindings()
+  const session = bindings.sessions[address.sessionKey]
+  if (!session) return { kind: 'NOT_FOUND' }
+  if (session.projectId !== address.projectId) return { kind: 'PROJECT_MISMATCH' }
+  return {
+    kind: 'FOUND',
+    scope: {
+      projectId: address.projectId,
+      sessionKey: address.sessionKey,
+      sessionMode: session.sessionMode,
+    },
+  }
+}
+
+function commitCanonicalSession(input: SessionBindingCommitV1): SessionMode {
+  assertProjectBinding(input.project)
+  validateIncomingId(input.session.opaqueId, SESSION_KEY_PATTERN)
+  validateIncomingId(input.session.projectId, PROJECT_ID_PATTERN)
+  validateIncomingFingerprint(input.session.canonicalInputFingerprint)
+  if (!isXiaoguiMode(input.sessionMode)) {
+    throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+  }
+  if (input.session.projectId !== input.project.opaqueId) {
+    throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+  }
+
+  const current = readCanonicalScopeBindings()
+  assertProjectCompatible(current.projects[input.project.opaqueId], input.project)
+  const existing = current.sessions[input.session.opaqueId]
+  if (existing) {
+    if (existing.projectId !== input.session.projectId) {
+      throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+    }
+    if (existing.canonicalInputFingerprint !== input.session.canonicalInputFingerprint) {
+      throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
+    }
+    return existing.sessionMode
+  }
+
+  writeCanonicalScopeBindings({
+    version: 1,
+    projects: {
+      ...current.projects,
+      [input.project.opaqueId]: {
+        canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+      },
+    },
+    sessions: {
+      ...current.sessions,
+      [input.session.opaqueId]: {
+        projectId: input.session.projectId,
+        canonicalInputFingerprint: input.session.canonicalInputFingerprint,
+        sessionMode: input.sessionMode,
+      },
+    },
+    sandboxes: current.sandboxes,
+  })
+  return input.sessionMode
+}
+
+function commitCanonicalSandbox(input: SandboxBindingCommitV1): void {
+  assertProjectBinding(input.project)
+  validateIncomingId(input.sandbox.opaqueId, SANDBOX_KEY_PATTERN)
+  validateIncomingId(input.sandbox.projectId, PROJECT_ID_PATTERN)
+  validateIncomingFingerprint(input.sandbox.canonicalInputFingerprint)
+  if (input.sandbox.projectId !== input.project.opaqueId) {
+    throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+  }
+
+  const current = readCanonicalScopeBindings()
+  assertProjectCompatible(current.projects[input.project.opaqueId], input.project)
+  const existing = current.sandboxes[input.sandbox.opaqueId]
+  if (existing) {
+    if (existing.projectId !== input.sandbox.projectId) {
+      throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+    }
+    if (existing.canonicalInputFingerprint !== input.sandbox.canonicalInputFingerprint) {
+      throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
+    }
+    return
+  }
+
+  writeCanonicalScopeBindings({
+    version: 1,
+    projects: {
+      ...current.projects,
+      [input.project.opaqueId]: {
+        canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+      },
+    },
+    sessions: current.sessions,
+    sandboxes: {
+      ...current.sandboxes,
+      [input.sandbox.opaqueId]: {
+        projectId: input.sandbox.projectId,
+        canonicalInputFingerprint: input.sandbox.canonicalInputFingerprint,
+      },
+    },
+  })
+}
+
+export const sessionScopePersistenceV1: SessionScopePersistenceV1 = {
+  lookup: lookupCanonicalSession,
+  getLegacySessionMode: (normalizedSessionFile) => getScope('session', normalizedSessionFile),
+  getLegacyProjectMode: (normalizedProjectRoot) => getScope('project', normalizedProjectRoot),
+  commitSession: commitCanonicalSession,
+  commitSandbox: commitCanonicalSandbox,
+}
 
 /** 过滤非法 key/模式值（防御历史脏数据）。 */
 function sanitizeMap(raw: Record<string, unknown> | undefined): Record<string, XiaoguiMode> {
@@ -162,4 +424,5 @@ export function __resetScopeStoreForTests(): void {
   store.set('sessionModeMap', {})
   store.set('projectModeMap', {})
   store.set('projectBaseline', [])
+  store.set('canonicalScopeBindings', emptyCanonicalScopeBindings())
 }
