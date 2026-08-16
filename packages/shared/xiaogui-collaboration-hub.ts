@@ -181,12 +181,7 @@ export interface AttemptProjectionM2BV1 {
 }
 
 export type CollaborationHubActionM2BV1 =
-  | CollaborationHubActionV1
-  | 'system.schedule'
-  | 'system.workspace.prepare.result.record'
-  | 'system.agent.report.record'
-  | 'system.agent.outcome.record'
-  | 'system.agent.reconcile'
+  CollaborationHubActionV1
 
 export interface SessionCollaborationProjectionV1 {
   kind: 'SESSION_COLLABORATION_PROJECTION'
@@ -297,6 +292,21 @@ export type WorkspacePreparedReceiptM2BV1 =
   | { status: 'CONFLICT'; workspaceReceiptId: WorkspaceReceiptId; receiptDigest: string; conflictDigest: string }
   | { status: 'FAILED'; workspaceReceiptId: WorkspaceReceiptId; receiptDigest: string; failure: WorkspacePreparationFailureSourceV1 }
 
+export type AgentFailureSignalV1 = {
+  kind: 'AGENT_FAILURE'
+  reasonCode:
+    | 'RUNTIME_FAILED'
+    | 'RUNTIME_INTERRUPTED'
+    | 'RUNTIME_OUTCOME_UNKNOWN'
+    | 'RUNTIME_ADAPTER_ERROR'
+    | 'RUNTIME_SESSION_NOT_FOUND'
+    | 'RUNTIME_OUTCOME_SESSION_MISMATCH'
+    | 'PROTOCOL_SUCCEEDED_UNSUPPORTED'
+    | 'UNKNOWN_RUNTIME_FAILURE'
+  sourceReasonCode: string
+  receiptDigest: string
+}
+
 export interface SystemScheduleIntentM2BV1 {
   type: 'system.schedule'
   flowId: FlowId
@@ -315,8 +325,6 @@ export interface SystemAgentReportRecordIntentM2BV1 {
   flowId: FlowId
   taskRunId: TaskRunId
   attemptId: AttemptId
-  runtimeSessionId: string
-  reportDigest: string
 }
 
 export interface SystemAgentOutcomeRecordIntentM2BV1 {
@@ -327,6 +335,7 @@ export interface SystemAgentOutcomeRecordIntentM2BV1 {
   runtimeSessionId: string
   outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
   receiptDigest: string
+  failure?: AgentFailureSignalV1
 }
 
 export interface SystemAgentReconcileIntentM2BV1 {

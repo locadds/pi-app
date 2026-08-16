@@ -15,6 +15,7 @@ export interface ScriptedAgentRuntimeAdapterOptionsV1 {
   capabilities: readonly RuntimeCapabilityV1[]
   createRuntimeSessionId?: string
   createOutcome?: RuntimeCreateOrResumeOutcomeV1
+  createOutcomesByRequestId?: Record<string, RuntimeCreateOrResumeOutcomeV1>
   eventsBySession?: Record<string, readonly RuntimeEventV1[]>
   outcomesBySession?: Record<string, RuntimeOutcomeV1>
   sendResult?: { accepted: true; requestId: string } | { accepted: false; reasonCode: string }
@@ -25,6 +26,7 @@ export class ScriptedAgentRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
   private readonly capabilities: readonly RuntimeCapabilityV1[]
   private readonly createRuntimeSessionId: string
   private readonly createOutcome?: RuntimeCreateOrResumeOutcomeV1
+  private readonly createOutcomesByRequestId: Record<string, RuntimeCreateOrResumeOutcomeV1>
   private readonly eventsBySession: Record<string, readonly RuntimeEventV1[]>
   private readonly outcomesBySession: Record<string, RuntimeOutcomeV1>
   private readonly sendResult?: { accepted: true; requestId: string } | { accepted: false; reasonCode: string }
@@ -34,6 +36,7 @@ export class ScriptedAgentRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     this.capabilities = options.capabilities
     this.createRuntimeSessionId = options.createRuntimeSessionId ?? 'scripted-runtime-session'
     this.createOutcome = options.createOutcome
+    this.createOutcomesByRequestId = options.createOutcomesByRequestId ?? {}
     this.eventsBySession = options.eventsBySession ?? {}
     this.outcomesBySession = options.outcomesBySession ?? {}
     this.sendResult = options.sendResult
@@ -65,8 +68,8 @@ export class ScriptedAgentRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     )
   }
 
-  async createOrResume(_request: RuntimeCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1> {
-    return this.createOutcome ?? { state: 'READY', runtimeSessionId: this.createRuntimeSessionId }
+  async createOrResume(request: RuntimeCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1> {
+    return this.createOutcomesByRequestId[request.requestId] ?? this.createOutcome ?? { state: 'READY', runtimeSessionId: this.createRuntimeSessionId }
   }
 
   async send(request: RuntimeSendRequestV1): Promise<{ accepted: true; requestId: string } | { accepted: false; reasonCode: string }> {

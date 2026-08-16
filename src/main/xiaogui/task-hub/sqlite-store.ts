@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 
 import type {
+  AgentFailureSignalV1,
   AttemptId,
   AttemptProjectionM2BV1,
   FlowId,
@@ -51,9 +52,18 @@ interface TaskRunRecord {
 interface AttemptRecord {
   attempt_id: AttemptId
   task_run_id: TaskRunId
+  flow_id: FlowId
   status: string
+  attempt_digest: string
   workspace_receipt_id: WorkspaceReceiptId | null
   runtime_session_id: string | null
+}
+
+interface WorkspaceReceiptRecord {
+  workspace_receipt_id: WorkspaceReceiptId
+  attempt_id: AttemptId
+  status: string
+  receipt_digest: string
 }
 
 type ReadableProjectionV1 = Omit<SessionCollaborationProjectionV1, 'activeRevision'> & {
@@ -97,6 +107,9 @@ export interface ScheduleRecordM2BV1 {
   taskRunId: TaskRunId
   attemptId: AttemptId
   attemptDigest: string
+  compositionDigest: string
+  baselineBindingDigest: string
+  workspacePrepareRequestDigest: string
   projection: SessionCollaborationProjectionV1
   receipt: PerformReceiptV1
   now: string
@@ -121,6 +134,7 @@ export interface AgentDispatchRecordM2BV1 {
 
 export interface AgentReportRecordM2BV1 extends AgentDispatchRecordM2BV1 {
   runtimeSessionId: string
+  reportDigest: string
   receipt: PerformReceiptV1
 }
 
@@ -130,6 +144,7 @@ export interface AgentOutcomeRecordM2BV1 {
   runtimeSessionId: string
   outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
   receiptDigest: string
+  failure?: AgentFailureSignalV1
   receipt: PerformReceiptV1
   now: string
 }
@@ -138,6 +153,9 @@ export interface AgentReconcileRecordM2BV1 {
   attemptId: AttemptId
   runtimeSessionId: string
   expectedReceiptDigest?: string
+  outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
+  receiptDigest: string
+  failure?: AgentFailureSignalV1
   receipt: PerformReceiptV1
   now: string
 }
@@ -260,15 +278,29 @@ export class CollaborationHubSqliteStoreV1 {
 
   attempt(attemptId: AttemptId): AttemptRecord | null {
     const row = this.db
-      .prepare('select attempt_id, task_run_id, status, workspace_receipt_id, runtime_session_id from attempts where attempt_id = ?')
+      .prepare('select attempt_id, task_run_id, flow_id, status, attempt_digest, workspace_receipt_id, runtime_session_id from attempts where attempt_id = ?')
       .get(attemptId) as AttemptRecord | undefined
     return row ?? null
+  }
+
+  workspaceReceiptForAttempt(attemptId: AttemptId): WorkspaceReceiptRecord | null {
+    const row = this.db
+      .prepare('select workspace_receipt_id, attempt_id, status, receipt_digest from workspace_receipts where attempt_id = ? order by rowid desc limit 1')
+      .get(attemptId) as WorkspaceReceiptRecord | undefined
+    return row ?? null
+  }
+
+  workspacePrepareOutboxStatus(attemptId: AttemptId): string | null {
+    const row = this.db
+      .prepare('select status from workspace_prepare_outbox where attempt_id = ?')
+      .get(attemptId) as { status: string } | undefined
+    return row?.status ?? null
   }
 
   hasActiveExternalAttempt(): boolean {
     const row = this.db
       .prepare(
-        "select count(*) as count from attempts where status in ('STARTING', 'RUNNING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')",
+        "select count(*) as count from attempts where status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')",
       )
       .get() as { count: number }
     return row.count > 0
@@ -366,7 +398,7 @@ export class CollaborationHubSqliteStoreV1 {
       const projection = { ...record.projection, sessionVersion: version }
       const receipt = { ...record.receipt, sessionVersion: version }
       this.db
-        .prepare("update task_runs set status = 'RUNNING', unavailable_reason = 'M2B1_SCHEDULED' where task_run_id = ?")
+        .prepare("update task_runs set status = 'READY', unavailable_reason = 'M2B1_SCHEDULED' where task_run_id = ?")
         .run(record.taskRunId)
       this.db
         .prepare(
@@ -397,13 +429,24 @@ export class CollaborationHubSqliteStoreV1 {
         from: 'DEPENDENCY_ELIGIBLE',
         to: 'READY',
       }, record.now)
-      this.writeEvent(address, version, 'system.schedule', {
-        phase: 'task_run.transition',
-        flowId: record.flowId,
-        taskRunId: record.taskRunId,
-        from: 'READY',
-        to: 'RUNNING',
-      }, record.now)
+      this.db
+        .prepare(
+          'insert into composition_attempts (composition_attempt_id, attempt_id, attempt_kind, composition_digest, baseline_binding_digest, request_digest, created_at) values (?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          `xhbc_${record.attemptId}`,
+          record.attemptId,
+          'INITIAL',
+          record.compositionDigest,
+          record.baselineBindingDigest,
+          record.workspacePrepareRequestDigest,
+          record.now,
+        )
+      this.db
+        .prepare(
+          'insert into workspace_prepare_outbox (outbox_id, attempt_id, request_digest, status, created_at, completed_at) values (?, ?, ?, ?, ?, ?)',
+        )
+        .run(`xhbwpo_${record.attemptId}`, record.attemptId, record.workspacePrepareRequestDigest, 'READY', record.now, null)
       this.writeEvent(address, version, 'system.schedule', {
         phase: 'attempt.created',
         flowId: record.flowId,
@@ -419,6 +462,14 @@ export class CollaborationHubSqliteStoreV1 {
         from: 'CREATED',
         to: 'WORKSPACE_PREPARING',
       }, record.now)
+      this.writeEvent(address, version, 'system.schedule', {
+        phase: 'workspace_prepare.outbox_persisted',
+        flowId: record.flowId,
+        taskRunId: record.taskRunId,
+        attemptId: record.attemptId,
+        outboxId: `xhbwpo_${record.attemptId}`,
+        requestDigest: record.workspacePrepareRequestDigest,
+      }, record.now)
       this.writeProjection(address, projection)
       this.writeIdempotency(address, idempotency, receipt)
     })
@@ -431,25 +482,29 @@ export class CollaborationHubSqliteStoreV1 {
       const receipt = { ...record.receipt, sessionVersion: version }
       this.db
         .prepare(
-          'insert into workspace_receipts (workspace_receipt_id, attempt_id, status, receipt_digest, failure_json, created_at) values (?, ?, ?, ?, ?, ?)',
+          'insert into workspace_receipts (workspace_receipt_id, attempt_id, status, receipt_digest, conflict_digest, failure_json, created_at) values (?, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           record.workspaceReceipt.workspaceReceiptId,
           record.attemptId,
           record.workspaceReceipt.status,
           record.workspaceReceipt.receiptDigest,
+          record.workspaceReceipt.status === 'CONFLICT' ? record.workspaceReceipt.conflictDigest : null,
           record.workspaceReceipt.status === 'FAILED' ? JSON.stringify(record.workspaceReceipt.failure) : null,
           record.now,
         )
+      this.db.prepare('update workspace_prepare_outbox set status = ?, completed_at = ? where attempt_id = ?').run(
+        record.workspaceReceipt.status === 'PREPARED' ? 'DONE' : 'FAILED',
+        record.now,
+        record.attemptId,
+      )
       this.db.prepare('update attempts set status = ?, workspace_receipt_id = ?, updated_at = ? where attempt_id = ?').run(
         nextAttemptStatus,
         record.workspaceReceipt.workspaceReceiptId,
         record.now,
         record.attemptId,
       )
-      if (record.workspaceReceipt.status !== 'PREPARED') {
-        this.db.prepare("update task_runs set status = 'FAILED' where task_run_id = ?").run(record.taskRunId)
-      }
+      this.db.prepare('update task_runs set status = ? where task_run_id = ?').run(record.workspaceReceipt.status === 'PREPARED' ? 'READY' : 'FAILED', record.taskRunId)
       this.writeEvent(address, version, 'system.workspace.prepare.result.record', {
         phase: 'attempt.transition',
         flowId: record.flowId,
@@ -469,7 +524,7 @@ export class CollaborationHubSqliteStoreV1 {
       const version = this.currentVersion(address) + 1
       this.db
         .prepare(
-          'insert into agent_dispatch_outbox (outbox_id, attempt_id, request_id, status, payload_digest, created_at, claimed_at, completed_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+          'insert or ignore into agent_dispatch_outbox (outbox_id, attempt_id, request_id, status, payload_digest, created_at, claimed_at, completed_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
         )
         .run(`xhbo_${record.requestId}`, record.attemptId, record.requestId, 'READY', record.payloadDigest, record.now, null, null)
       this.db.prepare("update attempts set status = 'STARTING', updated_at = ? where attempt_id = ?").run(
@@ -502,7 +557,7 @@ export class CollaborationHubSqliteStoreV1 {
         .prepare(
           'insert into runtime_session_bindings (runtime_session_id, attempt_id, attempt_worktree_id, binding_digest, created_at) values (?, ?, ?, ?, ?)',
         )
-        .run(record.runtimeSessionId, record.attemptId, `fake-worktree-${record.attemptId}`, `sha256:${record.attemptId}`, record.now)
+        .run(record.runtimeSessionId, record.attemptId, `xhbwt_${record.attemptId}`, record.reportDigest, record.now)
       this.db.prepare("update agent_dispatch_outbox set status = 'DONE', claimed_at = coalesce(claimed_at, ?), completed_at = ? where outbox_id = ?").run(
         record.now,
         record.now,
@@ -538,6 +593,13 @@ export class CollaborationHubSqliteStoreV1 {
         record.attemptId,
       )
       this.db.prepare('update task_runs set status = ? where task_run_id = ?').run(nextTaskStatus, record.taskRunId)
+      if (record.failure) {
+        this.db
+          .prepare(
+            'insert into agent_failures (failure_id, attempt_id, runtime_session_id, failure_json, receipt_digest, created_at) values (?, ?, ?, ?, ?, ?)',
+          )
+          .run(`xhbfail_${record.receipt.requestId}`, record.attemptId, record.runtimeSessionId, JSON.stringify(record.failure), record.receiptDigest, record.now)
+      }
       this.writeEvent(address, version, 'system.agent.outcome.record', {
         phase: 'attempt.transition',
         taskRunId: record.taskRunId,
@@ -545,6 +607,7 @@ export class CollaborationHubSqliteStoreV1 {
         runtimeSessionId: record.runtimeSessionId,
         to: record.outcome,
         receiptDigest: record.receiptDigest,
+        ...(record.failure ? { failure: record.failure } : {}),
       }, record.now)
       this.bumpProjectionVersion(address, version)
       this.writeIdempotency(address, idempotency, receipt)
@@ -555,11 +618,41 @@ export class CollaborationHubSqliteStoreV1 {
     this.transaction(() => {
       const version = this.currentVersion(address) + 1
       const receipt = { ...record.receipt, sessionVersion: version }
+      const taskRun = this.db
+        .prepare('select task_run_id from attempts where attempt_id = ?')
+        .get(record.attemptId) as { task_run_id: TaskRunId } | undefined
+      const nextTaskStatus = record.outcome === 'OUTCOME_UNKNOWN' ? 'OUTCOME_UNKNOWN' : 'FAILED'
+      this.db.prepare('update attempts set status = ?, updated_at = ? where attempt_id = ?').run(record.outcome, record.now, record.attemptId)
+      if (taskRun) this.db.prepare('update task_runs set status = ? where task_run_id = ?').run(nextTaskStatus, taskRun.task_run_id)
+      this.db
+        .prepare(
+          'insert into agent_reconcile_results (reconcile_id, attempt_id, runtime_session_id, outcome, receipt_digest, expected_receipt_digest, failure_json, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          `xhbrecon_${record.receipt.requestId}`,
+          record.attemptId,
+          record.runtimeSessionId,
+          record.outcome,
+          record.receiptDigest,
+          record.expectedReceiptDigest ?? null,
+          record.failure ? JSON.stringify(record.failure) : null,
+          record.now,
+        )
+      if (record.failure) {
+        this.db
+          .prepare(
+            'insert into agent_failures (failure_id, attempt_id, runtime_session_id, failure_json, receipt_digest, created_at) values (?, ?, ?, ?, ?, ?)',
+          )
+          .run(`xhbfail_${record.receipt.requestId}`, record.attemptId, record.runtimeSessionId, JSON.stringify(record.failure), record.receiptDigest, record.now)
+      }
       this.writeEvent(address, version, 'system.agent.reconcile', {
-        phase: 'outcome_unknown.reconcile_requested',
+        phase: 'outcome_unknown.reconciled',
         attemptId: record.attemptId,
         runtimeSessionId: record.runtimeSessionId,
         expectedReceiptDigest: record.expectedReceiptDigest,
+        outcome: record.outcome,
+        receiptDigest: record.receiptDigest,
+        ...(record.failure ? { failure: record.failure } : {}),
       }, record.now)
       this.bumpProjectionVersion(address, version)
       this.writeIdempotency(address, idempotency, receipt)
@@ -576,9 +669,13 @@ export class CollaborationHubSqliteStoreV1 {
       'task_specs',
       'task_runs',
       'attempts',
+      'composition_attempts',
+      'workspace_prepare_outbox',
       'workspace_receipts',
       'agent_dispatch_outbox',
       'runtime_session_bindings',
+      'agent_failures',
+      'agent_reconcile_results',
     ]
     return Object.fromEntries(
       tables.map((table) => {
@@ -676,11 +773,31 @@ export class CollaborationHubSqliteStoreV1 {
         created_at text not null,
         updated_at text not null
       );
+      create table if not exists composition_attempts (
+        composition_attempt_id text primary key,
+        attempt_id text not null references attempts(attempt_id),
+        attempt_kind text not null,
+        composition_digest text not null,
+        baseline_binding_digest text not null,
+        request_digest text not null,
+        created_at text not null,
+        unique(attempt_id, attempt_kind)
+      );
+      create table if not exists workspace_prepare_outbox (
+        outbox_id text primary key,
+        attempt_id text not null references attempts(attempt_id),
+        request_digest text not null,
+        status text not null,
+        created_at text not null,
+        completed_at text,
+        unique(attempt_id)
+      );
       create table if not exists workspace_receipts (
         workspace_receipt_id text primary key,
         attempt_id text not null references attempts(attempt_id),
         status text not null,
         receipt_digest text not null,
+        conflict_digest text,
         failure_json text,
         created_at text not null
       );
@@ -701,8 +818,30 @@ export class CollaborationHubSqliteStoreV1 {
         binding_digest text not null,
         created_at text not null
       );
+      create table if not exists agent_failures (
+        failure_id text primary key,
+        attempt_id text not null references attempts(attempt_id),
+        runtime_session_id text not null,
+        failure_json text not null,
+        receipt_digest text not null,
+        created_at text not null
+      );
+      create table if not exists agent_reconcile_results (
+        reconcile_id text primary key,
+        attempt_id text not null references attempts(attempt_id),
+        runtime_session_id text not null,
+        outcome text not null,
+        receipt_digest text not null,
+        expected_receipt_digest text,
+        failure_json text,
+        created_at text not null
+      );
+      create unique index if not exists attempts_one_active_external
+        on attempts(project_id, session_key)
+        where status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN');
       insert or ignore into schema_migrations (version, applied_at) values (2, datetime('now'));
     `)
+    this.addColumnIfMissing('workspace_receipts', 'conflict_digest', 'text')
   }
 
   private taskRunsForFlow(flowId: FlowId | null): TaskRunRecord[] {
@@ -717,7 +856,7 @@ export class CollaborationHubSqliteStoreV1 {
   private attemptsForFlow(flowId: FlowId | null): AttemptRecord[] {
     if (!flowId) return []
     return this.db
-      .prepare('select attempt_id, task_run_id, status, workspace_receipt_id, runtime_session_id from attempts where flow_id = ? order by rowid asc')
+      .prepare('select attempt_id, task_run_id, flow_id, status, attempt_digest, workspace_receipt_id, runtime_session_id from attempts where flow_id = ? order by rowid asc')
       .all(flowId) as unknown as AttemptRecord[]
   }
 
@@ -725,6 +864,12 @@ export class CollaborationHubSqliteStoreV1 {
     const projection = this.readProjection(address)
     if (!projection) return
     this.writeProjection(address, { ...projection, sessionVersion: version })
+  }
+
+  private addColumnIfMissing(table: string, column: string, definition: string): void {
+    const columns = this.db.prepare(`pragma table_info(${table})`).all() as Array<{ name: string }>
+    if (columns.some((item) => item.name === column)) return
+    this.db.exec(`alter table ${table} add column ${column} ${definition}`)
   }
 
   private writeEvent(address: HubAddressV1, version: number, eventType: string, event: unknown, now: string): void {

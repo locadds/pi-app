@@ -19,13 +19,13 @@ export interface RuntimeCapabilityV1 {
   protocol: RuntimeProtocolV1
   capabilityDigest: RuntimeDigestV1 | string
   approvalStatus: RuntimeApprovalStatusV1
-  health?: AdapterHealthV1
-  canCreateSession?: boolean
-  canResumeSession?: boolean
+  health: AdapterHealthV1
+  canCreateSession: boolean
+  canResumeSession: boolean
   stream: 'NONE' | 'POLL' | 'PUSH'
   interrupt: 'NONE' | 'BEST_EFFORT' | 'ACKED'
   inspect: 'NONE' | 'SNAPSHOT' | 'RECONCILE'
-  interactivePermission?: 'NONE' | 'HOST_MEDIATED' | 'RUNTIME_NATIVE'
+  interactivePermission: 'NONE' | 'HOST_MEDIATED' | 'RUNTIME_NATIVE'
   diagnosticOnly: boolean
   reasonCode?: string
 }
@@ -227,27 +227,38 @@ export function validateRuntimePublicDto(value: unknown): RuntimeValidationResul
   return scanPublicDto(value) ? { ok: false, reasonCode: 'PUBLIC_DTO_LEAK' } : { ok: true }
 }
 
-function scanPublicDto(value: unknown): boolean {
+export function isRuntimePublicSessionId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value) && !isSensitivePublicString(value)
+}
+
+function scanPublicDto(value: unknown, key?: string): boolean {
   if (value == null) return false
-  if (typeof value === 'string') return isSensitivePublicString(value)
+  if (typeof value === 'string') {
+    if (key === 'runtimeSessionId' && !isRuntimePublicSessionId(value)) return true
+    return isSensitivePublicString(value)
+  }
   if (typeof value !== 'object') return false
-  if (Array.isArray(value)) return value.some(scanPublicDto)
+  if (Array.isArray(value)) return value.some((nested) => scanPublicDto(nested, key))
 
   for (const [key, nested] of Object.entries(value)) {
     if (isSensitivePublicKey(key)) return true
-    if (scanPublicDto(nested)) return true
+    if (scanPublicDto(nested, key)) return true
   }
   return false
 }
 
 function isSensitivePublicKey(key: string): boolean {
-  return /(^|_)(path|token|secret|password|env|stdout|stderr|prompt|candidatePath|url)$/i.test(key)
+  return /(^|_)(path|token|secret|password|env|stdout|stderr|prompt|candidatePath|uri|url)$/i.test(key)
 }
 
 function isSensitivePublicString(value: string): boolean {
-  if (/^[A-Za-z]:\\/.test(value)) return true
+  if (/[A-Za-z]:[\\/][^\s"'<>]*/.test(value)) return true
+  if (/\\\\[^\\\s]+\\[^\\\s]+/.test(value)) return true
+  if (/(^|[\s"'`[{(=:：])\/(?!\/)[A-Za-z0-9._-]+(?:\/[^\s"'<>]*)?/.test(value)) return true
+  if (/file:\/\//i.test(value)) return true
   if (/^https?:\/\/(127\.0\.0\.1|localhost|[^/\s]+\/internal)/i.test(value)) return true
   if (/\b[A-Z][A-Z0-9_]*(API_KEY|TOKEN|SECRET|PASSWORD)\b/.test(value)) return true
+  if (/"?(token|api[_-]?key|secret|password)"?\s*[:：]\s*"?.{4,}"?/i.test(value)) return true
   if (/\b(ghp|github_pat|sk|xox[baprs])-?[A-Za-z0-9_]{16,}\b/.test(value)) return true
   return false
 }

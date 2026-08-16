@@ -1,0 +1,328 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, describe, expect, it } from 'vitest'
+
+import type {
+  AttemptId,
+  FlowId,
+  HubAddressV1,
+  InitialPlanDraftInputV1,
+  TaskRunId,
+  WorkspaceReceiptId,
+} from '@shared/xiaogui-collaboration-hub'
+import type {
+  RuntimeAdapterSelectionV1,
+  RuntimeCapabilityV1,
+  RuntimeCreateOrResumeRequestV1,
+  RuntimeScopeBindingV1,
+} from '@shared/xiaogui-agent-runtime'
+import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
+import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
+import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
+import { createCollaborationHubApplicationV1 } from './application'
+import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+
+const ADDRESS = {
+  projectId: `xgp1_${'1'.repeat(64)}`,
+  sessionKey: `xgs1_${'2'.repeat(64)}`,
+} as SessionAddressV1
+
+const approvedSelection: RuntimeAdapterSelectionV1 = {
+  adapterId: 'fake-approved',
+  runtimeKind: 'OTHER',
+  protocol: 'HEADLESS',
+  capabilityDigest: 'sha256:fake-approved',
+  approvalStatus: 'APPROVED_FOR_PRODUCTION',
+  diagnosticOnly: false,
+  stream: 'POLL',
+  interrupt: 'BEST_EFFORT',
+  inspect: 'SNAPSHOT',
+}
+
+const diagnosticCapability: RuntimeCapabilityV1 = {
+  ...approvedSelection,
+  adapterId: 'fake-diagnostic',
+  protocol: 'NON_INTERACTIVE_CLI_DIAGNOSTIC',
+  approvalStatus: 'DISCOVERED',
+  health: 'UNAVAILABLE',
+  canCreateSession: false,
+  canResumeSession: false,
+  diagnosticOnly: true,
+  stream: 'NONE',
+  interrupt: 'NONE',
+  inspect: 'NONE',
+  interactivePermission: 'NONE',
+}
+
+const approvedCapability: RuntimeCapabilityV1 = {
+  ...approvedSelection,
+  health: 'AVAILABLE',
+  canCreateSession: true,
+  canResumeSession: true,
+  interactivePermission: 'HOST_MEDIATED',
+}
+
+const roots: string[] = []
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+})
+
+async function tempDb(name = 'hub.sqlite') {
+  const root = await mkdtemp(join(tmpdir(), 'xiaogui-hub-m2b-runtime-'))
+  roots.push(root)
+  return join(root, name)
+}
+
+function lookup(mode: SessionMode): SessionScopeLookupV1 {
+  return {
+    lookup: async (address: SessionAddressV1) => ({
+      kind: 'FOUND' as const,
+      scope: { ...address, sessionMode: mode },
+    }),
+  }
+}
+
+function draft(): InitialPlanDraftInputV1 {
+  return {
+    objective: '验证 fake runtime 和 M2B 执行骨架',
+    tasks: [{ taskKey: 'scope', title: '执行首个任务' }],
+  }
+}
+
+async function readyAttempt(dbPath: string, capabilities: readonly RuntimeCapabilityV1[] = [approvedCapability]) {
+  let id = 0
+  const app = createCollaborationHubApplicationV1({
+    lookup: lookup('CODING'),
+    storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
+    agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities, createRuntimeSessionId: 'runtime-1' })),
+    now: () => '2026-08-17T00:00:00.000Z',
+    idFactory: (prefix) => `${prefix}_${++id}`,
+  })
+  const start = await app.execute({
+    contractVersion: 'm2a.v1',
+    address: ADDRESS,
+    trustedActor: { kind: 'main-process-user' },
+    requestId: 'req-start',
+    intent: { type: 'flow.start.with_draft', draft: draft() },
+  })
+  if (!start.ok || !start.value.flowId || !start.value.revisionId) throw new Error('start failed')
+  const before = await app.observe(ADDRESS)
+  if (!before.ok || !before.value.activeRevision) throw new Error('missing draft')
+  await app.execute({
+    contractVersion: 'm2a.v1',
+    address: ADDRESS,
+    trustedActor: { kind: 'main-process-user' },
+    requestId: 'req-approve',
+    expectedSessionVersion: before.value.sessionVersion,
+    intent: {
+      type: 'plan.revision.submit',
+      flowId: start.value.flowId,
+      baseRevisionId: start.value.revisionId,
+      draft: before.value.activeRevision.draft,
+    },
+  })
+  const approved = await app.observeM2B(ADDRESS)
+  const scheduled = await app.executeSystem({
+    contractVersion: 'm2b.v1',
+    address: ADDRESS as HubAddressV1,
+    trustedActor: { kind: 'main-process-system' },
+    requestId: 'sys-schedule',
+    expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+    intent: { type: 'system.schedule', flowId: start.value.flowId as FlowId },
+  })
+  if (!scheduled.ok || !scheduled.value.taskRunId || !scheduled.value.attemptId) throw new Error('schedule failed')
+  const afterSchedule = await app.observeM2B(ADDRESS)
+  await app.executeSystem({
+    contractVersion: 'm2b.v1',
+    address: ADDRESS as HubAddressV1,
+    trustedActor: { kind: 'main-process-system' },
+    requestId: 'sys-workspace',
+    expectedSessionVersion: afterSchedule.ok ? afterSchedule.value.sessionVersion : 0,
+    intent: {
+      type: 'system.workspace.prepare.result.record',
+      flowId: start.value.flowId as FlowId,
+      taskRunId: scheduled.value.taskRunId,
+      attemptId: scheduled.value.attemptId,
+      receipt: {
+        status: 'PREPARED',
+        workspaceReceiptId: 'xhbw_ready' as WorkspaceReceiptId,
+        receiptDigest: 'sha256:workspace-ready',
+      },
+    },
+  })
+  return { app, flowId: start.value.flowId as FlowId, taskRunId: scheduled.value.taskRunId, attemptId: scheduled.value.attemptId }
+}
+
+function runtimeRequest(scope: RuntimeScopeBindingV1): RuntimeCreateOrResumeRequestV1 {
+  return {
+    requestId: 'runtime-create',
+    scope,
+    workspace: {
+      attemptWorktreeId: 'attempt-worktree-1',
+      worktreeRootDigest: 'sha256:worktree',
+      baseRevisionDigest: 'sha256:base',
+      targetProjectRootDigest: 'sha256:project',
+      writePolicy: 'ATTEMPT_WORKTREE_ONLY',
+    },
+    selection: approvedSelection,
+    productionPolicy: { allowedSelections: [approvedSelection], rejectDiagnosticOnly: true },
+    promptEnvelopeRef: {
+      refId: 'prompt-ref',
+      digest: 'sha256:prompt',
+      mediaType: 'application/vnd.xiaogui.runtime-prompt+json',
+    },
+  }
+}
+
+describe('M2B fake agent runtime integration', () => {
+  it('dispatches an approved fake runtime report without verification or changeset side effects', async () => {
+    const dbPath = await tempDb()
+    const { app, flowId, taskRunId, attemptId } = await readyAttempt(dbPath)
+    const beforeReport = await app.observeM2B(ADDRESS)
+    await expect(
+      app.executeSystem({
+        contractVersion: 'm2b.v1',
+        address: ADDRESS as HubAddressV1,
+        trustedActor: { kind: 'main-process-system' },
+        requestId: 'sys-agent-report',
+        expectedSessionVersion: beforeReport.ok ? beforeReport.value.sessionVersion : 0,
+        intent: {
+          type: 'system.agent.report.record',
+          flowId,
+          taskRunId,
+          attemptId,
+        },
+      }),
+    ).resolves.toMatchObject({ ok: true })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { attempts: [expect.objectContaining({ status: 'RUNNING', runtimeSessionId: 'runtime-1' })] },
+    })
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ agent_dispatch_outbox: 1, runtime_session_bindings: 1 })
+    store.close()
+    app.close()
+  })
+
+  it('fails diagnostic runtime selection before any M2B dispatch write', async () => {
+    const dbPath = await tempDb()
+    let id = 0
+    const app = createCollaborationHubApplicationV1({
+      lookup: lookup('CODING'),
+      storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
+      agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [diagnosticCapability] })),
+      now: () => '2026-08-17T00:00:00.000Z',
+      idFactory: (prefix) => `${prefix}_${++id}`,
+    })
+    const start = await app.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'req-start',
+      intent: { type: 'flow.start.with_draft', draft: draft() },
+    })
+    if (!start.ok || !start.value.flowId || !start.value.revisionId) throw new Error('start failed')
+    const before = await app.observe(ADDRESS)
+    if (!before.ok || !before.value.activeRevision) throw new Error('missing draft')
+    await app.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'req-approve',
+      expectedSessionVersion: before.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: start.value.flowId,
+        baseRevisionId: start.value.revisionId,
+        draft: before.value.activeRevision.draft,
+      },
+    })
+    const approved = await app.observeM2B(ADDRESS)
+    await expect(
+      app.executeSystem({
+        contractVersion: 'm2b.v1',
+        address: ADDRESS as HubAddressV1,
+        trustedActor: { kind: 'main-process-system' },
+        requestId: 'sys-schedule-diagnostic',
+        expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+        intent: { type: 'system.schedule', flowId: start.value.flowId as FlowId },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'RUNTIME_SELECTION_NOT_APPROVED' } })
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ attempts: 0, workspace_prepare_outbox: 0, agent_dispatch_outbox: 0, runtime_session_bindings: 0 })
+    store.close()
+    app.close()
+  })
+
+  it('converts public DTO leaks and permission proof replay into closed runtime results', async () => {
+    const scope: RuntimeScopeBindingV1 = {
+      projectId: ADDRESS.projectId,
+      sessionKey: ADDRESS.sessionKey,
+      sessionMode: 'CODING',
+      flowId: 'xhbf_flow',
+      taskRunId: 'xhbtr_task',
+      attemptId: 'xhba_attempt',
+      attemptDigest: 'sha256:attempt',
+      workspaceReceiptId: 'xhbw_ready',
+      workspaceReceiptDigest: 'sha256:workspace-ready',
+    }
+    const host = createAgentRuntimeHostV1(
+      new ScriptedAgentRuntimeAdapterV1({
+        capabilities: [approvedCapability],
+        createRuntimeSessionId: 'runtime-1',
+        eventsBySession: {
+          'runtime-1': [
+            { type: 'SESSION_READY', runtimeSessionId: 'runtime-1', sequence: 1 },
+            { type: 'TEXT_DELTA', runtimeSessionId: 'runtime-1', sequence: 2, textDigest: 'file:///secret.txt' },
+          ],
+        },
+      }),
+    )
+    await host.createOrResume(runtimeRequest(scope))
+    const events = []
+    for await (const event of host.stream('runtime-1', 0)) events.push(event)
+    expect(events).toEqual([
+      { type: 'SESSION_READY', runtimeSessionId: 'runtime-1', sequence: 1 },
+      { type: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1', sequence: 2, reasonCode: 'PUBLIC_DTO_LEAK' },
+    ])
+
+    const permissionEvent = {
+      type: 'PERMISSION_REQUESTED' as const,
+      runtimeSessionId: 'runtime-1',
+      sequence: 1,
+      permissionRequestId: 'perm-1',
+      scope,
+      challengeDigest: 'sha256:challenge',
+      decisionRequired: 'ALLOW_ONCE_OR_DENY' as const,
+    }
+    const permissionHost = createAgentRuntimeHostV1(
+      new ScriptedAgentRuntimeAdapterV1({
+        capabilities: [approvedCapability],
+        createRuntimeSessionId: 'runtime-1',
+        eventsBySession: { 'runtime-1': [permissionEvent] },
+      }),
+    )
+    await permissionHost.createOrResume(runtimeRequest(scope))
+    for await (const _ of permissionHost.stream('runtime-1', 0)) {
+      // consume permission request into host state
+    }
+    const decision = {
+      type: 'ALLOW_ONCE' as const,
+      permissionRequestId: 'perm-1',
+      challengeDigest: 'sha256:challenge',
+      decisionRequestId: 'decision-1',
+      scope,
+      runtimeSessionId: 'runtime-1',
+      proofId: 'proof-1',
+      proofDigest: 'sha256:proof-1',
+    }
+    await expect(permissionHost.permission(decision)).resolves.toEqual({ accepted: true })
+    await expect(permissionHost.permission({ ...decision, decisionRequestId: 'decision-2' })).resolves.toEqual({
+      accepted: false,
+      reasonCode: 'PERMISSION_REQUEST_CONSUMED',
+    })
+  })
+})

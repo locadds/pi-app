@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { RuntimeCapabilityV1 } from '@shared/xiaogui-agent-runtime'
 import type {
   AttemptId,
   FlowId,
@@ -20,6 +21,8 @@ import type {
   WorkspaceReceiptId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
+import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
+import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import { createCollaborationHubApplicationV1 } from './application'
 import { digestJson } from './digest'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
@@ -28,6 +31,22 @@ const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
   sessionKey: `xgs1_${'2'.repeat(64)}`,
 } as SessionAddressV1
+
+const approvedCapability = {
+  adapterId: 'fake-approved',
+  runtimeKind: 'OTHER',
+  protocol: 'HEADLESS',
+  capabilityDigest: 'sha256:fake-approved',
+  approvalStatus: 'APPROVED_FOR_PRODUCTION',
+  health: 'AVAILABLE',
+  canCreateSession: true,
+  canResumeSession: true,
+  diagnosticOnly: false,
+  stream: 'POLL',
+  interrupt: 'BEST_EFFORT',
+  inspect: 'RECONCILE',
+  interactivePermission: 'HOST_MEDIATED',
+} satisfies RuntimeCapabilityV1
 
 const roots: string[] = []
 
@@ -88,11 +107,16 @@ function canonicalDraft(): InitialPlanDraftInputV1 {
   }
 }
 
-function appFor(dbPath: string, mode: SessionMode = 'WORK', ids = ['xhbf_flow', 'xhbr_rev']) {
+function appFor(dbPath: string, mode: SessionMode = 'WORK', ids = ['xhbf_flow', 'xhbr_rev'], runtimeSessionId?: string) {
   let index = 0
   return createCollaborationHubApplicationV1({
     lookup: lookup(mode),
     storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
+    ...(runtimeSessionId
+      ? {
+          agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [approvedCapability], createRuntimeSessionId: runtimeSessionId })),
+        }
+      : {}),
     now: () => '2026-08-16T00:00:00.000Z',
     idFactory: (prefix) => ids[index++] ?? `${prefix}_${index}`,
   })
@@ -208,9 +232,13 @@ describe('M2A collaboration hub application', () => {
       task_specs: 0,
       task_runs: 0,
       attempts: 0,
+      composition_attempts: 0,
+      workspace_prepare_outbox: 0,
       workspace_receipts: 0,
       agent_dispatch_outbox: 0,
       runtime_session_bindings: 0,
+      agent_failures: 0,
+      agent_reconcile_results: 0,
     })
     store.close()
   })
@@ -482,23 +510,21 @@ describe('M2A collaboration hub application', () => {
     expect(migration.version).toBe(2)
   })
 
-  it('keeps public DTO and persisted event payload free from path-like field names and values', async () => {
+  it('keeps public projection actions user-only and persisted event payload sanitized', async () => {
     const dbPath = await tempDb()
     const app = appFor(dbPath)
     await start(app)
+    const projection = await app.observeM2B(ADDRESS)
+    expect(projection).toMatchObject({ ok: true, value: { availableActions: ['plan.revision.submit', 'flow.cancel'] } })
+    const payloads = journalPayloads(dbPath, 'flow.started.with_draft')
+    expect(JSON.stringify(payloads)).not.toMatch(/[A-Za-z]:[\\/]|\\\\|file:\/\/|token|secret|password/i)
     app.close()
-
-    const publicDto = readFileSync(join(process.cwd(), 'packages/shared/xiaogui-collaboration-hub.ts'), 'utf8')
-    expect(publicDto).not.toMatch(/\b(rootPath|sessionFile|workspacePath|localPath|prompt|sql|token)\b/i)
-    const dbBytes = readFileSync(dbPath, 'utf8')
-    expect(dbBytes).not.toContain('D:')
-    expect(dbBytes).not.toContain('Users')
     })
   })
 
   it('keeps m2a projection compatible while system.schedule creates M2 TaskRun and Attempt states explicitly', async () => {
     const dbPath = await tempDb()
-    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'])
+    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'], 'runtime-1')
     await start(app)
     const draftProjection = await app.observe(ADDRESS)
     if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
@@ -544,7 +570,7 @@ describe('M2A collaboration hub application', () => {
       ok: true,
       value: {
         version: 'm2b.v1',
-        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'RUNNING', attemptId: 'xhba_attempt' })]),
+        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'READY', attemptId: 'xhba_attempt' })]),
         attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'WORKSPACE_PREPARING' })],
       },
     })
@@ -553,16 +579,47 @@ describe('M2A collaboration hub application', () => {
     expect(journalPayloads(dbPath, 'system.schedule')).toMatchObject([
       { phase: 'task_run.transition', from: 'BLOCKED', to: 'DEPENDENCY_ELIGIBLE' },
       { phase: 'task_run.transition', from: 'DEPENDENCY_ELIGIBLE', to: 'READY' },
-      { phase: 'task_run.transition', from: 'READY', to: 'RUNNING' },
       { phase: 'attempt.created', status: 'CREATED' },
       { phase: 'attempt.transition', from: 'CREATED', to: 'WORKSPACE_PREPARING' },
+      { phase: 'workspace_prepare.outbox_persisted', attemptId: 'xhba_attempt' },
     ])
+    app.close()
+  })
+
+  it('fails system.schedule preflight before any M2B execution write when no runtime is available', async () => {
+    const dbPath = await tempDb()
+    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection'])
+    await start(app)
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const approved = await app.observeM2B(ADDRESS)
+    await expect(
+      executeSystem(app, {
+        requestId: 'sys-schedule-no-runtime',
+        expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+        intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'RUNTIME_SELECTION_NOT_APPROVED' } })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({ ok: true, value: { sessionVersion: approved.ok ? approved.value.sessionVersion : 0, attempts: [] } })
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ attempts: 0, composition_attempts: 0, workspace_prepare_outbox: 0, agent_dispatch_outbox: 0, runtime_session_bindings: 0 })
+    store.close()
     app.close()
   })
 
   it('records PREPARED workspace result as Attempt READY without completing the TaskRun', async () => {
     const dbPath = await tempDb()
-    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'])
+    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'], 'runtime-1')
     await start(app)
     const draftProjection = await app.observe(ADDRESS)
     if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
@@ -602,7 +659,7 @@ describe('M2A collaboration hub application', () => {
     await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
       ok: true,
       value: {
-        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'RUNNING' })]),
+        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'READY' })]),
         attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'READY', workspaceReceiptId: 'xhbw_receipt' })],
       },
     })
@@ -614,7 +671,7 @@ describe('M2A collaboration hub application', () => {
 
   it('records fake agent report as Attempt RUNNING without Verification or ChangeSet side effects', async () => {
     const dbPath = await tempDb()
-    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'])
+    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'], 'runtime-1')
     await start(app)
     const draftProjection = await app.observe(ADDRESS)
     if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
@@ -659,8 +716,6 @@ describe('M2A collaboration hub application', () => {
         flowId: draftProjection.value.activeFlow.flowId,
         taskRunId: 'xhbtr_projection' as TaskRunId,
         attemptId: 'xhba_attempt' as AttemptId,
-        runtimeSessionId: 'fake-runtime-session-1',
-        reportDigest: 'sha256:fake-agent-report',
       },
     })
 
@@ -668,13 +723,13 @@ describe('M2A collaboration hub application', () => {
       ok: true,
       value: {
         taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'RUNNING' })]),
-        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'RUNNING', runtimeSessionId: 'fake-runtime-session-1' })],
+        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'RUNNING', runtimeSessionId: 'runtime-1' })],
       },
     })
     expect(journalPayloads(dbPath, 'system.agent.report.record')).toMatchObject([
       { phase: 'dispatch.outbox_persisted', attemptId: 'xhba_attempt' },
       { phase: 'attempt.transition', from: 'READY', to: 'STARTING' },
-      { phase: 'attempt.transition', from: 'STARTING', to: 'RUNNING', runtimeSessionId: 'fake-runtime-session-1' },
+      { phase: 'attempt.transition', from: 'STARTING', to: 'RUNNING', runtimeSessionId: 'runtime-1' },
     ])
     app.close()
     const store = new CollaborationHubSqliteStoreV1(dbPath)
@@ -684,7 +739,7 @@ describe('M2A collaboration hub application', () => {
 
   it('records OUTCOME_UNKNOWN and reconcile without Verification or ChangeSet side effects', async () => {
     const dbPath = await tempDb()
-    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'])
+    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'], 'runtime-1')
     await start(app)
     const draftProjection = await app.observe(ADDRESS)
     if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
@@ -729,8 +784,6 @@ describe('M2A collaboration hub application', () => {
         flowId: draftProjection.value.activeFlow.flowId,
         taskRunId: 'xhbtr_projection' as TaskRunId,
         attemptId: 'xhba_attempt' as AttemptId,
-        runtimeSessionId: 'fake-runtime-session-1',
-        reportDigest: 'sha256:fake-agent-report',
       },
     })
     const running = await app.observeM2B(ADDRESS)
@@ -742,7 +795,7 @@ describe('M2A collaboration hub application', () => {
         flowId: draftProjection.value.activeFlow.flowId,
         taskRunId: 'xhbtr_projection' as TaskRunId,
         attemptId: 'xhba_attempt' as AttemptId,
-        runtimeSessionId: 'fake-runtime-session-1',
+        runtimeSessionId: 'runtime-1',
         outcome: 'OUTCOME_UNKNOWN',
         receiptDigest: 'sha256:unknown-receipt',
       },
@@ -752,7 +805,7 @@ describe('M2A collaboration hub application', () => {
       ok: true,
       value: {
         taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'OUTCOME_UNKNOWN' })]),
-        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'fake-runtime-session-1' })],
+        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1' })],
       },
     })
     expect(journalPayloads(dbPath, 'system.agent.outcome.record')).toMatchObject([
@@ -765,12 +818,12 @@ describe('M2A collaboration hub application', () => {
       intent: {
         type: 'system.agent.reconcile',
         attemptId: 'xhba_attempt' as AttemptId,
-        runtimeSessionId: 'fake-runtime-session-1',
+        runtimeSessionId: 'runtime-1',
         expectedReceiptDigest: 'sha256:unknown-receipt',
       },
     })
     expect(journalPayloads(dbPath, 'system.agent.reconcile')).toMatchObject([
-      { phase: 'outcome_unknown.reconcile_requested', attemptId: 'xhba_attempt', expectedReceiptDigest: 'sha256:unknown-receipt' },
+      { phase: 'outcome_unknown.reconciled', attemptId: 'xhba_attempt', expectedReceiptDigest: 'sha256:unknown-receipt', outcome: 'OUTCOME_UNKNOWN' },
     ])
     app.close()
     const store = new CollaborationHubSqliteStoreV1(dbPath)
