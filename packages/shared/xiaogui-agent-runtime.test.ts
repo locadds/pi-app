@@ -51,9 +51,13 @@ describe('xiaogui agent runtime shared contract', () => {
 
     for (const value of [
       { path: 'C:\\Users\\90662\\secret.txt' },
+      { path: 'C:/Users/90662/secret.txt' },
       { path: '\\\\server\\share\\secret.txt' },
       { path: '/home/user/.config/token' },
+      { logLine: 'adapter wrote /opt/xiaogui/runtime/session.json' },
       { uri: 'file:///C:/Users/90662/secret.txt' },
+      { runtimeSessionId: 'runtime session with spaces' },
+      { runtimeSessionId: 'C:/runtime/session' },
       { token: 'ghp_1234567890abcdefghijklmnop' },
       { env: 'OPENAI_API_KEY' },
       { url: 'http://127.0.0.1:3210/internal' },

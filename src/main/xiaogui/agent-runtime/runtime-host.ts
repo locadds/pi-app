@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import {
+  isRuntimePublicSessionId,
   isRuntimeSelectionAllowed,
   validateRuntimePublicDto,
   type AgentRuntimeAdapterV1,
@@ -14,6 +15,8 @@ import {
   type RuntimeScopeBindingV1,
   type RuntimeSendRequestV1,
 } from '@shared/xiaogui-agent-runtime'
+
+const UNBOUND_RUNTIME_SESSION_ID = 'runtime-unbound'
 
 interface RuntimeSessionBinding {
   attemptId: string
@@ -83,6 +86,11 @@ export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentR
       }
 
       if ('runtimeSessionId' in outcome) {
+        if (!isRuntimePublicSessionId(outcome.runtimeSessionId)) {
+          const rejected = unknown('', 'PUBLIC_DTO_LEAK', 'unsafe-runtime-session-id')
+          idempotency.set(key, { payloadDigest: payload, outcome: rejected })
+          return rejected
+        }
         const mismatch = bindRuntimeSession(sessionBindings, outcome.runtimeSessionId, request)
         if (mismatch) {
           const rejected = failed('', mismatch, 'runtime-session-scope-mismatch')
@@ -228,6 +236,10 @@ async function* streamFromAdapter(
   runtimeSessionId: string,
   afterSequence: number,
 ): AsyncIterable<RuntimeEventV1> {
+  if (!isRuntimePublicSessionId(runtimeSessionId)) {
+    yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId: UNBOUND_RUNTIME_SESSION_ID, sequence: afterSequence + 1, reasonCode: 'PUBLIC_DTO_LEAK' }
+    return
+  }
   if (!bindings.has(runtimeSessionId)) {
     yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: afterSequence + 1, reasonCode: 'RUNTIME_SESSION_NOT_FOUND' }
     return
@@ -236,17 +248,17 @@ async function* streamFromAdapter(
   let expected = afterSequence + 1
   for await (const event of adapter.stream(runtimeSessionId, afterSequence)) {
     if (event.sequence <= afterSequence) continue
+    const publicDto = validateRuntimePublicDto(event)
+    if (!publicDto.ok) {
+      yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: publicDto.reasonCode }
+      return
+    }
     if (event.runtimeSessionId !== runtimeSessionId) {
       yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: 'RUNTIME_EVENT_SESSION_MISMATCH' }
       return
     }
     if (event.sequence !== expected) {
       yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: 'EVENT_SEQUENCE_GAP' }
-      return
-    }
-    const publicDto = validateRuntimePublicDto(event)
-    if (!publicDto.ok) {
-      yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: publicDto.reasonCode }
       return
     }
     if (event.type === 'PERMISSION_REQUESTED') {
@@ -262,6 +274,7 @@ async function* streamFromAdapter(
 }
 
 function validateOutcome(runtimeSessionId: string, outcome: RuntimeOutcomeV1): RuntimeOutcomeV1 {
+  if (!isRuntimePublicSessionId(runtimeSessionId)) return unknown('', 'PUBLIC_DTO_LEAK', 'unsafe-runtime-session-id')
   const publicDto = validateRuntimePublicDto(outcome)
   if (!publicDto.ok) return unknown(runtimeSessionId, publicDto.reasonCode, 'public-dto-leak')
   if (outcome.runtimeSessionId !== runtimeSessionId) return unknown(runtimeSessionId, 'RUNTIME_OUTCOME_SESSION_MISMATCH', 'runtime-outcome-session-mismatch')
@@ -288,11 +301,15 @@ function proofKey(decision: Extract<RuntimePermissionDecisionV1, { type: 'ALLOW_
 }
 
 function failed(runtimeSessionId: string, reasonCode: string, receipt: string): RuntimeOutcomeV1 {
-  return { state: 'FAILED', runtimeSessionId, receiptDigest: `sha256:${receipt}`, reasonCode }
+  return { state: 'FAILED', runtimeSessionId: safeRuntimeSessionId(runtimeSessionId), receiptDigest: `sha256:${receipt}`, reasonCode }
 }
 
 function unknown(runtimeSessionId: string, reasonCode: string, handle: string): RuntimeOutcomeV1 {
-  return { state: 'OUTCOME_UNKNOWN', runtimeSessionId, inspectHandleDigest: `sha256:${handle}`, reasonCode }
+  return { state: 'OUTCOME_UNKNOWN', runtimeSessionId: safeRuntimeSessionId(runtimeSessionId), inspectHandleDigest: `sha256:${handle}`, reasonCode }
+}
+
+function safeRuntimeSessionId(runtimeSessionId: string): string {
+  return isRuntimePublicSessionId(runtimeSessionId) ? runtimeSessionId : UNBOUND_RUNTIME_SESSION_ID
 }
 
 function publicDtoLeakCapability(): RuntimeCapabilityV1 {

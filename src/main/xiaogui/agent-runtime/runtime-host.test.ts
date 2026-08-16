@@ -72,7 +72,7 @@ describe('AgentRuntimeHostV1', () => {
     await expect(host.discover()).resolves.toEqual([selection])
     await expect(host.createOrResume(request({ selection: { ...selection, capabilityDigest: 'sha256:unapproved' } }))).resolves.toEqual({
       state: 'FAILED',
-      runtimeSessionId: '',
+      runtimeSessionId: 'runtime-unbound',
       receiptDigest: 'sha256:runtime-selection-rejected',
       reasonCode: 'RUNTIME_SELECTION_NOT_APPROVED',
     })
@@ -96,6 +96,19 @@ describe('AgentRuntimeHostV1', () => {
       inspectHandleDigest: 'sha256:public-dto-leak',
       reasonCode: 'PUBLIC_DTO_LEAK',
     })
+
+    const unsafeSessionHost = createAgentRuntimeHostV1(
+      new ScriptedAgentRuntimeAdapterV1({
+        capabilities: [selection],
+        createRuntimeSessionId: 'runtime session with spaces',
+      }),
+    )
+    await expect(unsafeSessionHost.createOrResume(request())).resolves.toEqual({
+      state: 'OUTCOME_UNKNOWN',
+      runtimeSessionId: 'runtime-unbound',
+      inspectHandleDigest: 'sha256:public-dto-leak',
+      reasonCode: 'PUBLIC_DTO_LEAK',
+    })
   })
 
   it('replays identical createOrResume requests and rejects same-key payload drift', async () => {
@@ -113,7 +126,7 @@ describe('AgentRuntimeHostV1', () => {
       ),
     ).resolves.toEqual({
       state: 'FAILED',
-      runtimeSessionId: '',
+      runtimeSessionId: 'runtime-unbound',
       receiptDigest: 'sha256:idempotency-conflict',
       reasonCode: 'IDEMPOTENCY_CONFLICT',
     })
