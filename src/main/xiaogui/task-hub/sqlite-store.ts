@@ -1,6 +1,8 @@
 import { DatabaseSync } from 'node:sqlite'
 
 import type {
+  AttemptId,
+  AttemptProjectionM2BV1,
   FlowId,
   HubAddressV1,
   HubEventEnvelopeV1,
@@ -8,6 +10,11 @@ import type {
   PerformReceiptV1,
   PlanRevisionId,
   SessionCollaborationProjectionV1,
+  SessionCollaborationProjectionM2BV1,
+  TaskRunId,
+  TaskRunProjectionM2BV1,
+  WorkspacePreparedReceiptM2BV1,
+  WorkspaceReceiptId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { CanonicalPlanDraftV1 } from './digest'
 
@@ -29,6 +36,24 @@ interface IdempotencyRecord {
   command_type: string
   payload_hash: string
   receipt_json: string
+}
+
+interface TaskRunRecord {
+  task_run_id: TaskRunId
+  task_spec_id: string
+  flow_id: FlowId
+  task_key: string
+  status: string
+  unavailable_reason: string
+  depends_json: string
+}
+
+interface AttemptRecord {
+  attempt_id: AttemptId
+  task_run_id: TaskRunId
+  status: string
+  workspace_receipt_id: WorkspaceReceiptId | null
+  runtime_session_id: string | null
 }
 
 type ReadableProjectionV1 = Omit<SessionCollaborationProjectionV1, 'activeRevision'> & {
@@ -65,6 +90,38 @@ export interface CancelFlowRecordV1 {
   receipt: PerformReceiptV1
   reason: string
   now: string
+}
+
+export interface ScheduleRecordM2BV1 {
+  flowId: FlowId
+  taskRunId: TaskRunId
+  attemptId: AttemptId
+  attemptDigest: string
+  projection: SessionCollaborationProjectionV1
+  receipt: PerformReceiptV1
+  now: string
+}
+
+export interface WorkspacePreparedRecordM2BV1 {
+  flowId: FlowId
+  taskRunId: TaskRunId
+  attemptId: AttemptId
+  receipt: PerformReceiptV1
+  workspaceReceipt: WorkspacePreparedReceiptM2BV1
+  now: string
+}
+
+export interface AgentDispatchRecordM2BV1 {
+  attemptId: AttemptId
+  taskRunId: TaskRunId
+  requestId: string
+  payloadDigest: string
+  now: string
+}
+
+export interface AgentReportRecordM2BV1 extends AgentDispatchRecordM2BV1 {
+  runtimeSessionId: string
+  receipt: PerformReceiptV1
 }
 
 export class CollaborationHubSqliteStoreV1 {
@@ -109,6 +166,37 @@ export class CollaborationHubSqliteStoreV1 {
     }
   }
 
+  readProjectionM2B(address: HubAddressV1): SessionCollaborationProjectionM2BV1 | null {
+    const base = this.readProjection(address)
+    if (!base) return null
+    const runs = this.taskRunsForFlow(base.activeFlow?.flowId ?? null)
+    const attempts = this.attemptsForFlow(base.activeFlow?.flowId ?? null)
+    const taskRuns: TaskRunProjectionM2BV1[] = base.taskRuns.map((run) => {
+      const row = runs.find((item) => item.task_run_id === run.taskRunId)
+      const attempt = attempts.find((item) => item.task_run_id === run.taskRunId)
+      return {
+        taskRunId: run.taskRunId,
+        taskSpecId: run.taskSpecId,
+        taskKey: run.taskKey,
+        status: toM2BTaskRunStatus(row?.status ?? run.status),
+        ...(attempt ? { attemptId: attempt.attempt_id } : {}),
+      }
+    })
+    return {
+      ...base,
+      version: 'm2b.v1',
+      taskRuns,
+      attempts: attempts.map((attempt) => ({
+        attemptId: attempt.attempt_id,
+        taskRunId: attempt.task_run_id,
+        status: attempt.status as AttemptProjectionM2BV1['status'],
+        ...(attempt.runtime_session_id ? { runtimeSessionId: attempt.runtime_session_id } : {}),
+        ...(attempt.workspace_receipt_id ? { workspaceReceiptId: attempt.workspace_receipt_id } : {}),
+      })),
+      availableActions: base.availableActions,
+    }
+  }
+
   readEvents(address: HubAddressV1, request: HubReadEventsRequestV1 = {}): HubEventEnvelopeV1[] {
     const after = request.afterSessionSequence ?? 0
     const limit = Math.max(1, Math.min(request.limit ?? 100, 500))
@@ -137,6 +225,35 @@ export class CollaborationHubSqliteStoreV1 {
       .prepare('select revision_id, status, digest, draft_json from plan_revisions where revision_id = ?')
       .get(revisionId) as RevisionRecord | undefined
     return row ?? null
+  }
+
+  taskRun(taskRunId: TaskRunId): TaskRunRecord | null {
+    const row = this.db
+      .prepare(
+        'select tr.task_run_id, tr.task_spec_id, tr.flow_id, tr.task_key, tr.status, tr.unavailable_reason, ts.depends_json from task_runs tr join task_specs ts on ts.task_spec_id = tr.task_spec_id where tr.task_run_id = ?',
+      )
+      .get(taskRunId) as TaskRunRecord | undefined
+    return row ?? null
+  }
+
+  taskRuns(flowId: FlowId): TaskRunRecord[] {
+    return this.taskRunsForFlow(flowId)
+  }
+
+  attempt(attemptId: AttemptId): AttemptRecord | null {
+    const row = this.db
+      .prepare('select attempt_id, task_run_id, status, workspace_receipt_id, runtime_session_id from attempts where attempt_id = ?')
+      .get(attemptId) as AttemptRecord | undefined
+    return row ?? null
+  }
+
+  hasActiveExternalAttempt(): boolean {
+    const row = this.db
+      .prepare(
+        "select count(*) as count from attempts where status in ('STARTING', 'RUNNING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')",
+      )
+      .get() as { count: number }
+    return row.count > 0
   }
 
   idempotency(address: HubAddressV1, requestId: string): IdempotencyRecord | null {
@@ -225,8 +342,186 @@ export class CollaborationHubSqliteStoreV1 {
     })
   }
 
+  writeSchedule(address: HubAddressV1, idempotency: IdempotencyInput, record: ScheduleRecordM2BV1): void {
+    this.transaction(() => {
+      const version = this.currentVersion(address) + 1
+      const projection = { ...record.projection, sessionVersion: version }
+      const receipt = { ...record.receipt, sessionVersion: version }
+      this.db
+        .prepare("update task_runs set status = 'RUNNING', unavailable_reason = 'M2B1_SCHEDULED' where task_run_id = ?")
+        .run(record.taskRunId)
+      this.db
+        .prepare(
+          'insert into attempts (attempt_id, project_id, session_key, flow_id, task_run_id, status, attempt_digest, workspace_receipt_id, runtime_session_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)',
+        )
+        .run(
+          record.attemptId,
+          address.projectId,
+          address.sessionKey,
+          record.flowId,
+          record.taskRunId,
+          'WORKSPACE_PREPARING',
+          record.attemptDigest,
+          record.now,
+          record.now,
+        )
+      this.writeEvent(address, version, 'system.schedule', {
+        phase: 'task_run.transition',
+        flowId: record.flowId,
+        taskRunId: record.taskRunId,
+        from: 'BLOCKED',
+        to: 'DEPENDENCY_ELIGIBLE',
+      }, record.now)
+      this.writeEvent(address, version, 'system.schedule', {
+        phase: 'task_run.transition',
+        flowId: record.flowId,
+        taskRunId: record.taskRunId,
+        from: 'DEPENDENCY_ELIGIBLE',
+        to: 'READY',
+      }, record.now)
+      this.writeEvent(address, version, 'system.schedule', {
+        phase: 'task_run.transition',
+        flowId: record.flowId,
+        taskRunId: record.taskRunId,
+        from: 'READY',
+        to: 'RUNNING',
+      }, record.now)
+      this.writeEvent(address, version, 'system.schedule', {
+        phase: 'attempt.created',
+        flowId: record.flowId,
+        taskRunId: record.taskRunId,
+        attemptId: record.attemptId,
+        status: 'CREATED',
+      }, record.now)
+      this.writeEvent(address, version, 'system.schedule', {
+        phase: 'attempt.transition',
+        flowId: record.flowId,
+        taskRunId: record.taskRunId,
+        attemptId: record.attemptId,
+        from: 'CREATED',
+        to: 'WORKSPACE_PREPARING',
+      }, record.now)
+      this.writeProjection(address, projection)
+      this.writeIdempotency(address, idempotency, receipt)
+    })
+  }
+
+  writeWorkspacePrepared(address: HubAddressV1, idempotency: IdempotencyInput, record: WorkspacePreparedRecordM2BV1): void {
+    this.transaction(() => {
+      const version = this.currentVersion(address) + 1
+      const nextAttemptStatus = record.workspaceReceipt.status === 'PREPARED' ? 'READY' : 'FAILED'
+      const receipt = { ...record.receipt, sessionVersion: version }
+      this.db
+        .prepare(
+          'insert into workspace_receipts (workspace_receipt_id, attempt_id, status, receipt_digest, failure_json, created_at) values (?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          record.workspaceReceipt.workspaceReceiptId,
+          record.attemptId,
+          record.workspaceReceipt.status,
+          record.workspaceReceipt.receiptDigest,
+          record.workspaceReceipt.status === 'FAILED' ? JSON.stringify(record.workspaceReceipt.failure) : null,
+          record.now,
+        )
+      this.db.prepare('update attempts set status = ?, workspace_receipt_id = ?, updated_at = ? where attempt_id = ?').run(
+        nextAttemptStatus,
+        record.workspaceReceipt.workspaceReceiptId,
+        record.now,
+        record.attemptId,
+      )
+      if (record.workspaceReceipt.status !== 'PREPARED') {
+        this.db.prepare("update task_runs set status = 'FAILED' where task_run_id = ?").run(record.taskRunId)
+      }
+      this.writeEvent(address, version, 'system.workspace.prepare.result.record', {
+        phase: 'attempt.transition',
+        flowId: record.flowId,
+        taskRunId: record.taskRunId,
+        attemptId: record.attemptId,
+        from: 'WORKSPACE_PREPARING',
+        to: nextAttemptStatus,
+        receipt: record.workspaceReceipt,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      this.writeIdempotency(address, idempotency, receipt)
+    })
+  }
+
+  writeAgentDispatchStart(address: HubAddressV1, record: AgentDispatchRecordM2BV1): void {
+    this.transaction(() => {
+      const version = this.currentVersion(address) + 1
+      this.db
+        .prepare(
+          'insert into agent_dispatch_outbox (outbox_id, attempt_id, request_id, status, payload_digest, created_at, claimed_at, completed_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(`xhbo_${record.requestId}`, record.attemptId, record.requestId, 'READY', record.payloadDigest, record.now, null, null)
+      this.db.prepare("update attempts set status = 'STARTING', updated_at = ? where attempt_id = ?").run(
+        record.now,
+        record.attemptId,
+      )
+      this.db.prepare("update task_runs set status = 'RUNNING' where task_run_id = ?").run(record.taskRunId)
+      this.writeEvent(address, version, 'system.agent.report.record', {
+        phase: 'dispatch.outbox_persisted',
+        taskRunId: record.taskRunId,
+        attemptId: record.attemptId,
+        outboxId: `xhbo_${record.requestId}`,
+      }, record.now)
+      this.writeEvent(address, version, 'system.agent.report.record', {
+        phase: 'attempt.transition',
+        taskRunId: record.taskRunId,
+        attemptId: record.attemptId,
+        from: 'READY',
+        to: 'STARTING',
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+    })
+  }
+
+  writeAgentReport(address: HubAddressV1, idempotency: IdempotencyInput, record: AgentReportRecordM2BV1): void {
+    this.transaction(() => {
+      const version = this.currentVersion(address) + 1
+      const receipt = { ...record.receipt, sessionVersion: version }
+      this.db
+        .prepare(
+          'insert into runtime_session_bindings (runtime_session_id, attempt_id, attempt_worktree_id, binding_digest, created_at) values (?, ?, ?, ?, ?)',
+        )
+        .run(record.runtimeSessionId, record.attemptId, `fake-worktree-${record.attemptId}`, `sha256:${record.attemptId}`, record.now)
+      this.db.prepare("update agent_dispatch_outbox set status = 'DONE', claimed_at = coalesce(claimed_at, ?), completed_at = ? where outbox_id = ?").run(
+        record.now,
+        record.now,
+        `xhbo_${record.requestId}`,
+      )
+      this.db.prepare("update attempts set status = 'RUNNING', runtime_session_id = ?, updated_at = ? where attempt_id = ?").run(
+        record.runtimeSessionId,
+        record.now,
+        record.attemptId,
+      )
+      this.writeEvent(address, version, 'system.agent.report.record', {
+        phase: 'attempt.transition',
+        taskRunId: record.taskRunId,
+        attemptId: record.attemptId,
+        from: 'STARTING',
+        to: 'RUNNING',
+        runtimeSessionId: record.runtimeSessionId,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      this.writeIdempotency(address, idempotency, receipt)
+    })
+  }
+
   tableCounts(): Record<string, number> {
-    const tables = ['journal_events', 'idempotency_keys', 'session_projection', 'flows', 'plan_revisions', 'task_specs', 'task_runs']
+    const tables = [
+      'journal_events',
+      'idempotency_keys',
+      'session_projection',
+      'flows',
+      'plan_revisions',
+      'task_specs',
+      'task_runs',
+      'attempts',
+      'workspace_receipts',
+      'agent_dispatch_outbox',
+      'runtime_session_bindings',
+    ]
     return Object.fromEntries(
       tables.map((table) => {
         const row = this.db.prepare(`select count(*) as count from ${table}`).get() as { count: number }
@@ -303,11 +598,75 @@ export class CollaborationHubSqliteStoreV1 {
         version integer primary key,
         applied_at text not null
       );
-      create unique index if not exists flows_one_active_per_session
-        on flows(project_id, session_key)
-        where status != 'CANCELLED';
       insert or ignore into schema_migrations (version, applied_at) values (1, datetime('now'));
     `)
+    this.db.exec(`
+      drop index if exists flows_one_active_per_session;
+      create unique index if not exists flows_one_active_per_session
+        on flows(project_id, session_key)
+        where status not in ('CANCELLED');
+      create table if not exists attempts (
+        attempt_id text primary key,
+        project_id text not null,
+        session_key text not null,
+        flow_id text not null references flows(flow_id),
+        task_run_id text not null references task_runs(task_run_id),
+        status text not null,
+        attempt_digest text not null,
+        workspace_receipt_id text,
+        runtime_session_id text,
+        created_at text not null,
+        updated_at text not null
+      );
+      create table if not exists workspace_receipts (
+        workspace_receipt_id text primary key,
+        attempt_id text not null references attempts(attempt_id),
+        status text not null,
+        receipt_digest text not null,
+        failure_json text,
+        created_at text not null
+      );
+      create table if not exists agent_dispatch_outbox (
+        outbox_id text primary key,
+        attempt_id text not null references attempts(attempt_id),
+        request_id text not null,
+        status text not null,
+        payload_digest text not null,
+        created_at text not null,
+        claimed_at text,
+        completed_at text
+      );
+      create table if not exists runtime_session_bindings (
+        runtime_session_id text primary key,
+        attempt_id text not null references attempts(attempt_id),
+        attempt_worktree_id text not null,
+        binding_digest text not null,
+        created_at text not null
+      );
+      insert or ignore into schema_migrations (version, applied_at) values (2, datetime('now'));
+    `)
+  }
+
+  private taskRunsForFlow(flowId: FlowId | null): TaskRunRecord[] {
+    if (!flowId) return []
+    return this.db
+      .prepare(
+        'select tr.task_run_id, tr.task_spec_id, tr.flow_id, tr.task_key, tr.status, tr.unavailable_reason, ts.depends_json from task_runs tr join task_specs ts on ts.task_spec_id = tr.task_spec_id where tr.flow_id = ? order by tr.rowid asc',
+      )
+      .all(flowId) as unknown as TaskRunRecord[]
+  }
+
+  private attemptsForFlow(flowId: FlowId | null): AttemptRecord[] {
+    if (!flowId) return []
+    return this.db
+      .prepare('select attempt_id, task_run_id, status, workspace_receipt_id, runtime_session_id from attempts where flow_id = ? order by rowid asc')
+      .all(flowId) as unknown as AttemptRecord[]
+  }
+
+  private bumpProjectionVersion(address: HubAddressV1, version: number): void {
+    const projection = this.readProjection(address)
+    if (!projection) return
+    this.writeProjection(address, { ...projection, sessionVersion: version })
   }
 
   private writeEvent(address: HubAddressV1, version: number, eventType: string, event: unknown, now: string): void {
@@ -358,4 +717,31 @@ export interface IdempotencyInput {
 
 function scopeKey(address: HubAddressV1): string {
   return `${address.projectId}:${address.sessionKey}`
+}
+
+function toM2BTaskRunStatus(status: string): TaskRunProjectionM2BV1['status'] {
+  if (status === 'PENDING_DISABLED') return 'BLOCKED'
+  if (
+    [
+      'BLOCKED',
+      'DEPENDENCY_ELIGIBLE',
+      'READY',
+      'RUNNING',
+      'VERIFYING',
+      'FAILED',
+      'VERIFIED',
+      'DELIVERY_PENDING',
+      'APPLYING',
+      'CANCEL_REQUESTED',
+      'DONE',
+      'INTERRUPT_REQUESTED',
+      'OUTCOME_UNKNOWN',
+      'CANCELLED',
+      'INVALIDATED',
+      'SUPERSEDED',
+    ].includes(status)
+  ) {
+    return status as TaskRunProjectionM2BV1['status']
+  }
+  return 'BLOCKED'
 }

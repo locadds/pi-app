@@ -132,6 +132,8 @@ export const HUB_ERROR_TEXT: Record<HubSafeErrorV1['code'], string> = {
   IDEMPOTENCY_CONFLICT: '请求标识冲突，请重试',
   INTENT_DISABLED: '该能力暂未开放',
   IPC_VERSION_UNSUPPORTED: '契约版本不受支持',
+  ILLEGAL_TRANSITION: '当前状态不允许执行该操作',
+  RUNTIME_SELECTION_NOT_APPROVED: '运行时尚未批准',
   INTERNAL: '内部错误',
 }
 

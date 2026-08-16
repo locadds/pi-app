@@ -7,13 +7,17 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  AttemptId,
   FlowId,
   HubCommandRequestV1,
   HubAddressV1,
+  HubSystemCommandRequestM2BV1,
   InitialPlanDraftInputV1,
   M2ADisabledIntentTypeV1,
   PlanRevisionId,
+  TaskRunId,
   UserIntentRequestV1,
+  WorkspaceReceiptId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { createCollaborationHubApplicationV1 } from './application'
@@ -35,6 +39,18 @@ async function tempDb(name = 'hub.sqlite') {
   const root = await mkdtemp(join(tmpdir(), 'xiaogui-hub-m2a-'))
   roots.push(root)
   return join(root, name)
+}
+
+function journalPayloads(dbPath: string, eventType: string): unknown[] {
+  const db = new DatabaseSync(dbPath)
+  try {
+    return db
+      .prepare('select event_json from journal_events where event_type = ? order by session_sequence asc')
+      .all(eventType)
+      .map((row) => JSON.parse((row as { event_json: string }).event_json) as unknown)
+  } finally {
+    db.close()
+  }
 }
 
 function lookup(mode: SessionMode): SessionScopeLookupV1 {
@@ -95,6 +111,15 @@ function execute(app: ReturnType<typeof appFor>, request: Omit<HubCommandRequest
     contractVersion: 'm2a.v1',
     address: ADDRESS,
     trustedActor: { kind: 'main-process-user' },
+  })
+}
+
+function executeSystem(app: ReturnType<typeof appFor>, request: Omit<HubSystemCommandRequestM2BV1, 'contractVersion' | 'address' | 'trustedActor'>) {
+  return app.executeSystem({
+    ...request,
+    contractVersion: 'm2b.v1',
+    address: ADDRESS,
+    trustedActor: { kind: 'main-process-system' },
   })
 }
 
@@ -174,7 +199,19 @@ describe('M2A collaboration hub application', () => {
     app.close()
 
     const store = new CollaborationHubSqliteStoreV1(dbPath)
-    expect(Object.values(store.tableCounts())).toEqual([0, 0, 0, 0, 0, 0, 0])
+    expect(store.tableCounts()).toEqual({
+      journal_events: 0,
+      idempotency_keys: 0,
+      session_projection: 0,
+      flows: 0,
+      plan_revisions: 0,
+      task_specs: 0,
+      task_runs: 0,
+      attempts: 0,
+      workspace_receipts: 0,
+      agent_dispatch_outbox: 0,
+      runtime_session_bindings: 0,
+    })
     store.close()
   })
 
@@ -442,7 +479,7 @@ describe('M2A collaboration hub application', () => {
     const migration = unchangedDb.prepare('select max(version) as version from schema_migrations').get() as { version: number }
     unchangedDb.close()
     expect(JSON.parse(stored.projection_json).activeRevision).not.toHaveProperty('draft')
-    expect(migration.version).toBe(1)
+    expect(migration.version).toBe(2)
   })
 
   it('keeps public DTO and persisted event payload free from path-like field names and values', async () => {
@@ -456,5 +493,202 @@ describe('M2A collaboration hub application', () => {
     const dbBytes = readFileSync(dbPath, 'utf8')
     expect(dbBytes).not.toContain('D:')
     expect(dbBytes).not.toContain('Users')
+    })
   })
-})
+
+  it('keeps m2a projection compatible while system.schedule creates M2 TaskRun and Attempt states explicitly', async () => {
+    const dbPath = await tempDb()
+    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'])
+    await start(app)
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+
+    const before = await app.observeM2B(ADDRESS)
+    expect(before).toMatchObject({
+      ok: true,
+      value: {
+        version: 'm2b.v1',
+        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'BLOCKED' })]),
+        attempts: [],
+      },
+    })
+
+    const scheduled = await executeSystem(app, {
+      requestId: 'sys-schedule-1',
+      expectedSessionVersion: before.ok ? before.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+    })
+    expect(scheduled).toMatchObject({
+      ok: true,
+      value: { intentType: 'system.schedule', taskRunId: 'xhbtr_projection', attemptId: 'xhba_attempt' },
+    })
+
+    await expect(app.observe(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        version: 'm2a.v1',
+        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'PENDING_DISABLED' })]),
+      },
+    })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        version: 'm2b.v1',
+        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'RUNNING', attemptId: 'xhba_attempt' })]),
+        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'WORKSPACE_PREPARING' })],
+      },
+    })
+    const events = await app.readEvents(ADDRESS, { afterSessionSequence: 0, limit: 10 })
+    expect(events).toMatchObject({ ok: true, value: expect.arrayContaining([expect.objectContaining({ eventType: 'system.schedule' })]) })
+    expect(journalPayloads(dbPath, 'system.schedule')).toMatchObject([
+      { phase: 'task_run.transition', from: 'BLOCKED', to: 'DEPENDENCY_ELIGIBLE' },
+      { phase: 'task_run.transition', from: 'DEPENDENCY_ELIGIBLE', to: 'READY' },
+      { phase: 'task_run.transition', from: 'READY', to: 'RUNNING' },
+      { phase: 'attempt.created', status: 'CREATED' },
+      { phase: 'attempt.transition', from: 'CREATED', to: 'WORKSPACE_PREPARING' },
+    ])
+    app.close()
+  })
+
+  it('records PREPARED workspace result as Attempt READY without completing the TaskRun', async () => {
+    const dbPath = await tempDb()
+    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'])
+    await start(app)
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const before = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-schedule-1',
+      expectedSessionVersion: before.ok ? before.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+    })
+    const scheduled = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-workspace-1',
+      expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,
+      intent: {
+        type: 'system.workspace.prepare.result.record',
+        flowId: draftProjection.value.activeFlow.flowId,
+        taskRunId: 'xhbtr_projection' as TaskRunId,
+        attemptId: 'xhba_attempt' as AttemptId,
+        receipt: {
+          status: 'PREPARED',
+          workspaceReceiptId: 'xhbw_receipt' as WorkspaceReceiptId,
+          receiptDigest: 'sha256:workspace',
+        },
+      },
+    })
+
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'RUNNING' })]),
+        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'READY', workspaceReceiptId: 'xhbw_receipt' })],
+      },
+    })
+    expect(journalPayloads(dbPath, 'system.workspace.prepare.result.record')).toMatchObject([
+      { phase: 'attempt.transition', from: 'WORKSPACE_PREPARING', to: 'READY' },
+    ])
+    app.close()
+  })
+
+  it('records fake agent report as Attempt RUNNING without Verification or ChangeSet side effects', async () => {
+    const dbPath = await tempDb()
+    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'])
+    await start(app)
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const before = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-schedule-1',
+      expectedSessionVersion: before.ok ? before.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+    })
+    const scheduled = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-workspace-1',
+      expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,
+      intent: {
+        type: 'system.workspace.prepare.result.record',
+        flowId: draftProjection.value.activeFlow.flowId,
+        taskRunId: 'xhbtr_projection' as TaskRunId,
+        attemptId: 'xhba_attempt' as AttemptId,
+        receipt: {
+          status: 'PREPARED',
+          workspaceReceiptId: 'xhbw_receipt' as WorkspaceReceiptId,
+          receiptDigest: 'sha256:workspace',
+        },
+      },
+    })
+    const ready = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-agent-report-1',
+      expectedSessionVersion: ready.ok ? ready.value.sessionVersion : 0,
+      intent: {
+        type: 'system.agent.report.record',
+        flowId: draftProjection.value.activeFlow.flowId,
+        taskRunId: 'xhbtr_projection' as TaskRunId,
+        attemptId: 'xhba_attempt' as AttemptId,
+        runtimeSessionId: 'fake-runtime-session-1',
+        reportDigest: 'sha256:fake-agent-report',
+      },
+    })
+
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'RUNNING' })]),
+        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'RUNNING', runtimeSessionId: 'fake-runtime-session-1' })],
+      },
+    })
+    expect(journalPayloads(dbPath, 'system.agent.report.record')).toMatchObject([
+      { phase: 'dispatch.outbox_persisted', attemptId: 'xhba_attempt' },
+      { phase: 'attempt.transition', from: 'READY', to: 'STARTING' },
+      { phase: 'attempt.transition', from: 'STARTING', to: 'RUNNING', runtimeSessionId: 'fake-runtime-session-1' },
+    ])
+    app.close()
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ agent_dispatch_outbox: 1, runtime_session_bindings: 1, workspace_receipts: 1 })
+    store.close()
+  })
+
+  it('rejects DESIGN system.schedule with zero SQLite writes', async () => {
+    const dbPath = await tempDb()
+    const app = appFor(dbPath, 'DESIGN')
+
+    await expect(
+      executeSystem(app, { requestId: 'sys-design', intent: { type: 'system.schedule', flowId: 'xhbf_flow' as FlowId } }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'DESIGN_RESERVED' } })
+    expect(existsSync(dbPath)).toBe(false)
+    app.close()
+  })

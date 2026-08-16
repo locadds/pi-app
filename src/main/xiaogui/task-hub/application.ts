@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type {
+  AttemptId,
   CollaborationHubActionV1,
   FlowId,
   HubAddressV1,
@@ -9,9 +10,11 @@ import type {
   HubOutcomeV1,
   HubReadEventsRequestV1,
   HubReadRequestV1,
+  HubSystemCommandRequestM2BV1,
   M2AUserIntentV1,
   PerformReceiptV1,
   PlanRevisionId,
+  SessionCollaborationProjectionM2BV1,
   SessionCollaborationProjectionV1,
   TaskRunProjectionV1,
   TaskSpecId,
@@ -32,9 +35,11 @@ export interface CollaborationHubApplicationOptionsV1 {
 
 export interface CollaborationHubApplicationV1 {
   execute(request: HubCommandRequestV1): Promise<HubOutcomeV1<PerformReceiptV1>>
+  executeSystem(request: HubSystemCommandRequestM2BV1): Promise<HubOutcomeV1<PerformReceiptV1>>
   read(address: HubAddressV1, request: HubReadRequestV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>>
   readEvents(address: HubAddressV1, request?: HubReadEventsRequestV1): Promise<HubOutcomeV1<HubEventEnvelopeV1[]>>
   observe(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>>
+  observeM2B(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionM2BV1>>
   perform(address: HubAddressV1, request: UserIntentRequestV1): Promise<HubOutcomeV1<PerformReceiptV1>>
   close(): void
 }
@@ -48,6 +53,35 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
 
   async observe(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>> {
     return this.read(address, { type: 'session.current' })
+  }
+
+  async observeM2B(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionM2BV1>> {
+    try {
+      const scope = await this.resolve(address)
+      if (!scope.ok) return scope
+      if (scope.value.mode === 'DESIGN') {
+        return {
+          ok: true,
+          value: {
+            ...reservedProjection(address, scope.value.mode),
+            version: 'm2b.v1',
+            taskRuns: [],
+            attempts: [],
+            availableActions: [],
+          },
+        }
+      }
+      const projection = this.getStore().readProjectionM2B(address) ?? {
+        ...emptyProjection(address, scope.value.mode),
+        version: 'm2b.v1' as const,
+        taskRuns: [],
+        attempts: [],
+        availableActions: ['flow.start.with_draft'],
+      }
+      return { ok: true, value: projection }
+    } catch {
+      return hubError('INTERNAL')
+    }
   }
 
   async read(address: HubAddressV1, request: HubReadRequestV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>> {
@@ -105,6 +139,27 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       default:
         return hubError('INTENT_DISABLED')
     }
+    } catch {
+      return hubError('INTERNAL')
+    }
+  }
+
+  async executeSystem(request: HubSystemCommandRequestM2BV1): Promise<HubOutcomeV1<PerformReceiptV1>> {
+    try {
+      if (request.contractVersion !== 'm2b.v1' || request.trustedActor.kind !== 'main-process-system') return hubError('IPC_VERSION_UNSUPPORTED')
+      const scope = await this.resolve(request.address)
+      if (!scope.ok) return scope
+      if (scope.value.mode === 'DESIGN') return hubError('DESIGN_RESERVED')
+      switch (request.intent.type) {
+        case 'system.schedule':
+          return this.schedule(request.address, scope.value.mode, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.schedule' }> })
+        case 'system.workspace.prepare.result.record':
+          return this.recordWorkspaceResult(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.workspace.prepare.result.record' }> })
+        case 'system.agent.report.record':
+          return this.recordAgentReport(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> })
+        default:
+          return hubError('INTENT_DISABLED')
+      }
     } catch {
       return hubError('INTERNAL')
     }
@@ -240,10 +295,117 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
   }
 
+  private schedule(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: { type: 'system.schedule'; flowId: FlowId } }): HubOutcomeV1<PerformReceiptV1> {
+    const store = this.getStore()
+    const replay = this.checkIdempotency(store, address, request)
+    if (replay) return replay
+    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
+    const projection = store.readProjection(address) ?? emptyProjection(address, mode)
+    if (!projection.activeFlow || projection.activeFlow.flowId !== request.intent.flowId || projection.activeFlow.status !== 'PLAN_ACTIVE') {
+      return hubError('FLOW_NOT_FOUND')
+    }
+    if (store.hasActiveExternalAttempt()) return hubError('ILLEGAL_TRANSITION')
+    const task = store.taskRuns(request.intent.flowId).find((candidate) => {
+      if (candidate.status !== 'PENDING_DISABLED') return false
+      const dependsOn = JSON.parse(candidate.depends_json) as string[]
+      return dependsOn.length === 0
+    })
+    if (!task) return hubError('ILLEGAL_TRANSITION')
+    const attemptId = this.id('xhba') as AttemptId
+    const receipt = {
+      requestId: request.requestId,
+      intentType: request.intent.type,
+      sessionVersion: 0,
+      flowId: request.intent.flowId,
+      taskRunId: task.task_run_id,
+      attemptId,
+    }
+    store.writeSchedule(address, this.idempotency(request), {
+      flowId: request.intent.flowId,
+      taskRunId: task.task_run_id,
+      attemptId,
+      attemptDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId }),
+      projection,
+      receipt,
+      now: this.now(),
+    })
+    return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
+  }
+
+  private recordWorkspaceResult(
+    address: HubAddressV1,
+    request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.workspace.prepare.result.record' }> },
+  ): HubOutcomeV1<PerformReceiptV1> {
+    const store = this.getStore()
+    const replay = this.checkIdempotency(store, address, request)
+    if (replay) return replay
+    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
+    const attempt = store.attempt(request.intent.attemptId)
+    if (!attempt || attempt.status !== 'WORKSPACE_PREPARING' || attempt.task_run_id !== request.intent.taskRunId) return hubError('ILLEGAL_TRANSITION')
+    const receipt = {
+      requestId: request.requestId,
+      intentType: request.intent.type,
+      sessionVersion: 0,
+      flowId: request.intent.flowId,
+      taskRunId: request.intent.taskRunId,
+      attemptId: request.intent.attemptId,
+    }
+    store.writeWorkspacePrepared(address, this.idempotency(request), {
+      flowId: request.intent.flowId,
+      taskRunId: request.intent.taskRunId,
+      attemptId: request.intent.attemptId,
+      workspaceReceipt: request.intent.receipt,
+      receipt,
+      now: this.now(),
+    })
+    return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
+  }
+
+  private recordAgentReport(
+    address: HubAddressV1,
+    request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> },
+  ): HubOutcomeV1<PerformReceiptV1> {
+    const store = this.getStore()
+    const replay = this.checkIdempotency(store, address, request)
+    if (replay) return replay
+    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
+    const attempt = store.attempt(request.intent.attemptId)
+    if (!attempt || attempt.task_run_id !== request.intent.taskRunId) return hubError('ILLEGAL_TRANSITION')
+    const receipt = {
+      requestId: request.requestId,
+      intentType: request.intent.type,
+      sessionVersion: 0,
+      flowId: request.intent.flowId,
+      taskRunId: request.intent.taskRunId,
+      attemptId: request.intent.attemptId,
+    }
+    if (attempt.status === 'READY') {
+      store.writeAgentDispatchStart(address, {
+        attemptId: request.intent.attemptId,
+        taskRunId: request.intent.taskRunId,
+        requestId: request.requestId,
+        payloadDigest: request.intent.reportDigest,
+        now: this.now(),
+      })
+    }
+    const startingAttempt = store.attempt(request.intent.attemptId)
+    if (!startingAttempt || startingAttempt.status !== 'STARTING') return hubError('ILLEGAL_TRANSITION')
+    store.writeAgentReport(address, this.idempotency(request), {
+      attemptId: request.intent.attemptId,
+      taskRunId: request.intent.taskRunId,
+      requestId: request.requestId,
+      payloadDigest: request.intent.reportDigest,
+      runtimeSessionId: request.intent.runtimeSessionId,
+      receipt,
+      now: this.now(),
+    })
+    return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
+  }
+
   private checkIdempotency(
     store: CollaborationHubSqliteStoreV1,
     address: HubAddressV1,
-    request: UserIntentRequestV1,
+    request: { requestId: string; expectedSessionVersion?: number; intent: { type: string } },
   ): HubOutcomeV1<PerformReceiptV1> | null {
     const existing = store.idempotency(address, request.requestId)
     if (!existing) return null
@@ -254,7 +416,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     return { ok: true, value: JSON.parse(existing.receipt_json) as PerformReceiptV1 }
   }
 
-  private idempotency(request: UserIntentRequestV1) {
+  private idempotency(request: { requestId: string; expectedSessionVersion?: number; intent: { type: string } }) {
     return {
       requestId: request.requestId,
       commandType: request.intent.type,
@@ -265,7 +427,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
   private hasStaleExpectedVersion(
     store: CollaborationHubSqliteStoreV1,
     address: HubAddressV1,
-    request: UserIntentRequestV1,
+    request: { expectedSessionVersion?: number },
   ): boolean {
     return typeof request.expectedSessionVersion === 'number' && request.expectedSessionVersion !== store.currentVersion(address)
   }

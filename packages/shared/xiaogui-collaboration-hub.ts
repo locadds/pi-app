@@ -1,7 +1,7 @@
 import type { SessionAddressV1, SessionMode } from './xiaogui-session-scope'
 
 export type HubAddressV1 = SessionAddressV1
-export type CollaborationHubContractVersionV1 = 'm2a.v1'
+export type CollaborationHubContractVersionV1 = 'm2a.v1' | 'm2b.v1'
 
 export type FlowId = string & { readonly __brand: 'FlowId' }
 export type PlanRevisionId = string & { readonly __brand: 'PlanRevisionId' }
@@ -16,6 +16,23 @@ export type CollaborationHubActionV1 =
 export type CollaborationFlowStatusV1 = 'AWAITING_PLAN_APPROVAL' | 'PLAN_ACTIVE' | 'CANCELLED'
 export type PlanRevisionStatusV1 = 'DRAFT' | 'ACTIVE'
 export type TaskRunStatusV1 = 'PENDING_DISABLED'
+export type TaskRunStatusM2BV1 =
+  | 'BLOCKED'
+  | 'DEPENDENCY_ELIGIBLE'
+  | 'READY'
+  | 'RUNNING'
+  | 'VERIFYING'
+  | 'FAILED'
+  | 'VERIFIED'
+  | 'DELIVERY_PENDING'
+  | 'APPLYING'
+  | 'CANCEL_REQUESTED'
+  | 'DONE'
+  | 'INTERRUPT_REQUESTED'
+  | 'OUTCOME_UNKNOWN'
+  | 'CANCELLED'
+  | 'INVALIDATED'
+  | 'SUPERSEDED'
 
 export interface InitialPlanTaskInputV1 {
   taskKey: string
@@ -132,6 +149,45 @@ export interface TaskRunProjectionV1 {
   unavailableReason: 'AGENT_DISABLED_M2A'
 }
 
+export interface TaskRunProjectionM2BV1 extends Omit<TaskRunProjectionV1, 'status' | 'unavailableReason'> {
+  status: TaskRunStatusM2BV1
+  unavailableReason?: 'AGENT_DISABLED_M2A'
+  attemptId?: AttemptId
+}
+
+export type AttemptId = string & { readonly __brand: 'AttemptId' }
+export type WorkspaceReceiptId = string & { readonly __brand: 'WorkspaceReceiptId' }
+
+export type AttemptStatusM2BV1 =
+  | 'CREATED'
+  | 'WORKSPACE_PREPARING'
+  | 'READY'
+  | 'STARTING'
+  | 'RUNNING'
+  | 'VERIFYING'
+  | 'INTERRUPT_REQUESTED'
+  | 'OUTCOME_UNKNOWN'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'INTERRUPTED'
+  | 'CANCELLED'
+
+export interface AttemptProjectionM2BV1 {
+  attemptId: AttemptId
+  taskRunId: TaskRunId
+  status: AttemptStatusM2BV1
+  runtimeSessionId?: string
+  workspaceReceiptId?: WorkspaceReceiptId
+}
+
+export type CollaborationHubActionM2BV1 =
+  | CollaborationHubActionV1
+  | 'system.schedule'
+  | 'system.workspace.prepare.result.record'
+  | 'system.agent.report.record'
+  | 'system.agent.outcome.record'
+  | 'system.agent.reconcile'
+
 export interface SessionCollaborationProjectionV1 {
   kind: 'SESSION_COLLABORATION_PROJECTION'
   version: 'm2a.v1'
@@ -148,12 +204,22 @@ export interface SessionCollaborationProjectionV1 {
   availableActions: CollaborationHubActionV1[]
 }
 
+export interface SessionCollaborationProjectionM2BV1
+  extends Omit<SessionCollaborationProjectionV1, 'version' | 'taskRuns' | 'availableActions'> {
+  version: 'm2b.v1'
+  taskRuns: TaskRunProjectionM2BV1[]
+  attempts: AttemptProjectionM2BV1[]
+  availableActions: CollaborationHubActionM2BV1[]
+}
+
 export interface PerformReceiptV1 {
   requestId: string
-  intentType: M2AUserIntentV1['type']
+  intentType: M2AUserIntentV1['type'] | M2BSystemIntentV1['type']
   sessionVersion: number
   flowId?: FlowId
   revisionId?: PlanRevisionId
+  taskRunId?: TaskRunId
+  attemptId?: AttemptId
 }
 
 export type HubErrorCodeV1 =
@@ -168,6 +234,8 @@ export type HubErrorCodeV1 =
   | 'IDEMPOTENCY_CONFLICT'
   | 'INTENT_DISABLED'
   | 'IPC_VERSION_UNSUPPORTED'
+  | 'ILLEGAL_TRANSITION'
+  | 'RUNTIME_SELECTION_NOT_APPROVED'
   | 'INTERNAL'
 
 export interface HubSafeErrorV1 {
@@ -217,4 +285,69 @@ export interface HubReadEventsIpcRequestV1 {
   contractVersion: CollaborationHubContractVersionV1
   address: HubAddressV1
   request?: HubReadEventsRequestV1
+}
+
+export type WorkspacePreparationFailureSourceV1 =
+  | { kind: 'WORKTREE_CREATE_FAILED'; failureDigest: string }
+  | { kind: 'BASE_REVISION_UNAVAILABLE'; failureDigest: string }
+  | { kind: 'DEPENDENCY_CHANGESET_UNAVAILABLE'; failureDigest: string }
+
+export type WorkspacePreparedReceiptM2BV1 =
+  | { status: 'PREPARED'; workspaceReceiptId: WorkspaceReceiptId; receiptDigest: string }
+  | { status: 'CONFLICT'; workspaceReceiptId: WorkspaceReceiptId; receiptDigest: string; conflictDigest: string }
+  | { status: 'FAILED'; workspaceReceiptId: WorkspaceReceiptId; receiptDigest: string; failure: WorkspacePreparationFailureSourceV1 }
+
+export interface SystemScheduleIntentM2BV1 {
+  type: 'system.schedule'
+  flowId: FlowId
+}
+
+export interface SystemWorkspacePrepareResultRecordIntentM2BV1 {
+  type: 'system.workspace.prepare.result.record'
+  flowId: FlowId
+  taskRunId: TaskRunId
+  attemptId: AttemptId
+  receipt: WorkspacePreparedReceiptM2BV1
+}
+
+export interface SystemAgentReportRecordIntentM2BV1 {
+  type: 'system.agent.report.record'
+  flowId: FlowId
+  taskRunId: TaskRunId
+  attemptId: AttemptId
+  runtimeSessionId: string
+  reportDigest: string
+}
+
+export interface SystemAgentOutcomeRecordIntentM2BV1 {
+  type: 'system.agent.outcome.record'
+  flowId: FlowId
+  taskRunId: TaskRunId
+  attemptId: AttemptId
+  runtimeSessionId: string
+  outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
+  receiptDigest: string
+}
+
+export interface SystemAgentReconcileIntentM2BV1 {
+  type: 'system.agent.reconcile'
+  attemptId: AttemptId
+  runtimeSessionId: string
+  expectedReceiptDigest?: string
+}
+
+export type M2BSystemIntentV1 =
+  | SystemScheduleIntentM2BV1
+  | SystemWorkspacePrepareResultRecordIntentM2BV1
+  | SystemAgentReportRecordIntentM2BV1
+  | SystemAgentOutcomeRecordIntentM2BV1
+  | SystemAgentReconcileIntentM2BV1
+
+export interface HubSystemCommandRequestM2BV1 {
+  contractVersion: 'm2b.v1'
+  address: HubAddressV1
+  requestId: string
+  expectedSessionVersion?: number
+  intent: M2BSystemIntentV1
+  trustedActor: { kind: 'main-process-system' }
 }
