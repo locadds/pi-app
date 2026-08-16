@@ -12,6 +12,16 @@ import type {
   SessionScopeLookupResultV1,
 } from './xiaogui-session-scope'
 import type {
+  HubEventEnvelopeV1,
+  HubObserveIpcRequestV1,
+  HubOutcomeV1,
+  HubPerformIpcRequestV1,
+  HubReadEventsIpcRequestV1,
+  HubReadIpcRequestV1,
+  PerformReceiptV1,
+  SessionCollaborationProjectionV1,
+} from './xiaogui-collaboration-hub'
+import type {
   WorkDocxConfirmRequestV1,
   WorkDocxDiscoverRequestV1,
   WorkDocxDiscoverResultV1,
@@ -324,6 +334,22 @@ export interface IpcMethodMap {
   'session.forkCandidates': { request: SessionForkCandidatesRequest; response: SessionForkCandidatesResponse }
   'session.clone': { request: SessionCloneRequest; response: SessionCloneResponse }
   'xiaogui.scope.lookup': { request: SessionScopeLookupRequest; response: SessionScopeLookupResponse }
+  'xiaogui.hub.observe': {
+    request: HubObserveIpcRequestV1
+    response: HubOutcomeV1<SessionCollaborationProjectionV1>
+  }
+  'xiaogui.hub.perform': {
+    request: HubPerformIpcRequestV1
+    response: HubOutcomeV1<PerformReceiptV1>
+  }
+  'xiaogui.hub.read': {
+    request: HubReadIpcRequestV1
+    response: HubOutcomeV1<SessionCollaborationProjectionV1>
+  }
+  'xiaogui.hub.readEvents': {
+    request: HubReadEventsIpcRequestV1
+    response: HubOutcomeV1<HubEventEnvelopeV1[]>
+  }
   'xiaogui.work.docx.discover': {
     request: WorkDocxDiscoverRequestV1
     response: WorkDocxOutcomeV1<WorkDocxDiscoverResultV1>
