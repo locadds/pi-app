@@ -101,19 +101,49 @@ function resolveRequested(rootPath: string, requestedPath: string, allowConfigur
     requestedPath.length === 0 ||
     requestedPath !== requestedPath.trim() ||
     requestedPath.includes('\0') ||
-    requestedPath.includes(':') ||
-    hasTraversal(requestedPath) ||
-    win32.isAbsolute(requestedPath) ||
-    posix.isAbsolute(requestedPath)
+    hasTraversal(requestedPath)
   ) {
     throw new KimiAcpWorkspacePolicyError(allowConfiguredOnly ? 'WORKSPACE_ALLOWLIST_PATH_INVALID' : 'WORKSPACE_REQUEST_PATH_INVALID')
   }
-  const lexical = resolve(rootPath, requestedPath.replace(/[\\/]/g, sep))
+
+  const lexical = resolveRequestedLexical(rootPath, requestedPath, allowConfiguredOnly)
   if (!isInside(rootPath, lexical)) throw new KimiAcpWorkspacePolicyError('WORKSPACE_REQUEST_OUTSIDE_ROOT')
   const realPath = safeRealpath(lexical, 'WORKSPACE_FILE_UNAVAILABLE')
   if (!isInside(rootPath, realPath)) throw new KimiAcpWorkspacePolicyError('WORKSPACE_FILE_OUTSIDE_ROOT')
   if (pathKey(lexical) !== pathKey(realPath)) throw new KimiAcpWorkspacePolicyError('WORKSPACE_FILE_ALIAS')
   return { realPath }
+}
+
+function resolveRequestedLexical(rootPath: string, requestedPath: string, allowConfiguredOnly: boolean): string {
+  if (allowConfiguredOnly) {
+    if (requestedPath.includes(':') || win32.isAbsolute(requestedPath) || posix.isAbsolute(requestedPath)) {
+      throw new KimiAcpWorkspacePolicyError('WORKSPACE_ALLOWLIST_PATH_INVALID')
+    }
+    return resolve(rootPath, requestedPath.replace(/[\\/]/g, sep))
+  }
+
+  if (isBlockedWindowsAbsolute(requestedPath)) throw new KimiAcpWorkspacePolicyError('WORKSPACE_REQUEST_PATH_INVALID')
+  if (win32.isAbsolute(requestedPath)) {
+    if (!isPlainDriveAbsolute(requestedPath) || hasWindowsAlternateDataStream(requestedPath, true)) {
+      throw new KimiAcpWorkspacePolicyError('WORKSPACE_REQUEST_PATH_INVALID')
+    }
+    return resolve(requestedPath)
+  }
+  if (posix.isAbsolute(requestedPath) || requestedPath.includes(':')) throw new KimiAcpWorkspacePolicyError('WORKSPACE_REQUEST_PATH_INVALID')
+  return resolve(rootPath, requestedPath.replace(/[\\/]/g, sep))
+}
+
+function isPlainDriveAbsolute(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value)
+}
+
+function isBlockedWindowsAbsolute(value: string): boolean {
+  return /^\\\\[?.][\\/]/.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(value)
+}
+
+function hasWindowsAlternateDataStream(value: string, skipDriveColon: boolean): boolean {
+  const start = skipDriveColon && /^[A-Za-z]:/.test(value) ? 2 : 0
+  return value.slice(start).includes(':')
 }
 
 function readIdentity(rootPath: string, realPath: string): FileIdentity {

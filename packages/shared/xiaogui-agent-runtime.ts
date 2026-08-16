@@ -42,9 +42,28 @@ export interface RuntimeAdapterSelectionV1 {
   inspect: 'SNAPSHOT' | 'RECONCILE'
 }
 
+export interface RuntimeTestAdapterSelectionV1 {
+  adapterId: AdapterIdV1 | string
+  runtimeKind: RuntimeKindV1
+  protocol: RuntimeProtocolV1
+  capabilityDigest: RuntimeDigestV1 | string
+  approvalStatus: 'APPROVED_FOR_TEST'
+  diagnosticOnly: false
+  stream: 'POLL' | 'PUSH'
+  interrupt: 'BEST_EFFORT' | 'ACKED'
+  inspect: 'SNAPSHOT' | 'RECONCILE'
+}
+
 export interface RuntimeProductionPolicyV1 {
   allowedSelections: readonly RuntimeAdapterSelectionV1[]
   rejectDiagnosticOnly: true
+}
+
+export interface RuntimeContractTestPolicyV1 {
+  allowedSelections: readonly RuntimeTestAdapterSelectionV1[]
+  rejectDiagnosticOnly: true
+  workspacePolicy: 'ATTEMPT_WORKTREE_ONLY'
+  productEnablement: false
 }
 
 export interface RuntimeScopeBindingV1 {
@@ -73,6 +92,12 @@ export interface PromptEnvelopeRefV1 {
   mediaType: 'application/vnd.xiaogui.runtime-prompt+json'
 }
 
+export interface RuntimeMessageEnvelopeRefV1 {
+  refId: RuntimeRefIdV1 | string
+  digest: RuntimeDigestV1 | string
+  mediaType: 'application/vnd.xiaogui.runtime-message+json'
+}
+
 export interface RuntimeTextStreamRefV1 {
   refId: RuntimeRefIdV1 | string
   digest: RuntimeDigestV1 | string
@@ -86,6 +111,12 @@ export interface RuntimeCandidateFileRefV1 {
 
 export interface RuntimePromptEnvelopeV1 {
   promptEnvelopeRef: PromptEnvelopeRefV1
+  redactedPreviewDigest: RuntimeDigestV1 | string
+  payloadBytes: Uint8Array
+}
+
+export interface RuntimeMessageEnvelopeV1 {
+  messageEnvelopeRef: RuntimeMessageEnvelopeRefV1
   redactedPreviewDigest: RuntimeDigestV1 | string
   payloadBytes: Uint8Array
 }
@@ -105,6 +136,7 @@ export interface M2ChangeSetCandidateInputV1 {
 
 export interface TrustedRuntimePayloadResolverV1 {
   resolvePrompt(ref: PromptEnvelopeRefV1): Promise<RuntimePromptEnvelopeV1>
+  resolveMessage(ref: RuntimeMessageEnvelopeRefV1): Promise<RuntimeMessageEnvelopeV1>
   resolveTextStream(ref: RuntimeTextStreamRefV1): AsyncIterable<Uint8Array>
   resolveCandidateFile(ref: RuntimeCandidateFileRefV1): Promise<RuntimeCandidateFileSnapshotV1>
   toM2ChangeSetCandidate(input: M2ChangeSetCandidateInputV1): Promise<{ changeSetCandidateId: string; digest: RuntimeDigestV1 | string }>
@@ -116,6 +148,17 @@ export interface RuntimeCreateOrResumeRequestV1 {
   workspace: RuntimeWorkspaceBindingV1
   selection: RuntimeAdapterSelectionV1
   productionPolicy: RuntimeProductionPolicyV1
+  promptEnvelopeRef: PromptEnvelopeRefV1
+  resumeTokenDigest?: RuntimeDigestV1 | string
+}
+
+export interface RuntimeContractTestCreateOrResumeRequestV1 {
+  executionMode: 'CONTRACT_TEST'
+  requestId: string
+  scope: RuntimeScopeBindingV1
+  workspace: RuntimeWorkspaceBindingV1
+  selection: RuntimeTestAdapterSelectionV1
+  contractTestPolicy: RuntimeContractTestPolicyV1
   promptEnvelopeRef: PromptEnvelopeRefV1
   resumeTokenDigest?: RuntimeDigestV1 | string
 }
@@ -154,7 +197,7 @@ export interface RuntimeSendRequestV1 {
   requestId: string
   runtimeSessionId: string
   messageKind: 'TASK_INPUT' | 'GUIDANCE'
-  payloadDigest: string
+  messageEnvelopeRef: RuntimeMessageEnvelopeRefV1
 }
 
 export interface RuntimeInterruptRequestV1 {
@@ -192,6 +235,18 @@ export interface AgentRuntimeAdapterV1 {
   reconcile(runtimeSessionId: string, expectedReceiptDigest?: string): Promise<RuntimeOutcomeV1>
 }
 
+export interface AgentRuntimeContractTestAdapterV1 {
+  discover(): Promise<readonly RuntimeCapabilityV1[]>
+  health(adapterId: AdapterIdV1 | string): Promise<RuntimeCapabilityV1>
+  createOrResume(request: RuntimeContractTestCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1>
+  send(request: RuntimeSendRequestV1): Promise<{ accepted: true; requestId: string } | { accepted: false; reasonCode: string }>
+  stream(runtimeSessionId: string, afterSequence: number): AsyncIterable<RuntimeEventV1>
+  permission(decision: RuntimePermissionDecisionV1): Promise<{ accepted: boolean; reasonCode?: string }>
+  interrupt(request: RuntimeInterruptRequestV1): Promise<{ requested: true } | { requested: false; reasonCode: string }>
+  inspect(runtimeSessionId: string): Promise<RuntimeOutcomeV1>
+  reconcile(runtimeSessionId: string, expectedReceiptDigest?: string): Promise<RuntimeOutcomeV1>
+}
+
 export type RuntimeValidationResultV1 = { ok: true } | { ok: false; reasonCode: string }
 
 export function isRuntimeSelectionAllowed(
@@ -209,7 +264,26 @@ export function isRuntimeSelectionAllowed(
   return allowed ? { ok: true } : { ok: false, reasonCode: 'RUNTIME_SELECTION_NOT_APPROVED' }
 }
 
-export function runtimeSelectionKey(selection: RuntimeAdapterSelectionV1 | RuntimeCapabilityV1): string {
+export function isRuntimeContractTestSelectionAllowed(
+  selection: RuntimeTestAdapterSelectionV1 | RuntimeCapabilityV1,
+  policy: RuntimeContractTestPolicyV1,
+): RuntimeValidationResultV1 {
+  if (selection.protocol === 'NON_INTERACTIVE_CLI_DIAGNOSTIC') return { ok: false, reasonCode: 'RUNTIME_DIAGNOSTIC_PROTOCOL' }
+  if (selection.diagnosticOnly && policy.rejectDiagnosticOnly) return { ok: false, reasonCode: 'RUNTIME_DIAGNOSTIC_ONLY' }
+  if (selection.approvalStatus !== 'APPROVED_FOR_TEST') return { ok: false, reasonCode: 'RUNTIME_SELECTION_NOT_APPROVED_FOR_TEST' }
+  if (selection.stream === 'NONE') return { ok: false, reasonCode: 'RUNTIME_STREAM_UNAVAILABLE' }
+  if (selection.interrupt === 'NONE') return { ok: false, reasonCode: 'RUNTIME_INTERRUPT_UNAVAILABLE' }
+  if (selection.inspect === 'NONE') return { ok: false, reasonCode: 'RUNTIME_INSPECT_UNAVAILABLE' }
+  if (policy.rejectDiagnosticOnly !== true) return { ok: false, reasonCode: 'RUNTIME_CONTRACT_TEST_POLICY_INVALID' }
+  if (policy.workspacePolicy !== 'ATTEMPT_WORKTREE_ONLY') return { ok: false, reasonCode: 'RUNTIME_CONTRACT_TEST_POLICY_INVALID' }
+  if (policy.productEnablement !== false) return { ok: false, reasonCode: 'RUNTIME_CONTRACT_TEST_PRODUCT_ENABLEMENT_FORBIDDEN' }
+  if (policy.allowedSelections.length !== 1) return { ok: false, reasonCode: 'RUNTIME_CONTRACT_TEST_SELECTION_AMBIGUOUS' }
+
+  const allowed = policy.allowedSelections.some((candidate) => runtimeSelectionKey(candidate) === runtimeSelectionKey(selection))
+  return allowed ? { ok: true } : { ok: false, reasonCode: 'RUNTIME_SELECTION_NOT_APPROVED_FOR_TEST' }
+}
+
+export function runtimeSelectionKey(selection: RuntimeAdapterSelectionV1 | RuntimeTestAdapterSelectionV1 | RuntimeCapabilityV1): string {
   return [
     selection.adapterId,
     selection.runtimeKind,

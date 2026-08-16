@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  isRuntimeContractTestSelectionAllowed,
   isRuntimeSelectionAllowed,
   validateRuntimePublicDto,
   type RuntimeAdapterSelectionV1,
   type RuntimeCapabilityV1,
+  type RuntimeContractTestPolicyV1,
   type RuntimeProductionPolicyV1,
+  type RuntimeTestAdapterSelectionV1,
 } from './xiaogui-agent-runtime'
 
 const approvedSelection = {
@@ -33,6 +36,25 @@ const policy = {
   allowedSelections: [approvedSelection],
 } satisfies RuntimeProductionPolicyV1
 
+const testSelection = {
+  adapterId: 'kimi-acp',
+  runtimeKind: 'KIMI',
+  protocol: 'ACP',
+  capabilityDigest: 'sha256:capability-test',
+  approvalStatus: 'APPROVED_FOR_TEST',
+  diagnosticOnly: false,
+  stream: 'POLL',
+  interrupt: 'BEST_EFFORT',
+  inspect: 'RECONCILE',
+} satisfies RuntimeTestAdapterSelectionV1
+
+const contractPolicy = {
+  rejectDiagnosticOnly: true,
+  workspacePolicy: 'ATTEMPT_WORKTREE_ONLY',
+  productEnablement: false,
+  allowedSelections: [testSelection],
+} satisfies RuntimeContractTestPolicyV1
+
 describe('xiaogui agent runtime shared contract', () => {
   it('allows only an exact approved production runtime selection', () => {
     expect(isRuntimeSelectionAllowed(approvedSelection, policy)).toEqual({ ok: true })
@@ -51,6 +73,24 @@ describe('xiaogui agent runtime shared contract', () => {
     expect(isRuntimeSelectionAllowed({ ...approvedCapability, stream: 'NONE' }, policy)).toEqual({
       ok: false,
       reasonCode: 'RUNTIME_STREAM_UNAVAILABLE',
+    })
+  })
+
+  it('allows only an exact approved contract-test runtime selection without product enablement', () => {
+    expect(isRuntimeContractTestSelectionAllowed(testSelection, contractPolicy)).toEqual({ ok: true })
+    expect(isRuntimeContractTestSelectionAllowed({ ...testSelection, capabilityDigest: 'sha256:changed' }, contractPolicy)).toEqual({
+      ok: false,
+      reasonCode: 'RUNTIME_SELECTION_NOT_APPROVED_FOR_TEST',
+    })
+    expect(isRuntimeContractTestSelectionAllowed({ ...approvedCapability, capabilityDigest: 'sha256:capability-test' }, contractPolicy)).toEqual({
+      ok: false,
+      reasonCode: 'RUNTIME_SELECTION_NOT_APPROVED_FOR_TEST',
+    })
+    const productEnabled = { ...contractPolicy }
+    Object.defineProperty(productEnabled, 'productEnablement', { value: true })
+    expect(isRuntimeContractTestSelectionAllowed(testSelection, productEnabled)).toEqual({
+      ok: false,
+      reasonCode: 'RUNTIME_CONTRACT_TEST_PRODUCT_ENABLEMENT_FORBIDDEN',
     })
   })
 

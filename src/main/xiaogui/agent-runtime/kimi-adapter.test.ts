@@ -6,13 +6,17 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type {
   RuntimeAdapterSelectionV1,
+  RuntimeContractTestCreateOrResumeRequestV1,
+  RuntimeContractTestPolicyV1,
   RuntimeCreateOrResumeRequestV1,
   RuntimeEventV1,
+  RuntimeMessageEnvelopeRefV1,
   RuntimeProductionPolicyV1,
+  RuntimeTestAdapterSelectionV1,
   TrustedRuntimePayloadResolverV1,
 } from '@shared/xiaogui-agent-runtime'
 
-import { createAgentRuntimeHostV1 } from './runtime-host'
+import { createAgentRuntimeContractTestHostV1, createAgentRuntimeHostV1 } from './runtime-host'
 import type {
   AcpRequestPermissionParamsV1,
   AcpRequestPermissionResultV1,
@@ -27,8 +31,6 @@ import {
   KimiAcpCliProbeV1,
   KimiAcpRuntimeAdapterV1,
   kimiAcpCapabilityDigestForVersionV1,
-  type KimiAcpCreateOrResumeForTestRequestV1,
-  type KimiAcpTestAdapterSelectionV1,
   type KimiAcpWorkspaceResolverV1,
 } from './kimi-adapter'
 
@@ -50,7 +52,7 @@ const testSelection = {
   stream: 'POLL',
   interrupt: 'BEST_EFFORT',
   inspect: 'RECONCILE',
-} satisfies KimiAcpTestAdapterSelectionV1
+} satisfies RuntimeTestAdapterSelectionV1
 
 const productionSelection = {
   ...testSelection,
@@ -62,6 +64,13 @@ const productionPolicy = {
   allowedSelections: [productionSelection],
 } satisfies RuntimeProductionPolicyV1
 
+const contractTestPolicy = {
+  rejectDiagnosticOnly: true,
+  workspacePolicy: 'ATTEMPT_WORKTREE_ONLY',
+  productEnablement: false,
+  allowedSelections: [testSelection],
+} satisfies RuntimeContractTestPolicyV1
+
 function workspace(files: Record<string, string>) {
   const root = mkdtempSync(join(tmpdir(), 'xiaogui-kimi-acp-'))
   roots.push(root)
@@ -71,9 +80,10 @@ function workspace(files: Record<string, string>) {
   return root
 }
 
-function request(rootPath: string, prompt = 'edit safely', overrides: Partial<KimiAcpCreateOrResumeForTestRequestV1> = {}): KimiAcpCreateOrResumeForTestRequestV1 {
+function request(rootPath: string, prompt = 'edit safely', overrides: Partial<RuntimeContractTestCreateOrResumeRequestV1> = {}): RuntimeContractTestCreateOrResumeRequestV1 {
   const promptBytes = Buffer.from(prompt, 'utf8')
   return {
+    executionMode: 'CONTRACT_TEST',
     requestId: 'req-1',
     scope: {
       projectId: 'xgp_project',
@@ -94,7 +104,7 @@ function request(rootPath: string, prompt = 'edit safely', overrides: Partial<Ki
       writePolicy: 'ATTEMPT_WORKTREE_ONLY',
     },
     selection: testSelection,
-    productionPolicy,
+    contractTestPolicy: { ...contractTestPolicy, allowedSelections: [...contractTestPolicy.allowedSelections] },
     promptEnvelopeRef: {
       refId: 'prompt-1',
       digest: digestBytes(promptBytes),
@@ -106,9 +116,20 @@ function request(rootPath: string, prompt = 'edit safely', overrides: Partial<Ki
 
 function productionRequest(rootPath: string): RuntimeCreateOrResumeRequestV1 {
   const base = request(rootPath)
+  const { executionMode: _executionMode, contractTestPolicy: _contractTestPolicy, selection: _selection, ...productionBase } = base
   return {
-    ...base,
+    ...productionBase,
     selection: productionSelection,
+    productionPolicy,
+  }
+}
+
+function messageRef(text = 'guidance text'): RuntimeMessageEnvelopeRefV1 {
+  const bytes = Buffer.from(text, 'utf8')
+  return {
+    refId: 'message-1',
+    digest: digestBytes(bytes),
+    mediaType: 'application/vnd.xiaogui.runtime-message+json',
   }
 }
 
@@ -135,6 +156,13 @@ function payloadResolver(text = 'edit safely'): TrustedRuntimePayloadResolverV1 
         promptEnvelopeRef: ref,
         redactedPreviewDigest: 'sha256:redacted',
         payloadBytes: bytes,
+      }
+    },
+    async resolveMessage(ref) {
+      return {
+        messageEnvelopeRef: ref,
+        redactedPreviewDigest: 'sha256:redacted-message',
+        payloadBytes: Buffer.from('guidance text', 'utf8'),
       }
     },
     async *resolveTextStream() {},
@@ -165,6 +193,8 @@ class FakeAcpTransport implements AcpTransportV1 {
   newSessionCalls = 0
   loadSessionCalls: Array<{ sessionId: string; cwd: string }> = []
   promptCalls = 0
+  prompts: Array<Array<{ type: string; text?: string }>> = []
+  cancelCalls = 0
   disposeCalls = 0
   permissionPromise?: Promise<AcpRequestPermissionResultV1>
 
@@ -184,13 +214,16 @@ class FakeAcpTransport implements AcpTransportV1 {
     this.loadSessionCalls.push({ sessionId, cwd })
   }
 
-  async prompt(sessionId: string) {
+  async prompt(sessionId: string, prompt: Array<{ type: string; text?: string }>) {
     this.promptCalls += 1
+    this.prompts.push(prompt)
     await this.script?.(this, sessionId)
     return { stopReason: 'end_turn' }
   }
 
-  async cancel() {}
+  async cancel() {
+    this.cancelCalls += 1
+  }
 
   async dispose() {
     this.disposeCalls += 1
@@ -263,11 +296,12 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
 
   it('discovers only APPROVED_FOR_TEST and cannot be selected through production Host policy', async () => {
     const root = workspace({ 'a.txt': 'before' })
+    const factory = new FakeTransportFactory()
     const adapter = createKimiAcpRuntimeAdapterV1({
       payloadResolver: payloadResolver(),
       workspaceResolver: resolver(root),
       probe: new FakeProbe(),
-      transportFactory: new FakeTransportFactory(),
+      transportFactory: factory,
     })
     await expect(adapter.discover()).resolves.toMatchObject([{ approvalStatus: 'APPROVED_FOR_TEST', health: 'AVAILABLE', stream: 'POLL' }])
 
@@ -276,16 +310,54 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       state: 'FAILED',
       reasonCode: 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST',
     })
+    await expect(
+      Reflect.apply(host.createOrResume, host, [request(root)]),
+    ).resolves.toMatchObject({
+      state: 'FAILED',
+      reasonCode: 'RUNTIME_CONTRACT_TEST_REQUEST_NOT_ALLOWED',
+    })
+    expect(factory.transports).toHaveLength(0)
+  })
+
+  it('runs through the contract test Host and fails closed for invalid test policies', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const factory = new FakeTransportFactory()
+    const adapter = new KimiAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver(),
+      workspaceResolver: resolver(root),
+      probe: new FakeProbe(),
+      transportFactory: factory,
+    })
+    const host = createAgentRuntimeContractTestHostV1(adapter)
+    await expect(
+      Reflect.apply(host.createOrResume, host, [productionRequest(root)]),
+    ).resolves.toMatchObject({
+      state: 'FAILED',
+      reasonCode: 'RUNTIME_CONTRACT_TEST_REQUEST_REQUIRED',
+    })
+
+    const productEnabled = request(root)
+    Object.defineProperty(productEnabled.contractTestPolicy, 'productEnablement', { value: true })
+    const wrongWorkspacePolicy = request(root)
+    Object.defineProperty(wrongWorkspacePolicy.contractTestPolicy, 'workspacePolicy', { value: 'TARGET_WORKTREE_ONLY' })
+
+    await expect(host.createOrResume(productEnabled)).resolves.toMatchObject({ state: 'FAILED', reasonCode: 'RUNTIME_CONTRACT_TEST_PRODUCT_ENABLEMENT_FORBIDDEN' })
+    await expect(host.createOrResume(wrongWorkspacePolicy)).resolves.toMatchObject({ state: 'FAILED', reasonCode: 'RUNTIME_CONTRACT_TEST_POLICY_INVALID' })
+    await expect(host.createOrResume(request(root, 'edit safely', {
+      selection: { ...testSelection, capabilityDigest: 'sha256:drift' },
+    }))).resolves.toMatchObject({ state: 'FAILED', reasonCode: 'RUNTIME_SELECTION_NOT_APPROVED_FOR_TEST' })
+    expect(factory.transports).toHaveLength(0)
   })
 
   it('declares mediated fs and terminal, reads/writes only allowlisted files, and emits candidate digest without public paths', async () => {
     const root = workspace({ 'a.txt': 'before' })
     const factory = new FakeTransportFactory(async (transport) => {
       expect(await transport.reverse('fs/read_text_file', { path: 'a.txt' })).toEqual({ content: 'before' })
+      expect(await transport.reverse('fs/read_text_file', { path: join(root, 'a.txt') })).toEqual({ content: 'before' })
       for (const method of ['terminal/create', 'terminal/wait_for_exit', 'terminal/output', 'terminal/release', 'terminal/kill']) {
         await expect(() => transport.reverse(method, { sessionId: 'terminal-session' })).rejects.toThrow()
       }
-      await transport.reverse('fs/write_text_file', { path: 'a.txt', content: 'after' })
+      await transport.reverse('fs/write_text_file', { path: join(root, 'a.txt'), content: 'after' })
     })
     const adapter = new KimiAcpRuntimeAdapterV1({
       payloadResolver: payloadResolver(),
@@ -294,7 +366,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       transportFactory: factory,
     })
 
-    const created = await adapter.createOrResumeForTest(request(root))
+    const created = await adapter.createOrResume(request(root))
     expect(created).toMatchObject({ state: 'READY' })
     const transport = factory.transports[0]
     expect(transport.startOptions?.initialize.clientCapabilities).toEqual({
@@ -309,6 +381,56 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     expect(events.map((event) => event.type)).toEqual(['SESSION_READY', 'CANDIDATE_PRODUCED', 'RUNTIME_SETTLED'])
     expect(JSON.stringify(events)).not.toContain(root)
     await expect(adapter.inspect(runtimeSessionId)).resolves.toMatchObject({ state: 'SUCCEEDED' })
+    expect(transport.disposeCalls).toBe(1)
+  })
+
+  it('sends resolver-backed guidance text and treats BEST_EFFORT cancel as unconfirmed until Kimi reports cancelled', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const factory = new FakeTransportFactory(async () => new Promise<void>(() => {}))
+    const adapter = new KimiAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver(),
+      workspaceResolver: resolver(root),
+      probe: new FakeProbe(),
+      transportFactory: factory,
+    })
+    const created = await adapter.createOrResume(request(root))
+    expect(created).toMatchObject({ state: 'READY' })
+    await expect(adapter.send({
+      requestId: 'send-1',
+      runtimeSessionId: created.runtimeSessionId,
+      messageKind: 'GUIDANCE',
+      messageEnvelopeRef: messageRef(),
+    })).resolves.toEqual({ accepted: true, requestId: 'send-1' })
+    expect(factory.transports[0].prompts[1]).toEqual([{ type: 'text', text: 'guidance text' }])
+
+    await expect(adapter.interrupt({ requestId: 'cancel-1', runtimeSessionId: created.runtimeSessionId, reason: 'user_cancelled' })).resolves.toEqual({ requested: true })
+    expect(factory.transports[0].cancelCalls).toBe(1)
+    await expect(adapter.inspect(created.runtimeSessionId)).resolves.toMatchObject({ state: 'OUTCOME_UNKNOWN', reasonCode: 'RUNTIME_STILL_RUNNING' })
+
+    const mismatchRoot = workspace({ 'a.txt': 'before' })
+    const mismatchFactory = new FakeTransportFactory(async () => new Promise<void>(() => {}))
+    const mismatchResolver = payloadResolver()
+    mismatchResolver.resolveMessage = async (ref) => ({
+      messageEnvelopeRef: { ...ref, refId: 'message-other' },
+      redactedPreviewDigest: 'sha256:redacted-message',
+      payloadBytes: Buffer.from('guidance text', 'utf8'),
+    })
+    const mismatchAdapter = new KimiAcpRuntimeAdapterV1({
+      payloadResolver: mismatchResolver,
+      workspaceResolver: resolver(mismatchRoot),
+      probe: new FakeProbe(),
+      transportFactory: mismatchFactory,
+    })
+    const mismatchCreated = await mismatchAdapter.createOrResume(request(mismatchRoot))
+    expect(mismatchCreated).toMatchObject({ state: 'READY' })
+    const promptCallsBeforeSend = mismatchFactory.transports[0].promptCalls
+    await expect(mismatchAdapter.send({
+      requestId: 'send-mismatch',
+      runtimeSessionId: mismatchCreated.runtimeSessionId,
+      messageKind: 'GUIDANCE',
+      messageEnvelopeRef: messageRef(),
+    })).resolves.toEqual({ accepted: false, reasonCode: 'MESSAGE_REF_MISMATCH' })
+    expect(mismatchFactory.transports[0].promptCalls).toBe(promptCallsBeforeSend)
   })
 
   it('replays identical createOrResume requests and rejects same-key payload drift before starting another ACP session', async () => {
@@ -322,9 +444,9 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     })
 
     const firstRequest = request(root)
-    const first = await adapter.createOrResumeForTest(firstRequest)
-    await expect(adapter.createOrResumeForTest(firstRequest)).resolves.toEqual(first)
-    await expect(adapter.createOrResumeForTest(request(root, 'edit safely', {
+    const first = await adapter.createOrResume(firstRequest)
+    await expect(adapter.createOrResume(firstRequest)).resolves.toEqual(first)
+    await expect(adapter.createOrResume(request(root, 'edit safely', {
       workspace: { ...firstRequest.workspace, baseRevisionDigest: 'sha256:drift' },
     }))).resolves.toMatchObject({ state: 'FAILED', reasonCode: 'IDEMPOTENCY_CONFLICT' })
     expect(factory.transports).toHaveLength(1)
@@ -333,7 +455,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
   it('fails closed for traversal, absolute paths, aliases, hardlinks, and digest drift before writing', async () => {
     const root = workspace({ 'a.txt': 'before', 'b.txt': 'other' })
     const factory = new FakeTransportFactory(async (transport) => {
-      for (const badPath of ['../a.txt', ' C.txt', 'C:\\tmp\\a.txt', 'a.txt:ads']) {
+      for (const badPath of ['../a.txt', ' C.txt', 'C:\\tmp\\a.txt', 'C:tmp\\a.txt', '\\\\server\\share\\a.txt', '\\\\?\\C:\\tmp\\a.txt', 'a.txt:ads', join(root, 'b.txt')]) {
         await expect(() => transport.reverse('fs/read_text_file', { path: badPath })).rejects.toThrow()
       }
       writeFileSync(join(root, 'a.txt'), 'drifted')
@@ -346,7 +468,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       transportFactory: factory,
     })
 
-    const created = await adapter.createOrResumeForTest(request(root))
+    const created = await adapter.createOrResume(request(root))
     await tick()
     expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('drifted')
     await expect(adapter.inspect(created.runtimeSessionId)).resolves.toMatchObject({ state: 'OUTCOME_UNKNOWN', reasonCode: 'CANDIDATE_NOT_PRODUCED' })
@@ -366,7 +488,20 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
         probe: new FakeProbe(),
         transportFactory: new FakeTransportFactory(),
       })
-      await expect(aliasAdapter.createOrResumeForTest(request(aliasRoot))).resolves.toMatchObject({ state: 'FAILED', reasonCode: 'WORKSPACE_FILE_ALIAS' })
+      await expect(aliasAdapter.createOrResume(request(aliasRoot))).resolves.toMatchObject({ state: 'FAILED', reasonCode: 'WORKSPACE_FILE_ALIAS' })
+
+      const absoluteAliasFactory = new FakeTransportFactory(async (transport) => {
+        await expect(() => transport.reverse('fs/read_text_file', { path: join(aliasRoot, 'alias.txt') })).rejects.toThrow()
+      })
+      const absoluteAliasAdapter = new KimiAcpRuntimeAdapterV1({
+        payloadResolver: payloadResolver(),
+        workspaceResolver: resolver(aliasRoot, ['target.txt']),
+        probe: new FakeProbe(),
+        transportFactory: absoluteAliasFactory,
+      })
+      const absoluteAliasCreated = await absoluteAliasAdapter.createOrResume(request(aliasRoot))
+      await tick()
+      await expect(absoluteAliasAdapter.inspect(absoluteAliasCreated.runtimeSessionId)).resolves.toMatchObject({ state: 'OUTCOME_UNKNOWN', reasonCode: 'CANDIDATE_NOT_PRODUCED' })
     }
 
     const hardlinkRoot = workspace({ 'target.txt': 'x' })
@@ -384,7 +519,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
         probe: new FakeProbe(),
         transportFactory: new FakeTransportFactory(),
       })
-      await expect(hardlinkAdapter.createOrResumeForTest(request(hardlinkRoot))).resolves.toMatchObject({ state: 'FAILED', reasonCode: 'WORKSPACE_FILE_HARDLINK' })
+      await expect(hardlinkAdapter.createOrResume(request(hardlinkRoot))).resolves.toMatchObject({ state: 'FAILED', reasonCode: 'WORKSPACE_FILE_HARDLINK' })
     }
   })
 
@@ -400,6 +535,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
         ],
       })
       await permission
+      await new Promise<void>(() => {})
     })
     const adapter = new KimiAcpRuntimeAdapterV1({
       payloadResolver: payloadResolver(),
@@ -407,7 +543,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       probe: new FakeProbe(),
       transportFactory: factory,
     })
-    const created = await adapter.createOrResumeForTest(request(root))
+    const created = await adapter.createOrResume(request(root))
     await tick()
     const [permissionEvent] = (await collect(adapter.stream(created.runtimeSessionId, 0))).filter(
       (event): event is Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> => event.type === 'PERMISSION_REQUESTED',
@@ -453,7 +589,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       probe: new FakeProbe(),
       transportFactory: denyFactory,
     })
-    const denied = await denyAdapter.createOrResumeForTest(request(denyRoot))
+    const denied = await denyAdapter.createOrResume(request(denyRoot))
     await tick()
     const [ready, permission] = await collect(denyAdapter.stream(denied.runtimeSessionId, 0))
     expect(ready).toMatchObject({ type: 'SESSION_READY' })
@@ -482,13 +618,18 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       probe: new FakeProbe(),
       transportFactory: factory,
     })
-    const created = await adapter.createOrResumeForTest(request(root))
+    const created = await adapter.createOrResume(request(root))
     expect(factory.transports[0].newSessionCalls).toBe(0)
     expect(factory.transports[0].loadSessionCalls).toHaveLength(1)
     await tick()
     await expect(adapter.inspect(created.runtimeSessionId)).resolves.toMatchObject({ state: 'OUTCOME_UNKNOWN', reasonCode: 'PROCESS_DISCONNECTED' })
     expect(factory.transports[0].disposeCalls).toBe(1)
-    await expect(adapter.send({ requestId: 'send-after-disconnect', runtimeSessionId: created.runtimeSessionId, messageKind: 'GUIDANCE', payloadDigest: 'sha256:guidance' })).resolves.toEqual({
+    await expect(adapter.send({
+      requestId: 'send-after-disconnect',
+      runtimeSessionId: created.runtimeSessionId,
+      messageKind: 'GUIDANCE',
+      messageEnvelopeRef: messageRef(),
+    })).resolves.toEqual({
       accepted: false,
       reasonCode: 'PROCESS_DISCONNECTED',
     })

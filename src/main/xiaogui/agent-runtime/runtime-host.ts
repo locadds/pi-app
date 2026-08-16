@@ -2,9 +2,12 @@ import { createHash } from 'node:crypto'
 
 import {
   isRuntimePublicSessionId,
+  isRuntimeContractTestSelectionAllowed,
   isRuntimeSelectionAllowed,
   validateRuntimePublicDto,
+  type AgentRuntimeContractTestAdapterV1,
   type AgentRuntimeAdapterV1,
+  type RuntimeContractTestCreateOrResumeRequestV1,
   type RuntimeCapabilityV1,
   type RuntimeCreateOrResumeOutcomeV1,
   type RuntimeCreateOrResumeRequestV1,
@@ -17,6 +20,9 @@ import {
 } from '@shared/xiaogui-agent-runtime'
 
 const UNBOUND_RUNTIME_SESSION_ID = 'runtime-unbound'
+
+type RuntimeCreateRequestV1 = RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1
+type RuntimeStreamAdapterV1 = Pick<AgentRuntimeAdapterV1, 'stream'>
 
 interface RuntimeSessionBinding {
   attemptId: string
@@ -42,8 +48,32 @@ interface PendingPermissionRequest {
 }
 
 export interface AgentRuntimeHostV1 extends AgentRuntimeAdapterV1 {}
+export interface AgentRuntimeContractTestHostV1 extends AgentRuntimeContractTestAdapterV1 {}
 
 export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentRuntimeHostV1 {
+  return createRuntimeHostCore(adapter, validateProductionCreateRequest)
+}
+
+export function createAgentRuntimeContractTestHostV1(adapter: AgentRuntimeContractTestAdapterV1): AgentRuntimeContractTestHostV1 {
+  return createRuntimeHostCore(adapter, validateContractTestCreateRequest)
+}
+
+interface RuntimeHostCoreAdapterV1<Request extends RuntimeCreateRequestV1> {
+  discover(): Promise<readonly RuntimeCapabilityV1[]>
+  health(adapterId: string): Promise<RuntimeCapabilityV1>
+  createOrResume(request: Request): Promise<RuntimeCreateOrResumeOutcomeV1>
+  send(request: RuntimeSendRequestV1): Promise<{ accepted: true; requestId: string } | { accepted: false; reasonCode: string }>
+  stream(runtimeSessionId: string, afterSequence: number): AsyncIterable<RuntimeEventV1>
+  permission(decision: RuntimePermissionDecisionV1): Promise<{ accepted: boolean; reasonCode?: string }>
+  interrupt(request: RuntimeInterruptRequestV1): Promise<{ requested: true } | { requested: false; reasonCode: string }>
+  inspect(runtimeSessionId: string): Promise<RuntimeOutcomeV1>
+  reconcile(runtimeSessionId: string, expectedReceiptDigest?: string): Promise<RuntimeOutcomeV1>
+}
+
+function createRuntimeHostCore<Request extends RuntimeCreateRequestV1>(
+  adapter: RuntimeHostCoreAdapterV1<Request>,
+  validateCreateRequest: (request: Request) => RuntimeCreateValidationResult,
+): RuntimeHostCoreAdapterV1<Request> {
   const idempotency = new Map<string, IdempotencyRecord>()
   const sessionBindings = new Map<string, RuntimeSessionBinding>()
   const decisions = new Map<string, PermissionDecisionRecord>()
@@ -51,7 +81,7 @@ export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentR
   const consumedPermissionRequests = new Map<string, string>()
   const permissionRequests = new Map<string, PendingPermissionRequest>()
 
-  const host: AgentRuntimeHostV1 = {
+  const host: RuntimeHostCoreAdapterV1<Request> = {
     async discover() {
       const capabilities = await safeCall(() => adapter.discover())
       if (!capabilities.ok) return [unavailableCapability('RUNTIME_ADAPTER_ERROR')]
@@ -65,11 +95,8 @@ export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentR
     },
 
     async createOrResume(request) {
-      const publicRequest = validateRuntimePublicDto(request)
-      if (!publicRequest.ok) return unknown('', publicRequest.reasonCode, 'public-dto-leak')
-
-      const selection = isRuntimeSelectionAllowed(request.selection, request.productionPolicy)
-      if (!selection.ok) return failed('', selection.reasonCode, 'runtime-selection-rejected')
+      const validation = validateCreateRequest(request)
+      if (!validation.ok) return validation.outcome
 
       const key = createIdempotencyKey(request)
       const payload = digestJson(request)
@@ -209,7 +236,32 @@ export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentR
   return host
 }
 
-function createIdempotencyKey(request: RuntimeCreateOrResumeRequestV1): string {
+type RuntimeCreateValidationResult = { ok: true } | { ok: false; outcome: RuntimeOutcomeV1 }
+
+function validateProductionCreateRequest(request: RuntimeCreateOrResumeRequestV1): RuntimeCreateValidationResult {
+  if (isContractTestCreateRequestShape(request)) {
+    return { ok: false, outcome: failed('', 'RUNTIME_CONTRACT_TEST_REQUEST_NOT_ALLOWED', 'runtime-contract-test-request-not-allowed') }
+  }
+  const publicRequest = validateRuntimePublicDto(request)
+  if (!publicRequest.ok) return { ok: false, outcome: unknown('', publicRequest.reasonCode, 'public-dto-leak') }
+  const selection = isRuntimeSelectionAllowed(request.selection, request.productionPolicy)
+  return selection.ok ? { ok: true } : { ok: false, outcome: failed('', selection.reasonCode, 'runtime-selection-rejected') }
+}
+
+function validateContractTestCreateRequest(request: RuntimeContractTestCreateOrResumeRequestV1): RuntimeCreateValidationResult {
+  if (!isContractTestCreateRequestShape(request)) {
+    return { ok: false, outcome: failed('', 'RUNTIME_CONTRACT_TEST_REQUEST_REQUIRED', 'runtime-contract-test-request-required') }
+  }
+  const publicRequest = validateRuntimePublicDto(request)
+  if (!publicRequest.ok) return { ok: false, outcome: unknown('', publicRequest.reasonCode, 'public-dto-leak') }
+  if (request.workspace.writePolicy !== request.contractTestPolicy.workspacePolicy) {
+    return { ok: false, outcome: failed('', 'RUNTIME_CONTRACT_TEST_POLICY_INVALID', 'runtime-contract-test-policy-invalid') }
+  }
+  const selection = isRuntimeContractTestSelectionAllowed(request.selection, request.contractTestPolicy)
+  return selection.ok ? { ok: true } : { ok: false, outcome: failed('', selection.reasonCode, 'runtime-contract-test-selection-rejected') }
+}
+
+function createIdempotencyKey(request: RuntimeCreateRequestV1): string {
   return [
     request.requestId,
     request.selection.adapterId,
@@ -224,7 +276,7 @@ function createIdempotencyKey(request: RuntimeCreateOrResumeRequestV1): string {
 function bindRuntimeSession(
   bindings: Map<string, RuntimeSessionBinding>,
   runtimeSessionId: string,
-  request: RuntimeCreateOrResumeRequestV1,
+  request: RuntimeCreateRequestV1,
 ): string | null {
   const next = {
     attemptId: request.scope.attemptId,
@@ -243,7 +295,7 @@ function bindRuntimeSession(
 }
 
 async function* streamFromAdapter(
-  adapter: AgentRuntimeAdapterV1,
+  adapter: RuntimeStreamAdapterV1,
   bindings: Map<string, RuntimeSessionBinding>,
   permissionRequests: Map<string, PendingPermissionRequest>,
   runtimeSessionId: string,
@@ -301,6 +353,15 @@ function validateOutcome(runtimeSessionId: string, outcome: RuntimeOutcomeV1): R
   if (!publicDto.ok) return unknown(runtimeSessionId, publicDto.reasonCode, 'public-dto-leak')
   if (outcome.runtimeSessionId !== runtimeSessionId) return unknown(runtimeSessionId, 'RUNTIME_OUTCOME_SESSION_MISMATCH', 'runtime-outcome-session-mismatch')
   return outcome
+}
+
+function isContractTestCreateRequestShape(value: unknown): value is RuntimeContractTestCreateOrResumeRequestV1 {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { executionMode?: unknown }).executionMode === 'CONTRACT_TEST'
+  )
 }
 
 function sanitizePermissionResult(result: { accepted: boolean; reasonCode?: string }): { accepted: boolean; reasonCode?: string } {
