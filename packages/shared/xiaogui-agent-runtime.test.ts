@@ -51,9 +51,14 @@ describe('xiaogui agent runtime shared contract', () => {
 
     for (const value of [
       { path: 'C:\\Users\\90662\\secret.txt' },
+      { path: '\\\\server\\share\\secret.txt' },
+      { path: '/home/user/.config/token' },
+      { uri: 'file:///C:/Users/90662/secret.txt' },
       { token: 'ghp_1234567890abcdefghijklmnop' },
       { env: 'OPENAI_API_KEY' },
       { url: 'http://127.0.0.1:3210/internal' },
+      'api_key：abcd1234',
+      '{"token":"abcd1234"}',
       { stdout: 'full stdout should stay behind resolver' },
       { prompt: 'write the entire user prompt into the event' },
       { candidatePath: 'src/main/index.ts' },

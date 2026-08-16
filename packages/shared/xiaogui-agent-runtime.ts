@@ -241,13 +241,17 @@ function scanPublicDto(value: unknown): boolean {
 }
 
 function isSensitivePublicKey(key: string): boolean {
-  return /(^|_)(path|token|secret|password|env|stdout|stderr|prompt|candidatePath|url)$/i.test(key)
+  return /(^|_)(path|token|secret|password|env|stdout|stderr|prompt|candidatePath|uri|url)$/i.test(key)
 }
 
 function isSensitivePublicString(value: string): boolean {
   if (/^[A-Za-z]:\\/.test(value)) return true
+  if (/^\\\\[^\\]+\\[^\\]+/.test(value)) return true
+  if (/^\/(Users|home|etc|var|tmp)\//.test(value)) return true
+  if (/^file:\/\//i.test(value)) return true
   if (/^https?:\/\/(127\.0\.0\.1|localhost|[^/\s]+\/internal)/i.test(value)) return true
   if (/\b[A-Z][A-Z0-9_]*(API_KEY|TOKEN|SECRET|PASSWORD)\b/.test(value)) return true
+  if (/"?(token|api[_-]?key|secret|password)"?\s*[:：]\s*"?.{4,}"?/i.test(value)) return true
   if (/\b(ghp|github_pat|sk|xox[baprs])-?[A-Za-z0-9_]{16,}\b/.test(value)) return true
   return false
 }
