@@ -157,6 +157,10 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
           return this.recordWorkspaceResult(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.workspace.prepare.result.record' }> })
         case 'system.agent.report.record':
           return this.recordAgentReport(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> })
+        case 'system.agent.outcome.record':
+          return this.recordAgentOutcome(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.outcome.record' }> })
+        case 'system.agent.reconcile':
+          return this.reconcileAgent(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.reconcile' }> })
         default:
           return hubError('INTENT_DISABLED')
       }
@@ -396,6 +400,64 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       requestId: request.requestId,
       payloadDigest: request.intent.reportDigest,
       runtimeSessionId: request.intent.runtimeSessionId,
+      receipt,
+      now: this.now(),
+    })
+    return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
+  }
+
+  private recordAgentOutcome(
+    address: HubAddressV1,
+    request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.outcome.record' }> },
+  ): HubOutcomeV1<PerformReceiptV1> {
+    const store = this.getStore()
+    const replay = this.checkIdempotency(store, address, request)
+    if (replay) return replay
+    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
+    const attempt = store.attempt(request.intent.attemptId)
+    if (!attempt || attempt.task_run_id !== request.intent.taskRunId) return hubError('ILLEGAL_TRANSITION')
+    if (!['STARTING', 'RUNNING'].includes(attempt.status)) return hubError('ILLEGAL_TRANSITION')
+    if (attempt.runtime_session_id && attempt.runtime_session_id !== request.intent.runtimeSessionId) return hubError('ILLEGAL_TRANSITION')
+    const receipt = {
+      requestId: request.requestId,
+      intentType: request.intent.type,
+      sessionVersion: 0,
+      flowId: request.intent.flowId,
+      taskRunId: request.intent.taskRunId,
+      attemptId: request.intent.attemptId,
+    }
+    store.writeAgentOutcome(address, this.idempotency(request), {
+      attemptId: request.intent.attemptId,
+      taskRunId: request.intent.taskRunId,
+      runtimeSessionId: request.intent.runtimeSessionId,
+      outcome: request.intent.outcome,
+      receiptDigest: request.intent.receiptDigest,
+      receipt,
+      now: this.now(),
+    })
+    return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
+  }
+
+  private reconcileAgent(
+    address: HubAddressV1,
+    request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.reconcile' }> },
+  ): HubOutcomeV1<PerformReceiptV1> {
+    const store = this.getStore()
+    const replay = this.checkIdempotency(store, address, request)
+    if (replay) return replay
+    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
+    const attempt = store.attempt(request.intent.attemptId)
+    if (!attempt || attempt.status !== 'OUTCOME_UNKNOWN' || attempt.runtime_session_id !== request.intent.runtimeSessionId) return hubError('ILLEGAL_TRANSITION')
+    const receipt = {
+      requestId: request.requestId,
+      intentType: request.intent.type,
+      sessionVersion: 0,
+      attemptId: request.intent.attemptId,
+    }
+    store.writeAgentReconcile(address, this.idempotency(request), {
+      attemptId: request.intent.attemptId,
+      runtimeSessionId: request.intent.runtimeSessionId,
+      expectedReceiptDigest: request.intent.expectedReceiptDigest,
       receipt,
       now: this.now(),
     })

@@ -682,6 +682,102 @@ describe('M2A collaboration hub application', () => {
     store.close()
   })
 
+  it('records OUTCOME_UNKNOWN and reconcile without Verification or ChangeSet side effects', async () => {
+    const dbPath = await tempDb()
+    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'])
+    await start(app)
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const before = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-schedule-1',
+      expectedSessionVersion: before.ok ? before.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+    })
+    const scheduled = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-workspace-1',
+      expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,
+      intent: {
+        type: 'system.workspace.prepare.result.record',
+        flowId: draftProjection.value.activeFlow.flowId,
+        taskRunId: 'xhbtr_projection' as TaskRunId,
+        attemptId: 'xhba_attempt' as AttemptId,
+        receipt: {
+          status: 'PREPARED',
+          workspaceReceiptId: 'xhbw_receipt' as WorkspaceReceiptId,
+          receiptDigest: 'sha256:workspace',
+        },
+      },
+    })
+    const ready = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-agent-report-1',
+      expectedSessionVersion: ready.ok ? ready.value.sessionVersion : 0,
+      intent: {
+        type: 'system.agent.report.record',
+        flowId: draftProjection.value.activeFlow.flowId,
+        taskRunId: 'xhbtr_projection' as TaskRunId,
+        attemptId: 'xhba_attempt' as AttemptId,
+        runtimeSessionId: 'fake-runtime-session-1',
+        reportDigest: 'sha256:fake-agent-report',
+      },
+    })
+    const running = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-agent-outcome-unknown-1',
+      expectedSessionVersion: running.ok ? running.value.sessionVersion : 0,
+      intent: {
+        type: 'system.agent.outcome.record',
+        flowId: draftProjection.value.activeFlow.flowId,
+        taskRunId: 'xhbtr_projection' as TaskRunId,
+        attemptId: 'xhba_attempt' as AttemptId,
+        runtimeSessionId: 'fake-runtime-session-1',
+        outcome: 'OUTCOME_UNKNOWN',
+        receiptDigest: 'sha256:unknown-receipt',
+      },
+    })
+
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'OUTCOME_UNKNOWN' })]),
+        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'fake-runtime-session-1' })],
+      },
+    })
+    expect(journalPayloads(dbPath, 'system.agent.outcome.record')).toMatchObject([
+      { phase: 'attempt.transition', to: 'OUTCOME_UNKNOWN', receiptDigest: 'sha256:unknown-receipt' },
+    ])
+    const unknown = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-agent-reconcile-1',
+      expectedSessionVersion: unknown.ok ? unknown.value.sessionVersion : 0,
+      intent: {
+        type: 'system.agent.reconcile',
+        attemptId: 'xhba_attempt' as AttemptId,
+        runtimeSessionId: 'fake-runtime-session-1',
+        expectedReceiptDigest: 'sha256:unknown-receipt',
+      },
+    })
+    expect(journalPayloads(dbPath, 'system.agent.reconcile')).toMatchObject([
+      { phase: 'outcome_unknown.reconcile_requested', attemptId: 'xhba_attempt', expectedReceiptDigest: 'sha256:unknown-receipt' },
+    ])
+    app.close()
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ agent_dispatch_outbox: 1, runtime_session_bindings: 1, workspace_receipts: 1 })
+    store.close()
+  })
+
   it('rejects DESIGN system.schedule with zero SQLite writes', async () => {
     const dbPath = await tempDb()
     const app = appFor(dbPath, 'DESIGN')

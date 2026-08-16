@@ -124,6 +124,24 @@ export interface AgentReportRecordM2BV1 extends AgentDispatchRecordM2BV1 {
   receipt: PerformReceiptV1
 }
 
+export interface AgentOutcomeRecordM2BV1 {
+  attemptId: AttemptId
+  taskRunId: TaskRunId
+  runtimeSessionId: string
+  outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
+  receiptDigest: string
+  receipt: PerformReceiptV1
+  now: string
+}
+
+export interface AgentReconcileRecordM2BV1 {
+  attemptId: AttemptId
+  runtimeSessionId: string
+  expectedReceiptDigest?: string
+  receipt: PerformReceiptV1
+  now: string
+}
+
 export class CollaborationHubSqliteStoreV1 {
   private readonly db: DatabaseSync
 
@@ -502,6 +520,46 @@ export class CollaborationHubSqliteStoreV1 {
         from: 'STARTING',
         to: 'RUNNING',
         runtimeSessionId: record.runtimeSessionId,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      this.writeIdempotency(address, idempotency, receipt)
+    })
+  }
+
+  writeAgentOutcome(address: HubAddressV1, idempotency: IdempotencyInput, record: AgentOutcomeRecordM2BV1): void {
+    this.transaction(() => {
+      const version = this.currentVersion(address) + 1
+      const receipt = { ...record.receipt, sessionVersion: version }
+      const nextTaskStatus = record.outcome === 'OUTCOME_UNKNOWN' ? 'OUTCOME_UNKNOWN' : 'FAILED'
+      this.db.prepare('update attempts set status = ?, runtime_session_id = ?, updated_at = ? where attempt_id = ?').run(
+        record.outcome,
+        record.runtimeSessionId,
+        record.now,
+        record.attemptId,
+      )
+      this.db.prepare('update task_runs set status = ? where task_run_id = ?').run(nextTaskStatus, record.taskRunId)
+      this.writeEvent(address, version, 'system.agent.outcome.record', {
+        phase: 'attempt.transition',
+        taskRunId: record.taskRunId,
+        attemptId: record.attemptId,
+        runtimeSessionId: record.runtimeSessionId,
+        to: record.outcome,
+        receiptDigest: record.receiptDigest,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      this.writeIdempotency(address, idempotency, receipt)
+    })
+  }
+
+  writeAgentReconcile(address: HubAddressV1, idempotency: IdempotencyInput, record: AgentReconcileRecordM2BV1): void {
+    this.transaction(() => {
+      const version = this.currentVersion(address) + 1
+      const receipt = { ...record.receipt, sessionVersion: version }
+      this.writeEvent(address, version, 'system.agent.reconcile', {
+        phase: 'outcome_unknown.reconcile_requested',
+        attemptId: record.attemptId,
+        runtimeSessionId: record.runtimeSessionId,
+        expectedReceiptDigest: record.expectedReceiptDigest,
       }, record.now)
       this.bumpProjectionVersion(address, version)
       this.writeIdempotency(address, idempotency, receipt)
