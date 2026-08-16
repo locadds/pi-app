@@ -339,8 +339,13 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       return systemError('FLOW_NOT_FOUND')
     }
     if (store.hasActiveExternalAttempt()) return systemError('ILLEGAL_TRANSITION')
+    const persistedBaseline = store.flowExecutionBaseline(request.intent.flowId)
     const baseline = await this.captureBaseline(address, request.intent.flowId, projection.activeRevision?.revisionId ?? null)
     if (!baseline.ok) return systemError('BASELINE_UNAVAILABLE', { reason: baseline.reasonCode })
+    const capturedBaselineBindingDigest = payloadDigest({ flowId: request.intent.flowId, baseline: baseline.value })
+    if (persistedBaseline && !matchesCapturedFlowBaseline(persistedBaseline, baseline.value, capturedBaselineBindingDigest)) {
+      return systemError('BASELINE_CONFLICT')
+    }
     const task = store.taskRuns(request.intent.flowId).find((candidate) => {
       if (candidate.status !== 'PENDING_DISABLED') return false
       const dependsOn = JSON.parse(candidate.depends_json) as string[]
@@ -348,7 +353,15 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     })
     if (!task) return systemError('ILLEGAL_TRANSITION')
     const attemptId = this.id('xhba') as AttemptId
-    const baselineBindingDigest = payloadDigest({ flowId: request.intent.flowId, baseline: baseline.value })
+    const effectiveBaseline = persistedBaseline
+      ? {
+          baselineId: persistedBaseline.baseline_id,
+          baselineTreeHash: persistedBaseline.baseline_tree_hash,
+          initialTargetFingerprint: persistedBaseline.initial_target_fingerprint,
+          baselineDigest: persistedBaseline.baseline_digest,
+        }
+      : baseline.value
+    const baselineBindingDigest = persistedBaseline?.baseline_binding_digest ?? capturedBaselineBindingDigest
     const receipt = {
       requestId: request.requestId,
       intentType: request.intent.type,
@@ -357,23 +370,28 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       taskRunId: task.task_run_id,
       attemptId,
     }
-    const compositionDigest = payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, attemptKind: 'INITIAL', baselineDigest: baseline.value.baselineDigest })
-    store.writeSchedule(address, this.idempotency(request), {
-      flowId: request.intent.flowId,
-      taskRunId: task.task_run_id,
-      attemptId,
-      attemptDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, baselineDigest: baseline.value.baselineDigest }),
-      compositionDigest,
-      baselineBindingDigest,
-      baselineId: baseline.value.baselineId,
-      baselineTreeHash: baseline.value.baselineTreeHash,
-      initialTargetFingerprint: baseline.value.initialTargetFingerprint,
-      baselineDigest: baseline.value.baselineDigest,
-      workspacePrepareRequestDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, purpose: 'workspace.prepare', compositionDigest, baselineBindingDigest }),
-      projection,
-      receipt,
-      now: this.now(),
-    })
+    const compositionDigest = payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, attemptKind: 'INITIAL', baselineDigest: effectiveBaseline.baselineDigest })
+    try {
+      store.writeSchedule(address, this.idempotency(request), {
+        flowId: request.intent.flowId,
+        taskRunId: task.task_run_id,
+        attemptId,
+        attemptDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, baselineDigest: effectiveBaseline.baselineDigest }),
+        compositionDigest,
+        baselineBindingDigest,
+        baselineId: effectiveBaseline.baselineId,
+        baselineTreeHash: effectiveBaseline.baselineTreeHash,
+        initialTargetFingerprint: effectiveBaseline.initialTargetFingerprint,
+        baselineDigest: effectiveBaseline.baselineDigest,
+        workspacePrepareRequestDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, purpose: 'workspace.prepare', compositionDigest, baselineBindingDigest }),
+        projection,
+        receipt,
+        now: this.now(),
+      })
+    } catch (error) {
+      if (isBaselineConflictError(error)) return systemError('BASELINE_CONFLICT')
+      throw error
+    }
     return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
   }
 
@@ -743,6 +761,24 @@ function matchesWorkspaceBinding(
     receipt.baselineBindingDigest === composition.baselineBindingDigest &&
     receipt.compositionDigest === composition.compositionDigest
   )
+}
+
+function matchesCapturedFlowBaseline(
+  persisted: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['flowExecutionBaseline']>>,
+  captured: ExecutionBaselineV1,
+  capturedBaselineBindingDigest: string,
+): boolean {
+  return (
+    persisted.baseline_id === captured.baselineId &&
+    persisted.baseline_tree_hash === captured.baselineTreeHash &&
+    persisted.initial_target_fingerprint === captured.initialTargetFingerprint &&
+    persisted.baseline_digest === captured.baselineDigest &&
+    persisted.baseline_binding_digest === capturedBaselineBindingDigest
+  )
+}
+
+function isBaselineConflictError(error: unknown): boolean {
+  return error instanceof Error && (error.message === 'BASELINE_CONFLICT' || (error as { code?: string }).code === 'BASELINE_CONFLICT')
 }
 
 function isValidAgentOutcomeIntent(intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.outcome.record' }>): boolean {

@@ -7,10 +7,12 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type {
+  AttemptId,
   FlowId,
   HubAddressV1,
   HubCommandRequestV1,
   InitialPlanDraftInputV1,
+  TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { createCollaborationHubApplicationV1 } from './application'
@@ -86,6 +88,26 @@ async function activePlan(dbPath: string) {
   const approved = await app.execute(approve)
   if (!approved.ok) throw new Error('approve failed')
   return { app, flowId: start.value.flowId }
+}
+
+function baselineRecord(suffix: string) {
+  const baselineId = `baseline-${suffix}`
+  const baselineTreeHash = `sha256:baseline-tree-${suffix}`
+  const initialTargetFingerprint = `sha256:initial-target-${suffix}`
+  const baselineDigest = `sha256:baseline-digest-${suffix}`
+  const baselineBindingDigest = `sha256:baseline-binding-${suffix}`
+  return { baselineId, baselineTreeHash, initialTargetFingerprint, baselineDigest, baselineBindingDigest }
+}
+
+function flowBaselineRow(dbPath: string, flowId: FlowId) {
+  const db = new DatabaseSync(dbPath)
+  try {
+    return db
+      .prepare('select flow_id, baseline_id, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at from flow_execution_baselines where flow_id = ?')
+      .get(flowId) as Record<string, unknown> | undefined
+  } finally {
+    db.close()
+  }
 }
 
 describe('M2B sqlite store migration', () => {
@@ -199,5 +221,69 @@ describe('M2B sqlite store migration', () => {
     ).resolves.toMatchObject({ ok: true })
     app.close()
     expect(existsSync(dbPath)).toBe(true)
+  })
+
+  it('rejects direct writeSchedule baseline drift at the SQLite write boundary without overwriting the existing row', async () => {
+    const dbPath = await tempDb()
+    const { app, flowId } = await activePlan(dbPath)
+    app.close()
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    const projection = store.readProjection(ADDRESS)
+    const taskRun = store.taskRuns(flowId as FlowId)[0]
+    if (!projection || !taskRun) throw new Error('missing active plan')
+    const firstBaseline = baselineRecord('1')
+    store.writeSchedule(
+      ADDRESS,
+      { requestId: 'sys-schedule-first', commandType: 'system.schedule', payloadHash: 'sha256:first-payload' },
+      {
+        flowId: flowId as FlowId,
+        taskRunId: taskRun.task_run_id,
+        attemptId: 'xhba_first' as AttemptId,
+        attemptDigest: 'sha256:first-attempt',
+        compositionDigest: 'sha256:first-composition',
+        ...firstBaseline,
+        workspacePrepareRequestDigest: 'sha256:first-workspace-prepare',
+        projection,
+        receipt: {
+          requestId: 'sys-schedule-first',
+          intentType: 'system.schedule',
+          sessionVersion: 0,
+          flowId: flowId as FlowId,
+          taskRunId: taskRun.task_run_id,
+          attemptId: 'xhba_first' as AttemptId,
+        },
+        now: '2026-08-17T00:00:00.000Z',
+      },
+    )
+    const oldRow = flowBaselineRow(dbPath, flowId as FlowId)
+    const beforeCounts = store.tableCounts()
+    expect(() =>
+      store.writeSchedule(
+        ADDRESS,
+        { requestId: 'sys-schedule-drift', commandType: 'system.schedule', payloadHash: 'sha256:drift-payload' },
+        {
+          flowId: flowId as FlowId,
+          taskRunId: taskRun.task_run_id as TaskRunId,
+          attemptId: 'xhba_drift' as AttemptId,
+          attemptDigest: 'sha256:drift-attempt',
+          compositionDigest: 'sha256:drift-composition',
+          ...baselineRecord('2'),
+          workspacePrepareRequestDigest: 'sha256:drift-workspace-prepare',
+          projection,
+          receipt: {
+            requestId: 'sys-schedule-drift',
+            intentType: 'system.schedule',
+            sessionVersion: 0,
+            flowId: flowId as FlowId,
+            taskRunId: taskRun.task_run_id,
+            attemptId: 'xhba_drift' as AttemptId,
+          },
+          now: '2026-08-17T00:00:01.000Z',
+        },
+      ),
+    ).toThrow('BASELINE_CONFLICT')
+    expect(store.tableCounts()).toEqual(beforeCounts)
+    store.close()
+    expect(flowBaselineRow(dbPath, flowId as FlowId)).toEqual(oldRow)
   })
 })

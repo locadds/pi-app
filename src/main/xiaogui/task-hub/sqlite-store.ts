@@ -456,19 +456,22 @@ export class CollaborationHubSqliteStoreV1 {
       const version = this.currentVersion(address) + 1
       const projection = { ...record.projection, sessionVersion: version }
       const receipt = { ...record.receipt, sessionVersion: version }
-      this.db
-        .prepare(
-          'insert into flow_execution_baselines (flow_id, baseline_id, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at) values (?, ?, ?, ?, ?, ?, ?) on conflict(flow_id) do update set baseline_id = excluded.baseline_id, baseline_tree_hash = excluded.baseline_tree_hash, initial_target_fingerprint = excluded.initial_target_fingerprint, baseline_digest = excluded.baseline_digest, baseline_binding_digest = excluded.baseline_binding_digest',
-        )
-        .run(
-          record.flowId,
-          record.baselineId,
-          record.baselineTreeHash,
-          record.initialTargetFingerprint,
-          record.baselineDigest,
-          record.baselineBindingDigest,
-          record.now,
-        )
+      const insertBaseline = this.db.prepare(
+        'insert or ignore into flow_execution_baselines (flow_id, baseline_id, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at) values (?, ?, ?, ?, ?, ?, ?)',
+      )
+      insertBaseline.run(
+        record.flowId,
+        record.baselineId,
+        record.baselineTreeHash,
+        record.initialTargetFingerprint,
+        record.baselineDigest,
+        record.baselineBindingDigest,
+        record.now,
+      )
+      const persistedBaseline = this.flowExecutionBaseline(record.flowId)
+      if (!persistedBaseline || !flowBaselineMatchesScheduleRecord(persistedBaseline, record)) {
+        throw Object.assign(new Error('BASELINE_CONFLICT'), { code: 'BASELINE_CONFLICT' })
+      }
       this.db
         .prepare("update task_runs set status = 'READY', unavailable_reason = 'M2B1_SCHEDULED' where task_run_id = ?")
         .run(record.taskRunId)
@@ -1048,6 +1051,17 @@ export interface IdempotencyInput {
 
 function scopeKey(address: HubAddressV1): string {
   return `${address.projectId}:${address.sessionKey}`
+}
+
+function flowBaselineMatchesScheduleRecord(baseline: FlowExecutionBaselineRecord, record: ScheduleRecordM2BV1): boolean {
+  return (
+    baseline.flow_id === record.flowId &&
+    baseline.baseline_id === record.baselineId &&
+    baseline.baseline_tree_hash === record.baselineTreeHash &&
+    baseline.initial_target_fingerprint === record.initialTargetFingerprint &&
+    baseline.baseline_digest === record.baselineDigest &&
+    baseline.baseline_binding_digest === record.baselineBindingDigest
+  )
 }
 
 function toM2BTaskRunStatus(status: string): TaskRunProjectionM2BV1['status'] {

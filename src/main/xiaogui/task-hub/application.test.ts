@@ -107,6 +107,16 @@ function canonicalDraft(): InitialPlanDraftInputV1 {
   }
 }
 
+function twoIndependentTasksDraft(): InitialPlanDraftInputV1 {
+  return {
+    objective: '验证同一 Flow baseline 不可变',
+    tasks: [
+      { taskKey: 'first', title: '第一项无依赖任务' },
+      { taskKey: 'second', title: '第二项无依赖任务' },
+    ],
+  }
+}
+
 function appFor(dbPath: string, mode: SessionMode = 'WORK', ids = ['xhbf_flow', 'xhbr_rev'], runtimeSessionId?: string) {
   let index = 0
   const baseline = scriptedBaseline()
@@ -124,13 +134,39 @@ function appFor(dbPath: string, mode: SessionMode = 'WORK', ids = ['xhbf_flow', 
   })
 }
 
-function scriptedBaseline() {
+function appForBaselines(dbPath: string, baselines: ReturnType<typeof scriptedBaseline>[]) {
+  let index = 0
+  let baselineIndex = 0
+  return createCollaborationHubApplicationV1({
+    lookup: lookup('CODING'),
+    storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
+    agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [approvedCapability], createRuntimeSessionId: 'runtime-1' })),
+    baselineProvider: {
+      capture: async () => baselines[Math.min(baselineIndex++, baselines.length - 1)],
+    },
+    now: () => '2026-08-16T00:00:00.000Z',
+    idFactory: (prefix) => `${prefix}_${++index}`,
+  })
+}
+
+function scriptedBaseline(suffix = '1') {
   const base = {
-    baselineId: 'baseline-1',
-    baselineTreeHash: 'sha256:baseline-tree',
-    initialTargetFingerprint: 'sha256:initial-target',
+    baselineId: `baseline-${suffix}`,
+    baselineTreeHash: `sha256:baseline-tree-${suffix}`,
+    initialTargetFingerprint: `sha256:initial-target-${suffix}`,
   }
   return { ...base, baselineDigest: digestJson(base) }
+}
+
+function flowBaselineRow(dbPath: string, flowId: FlowId) {
+  const db = new DatabaseSync(dbPath)
+  try {
+    return db
+      .prepare('select flow_id, baseline_id, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at from flow_execution_baselines where flow_id = ?')
+      .get(flowId) as Record<string, unknown> | undefined
+  } finally {
+    db.close()
+  }
 }
 
 function workspaceBinding(dbPath: string, attemptId: AttemptId) {
@@ -144,10 +180,10 @@ function workspaceBinding(dbPath: string, attemptId: AttemptId) {
   }
 }
 
-async function start(app: ReturnType<typeof appFor>, requestId = 'req-start') {
+async function start(app: ReturnType<typeof appFor>, requestId = 'req-start', initialDraft = draft()) {
   return execute(app, {
     requestId,
-    intent: { type: 'flow.start.with_draft', draft: draft() },
+    intent: { type: 'flow.start.with_draft', draft: initialDraft },
   })
 }
 
@@ -717,6 +753,141 @@ describe('M2A collaboration hub application', () => {
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'IDEMPOTENCY_CONFLICT' } })
     unavailable.close()
+  })
+
+  it('reuses an immutable flow baseline when scheduling a later task with the same provider facts', async () => {
+    const dbPath = await tempDb()
+    const baseline = scriptedBaseline()
+    const app = appForBaselines(dbPath, [baseline, baseline])
+    await start(app, 'req-start', twoIndependentTasksDraft())
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+
+    const approved = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-schedule-first',
+      expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+    })
+    const firstScheduled = await app.observeM2B(ADDRESS)
+    if (!firstScheduled.ok || !firstScheduled.value.attempts[0]) throw new Error('missing first attempt')
+    const firstAttempt = firstScheduled.value.attempts[0]
+    const firstBaselineRow = flowBaselineRow(dbPath, draftProjection.value.activeFlow.flowId)
+    const firstBinding = workspaceBinding(dbPath, firstAttempt.attemptId)
+    await executeSystem(app, {
+      requestId: 'sys-workspace-first-failed',
+      expectedSessionVersion: firstScheduled.value.sessionVersion,
+      intent: {
+        type: 'system.workspace.prepare.result.record',
+        flowId: draftProjection.value.activeFlow.flowId,
+        taskRunId: firstAttempt.taskRunId,
+        attemptId: firstAttempt.attemptId,
+        receipt: {
+          status: 'FAILED',
+          workspaceReceiptId: 'xhbw_first_failed' as WorkspaceReceiptId,
+          receiptDigest: 'sha256:first-workspace-failed',
+          failure: { kind: 'WORKTREE_CREATE_FAILED', failureDigest: 'sha256:first-worktree-failed' },
+          ...firstBinding,
+        },
+      },
+    })
+
+    const afterFailure = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-schedule-second',
+      expectedSessionVersion: afterFailure.ok ? afterFailure.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+    })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        attempts: [
+          expect.objectContaining({ status: 'FAILED' }),
+          expect.objectContaining({ status: 'WORKSPACE_PREPARING' }),
+        ],
+      },
+    })
+    expect(flowBaselineRow(dbPath, draftProjection.value.activeFlow.flowId)).toEqual(firstBaselineRow)
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ flow_execution_baselines: 1, attempts: 2, composition_attempts: 2, workspace_prepare_outbox: 2 })
+    store.close()
+    app.close()
+  })
+
+  it('rejects a later schedule when the provider baseline drifts and leaves persisted baseline state unchanged', async () => {
+    const dbPath = await tempDb()
+    const app = appForBaselines(dbPath, [scriptedBaseline('1'), scriptedBaseline('2')])
+    await start(app, 'req-start', twoIndependentTasksDraft())
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+
+    const approved = await app.observeM2B(ADDRESS)
+    await executeSystem(app, {
+      requestId: 'sys-schedule-first',
+      expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+    })
+    const firstScheduled = await app.observeM2B(ADDRESS)
+    if (!firstScheduled.ok || !firstScheduled.value.attempts[0]) throw new Error('missing first attempt')
+    const firstAttempt = firstScheduled.value.attempts[0]
+    const firstBinding = workspaceBinding(dbPath, firstAttempt.attemptId)
+    await executeSystem(app, {
+      requestId: 'sys-workspace-first-failed',
+      expectedSessionVersion: firstScheduled.value.sessionVersion,
+      intent: {
+        type: 'system.workspace.prepare.result.record',
+        flowId: draftProjection.value.activeFlow.flowId,
+        taskRunId: firstAttempt.taskRunId,
+        attemptId: firstAttempt.attemptId,
+        receipt: {
+          status: 'FAILED',
+          workspaceReceiptId: 'xhbw_first_failed' as WorkspaceReceiptId,
+          receiptDigest: 'sha256:first-workspace-failed',
+          failure: { kind: 'WORKTREE_CREATE_FAILED', failureDigest: 'sha256:first-worktree-failed' },
+          ...firstBinding,
+        },
+      },
+    })
+
+    const beforeDrift = await app.observeM2B(ADDRESS)
+    const oldBaselineRow = flowBaselineRow(dbPath, draftProjection.value.activeFlow.flowId)
+    const storeBefore = new CollaborationHubSqliteStoreV1(dbPath)
+    const beforeCounts = storeBefore.tableCounts()
+    const beforeVersion = storeBefore.currentVersion(ADDRESS)
+    storeBefore.close()
+    await expect(
+      executeSystem(app, {
+        requestId: 'sys-schedule-drift',
+        expectedSessionVersion: beforeDrift.ok ? beforeDrift.value.sessionVersion : 0,
+        intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'BASELINE_CONFLICT' } })
+    const storeAfter = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(storeAfter.tableCounts()).toEqual(beforeCounts)
+    expect(storeAfter.currentVersion(ADDRESS)).toBe(beforeVersion)
+    storeAfter.close()
+    expect(flowBaselineRow(dbPath, draftProjection.value.activeFlow.flowId)).toEqual(oldBaselineRow)
+    app.close()
   })
 
   it('records PREPARED workspace result as Attempt READY without completing the TaskRun', async () => {
