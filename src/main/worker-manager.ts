@@ -496,7 +496,12 @@ export class WorkerManager {
       setSessionLeafOverride(sessionFile, response.leafId as string | null)
     }
   }
-  async newSession(cwd: string): Promise<{ sessionId: string; sessionFile?: string }> {
+  async newSession(
+    cwd: string,
+    options?: {
+      beforeActivate?: (result: { sessionId: string; sessionFile: string }) => Promise<void>
+    },
+  ): Promise<{ sessionId: string; sessionFile?: string }> {
     const run = this.lifecycleChain.then(() =>
       createNewSessionInPool({
         cwd,
@@ -507,6 +512,7 @@ export class WorkerManager {
         setForeground: (slot) => this.setForeground(slot),
         onAppEvent: (payload) => this.forwardAppEvent(payload),
         onSlotExit: (slot, code) => this.handleSlotExit(slot, code),
+        beforeActivate: options?.beforeActivate,
       }),
     )
     this.lifecycleChain = run.then(
@@ -530,6 +536,7 @@ export class WorkerManager {
     sessionFile: string
     entryId: string
     position?: 'before' | 'at'
+    beforeActivate?: (result: { sessionId?: string; sessionFile: string }) => Promise<void>
   }): Promise<{
     cancelled?: boolean
     error?: string
@@ -552,6 +559,23 @@ export class WorkerManager {
       return { error: String((r as { error?: string }).error || 'fork failed') }
     }
     const sessionFile = r.sessionFile ? String(r.sessionFile) : undefined
+    if (sessionFile && opts.beforeActivate) {
+      try {
+        await opts.beforeActivate({
+          sessionId: r.sessionId ? String(r.sessionId) : undefined,
+          sessionFile,
+        })
+      } catch (error) {
+        const slot = this.foregroundSlot()
+        if (slot) {
+          const key = slot.poolKey
+          if (this.pool.get(key) === slot) this.pool.delete(key)
+          if (this.foregroundPoolKey === key) this.foregroundPoolKey = null
+          await disposeWorkerSlot(slot, this.mainWindow)
+        }
+        throw error
+      }
+    }
     if (sessionFile) await this.remapForegroundSlotToSessionFile(sessionFile)
     return {
       cancelled: !!r.cancelled,
@@ -563,7 +587,10 @@ export class WorkerManager {
     }
   }
 
-  async cloneSession(opts: { sessionFile: string }): Promise<{
+  async cloneSession(opts: {
+    sessionFile: string
+    beforeActivate?: (result: { sessionId?: string; sessionFile: string }) => Promise<void>
+  }): Promise<{
     cancelled?: boolean
     error?: string
     sessionId?: string
@@ -580,6 +607,23 @@ export class WorkerManager {
       return { error: String((r as { error?: string }).error || 'clone failed') }
     }
     const sessionFile = r.sessionFile ? String(r.sessionFile) : undefined
+    if (sessionFile && opts.beforeActivate) {
+      try {
+        await opts.beforeActivate({
+          sessionId: r.sessionId ? String(r.sessionId) : undefined,
+          sessionFile,
+        })
+      } catch (error) {
+        const slot = this.foregroundSlot()
+        if (slot) {
+          const key = slot.poolKey
+          if (this.pool.get(key) === slot) this.pool.delete(key)
+          if (this.foregroundPoolKey === key) this.foregroundPoolKey = null
+          await disposeWorkerSlot(slot, this.mainWindow)
+        }
+        throw error
+      }
+    }
     if (sessionFile) await this.remapForegroundSlotToSessionFile(sessionFile)
     return {
       cancelled: !!r.cancelled,

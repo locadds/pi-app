@@ -25,6 +25,7 @@ import { getProjectBaseline, getScope, listScopes, recordProjectBaseline, setSco
 import { readGuardStatus } from './guard-status'
 import { ensureDesignExtensionDeployed } from './design-extension-deploy'
 import type { ExecutionPhase, XiaoguiMode } from './config'
+import { sessionScopeResolverV1 } from './scope-service'
 
 const ModeSwitchSchema = z.object({
   mode: z.enum(['WORK', 'DESIGN', 'CODING']),
@@ -50,6 +51,11 @@ const ScopeSetSchema = z.object({
 
 const ScopeBaselineProjectsSchema = z.object({
   paths: z.array(z.string()),
+})
+
+const CanonicalScopeLookupSchema = z.object({
+  projectId: z.string().regex(/^xgp1_[0-9a-f]{64}$/),
+  sessionKey: z.string().regex(/^xgs1_[0-9a-f]{64}$/),
 })
 
 const ToolInvokeSchema = z.object({
@@ -115,6 +121,13 @@ export function registerXiaoguiHandlers(): void {
   })
 
   // ---- 模式作用域映射（三模式独立对话/项目；查不到映射=历史数据，渲染层按 WORK 处理） ----
+
+  registerHandlerWithSchema('ipc:xiaogui.scope.lookup', CanonicalScopeLookupSchema, async (req) => {
+    return sessionScopeResolverV1.lookup({
+      projectId: req.projectId as never,
+      sessionKey: req.sessionKey as never,
+    })
+  })
 
   registerHandlerWithSchema('ipc:xiaogui.scope.get', ScopeGetSchema, async (req) => {
     return { mode: getScope(req.kind as ScopeKind, req.key) }

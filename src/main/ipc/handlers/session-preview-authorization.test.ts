@@ -66,6 +66,12 @@ vi.mock('../../session-bind-state', () => ({
   setPendingEphemeralSandboxDraft: vi.fn(),
   setPendingWorkerSessionFile: vi.fn(),
 }))
+vi.mock('../../xiaogui/scope-service', () => ({
+  sessionScopeResolverV1: { resolve: vi.fn(), registerNew: vi.fn(), derive: vi.fn() },
+}))
+vi.mock('../../xiaogui/sidecar-bridge', () => ({
+  xiaogui: { setMode: vi.fn(), getMode: vi.fn(() => 'WORK') },
+}))
 
 vi.mock('../../session-prepare', () => ({ resolvePreparedSessionFile: vi.fn() }))
 vi.mock('../../session-display-names', () => ({

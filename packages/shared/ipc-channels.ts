@@ -134,6 +134,7 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.scope.baselineProjects',
   'ipc:xiaogui.scope.get',
   'ipc:xiaogui.scope.list',
+  'ipc:xiaogui.scope.lookup',
   'ipc:xiaogui.scope.set',
   'ipc:xiaogui.sidecar.status',
   'ipc:xiaogui.tool.invoke',

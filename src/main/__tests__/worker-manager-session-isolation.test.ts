@@ -7,6 +7,9 @@ import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
 vi.mock('../config-store', () => ({
   configStore: { get: vi.fn(() => undefined) },
 }))
+vi.mock('../session-file-meta', () => ({
+  readSessionMetaFromFile: vi.fn(() => ({ cwd: '/workspace' })),
+}))
 
 const { forkWorkerForCwd, readMaxSessionWorkers } = vi.hoisted(() => ({
   forkWorkerForCwd: vi.fn(),
@@ -122,6 +125,51 @@ describe('WorkerManager session isolation', () => {
     expect(internals.pool.get(createdFile)).toBe(created)
   })
 
+  it('runs the new-session persistence gate before foreground activation', async () => {
+    const running = fakeSlot(normalizeSessionKey('/sessions/running.jsonl'), true)
+    const { manager, internals } = managerWithForeground(running)
+    const created = fakeSlot(workspacePoolKey('/workspace'))
+    const createdFile = normalizeSessionKey('/sessions/new.jsonl')
+    replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
+    forkWorkerForCwd.mockResolvedValue({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
+    const beforeActivate = vi.fn(async () => {
+      expect(internals.foregroundPoolKey).toBe(running.poolKey)
+      expect(internals.pool.has(createdFile)).toBe(false)
+      expect(created.poolKey).toBe(workspacePoolKey('/workspace'))
+    })
+
+    await expect(manager.newSession('/workspace', { beforeActivate })).resolves.toEqual({
+      sessionId: 'new',
+      sessionFile: createdFile,
+    })
+
+    expect(beforeActivate).toHaveBeenCalledWith({ sessionId: 'new', sessionFile: createdFile })
+    expect(internals.foregroundPoolKey).toBe(createdFile)
+    expect(internals.pool.get(createdFile)).toBe(created)
+  })
+
+  it('disposes the candidate worker when the new-session persistence gate fails', async () => {
+    const running = fakeSlot(normalizeSessionKey('/sessions/running.jsonl'), true)
+    const { manager, internals } = managerWithForeground(running)
+    const created = fakeSlot(workspacePoolKey('/workspace'))
+    const createdFile = normalizeSessionKey('/sessions/new.jsonl')
+    replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
+    forkWorkerForCwd.mockResolvedValue({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
+
+    await expect(
+      manager.newSession('/workspace', {
+        beforeActivate: async () => {
+          throw new Error('SCOPE_PERSISTENCE_FAILED')
+        },
+      }),
+    ).rejects.toThrow('SCOPE_PERSISTENCE_FAILED')
+
+    expect(internals.foregroundPoolKey).toBe(running.poolKey)
+    expect(internals.pool.has(createdFile)).toBe(false)
+    expect(internals.pool.has(created.poolKey)).toBe(false)
+    expect(created.worker.kill).toHaveBeenCalled()
+  })
+
   it('evicts an idle slot before forking when the pool is at capacity', async () => {
     readMaxSessionWorkers.mockReturnValue(1)
     const idle = fakeSlot(normalizeSessionKey('/sessions/idle.jsonl'))
@@ -166,6 +214,72 @@ describe('WorkerManager session isolation', () => {
     expect(internals.pool.has(normalizeSessionKey('/sessions/new-1.jsonl'))).toBe(true)
     expect(internals.pool.has(normalizeSessionKey('/sessions/new-2.jsonl'))).toBe(true)
   })
+
+  it.each(['fork', 'clone'] as const)(
+    'runs the %s persistence gate before remapping the foreground slot',
+    async (kind) => {
+      const sourceFile = normalizeSessionKey('/sessions/source.jsonl')
+      const targetFile = normalizeSessionKey(`/sessions/${kind}.jsonl`)
+      const source = fakeSlot(sourceFile)
+      const { manager, internals } = managerWithForeground(source)
+      replyFrom(source, {
+        type: `${kind}-done`,
+        sessionId: kind,
+        sessionFile: targetFile,
+      })
+      const beforeActivate = vi.fn(async () => {
+        expect(internals.foregroundPoolKey).toBe(sourceFile)
+        expect(internals.pool.get(sourceFile)).toBe(source)
+        expect(internals.pool.has(targetFile)).toBe(false)
+      })
+
+      if (kind === 'fork') {
+        await expect(
+          manager.forkSession({
+            sessionFile: sourceFile,
+            entryId: 'entry',
+            beforeActivate,
+          }),
+        ).resolves.toMatchObject({ sessionId: 'fork', sessionFile: targetFile })
+      } else {
+        await expect(
+          manager.cloneSession({ sessionFile: sourceFile, beforeActivate }),
+        ).resolves.toMatchObject({ sessionId: 'clone', sessionFile: targetFile })
+      }
+
+      expect(beforeActivate).toHaveBeenCalledWith({ sessionId: kind, sessionFile: targetFile })
+      expect(internals.foregroundPoolKey).toBe(targetFile)
+      expect(internals.pool.get(targetFile)).toBe(source)
+    },
+  )
+
+  it.each(['fork', 'clone'] as const)(
+    'disposes the candidate slot when the %s persistence gate fails',
+    async (kind) => {
+      const sourceFile = normalizeSessionKey('/sessions/source.jsonl')
+      const targetFile = normalizeSessionKey(`/sessions/${kind}.jsonl`)
+      const source = fakeSlot(sourceFile)
+      const { manager, internals } = managerWithForeground(source)
+      replyFrom(source, {
+        type: `${kind}-done`,
+        sessionId: kind,
+        sessionFile: targetFile,
+      })
+      const beforeActivate = async () => {
+        throw new Error('SCOPE_PERSISTENCE_FAILED')
+      }
+
+      const operation = kind === 'fork'
+        ? manager.forkSession({ sessionFile: sourceFile, entryId: 'entry', beforeActivate })
+        : manager.cloneSession({ sessionFile: sourceFile, beforeActivate })
+
+      await expect(operation).rejects.toThrow('SCOPE_PERSISTENCE_FAILED')
+      expect(internals.foregroundPoolKey).toBeNull()
+      expect(internals.pool.has(sourceFile)).toBe(false)
+      expect(internals.pool.has(targetFile)).toBe(false)
+      expect(source.worker.kill).toHaveBeenCalled()
+    },
+  )
 
   it('sends abort only to the worker bound to the requested session', async () => {
     const foreground = fakeSlot(normalizeSessionKey('/sessions/a.jsonl'), true)

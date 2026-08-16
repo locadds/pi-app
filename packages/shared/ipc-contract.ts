@@ -5,6 +5,12 @@ import type { DiffResult } from './diff-model'
 import type { CompatibilityLevel } from './extension-types'
 import type { ModelAuthProjection } from './model-auth-projection'
 import type { SessionContextPreview } from './session-context-preview'
+import type {
+  CanonicalSessionAddressScopeV1,
+  SessionAddressV1,
+  SessionMode,
+  SessionScopeLookupResultV1,
+} from './xiaogui-session-scope'
 
 // ── Workspace ──
 export interface WorkspaceOpenRequest { path?: string; awaitWorker?: boolean }
@@ -38,12 +44,19 @@ export interface SessionInfo {
   updatedAt: number
   modelId: string
   status: 'idle' | 'busy' | 'error'
+  canonicalScope?: CanonicalSessionAddressScopeV1
 }
 export interface SessionListRequest { workspaceId?: string }
 export interface SessionListResponse { sessions: SessionInfo[] }
-export interface SessionOpenRequest { sessionId: string; sessionFile?: string }
+export interface SessionOpenRequest { sessionId: string; sessionFile?: string; workspaceId?: string }
 export interface SessionOpenResponse { session: SessionInfo }
-export interface SessionNewRequest { workspaceId: string; title?: string; modelId?: string }
+export interface SessionNewRequest {
+  workspaceId: string
+  title?: string
+  modelId?: string
+  /** Creation intent only; the main-process resolver signs the returned canonical scope. */
+  mode?: SessionMode
+}
 export interface SessionNewResponse { session: SessionInfo }
 export interface SessionForkRequest {
   sessionId?: string
@@ -83,6 +96,8 @@ export interface SessionForkCandidatesResponse {
   messages: Array<{ entryId: string; text: string }>
   error?: string
 }
+export type SessionScopeLookupRequest = SessionAddressV1
+export type SessionScopeLookupResponse = SessionScopeLookupResultV1
 export interface SessionRenameRequest { sessionId: string; title: string }
 export interface SessionRenameResponse { session: SessionInfo }
 export interface SessionCompactRequest { sessionId: string }
@@ -299,6 +314,7 @@ export interface IpcMethodMap {
   'session.fork': { request: SessionForkRequest; response: SessionForkResponse }
   'session.forkCandidates': { request: SessionForkCandidatesRequest; response: SessionForkCandidatesResponse }
   'session.clone': { request: SessionCloneRequest; response: SessionCloneResponse }
+  'xiaogui.scope.lookup': { request: SessionScopeLookupRequest; response: SessionScopeLookupResponse }
   'session.rename': { request: SessionRenameRequest; response: SessionRenameResponse }
   'session.compact': { request: SessionCompactRequest; response: SessionCompactResponse }
   'session.export': { request: SessionExportRequest; response: SessionExportResponse }

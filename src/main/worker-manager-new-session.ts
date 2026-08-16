@@ -21,6 +21,7 @@ export type NewSessionPoolOptions = {
   setForeground: (slot: WorkerSlot) => void
   onAppEvent: (payload: WorkerAppEventForward) => void
   onSlotExit: (slot: WorkerSlot, code: number) => void
+  beforeActivate?: (result: { sessionId: string; sessionFile: string }) => Promise<void>
 }
 
 function findReusableWorkspaceSlot(options: NewSessionPoolOptions): WorkerSlot | null {
@@ -70,6 +71,7 @@ async function runNewSession(
     ? normalizeSessionKey(String(response.sessionFile))
     : undefined
   if (sessionFile) {
+    await options.beforeActivate?.({ sessionId, sessionFile })
     await remapSessionWorkerSlot(options.pool, slot.poolKey, sessionFile)
   }
   options.setForeground(slot)
@@ -85,7 +87,15 @@ export async function createNewSessionInPool(
   options: NewSessionPoolOptions,
 ): Promise<{ sessionId: string; sessionFile?: string }> {
   const reusable = findReusableWorkspaceSlot(options)
-  if (reusable) return runNewSession(reusable, options)
+  if (reusable) {
+    try {
+      return await runNewSession(reusable, options)
+    } catch (error) {
+      if (options.pool.get(reusable.poolKey) === reusable) options.pool.delete(reusable.poolKey)
+      await disposeWorkerSlot(reusable, options.mainWindow)
+      throw error
+    }
+  }
 
   const capacity = canAcquireNewWorker(options.pool)
   if (!capacity.ok) throw new Error(capacity.reason)

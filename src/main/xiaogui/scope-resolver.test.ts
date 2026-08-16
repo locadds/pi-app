@@ -57,6 +57,41 @@ beforeEach(() => {
 })
 
 describe('SessionScopeResolverV1.resolve', () => {
+  it('registers a new session from an explicit creation intent', async () => {
+    const resolver = createSessionScopeResolverV1(persistence)
+    const scope = await resolver.registerNew(
+      {
+        rootPath: 'D:/projects/alpha',
+        sessionFile: 'D:/projects/alpha/new.jsonl',
+      },
+      'DESIGN',
+    )
+
+    expect(scope.sessionMode).toBe('DESIGN')
+    await expect(
+      resolver.lookup({ projectId: scope.projectId, sessionKey: scope.sessionKey }),
+    ).resolves.toEqual({
+      kind: 'FOUND',
+      scope: {
+        projectId: scope.projectId,
+        sessionKey: scope.sessionKey,
+        sessionMode: 'DESIGN',
+      },
+    })
+  })
+
+  it('does not let a repeated creation intent overwrite canonical mode', async () => {
+    const resolver = createSessionScopeResolverV1(persistence)
+    const ref = {
+      rootPath: 'D:/projects/alpha',
+      sessionFile: 'D:/projects/alpha/new.jsonl',
+    }
+
+    expect((await resolver.registerNew(ref, 'CODING')).sessionMode).toBe('CODING')
+    expect((await resolver.registerNew(ref, 'DESIGN')).sessionMode).toBe('CODING')
+    expect(persistence.writes).toBe(1)
+  })
+
   it('defaults historical sessions to WORK and persists before returning', async () => {
     const resolver = createSessionScopeResolverV1(persistence)
     const scope = await resolver.resolve({

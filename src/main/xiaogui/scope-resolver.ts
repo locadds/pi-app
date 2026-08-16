@@ -48,6 +48,11 @@ export interface SessionScopeResolverV1 extends SessionScopeLookupV1 {
   }): Promise<PiSessionScopeV1>
 }
 
+/** Main-process-only creation seam. The mode is an intent for an unregistered session. */
+export interface SessionScopeRegistrarV1 {
+  registerNew(session: PiSessionRefV1, requestedMode: SessionMode): Promise<PiSessionScopeV1>
+}
+
 export type SessionScopeResolutionErrorCode =
   | 'INVALID_CANONICAL_SCOPE_INPUT'
   | 'OPAQUE_ID_COLLISION'
@@ -90,7 +95,7 @@ function safePersistenceCall<T>(operation: () => T): T {
 export function createSessionScopeResolverV1(
   persistence: SessionScopePersistenceV1,
   idDeriver: OpaqueScopeIdDeriverV1 = opaqueScopeIdDeriverV1,
-): SessionScopeResolverV1 {
+): SessionScopeResolverV1 & SessionScopeRegistrarV1 {
   function bindSession(
     session: PiSessionRefV1,
     requestedMode: SessionMode,
@@ -136,6 +141,10 @@ export function createSessionScopeResolverV1(
     },
 
     resolve: resolveSession,
+
+    async registerNew(session, requestedMode) {
+      return bindSession(session, requestedMode)
+    },
 
     async derive({ source, target }) {
       const sourceScope = await resolveSession(source)

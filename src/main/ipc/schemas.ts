@@ -65,6 +65,7 @@ export const sessionGetMessagesSchema = z
 
 export const sessionNewSchema = z.object({
   workspaceId: z.string().min(1),
+  mode: z.enum(['WORK', 'DESIGN', 'CODING']).optional(),
 })
 
 export const sessionDeleteSchema = z
