@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
 import type {
+  AgentRuntimeAdapterV1,
+  RuntimeCapabilityV1,
   RuntimeAdapterSelectionV1,
+  RuntimeCreateOrResumeOutcomeV1,
   RuntimeCreateOrResumeRequestV1,
   RuntimeEventV1,
+  RuntimeInterruptRequestV1,
+  RuntimeOutcomeV1,
   RuntimePermissionDecisionV1,
   RuntimeProductionPolicyV1,
+  RuntimeSendRequestV1,
 } from '@shared/xiaogui-agent-runtime'
 import { createAgentRuntimeHostV1 } from './runtime-host'
 import { ScriptedAgentRuntimeAdapterV1 } from './scripted-adapter'
@@ -21,6 +27,14 @@ const selection = {
   interrupt: 'ACKED',
   inspect: 'RECONCILE',
 } satisfies RuntimeAdapterSelectionV1
+
+const capability = {
+  ...selection,
+  health: 'AVAILABLE',
+  canCreateSession: true,
+  canResumeSession: true,
+  interactivePermission: 'HOST_MEDIATED',
+} satisfies RuntimeCapabilityV1
 
 const policy = {
   rejectDiagnosticOnly: true,
@@ -65,11 +79,15 @@ async function collect(iterable: AsyncIterable<RuntimeEventV1>) {
   return events
 }
 
+function unsafeWindowsPath(leaf: string) {
+  return ['C:', 'Users', '90662', leaf].join('\\')
+}
+
 describe('AgentRuntimeHostV1', () => {
   it('discovers capabilities but fails closed for unapproved production selections', async () => {
-    const host = createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [selection] }))
+    const host = createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [capability] }))
 
-    await expect(host.discover()).resolves.toEqual([selection])
+    await expect(host.discover()).resolves.toEqual([capability])
     await expect(host.createOrResume(request({ selection: { ...selection, capabilityDigest: 'sha256:unapproved' } }))).resolves.toEqual({
       state: 'FAILED',
       runtimeSessionId: 'runtime-unbound',
@@ -81,7 +99,7 @@ describe('AgentRuntimeHostV1', () => {
   it('fails closed when adapter capability or create outcome leaks public DTO data', async () => {
     const host = createAgentRuntimeHostV1(
       new ScriptedAgentRuntimeAdapterV1({
-        capabilities: [{ ...selection, reasonCode: 'C:\\Users\\90662\\runtime' }],
+        capabilities: [{ ...capability, reasonCode: unsafeWindowsPath('runtime') }],
         createOutcome: { state: 'SUCCEEDED', runtimeSessionId: 'runtime-1', receiptDigest: 'sha256:receipt', candidateDigest: 'file:///secret.patch' },
       }),
     )
@@ -99,7 +117,7 @@ describe('AgentRuntimeHostV1', () => {
 
     const unsafeSessionHost = createAgentRuntimeHostV1(
       new ScriptedAgentRuntimeAdapterV1({
-        capabilities: [selection],
+        capabilities: [capability],
         createRuntimeSessionId: 'runtime session with spaces',
       }),
     )
@@ -112,7 +130,7 @@ describe('AgentRuntimeHostV1', () => {
   })
 
   it('replays identical createOrResume requests and rejects same-key payload drift', async () => {
-    const adapter = new ScriptedAgentRuntimeAdapterV1({ capabilities: [selection], createRuntimeSessionId: 'runtime-1' })
+    const adapter = new ScriptedAgentRuntimeAdapterV1({ capabilities: [capability], createRuntimeSessionId: 'runtime-1' })
     const host = createAgentRuntimeHostV1(adapter)
     const firstRequest = request()
 
@@ -133,7 +151,7 @@ describe('AgentRuntimeHostV1', () => {
   })
 
   it('rejects adapter reuse across attempt or worktree bindings', async () => {
-    const adapter = new ScriptedAgentRuntimeAdapterV1({ capabilities: [selection], createRuntimeSessionId: 'runtime-1' })
+    const adapter = new ScriptedAgentRuntimeAdapterV1({ capabilities: [capability], createRuntimeSessionId: 'runtime-1' })
     const host = createAgentRuntimeHostV1(adapter)
 
     await expect(host.createOrResume(request())).resolves.toMatchObject({ state: 'READY', runtimeSessionId: 'runtime-1' })
@@ -157,7 +175,7 @@ describe('AgentRuntimeHostV1', () => {
 
   it('streams only monotonic events and converts sequence gaps or leaking packets to OUTCOME_UNKNOWN', async () => {
     const adapter = new ScriptedAgentRuntimeAdapterV1({
-      capabilities: [selection],
+      capabilities: [capability],
       createRuntimeSessionId: 'runtime-1',
       createOutcomesByRequestId: {
         'req-gap': { state: 'READY', runtimeSessionId: 'gap' },
@@ -190,7 +208,7 @@ describe('AgentRuntimeHostV1', () => {
 
   it('rejects unbound streams, runtimeSessionId mismatches, and duplicate event packets', async () => {
     const adapter = new ScriptedAgentRuntimeAdapterV1({
-      capabilities: [selection],
+      capabilities: [capability],
       createRuntimeSessionId: 'runtime-1',
       createOutcomesByRequestId: {
         'req-mismatch': { state: 'READY', runtimeSessionId: 'mismatch' },
@@ -221,7 +239,7 @@ describe('AgentRuntimeHostV1', () => {
 
   it('binds ALLOW_ONCE permission proof to challenge, scope, runtime session, and one decision request', async () => {
     const host = createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({
-      capabilities: [selection],
+      capabilities: [capability],
       createRuntimeSessionId: 'runtime-1',
       eventsBySession: {
         'runtime-1': [{
@@ -276,9 +294,93 @@ describe('AgentRuntimeHostV1', () => {
     })
   })
 
+  it('rejects permission events whose scope drifts before caching the request', async () => {
+    const host = createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({
+      capabilities: [capability],
+      createRuntimeSessionId: 'runtime-1',
+      eventsBySession: {
+        'runtime-1': [{
+          type: 'PERMISSION_REQUESTED',
+          permissionRequestId: 'perm-drift',
+          runtimeSessionId: 'runtime-1',
+          scope: { ...request().scope, attemptId: 'attempt-drift' },
+          sequence: 1,
+          challengeDigest: 'sha256:challenge',
+          decisionRequired: 'ALLOW_ONCE_OR_DENY',
+        }],
+      },
+    }))
+    await host.createOrResume(request())
+    await expect(collect(host.stream('runtime-1', 0))).resolves.toEqual([
+      { type: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1', sequence: 1, reasonCode: 'PERMISSION_SCOPE_MISMATCH' },
+    ])
+    await expect(host.permission({
+      type: 'DENY',
+      permissionRequestId: 'perm-drift',
+      challengeDigest: 'sha256:challenge',
+      decisionRequestId: 'decision-drift',
+      scope: { ...request().scope, attemptId: 'attempt-drift' },
+      runtimeSessionId: 'runtime-1',
+      reasonCode: 'USER_DENIED',
+    })).resolves.toEqual({ accepted: false, reasonCode: 'PERMISSION_SCOPE_MISMATCH' })
+  })
+
+  it('fails closed at public host boundaries when adapter calls throw', async () => {
+    const unboundHost = createAgentRuntimeHostV1(new ThrowingBeforeCreateAdapterV1())
+    await expect(unboundHost.discover()).resolves.toEqual([expect.objectContaining({ health: 'UNAVAILABLE', reasonCode: 'RUNTIME_ADAPTER_ERROR' })])
+    await expect(unboundHost.health(selection.adapterId)).resolves.toEqual(expect.objectContaining({ health: 'UNAVAILABLE', reasonCode: 'RUNTIME_ADAPTER_ERROR' }))
+    await expect(unboundHost.createOrResume(request())).resolves.toEqual({
+      state: 'OUTCOME_UNKNOWN',
+      runtimeSessionId: 'runtime-unbound',
+      inspectHandleDigest: 'sha256:runtime-adapter-error',
+      reasonCode: 'RUNTIME_ADAPTER_ERROR',
+    })
+
+    const throwingHost = createAgentRuntimeHostV1(new ThrowingAfterCreateAdapterV1())
+    await throwingHost.createOrResume(request())
+    await expect(throwingHost.send({ requestId: 'send-1', runtimeSessionId: 'runtime-1', messageKind: 'TASK_INPUT', payloadDigest: 'sha256:payload' })).resolves.toEqual({
+      accepted: false,
+      reasonCode: 'RUNTIME_ADAPTER_ERROR',
+    })
+    await expect(collect(throwingHost.stream('runtime-1', 0))).resolves.toEqual([
+      { type: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1', sequence: 1, reasonCode: 'RUNTIME_ADAPTER_ERROR' },
+    ])
+    await expect(throwingHost.interrupt({ requestId: 'interrupt-throws', runtimeSessionId: 'runtime-1', reason: 'user_cancelled' })).resolves.toEqual({
+      requested: false,
+      reasonCode: 'RUNTIME_ADAPTER_ERROR',
+    })
+    await expect(throwingHost.inspect('runtime-1')).resolves.toEqual({
+      state: 'OUTCOME_UNKNOWN',
+      runtimeSessionId: 'runtime-1',
+      inspectHandleDigest: 'sha256:runtime-adapter-error',
+      reasonCode: 'RUNTIME_ADAPTER_ERROR',
+    })
+    await expect(throwingHost.reconcile('runtime-1')).resolves.toEqual({
+      state: 'OUTCOME_UNKNOWN',
+      runtimeSessionId: 'runtime-1',
+      inspectHandleDigest: 'sha256:runtime-adapter-error',
+      reasonCode: 'RUNTIME_ADAPTER_ERROR',
+    })
+  })
+
+  it('fails closed when adapter permission handling throws after a valid host request', async () => {
+    const host = createAgentRuntimeHostV1(new ThrowingPermissionAdapterV1())
+    await host.createOrResume(request())
+    await collect(host.stream('runtime-1', 0))
+    await expect(host.permission({
+      type: 'DENY',
+      permissionRequestId: 'perm-throws',
+      challengeDigest: 'sha256:challenge',
+      decisionRequestId: 'decision-throws',
+      scope: request().scope,
+      runtimeSessionId: 'runtime-1',
+      reasonCode: 'USER_DENIED',
+    })).resolves.toEqual({ accepted: false, reasonCode: 'RUNTIME_ADAPTER_ERROR' })
+  })
+
   it('keeps interrupt, inspect, and reconcile outcomes explicit without creating M2 domain effects', async () => {
     const adapter = new ScriptedAgentRuntimeAdapterV1({
-      capabilities: [selection],
+      capabilities: [capability],
       createRuntimeSessionId: 'runtime-1',
       createOutcomesByRequestId: {
         'req-failed': { state: 'READY', runtimeSessionId: 'failed' },
@@ -335,3 +437,79 @@ describe('AgentRuntimeHostV1', () => {
     ])
   })
 })
+
+class ThrowingBeforeCreateAdapterV1 implements AgentRuntimeAdapterV1 {
+  async discover(): Promise<readonly RuntimeCapabilityV1[]> {
+    throw new Error('adapter-discover')
+  }
+
+  async health(): Promise<RuntimeCapabilityV1> {
+    throw new Error('adapter-health')
+  }
+
+  async createOrResume(): Promise<RuntimeCreateOrResumeOutcomeV1> {
+    throw new Error('adapter-create')
+  }
+
+  async send(_request: RuntimeSendRequestV1): Promise<{ accepted: true; requestId: string } | { accepted: false; reasonCode: string }> {
+    throw new Error('adapter-send')
+  }
+
+  async *stream(): AsyncIterable<RuntimeEventV1> {
+    throw new Error('adapter-stream')
+  }
+
+  async permission(): Promise<{ accepted: boolean; reasonCode?: string }> {
+    throw new Error('adapter-permission')
+  }
+
+  async interrupt(_request: RuntimeInterruptRequestV1): Promise<{ requested: true } | { requested: false; reasonCode: string }> {
+    throw new Error('adapter-interrupt')
+  }
+
+  async inspect(_runtimeSessionId: string): Promise<RuntimeOutcomeV1> {
+    throw new Error('adapter-inspect')
+  }
+
+  async reconcile(_runtimeSessionId: string): Promise<RuntimeOutcomeV1> {
+    throw new Error('adapter-reconcile')
+  }
+}
+
+class ThrowingAfterCreateAdapterV1 extends ThrowingBeforeCreateAdapterV1 {
+  async discover(): Promise<readonly RuntimeCapabilityV1[]> {
+    return [capability]
+  }
+
+  async health(): Promise<RuntimeCapabilityV1> {
+    return capability
+  }
+
+  async createOrResume(): Promise<RuntimeCreateOrResumeOutcomeV1> {
+    return { state: 'READY', runtimeSessionId: 'runtime-1' }
+  }
+}
+
+class ThrowingPermissionAdapterV1 extends ScriptedAgentRuntimeAdapterV1 {
+  constructor() {
+    super({
+      capabilities: [capability],
+      createRuntimeSessionId: 'runtime-1',
+      eventsBySession: {
+        'runtime-1': [{
+          type: 'PERMISSION_REQUESTED',
+          permissionRequestId: 'perm-throws',
+          runtimeSessionId: 'runtime-1',
+          scope: request().scope,
+          sequence: 1,
+          challengeDigest: 'sha256:challenge',
+          decisionRequired: 'ALLOW_ONCE_OR_DENY',
+        }],
+      },
+    })
+  }
+
+  async permission(): Promise<{ accepted: boolean; reasonCode?: string }> {
+    throw new Error('adapter-permission')
+  }
+}

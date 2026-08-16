@@ -20,6 +20,14 @@ const approvedSelection = {
   inspect: 'RECONCILE',
 } satisfies RuntimeAdapterSelectionV1
 
+const approvedCapability = {
+  ...approvedSelection,
+  health: 'AVAILABLE',
+  canCreateSession: true,
+  canResumeSession: true,
+  interactivePermission: 'HOST_MEDIATED',
+} satisfies RuntimeCapabilityV1
+
 const policy = {
   rejectDiagnosticOnly: true,
   allowedSelections: [approvedSelection],
@@ -32,15 +40,15 @@ describe('xiaogui agent runtime shared contract', () => {
       ok: false,
       reasonCode: 'RUNTIME_SELECTION_NOT_APPROVED',
     })
-    expect(isRuntimeSelectionAllowed({ ...approvedSelection, diagnosticOnly: true } as RuntimeCapabilityV1, policy)).toEqual({
+    expect(isRuntimeSelectionAllowed({ ...approvedCapability, diagnosticOnly: true }, policy)).toEqual({
       ok: false,
       reasonCode: 'RUNTIME_DIAGNOSTIC_ONLY',
     })
-    expect(isRuntimeSelectionAllowed({ ...approvedSelection, protocol: 'NON_INTERACTIVE_CLI_DIAGNOSTIC' } as RuntimeCapabilityV1, policy)).toEqual({
+    expect(isRuntimeSelectionAllowed({ ...approvedCapability, protocol: 'NON_INTERACTIVE_CLI_DIAGNOSTIC' }, policy)).toEqual({
       ok: false,
       reasonCode: 'RUNTIME_DIAGNOSTIC_PROTOCOL',
     })
-    expect(isRuntimeSelectionAllowed({ ...approvedSelection, stream: 'NONE' } as RuntimeCapabilityV1, policy)).toEqual({
+    expect(isRuntimeSelectionAllowed({ ...approvedCapability, stream: 'NONE' }, policy)).toEqual({
       ok: false,
       reasonCode: 'RUNTIME_STREAM_UNAVAILABLE',
     })

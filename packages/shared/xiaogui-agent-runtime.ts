@@ -19,13 +19,13 @@ export interface RuntimeCapabilityV1 {
   protocol: RuntimeProtocolV1
   capabilityDigest: RuntimeDigestV1 | string
   approvalStatus: RuntimeApprovalStatusV1
-  health?: AdapterHealthV1
-  canCreateSession?: boolean
-  canResumeSession?: boolean
+  health: AdapterHealthV1
+  canCreateSession: boolean
+  canResumeSession: boolean
   stream: 'NONE' | 'POLL' | 'PUSH'
   interrupt: 'NONE' | 'BEST_EFFORT' | 'ACKED'
   inspect: 'NONE' | 'SNAPSHOT' | 'RECONCILE'
-  interactivePermission?: 'NONE' | 'HOST_MEDIATED' | 'RUNTIME_NATIVE'
+  interactivePermission: 'NONE' | 'HOST_MEDIATED' | 'RUNTIME_NATIVE'
   diagnosticOnly: boolean
   reasonCode?: string
 }

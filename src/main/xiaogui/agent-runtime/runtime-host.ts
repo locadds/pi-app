@@ -53,13 +53,15 @@ export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentR
 
   const host: AgentRuntimeHostV1 = {
     async discover() {
-      const capabilities = await adapter.discover()
-      return capabilities.some((capability) => !validateRuntimePublicDto(capability).ok) ? [publicDtoLeakCapability()] : capabilities
+      const capabilities = await safeCall(() => adapter.discover())
+      if (!capabilities.ok) return [unavailableCapability('RUNTIME_ADAPTER_ERROR')]
+      return capabilities.value.some((capability) => !validateRuntimePublicDto(capability).ok) ? [publicDtoLeakCapability()] : capabilities.value
     },
 
     async health(adapterId) {
-      const capability = await adapter.health(adapterId)
-      return validateRuntimePublicDto(capability).ok ? capability : publicDtoLeakCapability()
+      const capability = await safeCall(() => adapter.health(adapterId))
+      if (!capability.ok) return unavailableCapability('RUNTIME_ADAPTER_ERROR')
+      return validateRuntimePublicDto(capability.value).ok ? capability.value : publicDtoLeakCapability()
     },
 
     async createOrResume(request) {
@@ -77,7 +79,13 @@ export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentR
         return existing.outcome
       }
 
-      const outcome = await adapter.createOrResume(request)
+      const created = await safeCall(() => adapter.createOrResume(request))
+      if (!created.ok) {
+        const rejected = unknown('', 'RUNTIME_ADAPTER_ERROR', 'runtime-adapter-error')
+        idempotency.set(key, { payloadDigest: payload, outcome: rejected })
+        return rejected
+      }
+      const outcome = created.value
       const publicOutcome = validateRuntimePublicDto(outcome)
       if (!publicOutcome.ok) {
         const rejected = unknown('runtimeSessionId' in outcome ? outcome.runtimeSessionId : '', publicOutcome.reasonCode, 'public-dto-leak')
@@ -106,8 +114,9 @@ export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentR
     async send(request) {
       if (!sessionBindings.has(request.runtimeSessionId)) return { accepted: false, reasonCode: 'RUNTIME_SESSION_NOT_FOUND' }
       if (!validateRuntimePublicDto(request).ok) return { accepted: false, reasonCode: 'PUBLIC_DTO_LEAK' }
-      const result = await adapter.send(request)
-      return validateRuntimePublicDto(result).ok ? result : { accepted: false, reasonCode: 'PUBLIC_DTO_LEAK' }
+      const result = await safeCall(() => adapter.send(request))
+      if (!result.ok) return { accepted: false, reasonCode: 'RUNTIME_ADAPTER_ERROR' }
+      return validateRuntimePublicDto(result.value).ok ? result.value : { accepted: false, reasonCode: 'PUBLIC_DTO_LEAK' }
     },
 
     stream(runtimeSessionId, afterSequence) {
@@ -156,13 +165,13 @@ export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentR
           return result
         }
         consumedProofs.set(key, decision.decisionRequestId)
-        const result = sanitizePermissionResult(await adapter.permission(decision))
+        const result = await safePermission(() => adapter.permission(decision))
         if (result.accepted) consumedPermissionRequests.set(decision.permissionRequestId, decision.decisionRequestId)
         decisions.set(decision.decisionRequestId, { decisionDigest, proofKey: key, result })
         return result
       }
 
-      const result = sanitizePermissionResult(await adapter.permission(decision))
+      const result = await safePermission(() => adapter.permission(decision))
       if (result.accepted) consumedPermissionRequests.set(decision.permissionRequestId, decision.decisionRequestId)
       decisions.set(decision.decisionRequestId, { decisionDigest, result })
       return result
@@ -172,24 +181,28 @@ export function createAgentRuntimeHostV1(adapter: AgentRuntimeAdapterV1): AgentR
       if (!validateRuntimePublicDto(request).ok) return { requested: false, reasonCode: 'PUBLIC_DTO_LEAK' }
       if (!sessionBindings.has(request.runtimeSessionId)) return { requested: false, reasonCode: 'RUNTIME_SESSION_NOT_FOUND' }
 
-      const current = validateOutcome(request.runtimeSessionId, await adapter.inspect(request.runtimeSessionId))
+      const inspected = await safeCall(() => adapter.inspect(request.runtimeSessionId))
+      const current = inspected.ok ? validateOutcome(request.runtimeSessionId, inspected.value) : unknown(request.runtimeSessionId, 'RUNTIME_ADAPTER_ERROR', 'runtime-adapter-error')
       if (current.state === 'SUCCEEDED' || current.state === 'FAILED' || current.state === 'INTERRUPTED') {
         return { requested: false, reasonCode: 'RUNTIME_ALREADY_SETTLED' }
       }
       if (current.reasonCode !== 'RUNTIME_STILL_RUNNING') return { requested: false, reasonCode: current.reasonCode }
 
-      const result = await adapter.interrupt(request)
-      return validateRuntimePublicDto(result).ok ? result : { requested: false, reasonCode: 'PUBLIC_DTO_LEAK' }
+      const result = await safeCall(() => adapter.interrupt(request))
+      if (!result.ok) return { requested: false, reasonCode: 'RUNTIME_ADAPTER_ERROR' }
+      return validateRuntimePublicDto(result.value).ok ? result.value : { requested: false, reasonCode: 'PUBLIC_DTO_LEAK' }
     },
 
     async inspect(runtimeSessionId) {
       if (!sessionBindings.has(runtimeSessionId)) return unknown(runtimeSessionId, 'RUNTIME_SESSION_NOT_FOUND', 'session-not-found')
-      return validateOutcome(runtimeSessionId, await adapter.inspect(runtimeSessionId))
+      const outcome = await safeCall(() => adapter.inspect(runtimeSessionId))
+      return outcome.ok ? validateOutcome(runtimeSessionId, outcome.value) : unknown(runtimeSessionId, 'RUNTIME_ADAPTER_ERROR', 'runtime-adapter-error')
     },
 
     async reconcile(runtimeSessionId, expectedReceiptDigest) {
       if (!sessionBindings.has(runtimeSessionId)) return unknown(runtimeSessionId, 'RUNTIME_SESSION_NOT_FOUND', 'session-not-found')
-      return validateOutcome(runtimeSessionId, await adapter.reconcile(runtimeSessionId, expectedReceiptDigest))
+      const outcome = await safeCall(() => adapter.reconcile(runtimeSessionId, expectedReceiptDigest))
+      return outcome.ok ? validateOutcome(runtimeSessionId, outcome.value) : unknown(runtimeSessionId, 'RUNTIME_ADAPTER_ERROR', 'runtime-adapter-error')
     },
   }
 
@@ -240,36 +253,45 @@ async function* streamFromAdapter(
     yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId: UNBOUND_RUNTIME_SESSION_ID, sequence: afterSequence + 1, reasonCode: 'PUBLIC_DTO_LEAK' }
     return
   }
-  if (!bindings.has(runtimeSessionId)) {
+  const binding = bindings.get(runtimeSessionId)
+  if (!binding) {
     yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: afterSequence + 1, reasonCode: 'RUNTIME_SESSION_NOT_FOUND' }
     return
   }
 
   let expected = afterSequence + 1
-  for await (const event of adapter.stream(runtimeSessionId, afterSequence)) {
-    if (event.sequence <= afterSequence) continue
-    const publicDto = validateRuntimePublicDto(event)
-    if (!publicDto.ok) {
-      yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: publicDto.reasonCode }
-      return
+  try {
+    for await (const event of adapter.stream(runtimeSessionId, afterSequence)) {
+      if (event.sequence <= afterSequence) continue
+      const publicDto = validateRuntimePublicDto(event)
+      if (!publicDto.ok) {
+        yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: publicDto.reasonCode }
+        return
+      }
+      if (event.runtimeSessionId !== runtimeSessionId) {
+        yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: 'RUNTIME_EVENT_SESSION_MISMATCH' }
+        return
+      }
+      if (event.sequence !== expected) {
+        yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: 'EVENT_SEQUENCE_GAP' }
+        return
+      }
+      if (event.type === 'PERMISSION_REQUESTED') {
+        if (!sameScope(binding.scope, event.scope)) {
+          yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: 'PERMISSION_SCOPE_MISMATCH' }
+          return
+        }
+        permissionRequests.set(event.permissionRequestId, {
+          challengeDigest: String(event.challengeDigest),
+          runtimeSessionId: event.runtimeSessionId,
+          scope: event.scope,
+        })
+      }
+      yield event
+      expected += 1
     }
-    if (event.runtimeSessionId !== runtimeSessionId) {
-      yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: 'RUNTIME_EVENT_SESSION_MISMATCH' }
-      return
-    }
-    if (event.sequence !== expected) {
-      yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: 'EVENT_SEQUENCE_GAP' }
-      return
-    }
-    if (event.type === 'PERMISSION_REQUESTED') {
-      permissionRequests.set(event.permissionRequestId, {
-        challengeDigest: String(event.challengeDigest),
-        runtimeSessionId: event.runtimeSessionId,
-        scope: event.scope,
-      })
-    }
-    yield event
-    expected += 1
+  } catch {
+    yield { type: 'OUTCOME_UNKNOWN', runtimeSessionId, sequence: expected, reasonCode: 'RUNTIME_ADAPTER_ERROR' }
   }
 }
 
@@ -283,6 +305,19 @@ function validateOutcome(runtimeSessionId: string, outcome: RuntimeOutcomeV1): R
 
 function sanitizePermissionResult(result: { accepted: boolean; reasonCode?: string }): { accepted: boolean; reasonCode?: string } {
   return validateRuntimePublicDto(result).ok ? result : { accepted: false, reasonCode: 'PUBLIC_DTO_LEAK' }
+}
+
+async function safePermission(call: () => Promise<{ accepted: boolean; reasonCode?: string }>): Promise<{ accepted: boolean; reasonCode?: string }> {
+  const result = await safeCall(call)
+  return result.ok ? sanitizePermissionResult(result.value) : { accepted: false, reasonCode: 'RUNTIME_ADAPTER_ERROR' }
+}
+
+async function safeCall<T>(call: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> {
+  try {
+    return { ok: true, value: await call() }
+  } catch {
+    return { ok: false }
+  }
 }
 
 function sameScope(left: RuntimeScopeBindingV1, right: RuntimeScopeBindingV1): boolean {
@@ -313,11 +348,15 @@ function safeRuntimeSessionId(runtimeSessionId: string): string {
 }
 
 function publicDtoLeakCapability(): RuntimeCapabilityV1 {
+  return unavailableCapability('PUBLIC_DTO_LEAK')
+}
+
+function unavailableCapability(reasonCode: string, adapterId = 'runtime-public-dto-leak'): RuntimeCapabilityV1 {
   return {
-    adapterId: 'runtime-public-dto-leak',
+    adapterId,
     runtimeKind: 'OTHER',
     protocol: 'NON_INTERACTIVE_CLI_DIAGNOSTIC',
-    capabilityDigest: 'sha256:public-dto-leak',
+    capabilityDigest: `sha256:${reasonCode.toLowerCase().replace(/_/g, '-')}`,
     approvalStatus: 'DISCOVERED',
     health: 'UNAVAILABLE',
     canCreateSession: false,
@@ -327,7 +366,7 @@ function publicDtoLeakCapability(): RuntimeCapabilityV1 {
     inspect: 'NONE',
     interactivePermission: 'NONE',
     diagnosticOnly: true,
-    reasonCode: 'PUBLIC_DTO_LEAK',
+    reasonCode,
   }
 }
 
