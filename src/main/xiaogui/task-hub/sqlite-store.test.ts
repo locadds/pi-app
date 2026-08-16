@@ -101,12 +101,14 @@ describe('M2B sqlite store migration', () => {
       task_specs: 0,
       task_runs: 0,
       attempts: 0,
+      flow_execution_baselines: 0,
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
       workspace_receipts: 0,
       agent_dispatch_outbox: 0,
       runtime_session_bindings: 0,
       agent_failures: 0,
+      agent_succeeded_audits: 0,
       agent_reconcile_results: 0,
     })
     store.close()
@@ -116,12 +118,14 @@ describe('M2B sqlite store migration', () => {
 
     const db = new DatabaseSync(dbPath)
     expect(db.prepare('select version from schema_migrations order by version').all()).toEqual([{ version: 1 }, { version: 2 }])
-    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_reconcile_results') order by name").all()).toEqual([
+    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results') order by name").all()).toEqual([
       { name: 'agent_dispatch_outbox' },
       { name: 'agent_failures' },
       { name: 'agent_reconcile_results' },
+      { name: 'agent_succeeded_audits' },
       { name: 'attempts' },
       { name: 'composition_attempts' },
+      { name: 'flow_execution_baselines' },
       { name: 'runtime_session_bindings' },
       { name: 'workspace_prepare_outbox' },
       { name: 'workspace_receipts' },
@@ -149,12 +153,14 @@ describe('M2B sqlite store migration', () => {
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({
       attempts: 0,
+      flow_execution_baselines: 0,
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
       workspace_receipts: 0,
       agent_dispatch_outbox: 0,
       runtime_session_bindings: 0,
       agent_failures: 0,
+      agent_succeeded_audits: 0,
       agent_reconcile_results: 0,
     })
     store.close()

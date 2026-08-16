@@ -15,6 +15,7 @@ import type {
 import type {
   RuntimeAdapterSelectionV1,
   RuntimeCapabilityV1,
+  RuntimeCreateOrResumeOutcomeV1,
   RuntimeCreateOrResumeRequestV1,
   RuntimeScopeBindingV1,
 } from '@shared/xiaogui-agent-runtime'
@@ -22,6 +23,7 @@ import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@share
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import { createCollaborationHubApplicationV1 } from './application'
+import { digestJson } from './digest'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 
 const ADDRESS = {
@@ -92,12 +94,18 @@ function draft(): InitialPlanDraftInputV1 {
   }
 }
 
-async function readyAttempt(dbPath: string, capabilities: readonly RuntimeCapabilityV1[] = [approvedCapability]) {
+async function readyAttempt(
+  dbPath: string,
+  capabilities: readonly RuntimeCapabilityV1[] = [approvedCapability],
+  options: { afterAgentDispatchStart?: (requestId: string) => void; createOutcome?: RuntimeCreateOrResumeOutcomeV1 } = {},
+) {
   let id = 0
   const app = createCollaborationHubApplicationV1({
     lookup: lookup('CODING'),
     storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
-    agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities, createRuntimeSessionId: 'runtime-1' })),
+    agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities, createRuntimeSessionId: 'runtime-1', createOutcome: options.createOutcome })),
+    baselineProvider: { capture: async () => scriptedBaseline() },
+    afterAgentDispatchStart: options.afterAgentDispatchStart,
     now: () => '2026-08-17T00:00:00.000Z',
     idFactory: (prefix) => `${prefix}_${++id}`,
   })
@@ -135,6 +143,10 @@ async function readyAttempt(dbPath: string, capabilities: readonly RuntimeCapabi
   })
   if (!scheduled.ok || !scheduled.value.taskRunId || !scheduled.value.attemptId) throw new Error('schedule failed')
   const afterSchedule = await app.observeM2B(ADDRESS)
+  const bindingStore = new CollaborationHubSqliteStoreV1(dbPath)
+  const binding = bindingStore.compositionAttempt(scheduled.value.attemptId)
+  bindingStore.close()
+  if (!binding) throw new Error('missing workspace binding')
   await app.executeSystem({
     contractVersion: 'm2b.v1',
     address: ADDRESS as HubAddressV1,
@@ -150,10 +162,20 @@ async function readyAttempt(dbPath: string, capabilities: readonly RuntimeCapabi
         status: 'PREPARED',
         workspaceReceiptId: 'xhbw_ready' as WorkspaceReceiptId,
         receiptDigest: 'sha256:workspace-ready',
+        ...binding,
       },
     },
   })
   return { app, flowId: start.value.flowId as FlowId, taskRunId: scheduled.value.taskRunId, attemptId: scheduled.value.attemptId }
+}
+
+function scriptedBaseline() {
+  const base = {
+    baselineId: 'baseline-1',
+    baselineTreeHash: 'sha256:baseline-tree',
+    initialTargetFingerprint: 'sha256:initial-target',
+  }
+  return { ...base, baselineDigest: digestJson(base) }
 }
 
 function runtimeRequest(scope: RuntimeScopeBindingV1): RuntimeCreateOrResumeRequestV1 {
@@ -207,6 +229,109 @@ describe('M2B fake agent runtime integration', () => {
     app.close()
   })
 
+  it('recovers a persisted dispatch outbox after crash with a new application instance', async () => {
+    const dbPath = await tempDb()
+    const crashed = await readyAttempt(dbPath, [approvedCapability], {
+      afterAgentDispatchStart: () => {
+        throw new Error('crash-after-outbox')
+      },
+    })
+    const beforeReport = await crashed.app.observeM2B(ADDRESS)
+    const request = {
+      contractVersion: 'm2b.v1' as const,
+      address: ADDRESS as HubAddressV1,
+      trustedActor: { kind: 'main-process-system' as const },
+      requestId: 'sys-agent-report-recover',
+      expectedSessionVersion: beforeReport.ok ? beforeReport.value.sessionVersion : 0,
+      intent: {
+        type: 'system.agent.report.record' as const,
+        flowId: crashed.flowId,
+        taskRunId: crashed.taskRunId,
+        attemptId: crashed.attemptId,
+      },
+    }
+    await expect(crashed.app.executeSystem(request)).resolves.toMatchObject({ ok: false, error: { code: 'INTERNAL' } })
+    crashed.app.close()
+
+    const recovered = createCollaborationHubApplicationV1({
+      lookup: lookup('CODING'),
+      storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
+      agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [approvedCapability], createRuntimeSessionId: 'runtime-1' })),
+      baselineProvider: { capture: async () => scriptedBaseline() },
+    })
+    await expect(recovered.executeSystem(request)).resolves.toMatchObject({ ok: true })
+    await expect(recovered.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { attempts: [expect.objectContaining({ status: 'RUNNING', runtimeSessionId: 'runtime-1' })] },
+    })
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ attempts: 1, agent_dispatch_outbox: 1, runtime_session_bindings: 1 })
+    store.close()
+    recovered.close()
+  })
+
+  it('audits immediate SUCCEEDED candidate facts while leaving the M2B1 domain in a safe state', async () => {
+    const dbPath = await tempDb()
+    const { app, flowId, taskRunId, attemptId } = await readyAttempt(dbPath, [approvedCapability], {
+      createOutcome: {
+        state: 'SUCCEEDED',
+        runtimeSessionId: 'runtime-1',
+        receiptDigest: 'sha256:agent-succeeded',
+        candidateDigest: 'sha256:candidate',
+      },
+    })
+    const beforeReport = await app.observeM2B(ADDRESS)
+    await expect(
+      app.executeSystem({
+        contractVersion: 'm2b.v1',
+        address: ADDRESS as HubAddressV1,
+        trustedActor: { kind: 'main-process-system' },
+        requestId: 'sys-agent-report-succeeded',
+        expectedSessionVersion: beforeReport.ok ? beforeReport.value.sessionVersion : 0,
+        intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
+      }),
+    ).resolves.toMatchObject({ ok: true })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { attempts: [expect.objectContaining({ status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1' })] },
+    })
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ agent_succeeded_audits: 1, agent_failures: 0 })
+    store.close()
+    app.close()
+  })
+
+  it('does not classify an unknown free runtime failure reason as FAILED', async () => {
+    const dbPath = await tempDb()
+    const { app, flowId, taskRunId, attemptId } = await readyAttempt(dbPath, [approvedCapability], {
+      createOutcome: {
+        state: 'FAILED',
+        runtimeSessionId: 'runtime-1',
+        receiptDigest: 'sha256:vendor-free-failure',
+        reasonCode: 'VENDOR_FREE_TEXT',
+      },
+    })
+    const beforeReport = await app.observeM2B(ADDRESS)
+    await expect(
+      app.executeSystem({
+        contractVersion: 'm2b.v1',
+        address: ADDRESS as HubAddressV1,
+        trustedActor: { kind: 'main-process-system' },
+        requestId: 'sys-agent-report-free-failure',
+        expectedSessionVersion: beforeReport.ok ? beforeReport.value.sessionVersion : 0,
+        intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
+      }),
+    ).resolves.toMatchObject({ ok: true })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { attempts: [expect.objectContaining({ status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1' })] },
+    })
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ agent_failures: 0, agent_succeeded_audits: 0 })
+    store.close()
+    app.close()
+  })
+
   it('fails diagnostic runtime selection before any M2B dispatch write', async () => {
     const dbPath = await tempDb()
     let id = 0
@@ -250,7 +375,7 @@ describe('M2B fake agent runtime integration', () => {
         expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
         intent: { type: 'system.schedule', flowId: start.value.flowId as FlowId },
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: 'RUNTIME_SELECTION_NOT_APPROVED' } })
+    ).resolves.toMatchObject({ ok: false, error: { code: 'AGENT_UNAVAILABLE' } })
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({ attempts: 0, workspace_prepare_outbox: 0, agent_dispatch_outbox: 0, runtime_session_bindings: 0 })
     store.close()

@@ -288,23 +288,49 @@ export type WorkspacePreparationFailureSourceV1 =
   | { kind: 'DEPENDENCY_CHANGESET_UNAVAILABLE'; failureDigest: string }
 
 export type WorkspacePreparedReceiptM2BV1 =
-  | { status: 'PREPARED'; workspaceReceiptId: WorkspaceReceiptId; receiptDigest: string }
-  | { status: 'CONFLICT'; workspaceReceiptId: WorkspaceReceiptId; receiptDigest: string; conflictDigest: string }
-  | { status: 'FAILED'; workspaceReceiptId: WorkspaceReceiptId; receiptDigest: string; failure: WorkspacePreparationFailureSourceV1 }
+  | ({
+      status: 'PREPARED'
+      workspaceReceiptId: WorkspaceReceiptId
+      receiptDigest: string
+    } & WorkspaceReceiptBindingM2BV1)
+  | ({
+      status: 'CONFLICT'
+      workspaceReceiptId: WorkspaceReceiptId
+      receiptDigest: string
+      conflictDigest: string
+    } & WorkspaceReceiptBindingM2BV1)
+  | ({
+      status: 'FAILED'
+      workspaceReceiptId: WorkspaceReceiptId
+      receiptDigest: string
+      failure: WorkspacePreparationFailureSourceV1
+    } & WorkspaceReceiptBindingM2BV1)
+
+export interface WorkspaceReceiptBindingM2BV1 {
+  compositionAttemptId: string
+  attemptId: AttemptId
+  requestDigest: string
+  baselineBindingDigest: string
+  compositionDigest: string
+}
 
 export type AgentFailureSignalV1 = {
   kind: 'AGENT_FAILURE'
-  reasonCode:
+  failureClass: 'RUNTIME' | 'PROTOCOL' | 'UNKNOWN'
+  safeCode:
     | 'RUNTIME_FAILED'
-    | 'RUNTIME_INTERRUPTED'
-    | 'RUNTIME_OUTCOME_UNKNOWN'
     | 'RUNTIME_ADAPTER_ERROR'
     | 'RUNTIME_SESSION_NOT_FOUND'
     | 'RUNTIME_OUTCOME_SESSION_MISMATCH'
-    | 'PROTOCOL_SUCCEEDED_UNSUPPORTED'
     | 'UNKNOWN_RUNTIME_FAILURE'
-  sourceReasonCode: string
   receiptDigest: string
+}
+
+export interface AgentSucceededAuditV1 {
+  runtimeSessionId: string
+  attemptId: AttemptId
+  receiptDigest: string
+  candidateDigest: string
 }
 
 export interface SystemScheduleIntentM2BV1 {
@@ -327,16 +353,27 @@ export interface SystemAgentReportRecordIntentM2BV1 {
   attemptId: AttemptId
 }
 
-export interface SystemAgentOutcomeRecordIntentM2BV1 {
-  type: 'system.agent.outcome.record'
-  flowId: FlowId
-  taskRunId: TaskRunId
-  attemptId: AttemptId
-  runtimeSessionId: string
-  outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
-  receiptDigest: string
-  failure?: AgentFailureSignalV1
-}
+export type SystemAgentOutcomeRecordIntentM2BV1 =
+  | {
+      type: 'system.agent.outcome.record'
+      flowId: FlowId
+      taskRunId: TaskRunId
+      attemptId: AttemptId
+      runtimeSessionId: string
+      outcome: 'FAILED'
+      receiptDigest: string
+      failure: AgentFailureSignalV1
+    }
+  | {
+      type: 'system.agent.outcome.record'
+      flowId: FlowId
+      taskRunId: TaskRunId
+      attemptId: AttemptId
+      runtimeSessionId: string
+      outcome: 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
+      receiptDigest: string
+      failure?: never
+    }
 
 export interface SystemAgentReconcileIntentM2BV1 {
   type: 'system.agent.reconcile'
@@ -360,3 +397,25 @@ export interface HubSystemCommandRequestM2BV1 {
   intent: M2BSystemIntentV1
   trustedActor: { kind: 'main-process-system' }
 }
+
+export type HubSystemErrorCodeM2BV1 =
+  | 'AGENT_UNAVAILABLE'
+  | 'BASELINE_UNAVAILABLE'
+  | 'WORKSPACE_RECEIPT_MISMATCH'
+  | 'IDEMPOTENCY_CONFLICT'
+  | 'STALE_SESSION_VERSION'
+  | 'FLOW_NOT_FOUND'
+  | 'ILLEGAL_TRANSITION'
+  | 'DESIGN_RESERVED'
+  | 'SESSION_SCOPE_MISMATCH'
+  | 'IPC_VERSION_UNSUPPORTED'
+  | 'INTERNAL'
+
+export interface HubSystemSafeErrorM2BV1 {
+  code: HubSystemErrorCodeM2BV1
+  messageKey: string
+  safeArgs?: Record<string, string | number | boolean>
+  traceId: string
+}
+
+export type HubSystemOutcomeM2BV1<T> = { ok: true; value: T } | { ok: false; error: HubSystemSafeErrorM2BV1 }

@@ -109,17 +109,39 @@ function canonicalDraft(): InitialPlanDraftInputV1 {
 
 function appFor(dbPath: string, mode: SessionMode = 'WORK', ids = ['xhbf_flow', 'xhbr_rev'], runtimeSessionId?: string) {
   let index = 0
+  const baseline = scriptedBaseline()
   return createCollaborationHubApplicationV1({
     lookup: lookup(mode),
     storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
     ...(runtimeSessionId
       ? {
           agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [approvedCapability], createRuntimeSessionId: runtimeSessionId })),
+          baselineProvider: { capture: async () => baseline },
         }
       : {}),
     now: () => '2026-08-16T00:00:00.000Z',
     idFactory: (prefix) => ids[index++] ?? `${prefix}_${index}`,
   })
+}
+
+function scriptedBaseline() {
+  const base = {
+    baselineId: 'baseline-1',
+    baselineTreeHash: 'sha256:baseline-tree',
+    initialTargetFingerprint: 'sha256:initial-target',
+  }
+  return { ...base, baselineDigest: digestJson(base) }
+}
+
+function workspaceBinding(dbPath: string, attemptId: AttemptId) {
+  const store = new CollaborationHubSqliteStoreV1(dbPath)
+  try {
+    const binding = store.compositionAttempt(attemptId)
+    if (!binding) throw new Error('missing composition attempt')
+    return binding
+  } finally {
+    store.close()
+  }
 }
 
 async function start(app: ReturnType<typeof appFor>, requestId = 'req-start') {
@@ -232,12 +254,14 @@ describe('M2A collaboration hub application', () => {
       task_specs: 0,
       task_runs: 0,
       attempts: 0,
+      flow_execution_baselines: 0,
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
       workspace_receipts: 0,
       agent_dispatch_outbox: 0,
       runtime_session_bindings: 0,
       agent_failures: 0,
+      agent_succeeded_audits: 0,
       agent_reconcile_results: 0,
     })
     store.close()
@@ -609,12 +633,90 @@ describe('M2A collaboration hub application', () => {
         expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
         intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: 'RUNTIME_SELECTION_NOT_APPROVED' } })
+    ).resolves.toMatchObject({ ok: false, error: { code: 'AGENT_UNAVAILABLE' } })
     await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({ ok: true, value: { sessionVersion: approved.ok ? approved.value.sessionVersion : 0, attempts: [] } })
     const store = new CollaborationHubSqliteStoreV1(dbPath)
-    expect(store.tableCounts()).toMatchObject({ attempts: 0, composition_attempts: 0, workspace_prepare_outbox: 0, agent_dispatch_outbox: 0, runtime_session_bindings: 0 })
+    expect(store.tableCounts()).toMatchObject({ attempts: 0, flow_execution_baselines: 0, composition_attempts: 0, workspace_prepare_outbox: 0, agent_dispatch_outbox: 0, runtime_session_bindings: 0 })
     store.close()
     app.close()
+  })
+
+  it('maps runtime preflight throws to AGENT_UNAVAILABLE with zero M2B execution writes', async () => {
+    const dbPath = await tempDb()
+    let index = 0
+    const app = createCollaborationHubApplicationV1({
+      lookup: lookup('CODING'),
+      storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
+      agentRuntime: {
+        discover: async () => {
+          throw new Error('discover failed')
+        },
+      } as never,
+      baselineProvider: { capture: async () => scriptedBaseline() },
+      idFactory: (prefix) => ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection'][index++] ?? `${prefix}_${index}`,
+    })
+    await start(app)
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const approved = await app.observeM2B(ADDRESS)
+    await expect(
+      executeSystem(app, {
+        requestId: 'sys-schedule-throw',
+        expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+        intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'AGENT_UNAVAILABLE' } })
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ attempts: 0, flow_execution_baselines: 0, workspace_prepare_outbox: 0 })
+    store.close()
+    app.close()
+  })
+
+  it('replays a successful system.schedule after runtime becomes unavailable', async () => {
+    const dbPath = await tempDb()
+    const ids = ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt']
+    const app = appFor(dbPath, 'CODING', ids, 'runtime-1')
+    await start(app)
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const approved = await app.observeM2B(ADDRESS)
+    const scheduleRequest = {
+      requestId: 'sys-schedule-replay',
+      expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+      intent: { type: 'system.schedule' as const, flowId: draftProjection.value.activeFlow.flowId },
+    }
+    const first = await executeSystem(app, scheduleRequest)
+    app.close()
+
+    const unavailable = appFor(dbPath, 'CODING')
+    await expect(executeSystem(unavailable, scheduleRequest)).resolves.toEqual(first)
+    await expect(
+      executeSystem(unavailable, {
+        ...scheduleRequest,
+        intent: { type: 'system.schedule', flowId: 'xhbf_other' as FlowId },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'IDEMPOTENCY_CONFLICT' } })
+    unavailable.close()
   })
 
   it('records PREPARED workspace result as Attempt READY without completing the TaskRun', async () => {
@@ -640,6 +742,7 @@ describe('M2A collaboration hub application', () => {
       intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
     })
     const scheduled = await app.observeM2B(ADDRESS)
+    const binding = workspaceBinding(dbPath, 'xhba_attempt' as AttemptId)
     await executeSystem(app, {
       requestId: 'sys-workspace-1',
       expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,
@@ -652,6 +755,7 @@ describe('M2A collaboration hub application', () => {
           status: 'PREPARED',
           workspaceReceiptId: 'xhbw_receipt' as WorkspaceReceiptId,
           receiptDigest: 'sha256:workspace',
+          ...binding,
         },
       },
     })
@@ -667,6 +771,51 @@ describe('M2A collaboration hub application', () => {
       { phase: 'attempt.transition', from: 'WORKSPACE_PREPARING', to: 'READY' },
     ])
     app.close()
+  })
+
+  it('rejects workspace receipt drift for each persisted composition binding field', async () => {
+    const fields = ['attemptId', 'compositionAttemptId', 'requestDigest', 'baselineBindingDigest', 'compositionDigest'] as const
+    for (const field of fields) {
+      const dbPath = await tempDb(`workspace-drift-${field}.sqlite`)
+      const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'], 'runtime-1')
+      await start(app)
+      const draftProjection = await app.observe(ADDRESS)
+      if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+      await execute(app, {
+        requestId: 'req-approve',
+        expectedSessionVersion: draftProjection.value.sessionVersion,
+        intent: {
+          type: 'plan.revision.submit',
+          flowId: draftProjection.value.activeFlow.flowId,
+          baseRevisionId: draftProjection.value.activeRevision.revisionId,
+          draft: draftProjection.value.activeRevision.draft,
+        },
+      })
+      const before = await app.observeM2B(ADDRESS)
+      await executeSystem(app, {
+        requestId: 'sys-schedule-1',
+        expectedSessionVersion: before.ok ? before.value.sessionVersion : 0,
+        intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+      })
+      const scheduled = await app.observeM2B(ADDRESS)
+      const binding = workspaceBinding(dbPath, 'xhba_attempt' as AttemptId)
+      const drifted = { ...binding, [field]: field === 'attemptId' ? ('xhba_drift' as AttemptId) : 'sha256:drift' }
+      await expect(
+        executeSystem(app, {
+          requestId: `sys-workspace-drift-${field}`,
+          expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,
+          intent: {
+            type: 'system.workspace.prepare.result.record',
+            flowId: draftProjection.value.activeFlow.flowId,
+            taskRunId: 'xhbtr_projection' as TaskRunId,
+            attemptId: 'xhba_attempt' as AttemptId,
+            receipt: { status: 'PREPARED', workspaceReceiptId: 'xhbw_receipt' as WorkspaceReceiptId, receiptDigest: 'sha256:workspace', ...drifted },
+          },
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: 'WORKSPACE_RECEIPT_MISMATCH' } })
+      await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({ ok: true, value: { sessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0 } })
+      app.close()
+    }
   })
 
   it('records fake agent report as Attempt RUNNING without Verification or ChangeSet side effects', async () => {
@@ -692,6 +841,7 @@ describe('M2A collaboration hub application', () => {
       intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
     })
     const scheduled = await app.observeM2B(ADDRESS)
+    const binding = workspaceBinding(dbPath, 'xhba_attempt' as AttemptId)
     await executeSystem(app, {
       requestId: 'sys-workspace-1',
       expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,
@@ -704,6 +854,7 @@ describe('M2A collaboration hub application', () => {
           status: 'PREPARED',
           workspaceReceiptId: 'xhbw_receipt' as WorkspaceReceiptId,
           receiptDigest: 'sha256:workspace',
+          ...binding,
         },
       },
     })
@@ -760,6 +911,7 @@ describe('M2A collaboration hub application', () => {
       intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
     })
     const scheduled = await app.observeM2B(ADDRESS)
+    const binding = workspaceBinding(dbPath, 'xhba_attempt' as AttemptId)
     await executeSystem(app, {
       requestId: 'sys-workspace-1',
       expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,
@@ -772,6 +924,7 @@ describe('M2A collaboration hub application', () => {
           status: 'PREPARED',
           workspaceReceiptId: 'xhbw_receipt' as WorkspaceReceiptId,
           receiptDigest: 'sha256:workspace',
+          ...binding,
         },
       },
     })
@@ -787,6 +940,37 @@ describe('M2A collaboration hub application', () => {
       },
     })
     const running = await app.observeM2B(ADDRESS)
+    await expect(
+      executeSystem(app, {
+        requestId: 'sys-agent-failed-without-signal',
+        expectedSessionVersion: running.ok ? running.value.sessionVersion : 0,
+        intent: {
+          type: 'system.agent.outcome.record',
+          flowId: draftProjection.value.activeFlow.flowId,
+          taskRunId: 'xhbtr_projection' as TaskRunId,
+          attemptId: 'xhba_attempt' as AttemptId,
+          runtimeSessionId: 'runtime-1',
+          outcome: 'FAILED',
+          receiptDigest: 'sha256:failed-no-signal',
+        } as never,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'ILLEGAL_TRANSITION' } })
+    await expect(
+      executeSystem(app, {
+        requestId: 'sys-agent-unknown-with-signal',
+        expectedSessionVersion: running.ok ? running.value.sessionVersion : 0,
+        intent: {
+          type: 'system.agent.outcome.record',
+          flowId: draftProjection.value.activeFlow.flowId,
+          taskRunId: 'xhbtr_projection' as TaskRunId,
+          attemptId: 'xhba_attempt' as AttemptId,
+          runtimeSessionId: 'runtime-1',
+          outcome: 'OUTCOME_UNKNOWN',
+          receiptDigest: 'sha256:unknown-with-signal',
+          failure: { kind: 'AGENT_FAILURE', failureClass: 'RUNTIME', safeCode: 'RUNTIME_FAILED', receiptDigest: 'sha256:unknown-with-signal' },
+        } as never,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'ILLEGAL_TRANSITION' } })
     await executeSystem(app, {
       requestId: 'sys-agent-outcome-unknown-1',
       expectedSessionVersion: running.ok ? running.value.sessionVersion : 0,
@@ -812,6 +996,18 @@ describe('M2A collaboration hub application', () => {
       { phase: 'attempt.transition', to: 'OUTCOME_UNKNOWN', receiptDigest: 'sha256:unknown-receipt' },
     ])
     const unknown = await app.observeM2B(ADDRESS)
+    await expect(
+      executeSystem(app, {
+        requestId: 'sys-agent-reconcile-drift',
+        expectedSessionVersion: unknown.ok ? unknown.value.sessionVersion : 0,
+        intent: {
+          type: 'system.agent.reconcile',
+          attemptId: 'xhba_attempt' as AttemptId,
+          runtimeSessionId: 'runtime-1',
+          expectedReceiptDigest: 'sha256:wrong-receipt',
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'IDEMPOTENCY_CONFLICT' } })
     await executeSystem(app, {
       requestId: 'sys-agent-reconcile-1',
       expectedSessionVersion: unknown.ok ? unknown.value.sessionVersion : 0,

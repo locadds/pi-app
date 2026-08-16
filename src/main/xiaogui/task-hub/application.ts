@@ -21,6 +21,8 @@ import type {
   HubReadEventsRequestV1,
   HubReadRequestV1,
   HubSystemCommandRequestM2BV1,
+  HubSystemErrorCodeM2BV1,
+  HubSystemOutcomeM2BV1,
   M2AUserIntentV1,
   PerformReceiptV1,
   PlanRevisionId,
@@ -42,13 +44,26 @@ export interface CollaborationHubApplicationOptionsV1 {
   storeFactory: () => CollaborationHubSqliteStoreV1
   agentRuntime?: AgentRuntimeHostV1
   agentSelection?: RuntimeAdapterSelectionV1
+  baselineProvider?: ExecutionBaselineProviderV1
+  afterAgentDispatchStart?: (requestId: string) => void
   now?: () => string
   idFactory?: (prefix: string) => string
 }
 
+export interface ExecutionBaselineV1 {
+  baselineId: string
+  baselineTreeHash: string
+  initialTargetFingerprint: string
+  baselineDigest: string
+}
+
+export interface ExecutionBaselineProviderV1 {
+  capture(input: { address: HubAddressV1; flowId: FlowId; planRevisionId: PlanRevisionId | null }): Promise<ExecutionBaselineV1>
+}
+
 export interface CollaborationHubApplicationV1 {
   execute(request: HubCommandRequestV1): Promise<HubOutcomeV1<PerformReceiptV1>>
-  executeSystem(request: HubSystemCommandRequestM2BV1): Promise<HubOutcomeV1<PerformReceiptV1>>
+  executeSystem(request: HubSystemCommandRequestM2BV1): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>>
   read(address: HubAddressV1, request: HubReadRequestV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>>
   readEvents(address: HubAddressV1, request?: HubReadEventsRequestV1): Promise<HubOutcomeV1<HubEventEnvelopeV1[]>>
   observe(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>>
@@ -157,28 +172,28 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     }
   }
 
-  async executeSystem(request: HubSystemCommandRequestM2BV1): Promise<HubOutcomeV1<PerformReceiptV1>> {
+  async executeSystem(request: HubSystemCommandRequestM2BV1): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
     try {
-      if (request.contractVersion !== 'm2b.v1' || request.trustedActor.kind !== 'main-process-system') return hubError('IPC_VERSION_UNSUPPORTED')
+      if (request.contractVersion !== 'm2b.v1' || request.trustedActor.kind !== 'main-process-system') return systemError('IPC_VERSION_UNSUPPORTED')
       const scope = await this.resolve(request.address)
-      if (!scope.ok) return scope
-      if (scope.value.mode === 'DESIGN') return hubError('DESIGN_RESERVED')
+      if (!scope.ok) return systemError(scope.error.code === 'SESSION_SCOPE_MISMATCH' ? 'SESSION_SCOPE_MISMATCH' : 'INTERNAL')
+      if (scope.value.mode === 'DESIGN') return systemError('DESIGN_RESERVED')
       switch (request.intent.type) {
         case 'system.schedule':
-          return this.schedule(request.address, scope.value.mode, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.schedule' }> })
+          return await this.schedule(request.address, scope.value.mode, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.schedule' }> })
         case 'system.workspace.prepare.result.record':
-          return this.recordWorkspaceResult(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.workspace.prepare.result.record' }> })
+          return await this.recordWorkspaceResult(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.workspace.prepare.result.record' }> })
         case 'system.agent.report.record':
-          return this.recordAgentReport(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> })
+          return await this.recordAgentReport(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> })
         case 'system.agent.outcome.record':
-          return this.recordAgentOutcome(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.outcome.record' }> })
+          return await this.recordAgentOutcome(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.outcome.record' }> })
         case 'system.agent.reconcile':
-          return this.reconcileAgent(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.reconcile' }> })
+          return await this.reconcileAgent(request.address, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.reconcile' }> })
         default:
-          return hubError('INTENT_DISABLED')
+          return systemError('INTERNAL')
       }
     } catch {
-      return hubError('INTERNAL')
+      return systemError('INTERNAL')
     }
   }
 
@@ -312,25 +327,28 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
   }
 
-  private async schedule(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: { type: 'system.schedule'; flowId: FlowId } }): Promise<HubOutcomeV1<PerformReceiptV1>> {
-    const agent = await this.preflightAgent()
-    if (!agent.ok) return hubError('RUNTIME_SELECTION_NOT_APPROVED', { reason: agent.reasonCode })
+  private async schedule(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: { type: 'system.schedule'; flowId: FlowId } }): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
     const store = this.getStore()
-    const replay = this.checkIdempotency(store, address, request)
+    const replay = this.checkSystemIdempotency(store, address, request)
     if (replay) return replay
-    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
+    const agent = await this.preflightAgent()
+    if (!agent.ok) return systemError('AGENT_UNAVAILABLE', { reason: agent.reasonCode })
+    if (this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
     const projection = store.readProjection(address) ?? emptyProjection(address, mode)
     if (!projection.activeFlow || projection.activeFlow.flowId !== request.intent.flowId || projection.activeFlow.status !== 'PLAN_ACTIVE') {
-      return hubError('FLOW_NOT_FOUND')
+      return systemError('FLOW_NOT_FOUND')
     }
-    if (store.hasActiveExternalAttempt()) return hubError('ILLEGAL_TRANSITION')
+    if (store.hasActiveExternalAttempt()) return systemError('ILLEGAL_TRANSITION')
+    const baseline = await this.captureBaseline(address, request.intent.flowId, projection.activeRevision?.revisionId ?? null)
+    if (!baseline.ok) return systemError('BASELINE_UNAVAILABLE', { reason: baseline.reasonCode })
     const task = store.taskRuns(request.intent.flowId).find((candidate) => {
       if (candidate.status !== 'PENDING_DISABLED') return false
       const dependsOn = JSON.parse(candidate.depends_json) as string[]
       return dependsOn.length === 0
     })
-    if (!task) return hubError('ILLEGAL_TRANSITION')
+    if (!task) return systemError('ILLEGAL_TRANSITION')
     const attemptId = this.id('xhba') as AttemptId
+    const baselineBindingDigest = payloadDigest({ flowId: request.intent.flowId, baseline: baseline.value })
     const receipt = {
       requestId: request.requestId,
       intentType: request.intent.type,
@@ -339,14 +357,19 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       taskRunId: task.task_run_id,
       attemptId,
     }
+    const compositionDigest = payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, attemptKind: 'INITIAL', baselineDigest: baseline.value.baselineDigest })
     store.writeSchedule(address, this.idempotency(request), {
       flowId: request.intent.flowId,
       taskRunId: task.task_run_id,
       attemptId,
-      attemptDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId }),
-      compositionDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, attemptKind: 'INITIAL' }),
-      baselineBindingDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, planRevisionId: projection.activeRevision?.revisionId ?? null }),
-      workspacePrepareRequestDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, purpose: 'workspace.prepare' }),
+      attemptDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, baselineDigest: baseline.value.baselineDigest }),
+      compositionDigest,
+      baselineBindingDigest,
+      baselineId: baseline.value.baselineId,
+      baselineTreeHash: baseline.value.baselineTreeHash,
+      initialTargetFingerprint: baseline.value.initialTargetFingerprint,
+      baselineDigest: baseline.value.baselineDigest,
+      workspacePrepareRequestDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, purpose: 'workspace.prepare', compositionDigest, baselineBindingDigest }),
       projection,
       receipt,
       now: this.now(),
@@ -357,14 +380,16 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
   private recordWorkspaceResult(
     address: HubAddressV1,
     request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.workspace.prepare.result.record' }> },
-  ): HubOutcomeV1<PerformReceiptV1> {
+  ): HubSystemOutcomeM2BV1<PerformReceiptV1> {
     const store = this.getStore()
-    const replay = this.checkIdempotency(store, address, request)
+    const replay = this.checkSystemIdempotency(store, address, request)
     if (replay) return replay
-    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
+    if (this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
     const attempt = store.attempt(request.intent.attemptId)
-    if (!attempt || attempt.status !== 'WORKSPACE_PREPARING' || attempt.task_run_id !== request.intent.taskRunId) return hubError('ILLEGAL_TRANSITION')
-    if (store.workspacePrepareOutboxStatus(request.intent.attemptId) !== 'READY') return hubError('ILLEGAL_TRANSITION')
+    if (!attempt || attempt.status !== 'WORKSPACE_PREPARING' || attempt.task_run_id !== request.intent.taskRunId) return systemError('ILLEGAL_TRANSITION')
+    if (store.workspacePrepareOutboxStatus(request.intent.attemptId) !== 'READY') return systemError('ILLEGAL_TRANSITION')
+    const composition = store.compositionAttempt(request.intent.attemptId)
+    if (!composition || !matchesWorkspaceBinding(request.intent.receipt, composition)) return systemError('WORKSPACE_RECEIPT_MISMATCH')
     const receipt = {
       requestId: request.requestId,
       intentType: request.intent.type,
@@ -387,22 +412,31 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
   private async recordAgentReport(
     address: HubAddressV1,
     request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> },
-  ): Promise<HubOutcomeV1<PerformReceiptV1>> {
+  ): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
     const store = this.getStore()
-    const replay = this.checkIdempotency(store, address, request)
+    const replay = this.checkSystemIdempotency(store, address, request)
     if (replay) return replay
-    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
     const attempt = store.attempt(request.intent.attemptId)
-    if (!attempt || attempt.task_run_id !== request.intent.taskRunId || attempt.flow_id !== request.intent.flowId) return hubError('ILLEGAL_TRANSITION')
-    if (attempt.status !== 'READY' || !attempt.workspace_receipt_id) return hubError('ILLEGAL_TRANSITION')
+    if (!attempt || attempt.task_run_id !== request.intent.taskRunId || attempt.flow_id !== request.intent.flowId) return systemError('ILLEGAL_TRANSITION')
+    if (!['READY', 'STARTING'].includes(attempt.status) || !attempt.workspace_receipt_id) return systemError('ILLEGAL_TRANSITION')
+    const existingOutbox = store.agentDispatchOutbox(request.intent.attemptId)
+    const isDispatchReplay = attempt.status === 'STARTING' && existingOutbox?.request_id === request.requestId
+    if (!isDispatchReplay && this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
     const workspaceReceipt = store.workspaceReceiptForAttempt(request.intent.attemptId)
     if (!workspaceReceipt || workspaceReceipt.status !== 'PREPARED' || workspaceReceipt.workspace_receipt_id !== attempt.workspace_receipt_id) {
-      return hubError('ILLEGAL_TRANSITION')
+      return systemError('ILLEGAL_TRANSITION')
     }
     const agent = await this.preflightAgent()
-    if (!agent.ok) return hubError('RUNTIME_SELECTION_NOT_APPROVED', { reason: agent.reasonCode })
-    const runtimeRequest = this.runtimeRequest(address, agent.selection, request, attempt, workspaceReceipt.receipt_digest)
+    if (!agent.ok) return systemError('AGENT_UNAVAILABLE', { reason: agent.reasonCode })
+    const baseline = store.flowExecutionBaseline(request.intent.flowId)
+    if (!baseline) return systemError('BASELINE_UNAVAILABLE')
+    const runtimeRequest = existingOutbox?.runtime_request_json
+      ? (JSON.parse(existingOutbox.runtime_request_json) as RuntimeCreateOrResumeRequestV1)
+      : this.runtimeRequest(address, agent.selection, request, attempt, workspaceReceipt.receipt_digest, baseline)
     const dispatchDigest = payloadDigest(runtimeRequest)
+    if (existingOutbox && (existingOutbox.request_id !== request.requestId || existingOutbox.runtime_request_digest !== dispatchDigest)) {
+      return systemError('IDEMPOTENCY_CONFLICT')
+    }
     const receipt = {
       requestId: request.requestId,
       intentType: request.intent.type,
@@ -411,16 +445,22 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       taskRunId: request.intent.taskRunId,
       attemptId: request.intent.attemptId,
     }
-    store.writeAgentDispatchStart(address, {
-      attemptId: request.intent.attemptId,
-      taskRunId: request.intent.taskRunId,
-      requestId: request.requestId,
-      payloadDigest: dispatchDigest,
-      now: this.now(),
-    })
+    if (attempt.status === 'READY') {
+      store.writeAgentDispatchStart(address, {
+        attemptId: request.intent.attemptId,
+        taskRunId: request.intent.taskRunId,
+        requestId: request.requestId,
+        payloadDigest: dispatchDigest,
+        runtimeRequestDigest: dispatchDigest,
+        runtimeRequestJson: JSON.stringify(runtimeRequest),
+        selectionDigest: payloadDigest(runtimeRequest.selection),
+        now: this.now(),
+      })
+      this.options.afterAgentDispatchStart?.(request.requestId)
+    }
     const outcome = await agent.runtime.createOrResume(runtimeRequest)
     const startingAttempt = store.attempt(request.intent.attemptId)
-    if (!startingAttempt || startingAttempt.status !== 'STARTING') return hubError('ILLEGAL_TRANSITION')
+    if (!startingAttempt || startingAttempt.status !== 'STARTING') return systemError('ILLEGAL_TRANSITION')
     if (outcome.state !== 'READY') {
       store.writeAgentOutcome(address, this.idempotency(request), this.agentOutcomeRecord(request, outcome, receipt))
       return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
@@ -430,6 +470,9 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       taskRunId: request.intent.taskRunId,
       requestId: request.requestId,
       payloadDigest: dispatchDigest,
+      runtimeRequestDigest: dispatchDigest,
+      runtimeRequestJson: JSON.stringify(runtimeRequest),
+      selectionDigest: payloadDigest(runtimeRequest.selection),
       runtimeSessionId: outcome.runtimeSessionId,
       reportDigest: payloadDigest({ state: outcome.state, runtimeSessionId: outcome.runtimeSessionId, requestId: request.requestId }),
       receipt,
@@ -441,15 +484,16 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
   private recordAgentOutcome(
     address: HubAddressV1,
     request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.outcome.record' }> },
-  ): HubOutcomeV1<PerformReceiptV1> {
+  ): HubSystemOutcomeM2BV1<PerformReceiptV1> {
     const store = this.getStore()
-    const replay = this.checkIdempotency(store, address, request)
+    const replay = this.checkSystemIdempotency(store, address, request)
     if (replay) return replay
-    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
+    if (this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
+    if (!isValidAgentOutcomeIntent(request.intent)) return systemError('ILLEGAL_TRANSITION')
     const attempt = store.attempt(request.intent.attemptId)
-    if (!attempt || attempt.task_run_id !== request.intent.taskRunId) return hubError('ILLEGAL_TRANSITION')
-    if (!['STARTING', 'RUNNING'].includes(attempt.status)) return hubError('ILLEGAL_TRANSITION')
-    if (attempt.runtime_session_id && attempt.runtime_session_id !== request.intent.runtimeSessionId) return hubError('ILLEGAL_TRANSITION')
+    if (!attempt || attempt.task_run_id !== request.intent.taskRunId) return systemError('ILLEGAL_TRANSITION')
+    if (!['STARTING', 'RUNNING'].includes(attempt.status)) return systemError('ILLEGAL_TRANSITION')
+    if (attempt.runtime_session_id && attempt.runtime_session_id !== request.intent.runtimeSessionId) return systemError('ILLEGAL_TRANSITION')
     const receipt = {
       requestId: request.requestId,
       intentType: request.intent.type,
@@ -464,7 +508,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       runtimeSessionId: request.intent.runtimeSessionId,
       outcome: request.intent.outcome,
       receiptDigest: request.intent.receiptDigest,
-      failure: request.intent.outcome === 'FAILED' ? failureSignal('RUNTIME_FAILED', request.intent.receiptDigest, request.intent.failure?.sourceReasonCode ?? 'EXTERNAL_FAILED') : request.intent.failure,
+      failure: request.intent.outcome === 'FAILED' ? request.intent.failure : undefined,
       receipt,
       now: this.now(),
     })
@@ -474,15 +518,18 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
   private async reconcileAgent(
     address: HubAddressV1,
     request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.reconcile' }> },
-  ): Promise<HubOutcomeV1<PerformReceiptV1>> {
+  ): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
     const store = this.getStore()
-    const replay = this.checkIdempotency(store, address, request)
+    const replay = this.checkSystemIdempotency(store, address, request)
     if (replay) return replay
-    if (this.hasStaleExpectedVersion(store, address, request)) return hubError('STALE_SESSION_VERSION')
+    if (this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
     const attempt = store.attempt(request.intent.attemptId)
-    if (!attempt || attempt.status !== 'OUTCOME_UNKNOWN' || attempt.runtime_session_id !== request.intent.runtimeSessionId) return hubError('ILLEGAL_TRANSITION')
+    if (!attempt || attempt.status !== 'OUTCOME_UNKNOWN' || attempt.runtime_session_id !== request.intent.runtimeSessionId) return systemError('ILLEGAL_TRANSITION')
+    if (request.intent.expectedReceiptDigest && attempt.outcome_receipt_digest && request.intent.expectedReceiptDigest !== attempt.outcome_receipt_digest) {
+      return systemError('IDEMPOTENCY_CONFLICT')
+    }
     const agent = this.options.agentRuntime
-    if (!agent) return hubError('RUNTIME_SELECTION_NOT_APPROVED', { reason: 'NO_AGENT_RUNTIME' })
+    if (!agent) return systemError('AGENT_UNAVAILABLE', { reason: 'NO_AGENT_RUNTIME' })
     const outcome = await agent.reconcile(request.intent.runtimeSessionId, request.intent.expectedReceiptDigest)
     const receipt = {
       requestId: request.requestId,
@@ -509,14 +556,38 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
   > {
     const runtime = this.options.agentRuntime
     if (!runtime) return { ok: false, reasonCode: 'NO_AGENT_RUNTIME' }
-    const capabilities = await runtime.discover()
-    const candidate = this.options.agentSelection ?? capabilities.find(isProductionCapability)
-    if (!candidate || !isProductionCapability(candidate)) return { ok: false, reasonCode: 'NO_APPROVED_RUNTIME' }
-    const health = await runtime.health(candidate.adapterId)
-    if (!isProductionCapability(health) || runtimeSelectionKey(health) !== runtimeSelectionKey(candidate) || health.health !== 'AVAILABLE') {
-      return { ok: false, reasonCode: health.reasonCode ?? 'RUNTIME_NOT_AVAILABLE' }
+    try {
+      const capabilities = await runtime.discover()
+      const candidate = this.options.agentSelection ?? capabilities.find(isProductionCapability)
+      if (!candidate || !isProductionCapability(candidate)) return { ok: false, reasonCode: 'NO_APPROVED_RUNTIME' }
+      const health = await runtime.health(candidate.adapterId)
+      if (!isProductionCapability(health) || runtimeSelectionKey(health) !== runtimeSelectionKey(candidate) || health.health !== 'AVAILABLE') {
+        return { ok: false, reasonCode: health.reasonCode ?? 'RUNTIME_NOT_AVAILABLE' }
+      }
+      return { ok: true, runtime, selection: toRuntimeSelection(candidate) }
+    } catch {
+      return { ok: false, reasonCode: 'RUNTIME_ADAPTER_ERROR' }
     }
-    return { ok: true, runtime, selection: toRuntimeSelection(candidate) }
+  }
+
+  private async captureBaseline(
+    address: HubAddressV1,
+    flowId: FlowId,
+    planRevisionId: PlanRevisionId | null,
+  ): Promise<{ ok: true; value: ExecutionBaselineV1 } | { ok: false; reasonCode: string }> {
+    const provider = this.options.baselineProvider
+    if (!provider) return { ok: false, reasonCode: 'NO_BASELINE_PROVIDER' }
+    try {
+      const baseline = await provider.capture({ address, flowId, planRevisionId })
+      const expected = payloadDigest({
+        baselineId: baseline.baselineId,
+        baselineTreeHash: baseline.baselineTreeHash,
+        initialTargetFingerprint: baseline.initialTargetFingerprint,
+      })
+      return baseline.baselineDigest === expected ? { ok: true, value: baseline } : { ok: false, reasonCode: 'BASELINE_DIGEST_MISMATCH' }
+    } catch {
+      return { ok: false, reasonCode: 'BASELINE_PROVIDER_ERROR' }
+    }
   }
 
   private runtimeRequest(
@@ -525,6 +596,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> },
     attempt: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['attempt']>>,
     workspaceReceiptDigest: string,
+    baseline: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['flowExecutionBaseline']>>,
   ): RuntimeCreateOrResumeRequestV1 {
     const scope: RuntimeScopeBindingV1 = {
       projectId: address.projectId,
@@ -541,10 +613,10 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       requestId: request.requestId,
       scope,
       workspace: {
-        attemptWorktreeId: `xhbwt_${request.intent.attemptId}`,
-        worktreeRootDigest: payloadDigest({ attemptId: request.intent.attemptId, workspaceReceiptDigest, role: 'worktree-root' }),
-        baseRevisionDigest: payloadDigest({ flowId: request.intent.flowId, role: 'base-revision' }),
-        targetProjectRootDigest: payloadDigest({ projectId: address.projectId, role: 'target-project-root' }),
+        attemptWorktreeId: `xhbwt_${baseline.baseline_id}`,
+        worktreeRootDigest: payloadDigest({ baselineDigest: baseline.baseline_digest, workspaceReceiptDigest, role: 'worktree-root' }),
+        baseRevisionDigest: baseline.baseline_tree_hash,
+        targetProjectRootDigest: baseline.initial_target_fingerprint,
         writePolicy: 'ATTEMPT_WORKTREE_ONLY',
       },
       selection,
@@ -570,6 +642,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       outcome: mapped.outcome,
       receiptDigest: mapped.receiptDigest,
       failure: mapped.failure,
+      succeededAudit: mapped.succeededAudit ? { ...mapped.succeededAudit, attemptId: request.intent.attemptId } : undefined,
       receipt,
       now: this.now(),
     }
@@ -585,6 +658,20 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     const current = this.idempotency(request)
     if (existing.command_type !== current.commandType || existing.payload_hash !== current.payloadHash) {
       return hubError('IDEMPOTENCY_CONFLICT')
+    }
+    return { ok: true, value: JSON.parse(existing.receipt_json) as PerformReceiptV1 }
+  }
+
+  private checkSystemIdempotency(
+    store: CollaborationHubSqliteStoreV1,
+    address: HubAddressV1,
+    request: { requestId: string; expectedSessionVersion?: number; intent: { type: string } },
+  ): HubSystemOutcomeM2BV1<PerformReceiptV1> | null {
+    const existing = store.idempotency(address, request.requestId)
+    if (!existing) return null
+    const current = this.idempotency(request)
+    if (existing.command_type !== current.commandType || existing.payload_hash !== current.payloadHash) {
+      return systemError('IDEMPOTENCY_CONFLICT')
     }
     return { ok: true, value: JSON.parse(existing.receipt_json) as PerformReceiptV1 }
   }
@@ -630,6 +717,45 @@ function isProductionCapability(value: RuntimeCapabilityV1 | RuntimeAdapterSelec
   )
 }
 
+function systemError(
+  code: HubSystemErrorCodeM2BV1,
+  safeArgs?: Record<string, string | number | boolean>,
+): HubSystemOutcomeM2BV1<never> {
+  return {
+    ok: false,
+    error: {
+      code,
+      messageKey: `xiaogui.hub.system.${code.toLowerCase()}`,
+      ...(safeArgs ? { safeArgs } : {}),
+      traceId: `xhbs_${randomUUID()}`,
+    },
+  }
+}
+
+function matchesWorkspaceBinding(
+  receipt: { attemptId: AttemptId; compositionAttemptId: string; requestDigest: string; baselineBindingDigest: string; compositionDigest: string },
+  composition: { attemptId: AttemptId; compositionAttemptId: string; requestDigest: string; baselineBindingDigest: string; compositionDigest: string },
+): boolean {
+  return (
+    receipt.attemptId === composition.attemptId &&
+    receipt.compositionAttemptId === composition.compositionAttemptId &&
+    receipt.requestDigest === composition.requestDigest &&
+    receipt.baselineBindingDigest === composition.baselineBindingDigest &&
+    receipt.compositionDigest === composition.compositionDigest
+  )
+}
+
+function isValidAgentOutcomeIntent(intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.outcome.record' }>): boolean {
+  if (intent.outcome === 'FAILED') return isClosedFailureSignal(intent.failure, intent.receiptDigest)
+  return !('failure' in intent) || intent.failure == null
+}
+
+function isClosedFailureSignal(value: AgentFailureSignalV1 | undefined, receiptDigest: string): value is AgentFailureSignalV1 {
+  if (!value || value.kind !== 'AGENT_FAILURE' || value.receiptDigest !== receiptDigest) return false
+  if (!['RUNTIME', 'PROTOCOL', 'UNKNOWN'].includes(value.failureClass)) return false
+  return ['RUNTIME_FAILED', 'RUNTIME_ADAPTER_ERROR', 'RUNTIME_SESSION_NOT_FOUND', 'RUNTIME_OUTCOME_SESSION_MISMATCH', 'UNKNOWN_RUNTIME_FAILURE'].includes(value.safeCode)
+}
+
 function toRuntimeSelection(value: RuntimeCapabilityV1 | RuntimeAdapterSelectionV1): RuntimeAdapterSelectionV1 {
   if (value.stream === 'NONE' || value.interrupt === 'NONE' || value.inspect === 'NONE') {
     throw new Error('invalid runtime selection')
@@ -651,54 +777,63 @@ function mapRuntimeOutcome(outcome: RuntimeCreateOrResumeOutcomeV1 | RuntimeOutc
   outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
   receiptDigest: string
   failure?: AgentFailureSignalV1
+  succeededAudit?: { runtimeSessionId: string; attemptId: AttemptId; receiptDigest: string; candidateDigest: string }
 } {
   if (outcome.state === 'FAILED') {
+    const safeCode = classifyRuntimeFailure(outcome.reasonCode)
+    if (!safeCode) {
+      return {
+        outcome: 'OUTCOME_UNKNOWN',
+        receiptDigest: outcome.receiptDigest,
+      }
+    }
     return {
       outcome: 'FAILED',
       receiptDigest: outcome.receiptDigest,
-      failure: failureSignal(classifyRuntimeFailure(outcome.reasonCode), outcome.receiptDigest, outcome.reasonCode),
+      failure: failureSignal(safeCode, outcome.receiptDigest),
     }
   }
   if (outcome.state === 'INTERRUPTED') {
     return {
       outcome: 'INTERRUPTED',
       receiptDigest: outcome.receiptDigest,
-      failure: failureSignal('RUNTIME_INTERRUPTED', outcome.receiptDigest, outcome.reasonCode),
     }
   }
   if (outcome.state === 'SUCCEEDED') {
     return {
       outcome: 'OUTCOME_UNKNOWN',
       receiptDigest: outcome.receiptDigest,
-      failure: failureSignal('PROTOCOL_SUCCEEDED_UNSUPPORTED', outcome.receiptDigest, 'SUCCEEDED_WITHOUT_VERIFICATION'),
+      succeededAudit: {
+        runtimeSessionId: outcome.runtimeSessionId,
+        attemptId: '' as AttemptId,
+        receiptDigest: outcome.receiptDigest,
+        candidateDigest: outcome.candidateDigest,
+      },
     }
   }
   if (outcome.state === 'READY') {
     return {
       outcome: 'OUTCOME_UNKNOWN',
       receiptDigest: payloadDigest({ state: 'READY', runtimeSessionId: outcome.runtimeSessionId }),
-      failure: failureSignal('RUNTIME_OUTCOME_UNKNOWN', payloadDigest({ state: 'READY', runtimeSessionId: outcome.runtimeSessionId }), 'READY_NOT_SETTLED'),
     }
   }
   return {
     outcome: 'OUTCOME_UNKNOWN',
     receiptDigest: outcome.inspectHandleDigest,
-    failure: failureSignal(classifyRuntimeFailure(outcome.reasonCode), outcome.inspectHandleDigest, outcome.reasonCode),
   }
 }
 
-function classifyRuntimeFailure(reasonCode: string): AgentFailureSignalV1['reasonCode'] {
+function classifyRuntimeFailure(reasonCode: string): AgentFailureSignalV1['safeCode'] | null {
   if (reasonCode === 'RUNTIME_ADAPTER_ERROR') return 'RUNTIME_ADAPTER_ERROR'
   if (reasonCode === 'RUNTIME_SESSION_NOT_FOUND') return 'RUNTIME_SESSION_NOT_FOUND'
   if (reasonCode === 'RUNTIME_OUTCOME_SESSION_MISMATCH') return 'RUNTIME_OUTCOME_SESSION_MISMATCH'
-  if (reasonCode === 'PROTOCOL_SUCCEEDED_UNSUPPORTED') return 'PROTOCOL_SUCCEEDED_UNSUPPORTED'
-  if (reasonCode === 'RUNTIME_STILL_RUNNING') return 'RUNTIME_OUTCOME_UNKNOWN'
   if (reasonCode.startsWith('RUNTIME_')) return 'RUNTIME_FAILED'
-  return 'UNKNOWN_RUNTIME_FAILURE'
+  return null
 }
 
-function failureSignal(reasonCode: AgentFailureSignalV1['reasonCode'], receiptDigest: string, sourceReasonCode: string): AgentFailureSignalV1 {
-  return { kind: 'AGENT_FAILURE', reasonCode, sourceReasonCode, receiptDigest }
+function failureSignal(safeCode: AgentFailureSignalV1['safeCode'], receiptDigest: string): AgentFailureSignalV1 {
+  const failureClass = safeCode === 'UNKNOWN_RUNTIME_FAILURE' ? 'UNKNOWN' : 'RUNTIME'
+  return { kind: 'AGENT_FAILURE', failureClass, safeCode, receiptDigest }
 }
 
 function emptyProjection(address: HubAddressV1, mode: SessionMode): SessionCollaborationProjectionV1 {

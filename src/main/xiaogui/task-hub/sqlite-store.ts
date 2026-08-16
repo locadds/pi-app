@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import type {
   AgentFailureSignalV1,
+  AgentSucceededAuditV1,
   AttemptId,
   AttemptProjectionM2BV1,
   FlowId,
@@ -15,6 +16,7 @@ import type {
   TaskRunId,
   TaskRunProjectionM2BV1,
   WorkspacePreparedReceiptM2BV1,
+  WorkspaceReceiptBindingM2BV1,
   WorkspaceReceiptId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { CanonicalPlanDraftV1 } from './digest'
@@ -57,6 +59,7 @@ interface AttemptRecord {
   attempt_digest: string
   workspace_receipt_id: WorkspaceReceiptId | null
   runtime_session_id: string | null
+  outcome_receipt_digest: string | null
 }
 
 interface WorkspaceReceiptRecord {
@@ -64,6 +67,30 @@ interface WorkspaceReceiptRecord {
   attempt_id: AttemptId
   status: string
   receipt_digest: string
+}
+
+interface CompositionAttemptRecord extends WorkspaceReceiptBindingM2BV1 {
+  compositionAttemptId: string
+}
+
+interface AgentDispatchOutboxRecord {
+  outbox_id: string
+  attempt_id: AttemptId
+  request_id: string
+  status: string
+  payload_digest: string
+  runtime_request_digest: string | null
+  runtime_request_json: string | null
+  selection_digest: string | null
+}
+
+interface FlowExecutionBaselineRecord {
+  flow_id: FlowId
+  baseline_id: string
+  baseline_tree_hash: string
+  initial_target_fingerprint: string
+  baseline_digest: string
+  baseline_binding_digest: string
 }
 
 type ReadableProjectionV1 = Omit<SessionCollaborationProjectionV1, 'activeRevision'> & {
@@ -109,6 +136,10 @@ export interface ScheduleRecordM2BV1 {
   attemptDigest: string
   compositionDigest: string
   baselineBindingDigest: string
+  baselineId: string
+  baselineTreeHash: string
+  initialTargetFingerprint: string
+  baselineDigest: string
   workspacePrepareRequestDigest: string
   projection: SessionCollaborationProjectionV1
   receipt: PerformReceiptV1
@@ -129,6 +160,9 @@ export interface AgentDispatchRecordM2BV1 {
   taskRunId: TaskRunId
   requestId: string
   payloadDigest: string
+  runtimeRequestJson: string
+  runtimeRequestDigest: string
+  selectionDigest: string
   now: string
 }
 
@@ -145,6 +179,7 @@ export interface AgentOutcomeRecordM2BV1 {
   outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
   receiptDigest: string
   failure?: AgentFailureSignalV1
+  succeededAudit?: AgentSucceededAuditV1
   receipt: PerformReceiptV1
   now: string
 }
@@ -156,6 +191,7 @@ export interface AgentReconcileRecordM2BV1 {
   outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
   receiptDigest: string
   failure?: AgentFailureSignalV1
+  succeededAudit?: AgentSucceededAuditV1
   receipt: PerformReceiptV1
   now: string
 }
@@ -278,8 +314,31 @@ export class CollaborationHubSqliteStoreV1 {
 
   attempt(attemptId: AttemptId): AttemptRecord | null {
     const row = this.db
-      .prepare('select attempt_id, task_run_id, flow_id, status, attempt_digest, workspace_receipt_id, runtime_session_id from attempts where attempt_id = ?')
+      .prepare('select attempt_id, task_run_id, flow_id, status, attempt_digest, workspace_receipt_id, runtime_session_id, outcome_receipt_digest from attempts where attempt_id = ?')
       .get(attemptId) as AttemptRecord | undefined
+    return row ?? null
+  }
+
+  compositionAttempt(attemptId: AttemptId): CompositionAttemptRecord | null {
+    const row = this.db
+      .prepare(
+        'select composition_attempt_id as compositionAttemptId, attempt_id as attemptId, request_digest as requestDigest, baseline_binding_digest as baselineBindingDigest, composition_digest as compositionDigest from composition_attempts where attempt_id = ? and attempt_kind = ?',
+      )
+      .get(attemptId, 'INITIAL') as CompositionAttemptRecord | undefined
+    return row ?? null
+  }
+
+  agentDispatchOutbox(attemptId: AttemptId): AgentDispatchOutboxRecord | null {
+    const row = this.db
+      .prepare('select outbox_id, attempt_id, request_id, status, payload_digest, runtime_request_digest, runtime_request_json, selection_digest from agent_dispatch_outbox where attempt_id = ? order by rowid desc limit 1')
+      .get(attemptId) as AgentDispatchOutboxRecord | undefined
+    return row ?? null
+  }
+
+  flowExecutionBaseline(flowId: FlowId): FlowExecutionBaselineRecord | null {
+    const row = this.db
+      .prepare('select flow_id, baseline_id, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest from flow_execution_baselines where flow_id = ?')
+      .get(flowId) as FlowExecutionBaselineRecord | undefined
     return row ?? null
   }
 
@@ -397,6 +456,19 @@ export class CollaborationHubSqliteStoreV1 {
       const version = this.currentVersion(address) + 1
       const projection = { ...record.projection, sessionVersion: version }
       const receipt = { ...record.receipt, sessionVersion: version }
+      this.db
+        .prepare(
+          'insert into flow_execution_baselines (flow_id, baseline_id, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at) values (?, ?, ?, ?, ?, ?, ?) on conflict(flow_id) do update set baseline_id = excluded.baseline_id, baseline_tree_hash = excluded.baseline_tree_hash, initial_target_fingerprint = excluded.initial_target_fingerprint, baseline_digest = excluded.baseline_digest, baseline_binding_digest = excluded.baseline_binding_digest',
+        )
+        .run(
+          record.flowId,
+          record.baselineId,
+          record.baselineTreeHash,
+          record.initialTargetFingerprint,
+          record.baselineDigest,
+          record.baselineBindingDigest,
+          record.now,
+        )
       this.db
         .prepare("update task_runs set status = 'READY', unavailable_reason = 'M2B1_SCHEDULED' where task_run_id = ?")
         .run(record.taskRunId)
@@ -524,9 +596,21 @@ export class CollaborationHubSqliteStoreV1 {
       const version = this.currentVersion(address) + 1
       this.db
         .prepare(
-          'insert or ignore into agent_dispatch_outbox (outbox_id, attempt_id, request_id, status, payload_digest, created_at, claimed_at, completed_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+          'insert or ignore into agent_dispatch_outbox (outbox_id, attempt_id, request_id, status, payload_digest, runtime_request_digest, runtime_request_json, selection_digest, created_at, claimed_at, completed_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         )
-        .run(`xhbo_${record.requestId}`, record.attemptId, record.requestId, 'READY', record.payloadDigest, record.now, null, null)
+        .run(
+          `xhbo_${record.requestId}`,
+          record.attemptId,
+          record.requestId,
+          'READY',
+          record.payloadDigest,
+          record.runtimeRequestDigest,
+          record.runtimeRequestJson,
+          record.selectionDigest,
+          record.now,
+          null,
+          null,
+        )
       this.db.prepare("update attempts set status = 'STARTING', updated_at = ? where attempt_id = ?").run(
         record.now,
         record.attemptId,
@@ -586,9 +670,10 @@ export class CollaborationHubSqliteStoreV1 {
       const version = this.currentVersion(address) + 1
       const receipt = { ...record.receipt, sessionVersion: version }
       const nextTaskStatus = record.outcome === 'OUTCOME_UNKNOWN' ? 'OUTCOME_UNKNOWN' : 'FAILED'
-      this.db.prepare('update attempts set status = ?, runtime_session_id = ?, updated_at = ? where attempt_id = ?').run(
+      this.db.prepare('update attempts set status = ?, runtime_session_id = ?, outcome_receipt_digest = ?, updated_at = ? where attempt_id = ?').run(
         record.outcome,
         record.runtimeSessionId,
+        record.receiptDigest,
         record.now,
         record.attemptId,
       )
@@ -600,6 +685,9 @@ export class CollaborationHubSqliteStoreV1 {
           )
           .run(`xhbfail_${record.receipt.requestId}`, record.attemptId, record.runtimeSessionId, JSON.stringify(record.failure), record.receiptDigest, record.now)
       }
+      if (record.succeededAudit) {
+        this.writeSucceededAudit(record.receipt.requestId, record.succeededAudit, record.now)
+      }
       this.writeEvent(address, version, 'system.agent.outcome.record', {
         phase: 'attempt.transition',
         taskRunId: record.taskRunId,
@@ -608,6 +696,7 @@ export class CollaborationHubSqliteStoreV1 {
         to: record.outcome,
         receiptDigest: record.receiptDigest,
         ...(record.failure ? { failure: record.failure } : {}),
+        ...(record.succeededAudit ? { succeededAudit: record.succeededAudit } : {}),
       }, record.now)
       this.bumpProjectionVersion(address, version)
       this.writeIdempotency(address, idempotency, receipt)
@@ -622,7 +711,7 @@ export class CollaborationHubSqliteStoreV1 {
         .prepare('select task_run_id from attempts where attempt_id = ?')
         .get(record.attemptId) as { task_run_id: TaskRunId } | undefined
       const nextTaskStatus = record.outcome === 'OUTCOME_UNKNOWN' ? 'OUTCOME_UNKNOWN' : 'FAILED'
-      this.db.prepare('update attempts set status = ?, updated_at = ? where attempt_id = ?').run(record.outcome, record.now, record.attemptId)
+      this.db.prepare('update attempts set status = ?, outcome_receipt_digest = ?, updated_at = ? where attempt_id = ?').run(record.outcome, record.receiptDigest, record.now, record.attemptId)
       if (taskRun) this.db.prepare('update task_runs set status = ? where task_run_id = ?').run(nextTaskStatus, taskRun.task_run_id)
       this.db
         .prepare(
@@ -645,6 +734,9 @@ export class CollaborationHubSqliteStoreV1 {
           )
           .run(`xhbfail_${record.receipt.requestId}`, record.attemptId, record.runtimeSessionId, JSON.stringify(record.failure), record.receiptDigest, record.now)
       }
+      if (record.succeededAudit) {
+        this.writeSucceededAudit(record.receipt.requestId, record.succeededAudit, record.now)
+      }
       this.writeEvent(address, version, 'system.agent.reconcile', {
         phase: 'outcome_unknown.reconciled',
         attemptId: record.attemptId,
@@ -653,6 +745,7 @@ export class CollaborationHubSqliteStoreV1 {
         outcome: record.outcome,
         receiptDigest: record.receiptDigest,
         ...(record.failure ? { failure: record.failure } : {}),
+        ...(record.succeededAudit ? { succeededAudit: record.succeededAudit } : {}),
       }, record.now)
       this.bumpProjectionVersion(address, version)
       this.writeIdempotency(address, idempotency, receipt)
@@ -669,12 +762,14 @@ export class CollaborationHubSqliteStoreV1 {
       'task_specs',
       'task_runs',
       'attempts',
+      'flow_execution_baselines',
       'composition_attempts',
       'workspace_prepare_outbox',
       'workspace_receipts',
       'agent_dispatch_outbox',
       'runtime_session_bindings',
       'agent_failures',
+      'agent_succeeded_audits',
       'agent_reconcile_results',
     ]
     return Object.fromEntries(
@@ -770,8 +865,18 @@ export class CollaborationHubSqliteStoreV1 {
         attempt_digest text not null,
         workspace_receipt_id text,
         runtime_session_id text,
+        outcome_receipt_digest text,
         created_at text not null,
         updated_at text not null
+      );
+      create table if not exists flow_execution_baselines (
+        flow_id text primary key references flows(flow_id),
+        baseline_id text not null,
+        baseline_tree_hash text not null,
+        initial_target_fingerprint text not null,
+        baseline_digest text not null,
+        baseline_binding_digest text not null,
+        created_at text not null
       );
       create table if not exists composition_attempts (
         composition_attempt_id text primary key,
@@ -807,6 +912,9 @@ export class CollaborationHubSqliteStoreV1 {
         request_id text not null,
         status text not null,
         payload_digest text not null,
+        runtime_request_digest text,
+        runtime_request_json text,
+        selection_digest text,
         created_at text not null,
         claimed_at text,
         completed_at text
@@ -826,6 +934,14 @@ export class CollaborationHubSqliteStoreV1 {
         receipt_digest text not null,
         created_at text not null
       );
+      create table if not exists agent_succeeded_audits (
+        audit_id text primary key,
+        attempt_id text not null references attempts(attempt_id),
+        runtime_session_id text not null,
+        receipt_digest text not null,
+        candidate_digest text not null,
+        created_at text not null
+      );
       create table if not exists agent_reconcile_results (
         reconcile_id text primary key,
         attempt_id text not null references attempts(attempt_id),
@@ -842,6 +958,10 @@ export class CollaborationHubSqliteStoreV1 {
       insert or ignore into schema_migrations (version, applied_at) values (2, datetime('now'));
     `)
     this.addColumnIfMissing('workspace_receipts', 'conflict_digest', 'text')
+    this.addColumnIfMissing('attempts', 'outcome_receipt_digest', 'text')
+    this.addColumnIfMissing('agent_dispatch_outbox', 'runtime_request_digest', 'text')
+    this.addColumnIfMissing('agent_dispatch_outbox', 'runtime_request_json', 'text')
+    this.addColumnIfMissing('agent_dispatch_outbox', 'selection_digest', 'text')
   }
 
   private taskRunsForFlow(flowId: FlowId | null): TaskRunRecord[] {
@@ -856,7 +976,7 @@ export class CollaborationHubSqliteStoreV1 {
   private attemptsForFlow(flowId: FlowId | null): AttemptRecord[] {
     if (!flowId) return []
     return this.db
-      .prepare('select attempt_id, task_run_id, flow_id, status, attempt_digest, workspace_receipt_id, runtime_session_id from attempts where flow_id = ? order by rowid asc')
+      .prepare('select attempt_id, task_run_id, flow_id, status, attempt_digest, workspace_receipt_id, runtime_session_id, outcome_receipt_digest from attempts where flow_id = ? order by rowid asc')
       .all(flowId) as unknown as AttemptRecord[]
   }
 
@@ -870,6 +990,14 @@ export class CollaborationHubSqliteStoreV1 {
     const columns = this.db.prepare(`pragma table_info(${table})`).all() as Array<{ name: string }>
     if (columns.some((item) => item.name === column)) return
     this.db.exec(`alter table ${table} add column ${column} ${definition}`)
+  }
+
+  private writeSucceededAudit(requestId: string, audit: AgentSucceededAuditV1, now: string): void {
+    this.db
+      .prepare(
+        'insert into agent_succeeded_audits (audit_id, attempt_id, runtime_session_id, receipt_digest, candidate_digest, created_at) values (?, ?, ?, ?, ?, ?)',
+      )
+      .run(`xhbsucc_${requestId}`, audit.attemptId, audit.runtimeSessionId, audit.receiptDigest, audit.candidateDigest, now)
   }
 
   private writeEvent(address: HubAddressV1, version: number, eventType: string, event: unknown, now: string): void {
