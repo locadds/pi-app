@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { link, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -122,6 +122,9 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     })
     const first = await workspace.prepare(request)
     await expect(workspace.prepare(request)).resolves.toMatchObject({ handle: { rootPath: first.handle.rootPath } })
+    await expect(workspace.prepare({ ...request, managedRoot: await tempRoot('xiaogui-attempt-managed-drift-') })).rejects.toMatchObject({
+      reasonCode: 'MANIFEST_CONFLICT',
+    })
     await expect(
       workspace.prepare({
         ...request,
@@ -216,6 +219,46 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       actualRelativePaths: ['src/unapproved.txt'],
     })
     registry.close()
+  }, 30000)
+
+  it('rejects deletion and rename instead of treating them as approved MODIFY or CREATE paths', async () => {
+    const deleteRoot = await gitRepo()
+    const deleteService = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const deleted = await deleteService.workspace.prepare(
+      prepareRequest({
+        projectRoot: deleteRoot,
+        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+        grants: [{ operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') }],
+      }),
+    )
+    await rm(join(deleted.handle.rootPath, 'src', 'existing.txt'))
+    await expect(deleteService.workspace.auditChanges(deleted.handle.attemptId)).resolves.toMatchObject({
+      ok: false,
+      rejectedReasonCode: 'PATH_FORBIDDEN',
+      actualRelativePaths: ['src/existing.txt'],
+    })
+    deleteService.registry.close()
+
+    const renameRoot = await gitRepo()
+    const renameService = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const renamed = await renameService.workspace.prepare(
+      prepareRequest({
+        projectRoot: renameRoot,
+        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+        grants: [
+          { operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') },
+          { operation: 'CREATE', relativePath: 'src/renamed.txt' },
+        ],
+      }),
+    )
+    await rm(join(renamed.handle.rootPath, 'src', 'renamed.txt'))
+    await rename(join(renamed.handle.rootPath, 'src', 'existing.txt'), join(renamed.handle.rootPath, 'src', 'renamed.txt'))
+    await expect(renameService.workspace.auditChanges(renamed.handle.attemptId)).resolves.toMatchObject({
+      ok: false,
+      rejectedReasonCode: 'PATH_FORBIDDEN',
+      actualRelativePaths: ['src/existing.txt', 'src/renamed.txt'],
+    })
+    renameService.registry.close()
   }, 30000)
 
   it('approves scoped CREATE expansion as a new manifest version and rejects DELETE expansion', async () => {

@@ -81,6 +81,11 @@ export interface AttemptWorkspaceInspectionV1 {
   readonly inspectionDigest: string
 }
 
+interface PorcelainChangeV1 {
+  readonly status: string
+  readonly relativePath: string
+}
+
 export type AttemptWorkspaceReasonCodeV1 =
   | 'ATTEMPT_ID_INVALID'
   | 'BASE_REVISION_NOT_COMMIT'
@@ -401,9 +406,10 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
       throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
     }
     const status = await git(handle.rootPath, ['status', '--porcelain=v1', '--untracked-files=all'])
-    const actual = parsePorcelainStatus(status.stdout)
+    const changes = parsePorcelainStatus(status.stdout)
+    const actual = changes.map((change) => change.relativePath)
     const allowed = new Set(manifest.grants.map((grant) => grant.relativePath))
-    const ok = actual.every((entry) => allowed.has(entry)) && actual.every((entry) => isManifestSubsetChange(entry, manifest))
+    const ok = changes.every((change) => allowed.has(change.relativePath)) && changes.every((change) => isManifestSubsetChange(change, manifest))
     const inspectionDigest = digestJson({ ok, actual, manifestDigest: manifest.manifestDigest })
     return ok
       ? { ok: true, actualRelativePaths: actual, inspectionDigest }
@@ -731,17 +737,27 @@ async function git(cwd: string, args: readonly string[]): Promise<{ stdout: stri
   })
 }
 
-function parsePorcelainStatus(stdout: string): readonly string[] {
+function parsePorcelainStatus(stdout: string): readonly PorcelainChangeV1[] {
   return stdout
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter(Boolean)
-    .map((line) => normalizeRelativePath(line.slice(line.startsWith('R ') || line.startsWith('C ') ? 3 : 2).trim()))
-    .sort()
+    .map((line) => {
+      const status = line.slice(0, 2)
+      const rawPath = line.slice(3).trim()
+      const relativePath = status.includes('R') || status.includes('C') ? rawPath.split(' -> ').at(-1) ?? rawPath : rawPath
+      return { status, relativePath: normalizeRelativePath(relativePath) }
+    })
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath) || a.status.localeCompare(b.status))
 }
 
-function isManifestSubsetChange(relativePath: string, manifest: AttemptFileManifestV1): boolean {
-  return manifest.grants.some((grant) => grant.relativePath === relativePath && (grant.operation === 'MODIFY' || grant.operation === 'CREATE'))
+function isManifestSubsetChange(change: PorcelainChangeV1, manifest: AttemptFileManifestV1): boolean {
+  if (change.status.includes('R') || change.status.includes('C') || change.status.includes('D')) return false
+  const grant = manifest.grants.find((candidate) => candidate.relativePath === change.relativePath)
+  if (!grant) return false
+  if (grant.operation === 'MODIFY') return change.status.includes('M')
+  if (grant.operation === 'CREATE') return change.status === '??' || change.status.includes('A')
+  return false
 }
 
 function safeRealpath(path: string, reasonCode: AttemptWorkspaceReasonCodeV1): string {
@@ -784,9 +800,12 @@ function prepareConflictDigest(request: AttemptWorkspacePrepareRequestV1): strin
     requestDigest: request.requestDigest,
     baselineBindingDigest: request.baselineBindingDigest,
     compositionDigest: request.compositionDigest,
+    targetProjectRoot: request.targetProjectRoot,
+    managedRoot: request.managedRoot,
     baseRevision: request.baseRevision,
     baselineTreeHash: request.baselineTreeHash,
     manifest: request.manifest,
+    ownerId: request.ownerId,
   })
 }
 
