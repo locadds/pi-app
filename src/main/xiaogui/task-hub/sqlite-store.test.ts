@@ -405,6 +405,9 @@ describe('M2B sqlite store migration', () => {
         { name: 'private_runtime_payloads' },
         { name: 'scope_expansion_requests' },
       ])
+      expect(migrated.prepare("select name from sqlite_master where type = 'index' and name = 'attempt_workspace_leases_conflict_digest'").get()).toEqual({
+        name: 'attempt_workspace_leases_conflict_digest',
+      })
     } finally {
       migrated.close()
     }

@@ -152,7 +152,7 @@ async function readyAttempt(
   const binding = bindingStore.compositionAttempt(scheduled.value.attemptId)
   bindingStore.close()
   if (!binding) throw new Error('missing workspace binding')
-  await app.executeSystem({
+  await expect(app.executeSystem({
     contractVersion: 'm2b.v1',
     address: ADDRESS as HubAddressV1,
     trustedActor: { kind: 'main-process-system' },
@@ -170,7 +170,7 @@ async function readyAttempt(
         ...binding,
       },
     },
-  })
+  })).resolves.toMatchObject({ ok: true })
   return { app, flowId: start.value.flowId as FlowId, taskRunId: scheduled.value.taskRunId, attemptId: scheduled.value.attemptId }
 }
 
@@ -316,6 +316,8 @@ describe('M2B fake agent runtime integration', () => {
       storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
       agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [approvedCapability], createRuntimeSessionId: 'runtime-1' })),
       baselineProvider: { capture: async () => scriptedBaseline() },
+      workspaceBridge: testWorkspaceBridge(scriptedBaseline()),
+      runtimePromptVault: testPromptVault(),
     })
     await expect(recovered.executeSystem(request)).resolves.toMatchObject({ ok: true })
     await expect(recovered.observeM2B(ADDRESS)).resolves.toMatchObject({

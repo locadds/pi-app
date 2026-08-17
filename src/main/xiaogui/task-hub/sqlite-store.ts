@@ -1079,6 +1079,8 @@ export class CollaborationHubSqliteStoreV1 {
       this.db.exec(`
         create index if not exists attempt_file_manifests_attempt_version
           on attempt_file_manifests(attempt_id, version);
+        create index if not exists attempt_workspace_leases_conflict_digest
+          on attempt_workspace_leases(request_conflict_digest);
         create index if not exists scope_expansion_requests_attempt_state
           on scope_expansion_requests(attempt_id, state);
         create index if not exists create_batches_state_attempt

@@ -290,6 +290,7 @@ describe('GitAttemptWorkspaceServiceV1', () => {
         grants: [{ operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') }],
       }),
     )
+    writeFileSync(join(prepared.handle.rootPath, 'src', 'existing.txt'), 'already modified')
     const request = workspace.requestScopeExpansion({
       requestId: 'scope-1',
       attemptId: prepared.handle.attemptId,
@@ -310,6 +311,44 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       grants: expect.arrayContaining([expect.objectContaining({ operation: 'CREATE', relativePath: 'src/extra.txt' })]),
     })
     expect(readFileSync(join(prepared.handle.rootPath, 'src', 'extra.txt'), 'utf8')).toBe('')
+    await expect(
+      workspace.approveScopeExpansion({
+        requestId: request.requestId,
+        attemptId: prepared.handle.attemptId,
+        baseManifestVersion: request.baseManifestVersion,
+        requestDigest: request.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).resolves.toMatchObject({ version: 2 })
+    await expect(
+      workspace.approveScopeExpansion({
+        requestId: request.requestId,
+        attemptId: 'xhba_forged',
+        baseManifestVersion: request.baseManifestVersion,
+        requestDigest: request.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).rejects.toMatchObject({ reasonCode: 'MANIFEST_CONFLICT' })
+    const mixed = workspace.requestScopeExpansion({
+      requestId: 'scope-mixed',
+      attemptId: prepared.handle.attemptId,
+      baseManifestVersion: 2,
+      requestedGrants: [
+        { operation: 'CREATE', relativePath: 'src/should-not-exist.txt' },
+        { operation: 'CREATE', relativePath: '../escape.txt' },
+      ],
+      reasonDigest: 'sha256:reason',
+    })
+    await expect(
+      workspace.approveScopeExpansion({
+        requestId: mixed.requestId,
+        attemptId: prepared.handle.attemptId,
+        baseManifestVersion: mixed.baseManifestVersion,
+        requestDigest: mixed.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).rejects.toBeInstanceOf(AttemptWorkspaceError)
+    expect(existsSync(join(prepared.handle.rootPath, 'src', 'should-not-exist.txt'))).toBe(false)
     const deleteRequest = workspace.requestScopeExpansion({
       requestId: 'scope-delete',
       attemptId: prepared.handle.attemptId,
@@ -342,15 +381,8 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       }),
     )
     await link(join(prepared.handle.rootPath, 'src', 'existing.txt'), join(prepared.handle.rootPath, 'src', 'hard.txt'))
-    workspace.requestScopeExpansion({
-      requestId: 'scope-hardlink',
-      attemptId: prepared.handle.attemptId,
-      baseManifestVersion: 1,
-      requestedGrants: [{ operation: 'MODIFY', relativePath: 'src/hard.txt', baselineDigest: digestBytes('before') }],
-      reasonDigest: 'sha256:reason',
-    })
     const hardlinkRequest = workspace.requestScopeExpansion({
-      requestId: 'scope-hardlink-repeat',
+      requestId: 'scope-hardlink',
       attemptId: prepared.handle.attemptId,
       baseManifestVersion: 1,
       requestedGrants: [{ operation: 'MODIFY', relativePath: 'src/hard.txt', baselineDigest: digestBytes('before') }],
@@ -372,43 +404,39 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     const beforeCreateRoot = await gitRepo()
     const beforeCreateDb = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
     const beforeCreate = service(beforeCreateDb)
-    await expect(
-      beforeCreate.workspace.prepare(
-        prepareRequest({
-          projectRoot: beforeCreateRoot,
-          managedRoot: await tempRoot('xiaogui-attempt-managed-'),
-          attemptId: 'xhba_before_create' as AttemptId,
-          faultInjection: 'BEFORE_CREATE',
-          grants: [{ operation: 'CREATE', relativePath: 'src/new.txt' }],
-        }),
-      ),
-    ).rejects.toMatchObject({ reasonCode: 'CREATE_BATCH_PENDING' })
+    const beforeCreateRequest = prepareRequest({
+      projectRoot: beforeCreateRoot,
+      managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+      attemptId: 'xhba_before_create' as AttemptId,
+      faultInjection: 'BEFORE_CREATE',
+      grants: [{ operation: 'CREATE', relativePath: 'src/new.txt' }],
+    })
+    await expect(beforeCreate.workspace.prepare(beforeCreateRequest)).rejects.toMatchObject({ reasonCode: 'CREATE_BATCH_PENDING' })
     beforeCreate.registry.close()
+    writeFileSync(join(beforeCreateRoot, 'src', 'dirty-after-lease.txt'), 'dirty')
     const beforeCreateRecovered = service(beforeCreateDb)
-    beforeCreateRecovered.workspace.recoverPendingCreateBatches()
-    expect(beforeCreateRecovered.registry.pendingCreateBatches()).toEqual([])
+    const beforeCreateResult = await beforeCreateRecovered.workspace.prepare({ ...beforeCreateRequest, faultInjection: undefined })
+    expect(existsSync(join(beforeCreateResult.handle.rootPath, 'src', 'new.txt'))).toBe(true)
     beforeCreateRecovered.registry.close()
 
     const afterCreateRoot = await gitRepo()
     const afterCreateDb = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
     const afterCreate = service(afterCreateDb)
-    await expect(
-      afterCreate.workspace.prepare(
-        prepareRequest({
-          projectRoot: afterCreateRoot,
-          managedRoot: await tempRoot('xiaogui-attempt-managed-'),
-          attemptId: 'xhba_after_create' as AttemptId,
-          faultInjection: 'AFTER_CREATE_BEFORE_MANIFEST_COMMIT',
-          grants: [{ operation: 'CREATE', relativePath: 'src/new.txt' }],
-        }),
-      ),
-    ).rejects.toMatchObject({ reasonCode: 'CREATE_BATCH_PENDING' })
+    const afterCreateRequest = prepareRequest({
+      projectRoot: afterCreateRoot,
+      managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+      attemptId: 'xhba_after_create' as AttemptId,
+      faultInjection: 'AFTER_CREATE_BEFORE_MANIFEST_COMMIT',
+      grants: [{ operation: 'CREATE', relativePath: 'src/new.txt' }],
+    })
+    await expect(afterCreate.workspace.prepare(afterCreateRequest)).rejects.toMatchObject({ reasonCode: 'CREATE_BATCH_PENDING' })
     const pendingTarget = afterCreate.registry.pendingCreateBatches()[0].targets[0].realPath
     expect(existsSync(pendingTarget)).toBe(true)
     afterCreate.registry.close()
     const afterCreateRecovered = service(afterCreateDb)
-    afterCreateRecovered.workspace.recoverPendingCreateBatches()
-    expect(existsSync(pendingTarget)).toBe(false)
+    const afterCreateResult = await afterCreateRecovered.workspace.prepare({ ...afterCreateRequest, faultInjection: undefined })
+    expect(afterCreateResult).toMatchObject({ receipt: { status: 'PREPARED' }, allowedRelativePaths: ['src/new.txt'] })
+    expect(existsSync(pendingTarget)).toBe(true)
     afterCreateRecovered.registry.close()
 
     const afterCommitRoot = await gitRepo()

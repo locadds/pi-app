@@ -322,6 +322,7 @@ describe('M2A collaboration hub application', () => {
       workspace_prepare_outbox: 0,
       workspace_receipts: 0,
       attempt_workspace_prepared: 0,
+      attempt_workspace_leases: 0,
       attempt_file_manifests: 0,
       scope_expansion_requests: 0,
       create_batches: 0,

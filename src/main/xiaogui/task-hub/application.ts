@@ -231,17 +231,24 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       if (this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
       const attempt = store.attempt(request.attemptId)
       if (!attempt || attempt.status !== 'WORKSPACE_PREPARING') return systemError('ILLEGAL_TRANSITION')
-      const claim = store.claimWorkspacePrepareOutbox({
-        attemptId: request.attemptId,
-        ownerId: 'xiaogui-main-process',
-        claimDigest: payloadDigest({ attemptId: request.attemptId, requestId: request.requestId, purpose: 'workspace.prepare.claim' }),
-        now: this.now(),
-      })
-      if (!claim) return systemError('ILLEGAL_TRANSITION')
       const composition = store.compositionAttempt(request.attemptId)
       if (!composition) return systemError('ILLEGAL_TRANSITION')
       const baseline = store.flowExecutionBaseline(attempt.flow_id)
       if (!baseline) return systemError('BASELINE_UNAVAILABLE')
+      const claimOwnerId = 'xiaogui-main-process'
+      const claim = store.claimWorkspacePrepareOutbox({
+        attemptId: request.attemptId,
+        ownerId: claimOwnerId,
+        claimDigest: payloadDigest({
+          attemptId: request.attemptId,
+          requestDigest: composition.requestDigest,
+          ownerId: claimOwnerId,
+          purpose: 'workspace.prepare.claim.v1',
+        }),
+        now: this.now(),
+      })
+      if (!claim) return systemError('ILLEGAL_TRANSITION')
+      if (claim.requestDigest !== composition.requestDigest) return systemError('INTERNAL', { reason: 'WORKSPACE_CLAIM_BINDING_MISMATCH' })
       const receipt = await bridge.prepare({ address, attempt, composition, baseline })
       return this.executeSystem({
         contractVersion: 'm2b.v1',
@@ -472,7 +479,8 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     if (this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
     const attempt = store.attempt(request.intent.attemptId)
     if (!attempt || attempt.status !== 'WORKSPACE_PREPARING' || attempt.task_run_id !== request.intent.taskRunId) return systemError('ILLEGAL_TRANSITION')
-    if (!['READY', 'CLAIMED'].includes(store.workspacePrepareOutboxStatus(request.intent.attemptId) ?? '')) return systemError('ILLEGAL_TRANSITION')
+    const workspaceOutboxStatus = store.workspacePrepareOutboxStatus(request.intent.attemptId)
+    if (!['READY', 'CLAIMED'].includes(workspaceOutboxStatus ?? '')) return systemError('ILLEGAL_TRANSITION')
     const composition = store.compositionAttempt(request.intent.attemptId)
     if (!composition || !matchesWorkspaceBinding(request.intent.receipt, composition)) return systemError('WORKSPACE_RECEIPT_MISMATCH')
     const receipt = {
@@ -515,10 +523,24 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     if (!agent.ok) return systemError('AGENT_UNAVAILABLE', { reason: agent.reasonCode })
     const baseline = store.flowExecutionBaseline(request.intent.flowId)
     if (!baseline) return systemError('BASELINE_UNAVAILABLE')
-    const runtimeRequest = existingOutbox?.runtime_request_json
-      ? (JSON.parse(existingOutbox.runtime_request_json) as RuntimeCreateOrResumeRequestV1)
-      : this.runtimeRequest(address, agent.selection, request, attempt, workspaceReceipt.receipt_digest, baseline)
-    const dispatchDigest = payloadDigest(runtimeRequest)
+    let currentRuntimeRequest: RuntimeCreateOrResumeRequestV1
+    try {
+      currentRuntimeRequest = this.runtimeRequest(address, agent.selection, request, attempt, workspaceReceipt.receipt_digest)
+    } catch {
+      return systemError('AGENT_UNAVAILABLE', { reason: 'RUNTIME_PRIVATE_BINDING_MISSING' })
+    }
+    const dispatchDigest = payloadDigest(currentRuntimeRequest)
+    let runtimeRequest = currentRuntimeRequest
+    if (existingOutbox?.runtime_request_json) {
+      let persistedRuntimeRequest: RuntimeCreateOrResumeRequestV1
+      try {
+        persistedRuntimeRequest = JSON.parse(existingOutbox.runtime_request_json) as RuntimeCreateOrResumeRequestV1
+      } catch {
+        return systemError('IDEMPOTENCY_CONFLICT')
+      }
+      if (payloadDigest(persistedRuntimeRequest) !== dispatchDigest) return systemError('IDEMPOTENCY_CONFLICT')
+      runtimeRequest = persistedRuntimeRequest
+    }
     if (existingOutbox && (existingOutbox.request_id !== request.requestId || existingOutbox.runtime_request_digest !== dispatchDigest)) {
       return systemError('IDEMPOTENCY_CONFLICT')
     }
@@ -682,7 +704,6 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> },
     attempt: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['attempt']>>,
     workspaceReceiptDigest: string,
-    baseline: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['flowExecutionBaseline']>>,
   ): RuntimeCreateOrResumeRequestV1 {
     const scope: RuntimeScopeBindingV1 = {
       projectId: address.projectId,
