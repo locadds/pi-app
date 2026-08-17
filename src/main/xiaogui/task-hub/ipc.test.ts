@@ -25,6 +25,13 @@ const mocks = vi.hoisted(() => ({
     close: ReturnType<typeof vi.fn>
     stageAttemptInput: ReturnType<typeof vi.fn>
     taskExecution: { start: ReturnType<typeof vi.fn> }
+    delivery: {
+      selectTasks: ReturnType<typeof vi.fn>
+      approveGate: ReturnType<typeof vi.fn>
+      returnBatch: ReturnType<typeof vi.fn>
+      reconcileApply: ReturnType<typeof vi.fn>
+      retryApply: ReturnType<typeof vi.fn>
+    }
   }>,
   loginCoordinators: [] as Array<{
     options: { effectiveEnabled: boolean; userDataDir: string }
@@ -48,6 +55,13 @@ mocks.createRuntimeComposition.mockImplementation(() => {
           attempt: { attemptId: 'xhba_attempt', taskRunId: 'xhbtr_task', status: 'RUNNING' },
         },
       })),
+    },
+    delivery: {
+      selectTasks: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
+      approveGate: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
+      returnBatch: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
+      reconcileApply: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
+      retryApply: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
     },
   }
   mocks.runtimeCompositions.push(composition)
@@ -221,6 +235,19 @@ describe('M2A collaboration hub IPC adapter', () => {
     )
     expect(coordinator.inspect).toHaveBeenCalledOnce()
     expect(coordinator.startLogin).toHaveBeenCalledOnce()
+  })
+
+  it('registers the five delivery handlers when using the default runtime composition', async () => {
+    registerCollaborationHubHandlers()
+
+    expect([...mocks.handlers.keys()].filter((channel) => channel.startsWith('ipc:xiaogui.delivery.')).sort()).toEqual([
+      'ipc:xiaogui.delivery.apply.reconcile',
+      'ipc:xiaogui.delivery.apply.retry',
+      'ipc:xiaogui.delivery.batch.return',
+      'ipc:xiaogui.delivery.gate.approve',
+      'ipc:xiaogui.delivery.selection.submit',
+    ])
+    expect(mocks.runtimeCompositions[0]?.delivery).toBeDefined()
   })
 
   it('accepts only the narrow execution confirmation shape and rejects internal or unsafe fields before orchestration', async () => {

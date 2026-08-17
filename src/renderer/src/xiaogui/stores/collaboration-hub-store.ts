@@ -15,17 +15,25 @@ import type {
   HubSafeErrorV1,
   InitialPlanDraftInputV1,
   SessionCollaborationProjectionM2BV1,
+  TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
+import type { XiaoguiDeliveryOutcomeV1, XiaoguiDeliverySafeErrorV1 } from '@shared/xiaogui-delivery-ipc'
 import type {
   XiaoguiTaskExecutionSafeErrorV1,
   XiaoguiTaskExecutionStartRequestV1,
 } from '@shared/xiaogui-task-execution'
 
 import {
+  approveDeliveryGate,
   newHubRequestId,
   observeCollaborationHub,
   performHubIntent,
+  reconcileDeliveryApply,
+  retryDeliveryApply,
+  returnDeliveryBatch,
   startTaskExecution,
+  submitDeliverySelection,
 } from '../lib/collaboration-hub-client'
 
 /** 新建草稿临时表单的任务行（dependsOnText 为逗号/空白分隔的 taskKey 列表）。 */
@@ -230,6 +238,15 @@ export const TASK_EXECUTION_ERROR_TEXT: Record<XiaoguiTaskExecutionSafeErrorV1['
   INTERNAL: '内部错误',
 }
 
+export const DELIVERY_ERROR_TEXT: Record<XiaoguiDeliverySafeErrorV1['code'], string> = {
+  IPC_VERSION_UNSUPPORTED: '交付契约版本不受支持',
+  DELIVERY_INPUT_INVALID: '交付请求未通过校验',
+  STALE_DELIVERY_SUBJECT: '交付内容已变化，请刷新后重试',
+  DELIVERY_NOT_FOUND: '交付批次不存在',
+  ILLEGAL_TRANSITION: '当前交付状态不允许执行该操作',
+  INTERNAL: '交付内部错误',
+}
+
 interface CollaborationHubState {
   address: HubAddressV1 | null
   loading: boolean
@@ -243,6 +260,9 @@ interface CollaborationHubState {
   executionFormErrors: string[]
   executionReviewing: boolean
   executionError: XiaoguiTaskExecutionSafeErrorV1 | null
+  selectedDeliveryTaskRunIds: TaskRunId[]
+  deliveryReviewSubjectKey: string | null
+  deliveryError: XiaoguiDeliverySafeErrorV1 | null
 
   /** 切换 address 时清空旧投影与临时表单；相同 address 为 no-op。 */
   setAddress: (address: HubAddressV1 | null) => void
@@ -257,8 +277,17 @@ interface CollaborationHubState {
   reviewTaskExecution: () => boolean
   returnToTaskExecutionEdit: () => void
   startNextTaskExecution: () => Promise<boolean>
+  reviewActiveDelivery: () => boolean
+  toggleDeliveryTaskSelection: (taskRunId: TaskRunId) => void
+  createDeliveryFromSelection: () => Promise<boolean>
+  returnToDeliveryReview: () => void
+  approveActiveDelivery: () => Promise<boolean>
+  rejectActiveDelivery: (reason?: string) => Promise<boolean>
+  reconcileActiveDelivery: () => Promise<boolean>
+  retryActiveDelivery: () => Promise<boolean>
   clearError: () => void
   clearExecutionError: () => void
+  clearDeliveryError: () => void
 }
 
 function sameAddress(a: HubAddressV1 | null, b: HubAddressV1 | null): boolean {
@@ -294,6 +323,29 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
     return sameAddress(get().address, address)
   }
 
+  const runDeliveryIntent = async (
+    build: (
+      address: HubAddressV1,
+      projection: SessionCollaborationProjectionM2BV1,
+    ) => Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> | null,
+  ): Promise<boolean> => {
+    if (get().submitting) return false
+    const { address, projection } = get()
+    if (!address || !projection) return false
+    const task = build(address, projection)
+    if (!task) return false
+    set({ submitting: true, deliveryError: null })
+    const outcome = await task
+    if (!sameAddress(get().address, address)) return false
+    if (!outcome.ok) {
+      set({ submitting: false, deliveryError: outcome.error })
+      return false
+    }
+    set({ submitting: false, selectedDeliveryTaskRunIds: [], deliveryReviewSubjectKey: null })
+    await get().refresh()
+    return sameAddress(get().address, address)
+  }
+
   return {
     address: null,
     loading: false,
@@ -307,6 +359,9 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
     executionFormErrors: [],
     executionReviewing: false,
     executionError: null,
+    selectedDeliveryTaskRunIds: [],
+    deliveryReviewSubjectKey: null,
+    deliveryError: null,
 
     setAddress: (address) => {
       if (sameAddress(get().address, address)) return
@@ -325,6 +380,9 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
         executionFormErrors: [],
         executionReviewing: false,
         executionError: null,
+        selectedDeliveryTaskRunIds: [],
+        deliveryReviewSubjectKey: null,
+        deliveryError: null,
       })
     },
 
@@ -338,12 +396,16 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
       if (outcome.ok) {
         const nextFlowId = outcome.value.activeFlow?.flowId ?? null
         const flowChanged = get().executionFlowId !== nextFlowId
+        const nextDeliverySubjectKey = deliverySubjectKey(outcome.value.activeDelivery ?? null)
+        const keepDeliveryReview = get().deliveryReviewSubjectKey === nextDeliverySubjectKey
         if (flowChanged) executionSeq += 1
         set({
           loading: false,
           projection: outcome.value,
           error: null,
           executionFlowId: nextFlowId,
+          selectedDeliveryTaskRunIds: flowChanged || outcome.value.activeDelivery ? [] : get().selectedDeliveryTaskRunIds,
+          deliveryReviewSubjectKey: keepDeliveryReview ? get().deliveryReviewSubjectKey : null,
           ...(flowChanged ? { submitting: false } : {}),
           ...(flowChanged
             ? {
@@ -351,6 +413,7 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
                 executionFormErrors: [],
                 executionReviewing: false,
                 executionError: null,
+                deliveryError: null,
               }
             : {}),
         })
@@ -485,7 +548,101 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
       return sameAddress(get().address, address) && get().executionFlowId === flowId
     },
 
+    reviewActiveDelivery: () => {
+      const delivery = get().projection?.activeDelivery
+      if (!delivery?.gate || delivery.gate.state !== 'OPEN') return false
+      if (!get().projection?.availableActions.includes('delivery.gate.approve')) return false
+      set({ deliveryReviewSubjectKey: deliverySubjectKey(delivery), deliveryError: null })
+      return true
+    },
+
+    toggleDeliveryTaskSelection: (taskRunId) => {
+      if (get().submitting || get().projection?.activeDelivery) return
+      const current = get().selectedDeliveryTaskRunIds
+      set({
+        selectedDeliveryTaskRunIds: current.includes(taskRunId)
+          ? current.filter((item) => item !== taskRunId)
+          : [...current, taskRunId],
+        deliveryError: null,
+      })
+    },
+
+    createDeliveryFromSelection: async () => {
+      const selected = get().selectedDeliveryTaskRunIds
+      if (selected.length === 0) return false
+      return runDeliveryIntent((address, current) => {
+        if (current.activeDelivery || !current.activeFlow || !current.availableActions.includes('delivery.selection.submit')) return null
+        return submitDeliverySelection(address, {
+          requestId: newHubRequestId(),
+          flowId: current.activeFlow.flowId,
+          taskRunIds: selected,
+        })
+      })
+    },
+
+    returnToDeliveryReview: () => {
+      if (get().submitting) return
+      set({ deliveryReviewSubjectKey: null, deliveryError: null })
+    },
+
+    approveActiveDelivery: async () =>
+      runDeliveryIntent((address, current) => {
+        const delivery = current.activeDelivery
+        if (
+          !delivery?.gate ||
+          delivery.gate.state !== 'OPEN' ||
+          !current.availableActions.includes('delivery.gate.approve') ||
+          get().deliveryReviewSubjectKey !== deliverySubjectKey(delivery)
+        )
+          return null
+        return approveDeliveryGate(address, {
+          requestId: newHubRequestId(),
+          gateId: delivery.gate.gateId,
+          subject: delivery.gate.subject,
+        })
+      }),
+
+    rejectActiveDelivery: async (reason) =>
+      runDeliveryIntent((address, current) => {
+        const delivery = current.activeDelivery
+        if (!delivery?.gate || delivery.gate.state !== 'OPEN' || !current.availableActions.includes('delivery.gate.reject')) return null
+        return returnDeliveryBatch(address, {
+          requestId: newHubRequestId(),
+          gateId: delivery.gate.gateId,
+          subject: delivery.gate.subject,
+          ...(reason?.trim() ? { rejectionReason: reason.trim() } : {}),
+        })
+      }),
+
+    reconcileActiveDelivery: async () =>
+      runDeliveryIntent((address, current) => {
+        const delivery = current.activeDelivery
+        if (!delivery || !current.availableActions.includes('apply.reconcile.request')) return null
+        return reconcileDeliveryApply(address, {
+          requestId: newHubRequestId(),
+          batchId: delivery.batchId,
+          ...(delivery.applyAttempt ? { applyAttemptId: delivery.applyAttempt.applyAttemptId } : {}),
+        })
+      }),
+
+    retryActiveDelivery: async () =>
+      runDeliveryIntent((address, current) => {
+        const delivery = current.activeDelivery
+        if (!delivery?.applyAttempt || !current.availableActions.includes('apply.retry.request')) return null
+        return retryDeliveryApply(address, {
+          requestId: newHubRequestId(),
+          batchId: delivery.batchId,
+          failedApplyAttemptId: delivery.applyAttempt.applyAttemptId,
+        })
+      }),
+
     clearError: () => set({ error: null }),
     clearExecutionError: () => set({ executionError: null }),
+    clearDeliveryError: () => set({ deliveryError: null }),
   }
 })
+
+function deliverySubjectKey(delivery: DeliveryBatchProjectionV1 | null): string | null {
+  if (!delivery?.gate) return null
+  return `${delivery.gate.gateId}:${delivery.gate.subject.deliveryChangeSetId}:${delivery.gate.subject.version}:${delivery.gate.subject.digest}`
+}

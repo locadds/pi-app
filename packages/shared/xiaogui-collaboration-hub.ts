@@ -4,6 +4,7 @@ import type {
   Sha256Digest,
   TaskVerificationSummaryV1,
 } from './xiaogui-task-verification'
+import type { DeliveryReviewProjectionV1 } from './xiaogui-delivery'
 
 export type HubAddressV1 = SessionAddressV1
 export type CollaborationHubContractVersionV1 = 'm2a.v1' | 'm2b.v1'
@@ -189,6 +190,11 @@ export interface AttemptProjectionM2BV1 {
 export type CollaborationHubActionM2BV1 =
   | CollaborationHubActionV1
   | 'execution.next.confirm'
+  | 'delivery.selection.submit'
+  | 'delivery.gate.approve'
+  | 'delivery.gate.reject'
+  | 'apply.reconcile.request'
+  | 'apply.retry.request'
 
 export interface SessionCollaborationProjectionV1 {
   kind: 'SESSION_COLLABORATION_PROJECTION'
@@ -211,6 +217,7 @@ export interface SessionCollaborationProjectionM2BV1
   version: 'm2b.v1'
   taskRuns: TaskRunProjectionM2BV1[]
   attempts: AttemptProjectionM2BV1[]
+  activeDelivery?: DeliveryReviewProjectionV1 | null
   availableActions: CollaborationHubActionM2BV1[]
 }
 

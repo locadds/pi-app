@@ -18,12 +18,14 @@ import type {
   TaskRunStatusM2BV1,
   TaskSpecProjectionV1,
 } from '@shared/xiaogui-collaboration-hub'
+import type { DeliveryBatchProjectionV1, DeliveryBatchStateV1 } from '@shared/xiaogui-delivery'
 import type { TaskVerificationFailureSourceV1, TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 import { useUIStore } from '@renderer/stores/ui-store'
 
 import {
   DEFAULT_CANCEL_REASON,
+  DELIVERY_ERROR_TEXT,
   HUB_ERROR_TEXT,
   TASK_EXECUTION_ERROR_TEXT,
   parseTaskExecutionPaths,
@@ -87,6 +89,17 @@ const VERIFICATION_FAILURE_TEXT: Record<TaskVerificationFailureSourceV1['source'
   VERIFICATION_TRANSIENT_INFRASTRUCTURE: '验证环境暂时不可用',
   VERIFICATION_TRANSIENT_BUDGET_EXCEEDED: '验证环境多次不可用',
   VERIFICATION_PERMANENT_INFRASTRUCTURE: '验证环境不可用',
+}
+
+const DELIVERY_STATE_TEXT: Record<DeliveryBatchStateV1, string> = {
+  COMPOSING: '组合中',
+  VERIFYING: '交付复验中',
+  READY_FOR_REVIEW: '待审阅',
+  APPROVED: '已批准',
+  REJECTED: '已退回',
+  APPLYING: '应用中',
+  APPLIED: '已应用',
+  OUTCOME_UNKNOWN: '结果未知',
 }
 
 function shortDigest(digest: string): string {
@@ -478,6 +491,197 @@ function TaskExecutionSection({ projection }: { projection: SessionCollaboration
   )
 }
 
+function DeliveryReviewSection({ delivery }: { delivery: DeliveryBatchProjectionV1 }) {
+  const submitting = useCollaborationHubStore((s) => s.submitting)
+  const deliveryError = useCollaborationHubStore((s) => s.deliveryError)
+  const deliveryReviewSubjectKey = useCollaborationHubStore((s) => s.deliveryReviewSubjectKey)
+  const clearDeliveryError = useCollaborationHubStore((s) => s.clearDeliveryError)
+  const reviewActiveDelivery = useCollaborationHubStore((s) => s.reviewActiveDelivery)
+  const returnToDeliveryReview = useCollaborationHubStore((s) => s.returnToDeliveryReview)
+  const approveActiveDelivery = useCollaborationHubStore((s) => s.approveActiveDelivery)
+  const rejectActiveDelivery = useCollaborationHubStore((s) => s.rejectActiveDelivery)
+  const reconcileActiveDelivery = useCollaborationHubStore((s) => s.reconcileActiveDelivery)
+  const retryActiveDelivery = useCollaborationHubStore((s) => s.retryActiveDelivery)
+  const availableActions = useCollaborationHubStore((s) => s.projection?.availableActions ?? [])
+  const files = delivery.fileChangeSummaries ?? []
+  const evidenceCount = delivery.evidenceArtifactIds?.length ?? 0
+  const canApprove = availableActions.includes('delivery.gate.approve') && delivery.gate?.state === 'OPEN'
+  const canReject = availableActions.includes('delivery.gate.reject') && delivery.gate?.state === 'OPEN'
+  const reviewing = deliveryReviewSubjectKey !== null && deliveryReviewSubjectKey === currentDeliverySubjectKey(delivery)
+
+  return (
+    <div className="mt-3 rounded-lg border border-border/50 p-2.5" data-testid="hub-delivery-review">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-[12px] font-medium text-foreground">交付审阅</span>
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{DELIVERY_STATE_TEXT[delivery.state]}</span>
+      </div>
+      <div className="grid gap-1 text-[11px] text-muted-foreground">
+        <div>
+          交付批次 <span className="font-mono">{delivery.batchId}</span>
+        </div>
+        <div>完整任务 {delivery.selectedTaskRunIds.length} 个 · 任务变更集 {delivery.taskChangeSetIds.length} 个</div>
+        <div>
+          选择摘要 <span className="font-mono">{shortDigest(delivery.selectionDigest)}</span>
+        </div>
+        {delivery.deliveryChangeSetDigest && (
+          <div>
+            交付摘要 <span className="font-mono">{shortDigest(delivery.deliveryChangeSetDigest)}</span>
+          </div>
+        )}
+        <div>证据摘要 {evidenceCount} 项</div>
+      </div>
+      <div className="mt-2 rounded-md border border-border/40 p-2">
+        <div className="mb-1 text-[11px] font-medium text-muted-foreground">文件摘要</div>
+        {files.length === 0 ? (
+          <div className="text-[11px] text-muted-foreground">暂无文件摘要</div>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {files.map((file) => (
+              <li key={`${file.operation}:${file.relativePath}`} className="flex items-start justify-between gap-2 text-[11px]">
+                <span className="min-w-0 break-all font-mono text-foreground-secondary">{file.relativePath}</span>
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  {file.operation === 'CREATE' ? '新建' : '修改'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {deliveryError && (
+        <div className="mt-2 rounded-md border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
+          <div className="flex items-start justify-between gap-2">
+            <span>
+              错误 {deliveryError.code}：{DELIVERY_ERROR_TEXT[deliveryError.code]}
+            </span>
+            <button type="button" onClick={clearDeliveryError} className="shrink-0 text-red-500/70 hover:text-red-500">
+              ✕
+            </button>
+          </div>
+          {deliveryError.traceId && <div className="mt-1 font-mono text-[10px] opacity-70">traceId: {deliveryError.traceId}</div>}
+        </div>
+      )}
+      {reviewing ? (
+        <div className="mt-2" data-testid="hub-delivery-confirm">
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
+            确认应用会按当前交付摘要写入用户项目；审阅本身不会写入文件。
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={returnToDeliveryReview}
+              className="rounded-md border border-border/60 px-2 py-1 text-[12px] text-foreground-secondary hover:bg-accent disabled:opacity-40"
+            >
+              返回
+            </button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => void approveActiveDelivery()}
+              className="rounded-md bg-primary px-3 py-1 text-[12px] text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+            >
+              {submitting ? '正在确认…' : '确认应用'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {canApprove && (
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={reviewActiveDelivery}
+              className="rounded-md bg-primary px-3 py-1 text-[12px] text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+            >
+              审阅
+            </button>
+          )}
+          {canReject && (
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => void rejectActiveDelivery('用户退回当前交付')}
+              className="rounded-md border border-destructive/40 px-3 py-1 text-[12px] text-destructive hover:bg-destructive/10 disabled:opacity-40"
+            >
+              退回交付
+            </button>
+          )}
+          {availableActions.includes('apply.reconcile.request') && (
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => void reconcileActiveDelivery()}
+              className="rounded-md border border-border/60 px-2 py-1 text-[12px] text-foreground-secondary hover:bg-accent disabled:opacity-40"
+            >
+              对账
+            </button>
+          )}
+          {availableActions.includes('apply.retry.request') && (
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => void retryActiveDelivery()}
+              className="rounded-md border border-border/60 px-2 py-1 text-[12px] text-foreground-secondary hover:bg-accent disabled:opacity-40"
+            >
+              重试应用
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DeliverySelectionSection({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
+  const submitting = useCollaborationHubStore((s) => s.submitting)
+  const selectedDeliveryTaskRunIds = useCollaborationHubStore((s) => s.selectedDeliveryTaskRunIds)
+  const toggleDeliveryTaskSelection = useCollaborationHubStore((s) => s.toggleDeliveryTaskSelection)
+  const createDeliveryFromSelection = useCollaborationHubStore((s) => s.createDeliveryFromSelection)
+  if (projection.activeDelivery || !projection.availableActions.includes('delivery.selection.submit')) return null
+  const verifiedRuns = projection.taskRuns.filter((run) => {
+    if (run.status !== 'VERIFIED') return false
+    return projection.attempts.some(
+      (attempt) => attempt.taskRunId === run.taskRunId && attempt.verificationSummary?.state === 'SUCCEEDED',
+    )
+  })
+  if (verifiedRuns.length === 0) return null
+
+  return (
+    <div className="mt-3 rounded-lg border border-border/50 p-2.5" data-testid="hub-delivery-selection">
+      <div className="mb-1 text-[12px] font-medium text-foreground">创建交付</div>
+      <ul className="flex flex-col gap-1">
+        {verifiedRuns.map((run) => (
+          <li key={run.taskRunId}>
+            <label className="flex items-center gap-2 rounded-md border border-border/30 px-2 py-1 text-[11px]">
+              <input
+                type="checkbox"
+                checked={selectedDeliveryTaskRunIds.includes(run.taskRunId)}
+                disabled={submitting}
+                onChange={() => toggleDeliveryTaskSelection(run.taskRunId)}
+              />
+              <span className="font-mono text-muted-foreground">{run.taskKey}</span>
+              <span className="min-w-0 break-all text-foreground-secondary">{run.taskRunId}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        disabled={submitting || selectedDeliveryTaskRunIds.length === 0}
+        onClick={() => void createDeliveryFromSelection()}
+        className="mt-2 rounded-md bg-primary px-3 py-1 text-[12px] text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+      >
+        创建交付
+      </button>
+    </div>
+  )
+}
+
+function currentDeliverySubjectKey(delivery: DeliveryBatchProjectionV1): string | null {
+  if (!delivery.gate) return null
+  return `${delivery.gate.gateId}:${delivery.gate.subject.deliveryChangeSetId}:${delivery.gate.subject.version}:${delivery.gate.subject.digest}`
+}
+
 function ReadonlyExecutionPaths({ title, paths }: { title: string; paths: string[] }) {
   return (
     <div className="rounded-md border border-border/40 p-2">
@@ -587,6 +791,8 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
           </ul>
         </div>
       )}
+      <DeliverySelectionSection projection={projection} />
+      {projection.activeDelivery && <DeliveryReviewSection delivery={projection.activeDelivery} />}
       <TaskExecutionSection projection={projection} />
       <div className="mt-3">
         <CancelFlowSection flowId={flow.flowId} />

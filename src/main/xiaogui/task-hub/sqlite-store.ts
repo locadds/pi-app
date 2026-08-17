@@ -2,6 +2,32 @@ import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 
 import {
+  deliveryChangeSetDigestV1,
+  deliveryGateDecisionDigestV1,
+  deliverySelectionDigestV1,
+  deliveryVerificationReceiptDigestV1,
+  deliveryVerificationRequestDigestV1,
+} from '@shared/xiaogui-delivery'
+import type {
+  DeliveryApplyAttemptId,
+  DeliveryApplyAttemptV1,
+  DeliveryApplyOutboxStateV1,
+  DeliveryBatchId,
+  DeliveryBatchProjectionV1,
+  DeliveryBatchStateV1,
+  DeliveryChangeSetId,
+  DeliveryChangeSetV1,
+  DeliveryGateId,
+  DeliveryHumanGateV1,
+  DeliverySelectionDraftId,
+  DeliverySelectionDraftV1,
+  DeliveryTaskChangeSetRefV1,
+  DeliveryVerificationAttemptId,
+  DeliveryVerificationOutboxStateV1,
+  DeliveryVerificationReceiptV1,
+  DeliveryVerificationRequestV1,
+} from '@shared/xiaogui-delivery'
+import {
   taskCandidateDigestV1,
   taskChangeSetDigestV1,
   taskEvidenceBundleDigestV1,
@@ -151,6 +177,107 @@ interface VerificationOutboxRow {
   created_at: string
 }
 
+interface DeliveryBatchRow {
+  batch_id: DeliveryBatchId
+  project_id: string
+  session_key: string
+  flow_id: FlowId
+  selection_draft_id: DeliverySelectionDraftId
+  state: DeliveryBatchStateV1
+  selection_digest: Sha256Digest
+  target_fingerprint: Sha256Digest
+  created_at: string
+  updated_at: string
+}
+
+interface DeliverySelectionDraftRow {
+  draft_id: DeliverySelectionDraftId
+  batch_id: DeliveryBatchId
+  flow_id: FlowId
+  selected_task_run_ids_json: string
+  resolved_task_change_set_ids_json: string
+  dependency_task_run_ids_json: string
+  selection_digest: Sha256Digest
+  draft_json: string
+  created_at: string
+}
+
+interface DeliveryVerificationAttemptRow {
+  delivery_verification_attempt_id: DeliveryVerificationAttemptId
+  verification_request_id: string
+  batch_id: DeliveryBatchId
+  flow_id: FlowId
+  request_digest: Sha256Digest
+  selection_digest: Sha256Digest
+  qa_config_version: string
+  state: string
+  started_at: string
+  finished_at: string | null
+  outcome_receipt_digest: string | null
+}
+
+interface DeliveryVerificationOutboxRow {
+  outbox_id: string
+  delivery_verification_attempt_id: DeliveryVerificationAttemptId
+  request_digest: Sha256Digest
+  request_json: string
+  status: DeliveryVerificationOutboxStateV1
+  claim_owner_id: string | null
+  claim_digest: string | null
+  claimed_at: string | null
+  completed_at: string | null
+  created_at: string
+}
+
+interface DeliveryChangeSetRow {
+  delivery_change_set_id: DeliveryChangeSetId
+  batch_id: DeliveryBatchId
+  flow_id: FlowId
+  version: 1
+  digest: Sha256Digest
+  change_set_json: string
+  created_at: string
+}
+
+interface DeliveryGateRow {
+  gate_id: DeliveryGateId
+  batch_id: DeliveryBatchId
+  delivery_change_set_id: DeliveryChangeSetId
+  subject_version: 1
+  subject_digest: Sha256Digest
+  state: string
+  decision_digest: Sha256Digest | null
+  decided_at: string | null
+  gate_json: string
+  created_at: string
+}
+
+interface DeliveryApplyAttemptRow {
+  apply_attempt_id: DeliveryApplyAttemptId
+  batch_id: DeliveryBatchId
+  delivery_change_set_id: DeliveryChangeSetId
+  request_digest: Sha256Digest
+  target_fingerprint_before: Sha256Digest
+  state: DeliveryApplyAttemptV1['state']
+  receipt_digest: Sha256Digest | null
+  target_fingerprint_after: Sha256Digest | null
+  started_at: string
+  finished_at: string | null
+}
+
+interface DeliveryApplyOutboxRow {
+  outbox_id: string
+  apply_attempt_id: DeliveryApplyAttemptId
+  request_digest: Sha256Digest
+  request_json: string
+  status: DeliveryApplyOutboxStateV1
+  claim_owner_id: string | null
+  claim_digest: string | null
+  claimed_at: string | null
+  completed_at: string | null
+  created_at: string
+}
+
 export interface WorkspacePrepareOutboxClaimRecordM2B2V1 {
   outboxId: string
   attemptId: AttemptId
@@ -268,7 +395,7 @@ export interface AgentReconcileRecordM2BV1 {
 export interface TaskArtifactWriteV1 {
   artifactId: ArtifactId
   contentDigest: string
-  kind: 'PATCH' | 'VERIFICATION_EVIDENCE' | 'VERIFICATION_DIAGNOSTIC'
+  kind: 'PATCH' | 'VERIFICATION_EVIDENCE' | 'VERIFICATION_DIAGNOSTIC' | 'DELIVERY_FILE_CONTENT'
   mediaType: string
   content: Uint8Array
 }
@@ -328,6 +455,154 @@ export interface TaskVerificationCompletionResultV1 {
   verificationAttemptId: string
   verdict: TaskVerificationReceiptV1['verdict']
   replayed: boolean
+}
+
+export interface CreateDeliverySelectionRecordV1 {
+  batchId: DeliveryBatchId
+  draftId: DeliverySelectionDraftId
+  flowId: FlowId
+  selectedTaskRunIds: readonly TaskRunId[]
+  targetFingerprint: Sha256Digest
+  now: string
+}
+
+export interface CreateDeliverySelectionResultV1 {
+  batchId: DeliveryBatchId
+  selectionDigest: Sha256Digest
+  replayed: boolean
+}
+
+export interface BeginDeliveryVerificationRecordV1 {
+  verificationAttemptId: DeliveryVerificationAttemptId
+  verificationRequestJson: string
+  now: string
+}
+
+export interface DeliveryVerificationBeginResultV1 {
+  verificationAttemptId: DeliveryVerificationAttemptId
+  outboxId: string
+  replayed: boolean
+}
+
+export interface DeliveryVerificationOutboxRecordV1 {
+  outboxId: string
+  verificationAttemptId: DeliveryVerificationAttemptId
+  requestDigest: Sha256Digest
+  requestJson: string
+  status: DeliveryVerificationOutboxStateV1
+  claimOwnerId?: string
+  claimDigest?: string
+  claimedAt?: string
+  completedAt?: string
+  createdAt: string
+}
+
+export interface CompleteDeliveryVerificationRecordV1 {
+  receipt: DeliveryVerificationReceiptV1
+  deliveryChangeSet?: DeliveryChangeSetV1
+  deliveryFileArtifacts?: readonly DeliveryFileArtifactWriteV1[]
+  evidenceArtifacts?: readonly TaskArtifactWriteV1[]
+  diagnosticArtifacts?: readonly TaskArtifactWriteV1[]
+  gateId?: DeliveryGateId
+  now: string
+}
+
+export interface DeliveryVerificationCompletionResultV1 {
+  verificationAttemptId: DeliveryVerificationAttemptId
+  verdict: DeliveryVerificationReceiptV1['verdict']
+  replayed: boolean
+}
+
+export interface DecideDeliveryGateRecordV1 {
+  gateId: DeliveryGateId
+  batchId: DeliveryBatchId
+  deliveryChangeSetId: DeliveryChangeSetId
+  version: 1
+  digest: Sha256Digest
+  decision: 'APPROVE' | 'REJECT'
+  decisionDigest: Sha256Digest
+  now: string
+}
+
+export interface DeliveryGateDecisionResultV1 {
+  gateId: DeliveryGateId
+  state: 'APPROVED' | 'REJECTED'
+  replayed: boolean
+}
+
+export interface BeginDeliveryApplyRecordV1 {
+  applyAttemptId: DeliveryApplyAttemptId
+  batchId: DeliveryBatchId
+  deliveryChangeSetId: DeliveryChangeSetId
+  requestDigest: Sha256Digest
+  requestJson: string
+  targetFingerprintBefore: Sha256Digest
+  now: string
+}
+
+export interface DeliveryApplyBeginResultV1 {
+  applyAttemptId: DeliveryApplyAttemptId
+  outboxId: string
+  replayed: boolean
+}
+
+export interface CompleteDeliveryApplyRecordV1 {
+  applyAttemptId: DeliveryApplyAttemptId
+  outcome: 'SUCCEEDED' | 'FAILED' | 'OUTCOME_UNKNOWN'
+  receiptDigest: Sha256Digest
+  targetFingerprintAfter?: Sha256Digest
+  now: string
+}
+
+export interface DeliveryApplyCompletionResultV1 {
+  applyAttemptId: DeliveryApplyAttemptId
+  outcome: CompleteDeliveryApplyRecordV1['outcome']
+  replayed: boolean
+}
+
+export interface DeliveryArtifactContentRecordV1 {
+  artifactId: ArtifactId
+  kind: string
+  mediaType: string
+  contentDigest: Sha256Digest
+  content: Uint8Array
+}
+
+export interface DeliveryFileArtifactWriteV1 {
+  artifactId: ArtifactId
+  contentDigest: Sha256Digest
+  kind: 'DELIVERY_FILE_CONTENT'
+  mediaType: 'application/vnd.xiaogui.delivery-file-content'
+  content: Uint8Array
+}
+
+export interface DeliveryApplyOutboxRecordV1 {
+  outboxId: string
+  applyAttemptId: DeliveryApplyAttemptId
+  requestDigest: Sha256Digest
+  requestJson: string
+  status: DeliveryApplyOutboxStateV1
+  claimOwnerId?: string
+  claimDigest?: string
+  claimedAt?: string
+  completedAt?: string
+  createdAt: string
+}
+
+export interface DeliveryApplyPackageRecordV1 {
+  applyAttempt: DeliveryApplyAttemptV1
+  changeSet: DeliveryChangeSetV1
+  fileArtifacts: readonly DeliveryArtifactContentRecordV1[]
+}
+
+export interface PendingDeliveryApplyOutboxRecordV1 {
+  address: HubAddressV1
+  outbox: DeliveryApplyOutboxRecordV1
+}
+
+export interface PendingDeliveryVerificationOutboxRecordV1 {
+  address: HubAddressV1
+  outbox: DeliveryVerificationOutboxRecordV1
 }
 
 export class CollaborationHubSqliteStoreV1 {
@@ -464,6 +739,667 @@ export class CollaborationHubSqliteStoreV1 {
       throw verificationStoreError('TASK_VERIFICATION_SCOPE_MISMATCH')
     }
     return taskChangeSetAncestorIdsForTask(this.db, flowId, taskRunId)
+  }
+
+  createDeliverySelection(
+    address: HubAddressV1,
+    record: CreateDeliverySelectionRecordV1,
+  ): CreateDeliverySelectionResultV1 {
+    return this.transaction(() => {
+      const active = this.activeDeliveryBatch(address, record.flowId)
+      if (active) {
+        const existingDraft = this.readDeliverySelectionDraft(active.batch_id)
+        if (existingDraft && sameStringArray(existingDraft.selectedTaskRunIds, record.selectedTaskRunIds)) {
+          return { batchId: active.batch_id, selectionDigest: active.selection_digest, replayed: true }
+        }
+        throw deliveryStoreError('DELIVERY_ACTIVE_BATCH_EXISTS')
+      }
+      const draft = this.buildDeliverySelectionDraft(record)
+      const flow = this.db
+        .prepare('select project_id, session_key, status from flows where flow_id = ?')
+        .get(record.flowId) as { project_id: string; session_key: string; status: string } | undefined
+      if (
+        !flow ||
+        flow.project_id !== address.projectId ||
+        flow.session_key !== address.sessionKey ||
+        flow.status !== 'PLAN_ACTIVE'
+      ) {
+        throw deliveryStoreError('DELIVERY_FLOW_NOT_ACTIVE')
+      }
+
+      this.db
+        .prepare(
+          'insert into delivery_batches (batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          record.batchId,
+          address.projectId,
+          address.sessionKey,
+          record.flowId,
+          record.draftId,
+          'COMPOSING',
+          draft.digest,
+          record.targetFingerprint,
+          record.now,
+          record.now,
+        )
+      this.db
+        .prepare(
+          'insert into delivery_selection_drafts (draft_id, batch_id, flow_id, selected_task_run_ids_json, resolved_task_change_set_ids_json, dependency_task_run_ids_json, selection_digest, draft_json, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          record.draftId,
+          record.batchId,
+          draft.flowId,
+          JSON.stringify(draft.selectedTaskRunIds ?? []),
+          JSON.stringify((draft.resolvedTaskChangeSets ?? []).map((item) => item.taskChangeSetId)),
+          JSON.stringify(draft.dependencyTaskRunIds ?? []),
+          draft.digest,
+          JSON.stringify(draft),
+          draft.createdAt,
+        )
+      for (const taskRunId of draft.selectedTaskRunIds ?? []) {
+        const updated = this.db
+          .prepare("update task_runs set status = 'DELIVERY_PENDING' where task_run_id = ? and status = 'VERIFIED'")
+          .run(taskRunId)
+        if (updated.changes !== 1) throw deliveryStoreError('DELIVERY_TASK_STATUS_CONFLICT')
+      }
+      const version = this.currentVersion(address) + 1
+      this.writeEvent(address, version, 'delivery.selection.submit', {
+        phase: 'delivery.selection.created',
+        flowId: record.flowId,
+        batchId: record.batchId,
+        selectionDigest: draft.digest,
+        taskRunIds: draft.selectedTaskRunIds,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      return { batchId: record.batchId, selectionDigest: draft.digest, replayed: false }
+    })
+  }
+
+  readActiveDelivery(address: HubAddressV1, flowId: FlowId): DeliveryBatchProjectionV1 | null {
+    const batch = this.activeDeliveryBatch(address, flowId)
+    return batch ? this.deliveryProjection(batch.batch_id) : null
+  }
+
+  readDeliveryProjection(batchId: DeliveryBatchId): DeliveryBatchProjectionV1 | null {
+    return this.deliveryProjection(batchId)
+  }
+
+  verifiedTaskChangeSetsForFlow(flowId: FlowId): readonly DeliveryTaskChangeSetRefV1[] {
+    return this.db
+      .prepare(
+        'select task_run_id as taskRunId, task_change_set_id as taskChangeSetId, digest, patch_artifact_id as patchArtifactId from task_change_sets where flow_id = ? order by rowid asc',
+      )
+      .all(flowId) as unknown as DeliveryTaskChangeSetRefV1[]
+  }
+
+  readArtifactContent(artifactId: ArtifactId): Uint8Array | null {
+    const row = this.db.prepare('select content from artifacts where artifact_id = ?').get(artifactId) as
+      | { content: Uint8Array }
+      | undefined
+    return row?.content ?? null
+  }
+
+  readArtifact(artifactId: ArtifactId): DeliveryArtifactContentRecordV1 | null {
+    const row = this.db
+      .prepare('select artifact_id, kind, media_type, content_digest, content from artifacts where artifact_id = ?')
+      .get(artifactId) as
+      | {
+          artifact_id: ArtifactId
+          kind: string
+          media_type: string
+          content_digest: Sha256Digest
+          content: Uint8Array
+        }
+      | undefined
+    return row
+      ? {
+          artifactId: row.artifact_id,
+          kind: row.kind,
+          mediaType: row.media_type,
+          contentDigest: row.content_digest,
+          content: row.content,
+        }
+      : null
+  }
+
+  readDeliverySelectionDraft(batchId: DeliveryBatchId): DeliverySelectionDraftV1 | null {
+    const row = this.db
+      .prepare('select draft_json from delivery_selection_drafts where batch_id = ?')
+      .get(batchId) as { draft_json: string } | undefined
+    return row ? JSON.parse(row.draft_json) as DeliverySelectionDraftV1 : null
+  }
+
+  readTaskChangeSet(taskChangeSetId: TaskChangeSetId): TaskChangeSetV1 | null {
+    const row = this.db
+      .prepare('select change_set_json from task_change_sets where task_change_set_id = ?')
+      .get(taskChangeSetId) as { change_set_json: string } | undefined
+    return row ? JSON.parse(row.change_set_json) as TaskChangeSetV1 : null
+  }
+
+  readDeliveryChangeSet(deliveryChangeSetId: DeliveryChangeSetId): DeliveryChangeSetV1 | null {
+    const row = this.deliveryChangeSet(deliveryChangeSetId)
+    return row ? JSON.parse(row.change_set_json) as DeliveryChangeSetV1 : null
+  }
+
+  readDeliveryChangeSetForBatch(batchId: DeliveryBatchId): DeliveryChangeSetV1 | null {
+    const row = this.db
+      .prepare('select change_set_json from delivery_change_sets where batch_id = ? order by rowid desc limit 1')
+      .get(batchId) as { change_set_json: string } | undefined
+    return row ? JSON.parse(row.change_set_json) as DeliveryChangeSetV1 : null
+  }
+
+  readDeliveryGate(gateId: DeliveryGateId): DeliveryHumanGateV1 | null {
+    const row = this.deliveryGate(gateId)
+    return row ? toDeliveryHumanGate(row) : null
+  }
+
+  rejectComposingDelivery(address: HubAddressV1, batchId: DeliveryBatchId, reasonCode: string, now: string): void {
+    this.transaction(() => {
+      const batch = this.deliveryBatch(batchId)
+      if (!batch || batch.project_id !== address.projectId || batch.session_key !== address.sessionKey) {
+        throw deliveryStoreError('DELIVERY_SCOPE_MISMATCH')
+      }
+      const updated = this.db
+        .prepare("update delivery_batches set state = 'REJECTED', updated_at = ? where batch_id = ? and state = 'COMPOSING'")
+        .run(now, batchId)
+      if (updated.changes !== 1) throw deliveryStoreError('DELIVERY_ILLEGAL_TRANSITION')
+      this.restoreDeliveryTasks(batchId, 'VERIFIED')
+      const version = this.currentVersion(address) + 1
+      this.writeEvent(address, version, 'delivery.composition.rejected', {
+        phase: 'delivery_composition.rejected',
+        batchId,
+        reasonCode,
+      }, now)
+      this.bumpProjectionVersion(address, version)
+    })
+  }
+
+  writeDeliveryFileArtifacts(artifacts: readonly DeliveryFileArtifactWriteV1[], now: string): void {
+    this.transaction(() => {
+      for (const artifact of artifacts) {
+        assertArtifactIdAvailable(this.db, artifact)
+        insertArtifact(this.db, artifact, now)
+      }
+    })
+  }
+
+  beginDeliveryVerification(
+    address: HubAddressV1,
+    record: BeginDeliveryVerificationRecordV1,
+  ): DeliveryVerificationBeginResultV1 {
+    return this.transaction(() => {
+      const request = parseDeliveryVerificationRequest(record.verificationRequestJson)
+      if (request.verificationAttemptId !== record.verificationAttemptId) {
+        throw deliveryStoreError('DELIVERY_VERIFICATION_BINDING_MISMATCH')
+      }
+      const requestBatchId = request.batchId as DeliveryBatchId
+      const batch = this.deliveryBatch(requestBatchId)
+      if (!batch || batch.project_id !== address.projectId || batch.session_key !== address.sessionKey) {
+        throw deliveryStoreError('DELIVERY_SCOPE_MISMATCH')
+      }
+      if (
+        request.flowId !== batch.flow_id ||
+        request.selectionDigest !== batch.selection_digest ||
+        request.targetFingerprint !== batch.target_fingerprint ||
+        deliveryVerificationRequestDigestV1(request) !== request.requestDigest
+      ) {
+        throw deliveryStoreError('DELIVERY_VERIFICATION_BINDING_MISMATCH')
+      }
+      const existing = this.deliveryVerificationAttempt(record.verificationAttemptId)
+      if (existing) {
+        if (
+          existing.batch_id === requestBatchId &&
+          existing.request_digest === request.requestDigest &&
+          existing.state === 'STARTED'
+        ) {
+          return {
+            verificationAttemptId: existing.delivery_verification_attempt_id,
+            outboxId: `xhbdvo_${existing.delivery_verification_attempt_id}`,
+            replayed: true,
+          }
+        }
+        throw deliveryStoreError('DELIVERY_VERIFICATION_IDEMPOTENCY_CONFLICT')
+      }
+      if (batch.state !== 'COMPOSING') throw deliveryStoreError('DELIVERY_ILLEGAL_TRANSITION')
+      this.db
+        .prepare(
+          'insert into delivery_verification_attempts (delivery_verification_attempt_id, verification_request_id, batch_id, flow_id, request_digest, selection_digest, qa_config_version, state, started_at, finished_at, outcome_receipt_digest) values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, null)',
+        )
+        .run(
+          record.verificationAttemptId,
+          request.verificationRequestId,
+          requestBatchId,
+          request.flowId,
+          request.requestDigest,
+          request.selectionDigest,
+          request.qaConfigVersion,
+          'STARTED',
+          record.now,
+        )
+      const outboxId = `xhbdvo_${record.verificationAttemptId}`
+      this.db
+        .prepare(
+          'insert into delivery_verification_outbox (outbox_id, delivery_verification_attempt_id, request_digest, request_json, status, created_at) values (?, ?, ?, ?, ?, ?)',
+        )
+        .run(outboxId, record.verificationAttemptId, request.requestDigest, record.verificationRequestJson, 'READY', record.now)
+      this.db
+        .prepare("update delivery_batches set state = 'VERIFYING', updated_at = ? where batch_id = ? and state = 'COMPOSING'")
+        .run(record.now, requestBatchId)
+      const version = this.currentVersion(address) + 1
+      this.writeEvent(address, version, 'system.delivery.verification.begin', {
+        phase: 'delivery_verification.started',
+        batchId: requestBatchId,
+        verificationAttemptId: record.verificationAttemptId,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      return { verificationAttemptId: record.verificationAttemptId, outboxId, replayed: false }
+    })
+  }
+
+  readDeliveryVerificationOutbox(
+    verificationAttemptId: DeliveryVerificationAttemptId,
+  ): DeliveryVerificationOutboxRecordV1 | null {
+    const row = this.db
+      .prepare(
+        'select outbox_id, delivery_verification_attempt_id, request_digest, request_json, status, claim_owner_id, claim_digest, claimed_at, completed_at, created_at from delivery_verification_outbox where delivery_verification_attempt_id = ?',
+      )
+      .get(verificationAttemptId) as DeliveryVerificationOutboxRow | undefined
+    return row ? toDeliveryVerificationOutboxRecord(row) : null
+  }
+
+  claimDeliveryVerificationOutbox(input: {
+    verificationAttemptId: DeliveryVerificationAttemptId
+    ownerId: string
+    claimDigest: string
+    now: string
+  }): DeliveryVerificationOutboxRecordV1 | null {
+    return this.transaction(() => {
+      this.db
+        .prepare(
+          "update delivery_verification_outbox set status = 'CLAIMED', claim_owner_id = ?, claim_digest = ?, claimed_at = ? where delivery_verification_attempt_id = ? and status = 'READY'",
+        )
+        .run(input.ownerId, input.claimDigest, input.now, input.verificationAttemptId)
+      const row = this.db
+        .prepare(
+          'select outbox_id, delivery_verification_attempt_id, request_digest, request_json, status, claim_owner_id, claim_digest, claimed_at, completed_at, created_at from delivery_verification_outbox where delivery_verification_attempt_id = ?',
+        )
+        .get(input.verificationAttemptId) as DeliveryVerificationOutboxRow | undefined
+      if (
+        !row ||
+        row.status !== 'CLAIMED' ||
+        row.claim_owner_id !== input.ownerId ||
+        row.claim_digest !== input.claimDigest
+      ) {
+        return null
+      }
+      return toDeliveryVerificationOutboxRecord(row)
+    })
+  }
+
+  pendingDeliveryVerificationOutboxes(): readonly PendingDeliveryVerificationOutboxRecordV1[] {
+    return this.db
+      .prepare(
+        "select db.project_id, db.session_key, dvo.outbox_id, dvo.delivery_verification_attempt_id, dvo.request_digest, dvo.request_json, dvo.status, dvo.claim_owner_id, dvo.claim_digest, dvo.claimed_at, dvo.completed_at, dvo.created_at from delivery_verification_outbox dvo join delivery_verification_attempts dva on dva.delivery_verification_attempt_id = dvo.delivery_verification_attempt_id join delivery_batches db on db.batch_id = dva.batch_id where dvo.status in ('READY', 'CLAIMED') order by dvo.rowid asc",
+      )
+      .all()
+      .map((row) => {
+        const typed = row as unknown as DeliveryVerificationOutboxRow & { project_id: string; session_key: string }
+        return {
+          address: { projectId: typed.project_id, sessionKey: typed.session_key } as HubAddressV1,
+          outbox: toDeliveryVerificationOutboxRecord(typed),
+        }
+      })
+  }
+
+  completeDeliveryVerification(
+    address: HubAddressV1,
+    record: CompleteDeliveryVerificationRecordV1,
+  ): DeliveryVerificationCompletionResultV1 {
+    return this.transaction(() => {
+      validateDeliveryVerificationReceipt(record.receipt)
+      const attempt = this.deliveryVerificationAttempt(record.receipt.verificationAttemptId)
+      if (!attempt) throw deliveryStoreError('DELIVERY_VERIFICATION_NOT_FOUND')
+      const batch = this.deliveryBatch(attempt.batch_id)
+      if (!batch || batch.project_id !== address.projectId || batch.session_key !== address.sessionKey) {
+        throw deliveryStoreError('DELIVERY_SCOPE_MISMATCH')
+      }
+      if (
+        record.receipt.batchId !== batch.batch_id ||
+        record.receipt.flowId !== batch.flow_id ||
+        record.receipt.requestDigest !== attempt.request_digest ||
+        record.receipt.selectionDigest !== attempt.selection_digest ||
+        record.receipt.qaConfigVersion !== attempt.qa_config_version
+      ) {
+        throw deliveryStoreError('DELIVERY_VERIFICATION_BINDING_MISMATCH')
+      }
+      const existing = this.db
+        .prepare('select receipt_json from delivery_verification_receipts where receipt_digest = ?')
+        .get(record.receipt.receiptDigest) as { receipt_json: string } | undefined
+      if (attempt.state !== 'STARTED') {
+        if (
+          attempt.outcome_receipt_digest === record.receipt.receiptDigest &&
+          existing?.receipt_json === JSON.stringify(record.receipt) &&
+          deliveryVerificationStateForVerdict(record.receipt.verdict) === attempt.state
+        ) {
+          return {
+            verificationAttemptId: attempt.delivery_verification_attempt_id,
+            verdict: record.receipt.verdict,
+            replayed: true,
+          }
+        }
+        throw deliveryStoreError('DELIVERY_VERIFICATION_IDEMPOTENCY_CONFLICT')
+      }
+      if (existing) throw deliveryStoreError('DELIVERY_VERIFICATION_IDEMPOTENCY_CONFLICT')
+      const outbox = this.readDeliveryVerificationOutbox(attempt.delivery_verification_attempt_id)
+      if (!outbox || outbox.status !== 'CLAIMED' || outbox.requestDigest !== attempt.request_digest) {
+        throw deliveryStoreError('DELIVERY_VERIFICATION_OUTBOX_NOT_CLAIMED')
+      }
+      for (const artifact of [...(record.evidenceArtifacts ?? []), ...(record.diagnosticArtifacts ?? [])]) {
+        assertArtifactIdAvailable(this.db, artifact)
+        insertArtifact(this.db, artifact, record.now)
+      }
+      this.db
+        .prepare(
+          'insert into delivery_verification_receipts (receipt_digest, delivery_verification_attempt_id, request_digest, verdict, receipt_json, diagnostic_artifact_ids_json, created_at) values (?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          record.receipt.receiptDigest,
+          attempt.delivery_verification_attempt_id,
+          attempt.request_digest,
+          record.receipt.verdict,
+          JSON.stringify(record.receipt),
+          JSON.stringify(record.receipt.diagnosticArtifactIds),
+          record.now,
+        )
+      if (record.receipt.verdict === 'PASS') {
+        if (!record.deliveryChangeSet || !record.gateId) throw deliveryStoreError('DELIVERY_CHANGESET_REQUIRED')
+        validateDeliveryChangeSet(batch, record.receipt, record.deliveryChangeSet)
+        for (const artifact of record.deliveryFileArtifacts ?? []) {
+          if (artifact.kind !== 'DELIVERY_FILE_CONTENT') throw deliveryStoreError('DELIVERY_ARTIFACT_INVALID')
+          assertArtifactIdAvailable(this.db, artifact)
+          insertArtifact(this.db, artifact, record.now)
+        }
+        this.insertDeliveryChangeSet(record.deliveryChangeSet)
+        const gate: DeliveryHumanGateV1 = {
+          gateId: record.gateId,
+          batchId: batch.batch_id,
+          subject: {
+            deliveryChangeSetId: record.deliveryChangeSet.deliveryChangeSetId,
+            version: 1,
+            digest: record.deliveryChangeSet.digest,
+          },
+          state: 'OPEN',
+          createdAt: record.now as never,
+        }
+        this.db
+          .prepare(
+            'insert into delivery_human_gates (gate_id, batch_id, delivery_change_set_id, subject_version, subject_digest, state, decision_digest, decided_at, gate_json, created_at) values (?, ?, ?, ?, ?, ?, null, null, ?, ?)',
+          )
+          .run(
+            gate.gateId,
+            gate.batchId,
+            gate.subject.deliveryChangeSetId,
+            gate.subject.version,
+            gate.subject.digest,
+            gate.state,
+            JSON.stringify(gate),
+            record.now,
+          )
+        this.finishDeliveryVerificationRows(attempt, 'SUCCEEDED', 'DONE', 'READY_FOR_REVIEW', record.receipt.receiptDigest, record.now)
+      } else {
+        if (record.deliveryChangeSet || record.gateId || record.deliveryFileArtifacts?.length) {
+          throw deliveryStoreError('DELIVERY_UNSEALED_OBJECTS_FORBIDDEN')
+        }
+        const nextBatchState = record.receipt.verdict === 'FAIL' ? 'REJECTED' : 'OUTCOME_UNKNOWN'
+        const nextOutboxState = record.receipt.verdict === 'FAIL' ? 'FAILED' : 'OUTCOME_UNKNOWN'
+        this.finishDeliveryVerificationRows(
+          attempt,
+          nextBatchState === 'REJECTED' ? 'FAILED' : 'OUTCOME_UNKNOWN',
+          nextOutboxState,
+          nextBatchState,
+          record.receipt.receiptDigest,
+          record.now,
+        )
+        if (nextBatchState === 'REJECTED') this.restoreDeliveryTasks(batch.batch_id, 'VERIFIED')
+      }
+      const version = this.currentVersion(address) + 1
+      this.writeEvent(address, version, 'system.delivery.verification.complete', {
+        phase: 'delivery_verification.completed',
+        batchId: batch.batch_id,
+        verificationAttemptId: attempt.delivery_verification_attempt_id,
+        verdict: record.receipt.verdict,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      return {
+        verificationAttemptId: attempt.delivery_verification_attempt_id,
+        verdict: record.receipt.verdict,
+        replayed: false,
+      }
+    })
+  }
+
+  decideDeliveryGate(address: HubAddressV1, record: DecideDeliveryGateRecordV1): DeliveryGateDecisionResultV1 {
+    return this.transaction(() => {
+      const expectedDigest = deliveryGateDecisionDigestV1(record)
+      if (expectedDigest !== record.decisionDigest) throw deliveryStoreError('DELIVERY_GATE_DECISION_DIGEST_MISMATCH')
+      const gateRow = this.deliveryGate(record.gateId)
+      if (!gateRow || gateRow.batch_id !== record.batchId) throw deliveryStoreError('DELIVERY_GATE_NOT_FOUND')
+      const batch = this.deliveryBatch(gateRow.batch_id)
+      if (!batch || batch.project_id !== address.projectId || batch.session_key !== address.sessionKey) {
+        throw deliveryStoreError('DELIVERY_SCOPE_MISMATCH')
+      }
+      if (
+        gateRow.delivery_change_set_id !== record.deliveryChangeSetId ||
+        gateRow.subject_version !== record.version ||
+        gateRow.subject_digest !== record.digest
+      ) {
+        throw deliveryStoreError('DELIVERY_GATE_SUBJECT_STALE')
+      }
+      const nextState = record.decision === 'APPROVE' ? 'APPROVED' : 'REJECTED'
+      if (gateRow.state !== 'OPEN') {
+        if (gateRow.state === nextState && gateRow.decision_digest === record.decisionDigest) {
+          return { gateId: record.gateId, state: nextState, replayed: true }
+        }
+        throw deliveryStoreError('DELIVERY_GATE_ALREADY_DECIDED')
+      }
+      this.db
+        .prepare(
+          'update delivery_human_gates set state = ?, decision_digest = ?, decided_at = ?, gate_json = ? where gate_id = ? and state = ?',
+        )
+        .run(
+          nextState,
+          record.decisionDigest,
+          record.now,
+          JSON.stringify(toDeliveryHumanGate({ ...gateRow, state: nextState, decision_digest: record.decisionDigest, decided_at: record.now })),
+          record.gateId,
+          'OPEN',
+        )
+      this.db
+        .prepare('update delivery_batches set state = ?, updated_at = ? where batch_id = ? and state = ?')
+        .run(nextState, record.now, record.batchId, 'READY_FOR_REVIEW')
+      if (record.decision === 'REJECT') this.restoreDeliveryTasks(record.batchId, 'VERIFIED')
+      const version = this.currentVersion(address) + 1
+      this.writeEvent(address, version, 'gate.decide', {
+        phase: 'delivery_gate.decided',
+        batchId: record.batchId,
+        gateId: record.gateId,
+        decision: record.decision,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      return { gateId: record.gateId, state: nextState, replayed: false }
+    })
+  }
+
+  beginDeliveryApply(address: HubAddressV1, record: BeginDeliveryApplyRecordV1): DeliveryApplyBeginResultV1 {
+    return this.transaction(() => {
+      const batch = this.deliveryBatch(record.batchId)
+      if (!batch || batch.project_id !== address.projectId || batch.session_key !== address.sessionKey) {
+        throw deliveryStoreError('DELIVERY_SCOPE_MISMATCH')
+      }
+      const changeSet = this.deliveryChangeSet(record.deliveryChangeSetId)
+      if (!changeSet || changeSet.batch_id !== record.batchId) throw deliveryStoreError('DELIVERY_CHANGESET_NOT_FOUND')
+      const existing = this.deliveryApplyAttempt(record.applyAttemptId)
+      if (existing) {
+        if (
+          existing.batch_id === record.batchId &&
+          existing.delivery_change_set_id === record.deliveryChangeSetId &&
+          existing.request_digest === record.requestDigest &&
+          existing.state === 'STARTED'
+        ) {
+          return { applyAttemptId: existing.apply_attempt_id, outboxId: `xhbdapo_${existing.apply_attempt_id}`, replayed: true }
+        }
+        throw deliveryStoreError('DELIVERY_APPLY_IDEMPOTENCY_CONFLICT')
+      }
+      if (batch.state !== 'APPROVED') throw deliveryStoreError('DELIVERY_ILLEGAL_TRANSITION')
+      this.db
+        .prepare(
+          'insert into delivery_apply_attempts (apply_attempt_id, batch_id, delivery_change_set_id, request_digest, target_fingerprint_before, state, receipt_digest, target_fingerprint_after, started_at, finished_at) values (?, ?, ?, ?, ?, ?, null, null, ?, null)',
+        )
+        .run(
+          record.applyAttemptId,
+          record.batchId,
+          record.deliveryChangeSetId,
+          record.requestDigest,
+          record.targetFingerprintBefore,
+          'STARTED',
+          record.now,
+        )
+      this.db
+        .prepare(
+          'insert into delivery_apply_outbox (outbox_id, apply_attempt_id, request_digest, request_json, status, created_at) values (?, ?, ?, ?, ?, ?)',
+        )
+        .run(`xhbdapo_${record.applyAttemptId}`, record.applyAttemptId, record.requestDigest, record.requestJson, 'READY', record.now)
+      this.db.prepare("update delivery_batches set state = 'APPLYING', updated_at = ? where batch_id = ?").run(record.now, record.batchId)
+      this.restoreDeliveryTasks(record.batchId, 'APPLYING')
+      const version = this.currentVersion(address) + 1
+      this.writeEvent(address, version, 'delivery.apply.begin', {
+        phase: 'delivery_apply.started',
+        batchId: record.batchId,
+        applyAttemptId: record.applyAttemptId,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      return { applyAttemptId: record.applyAttemptId, outboxId: `xhbdapo_${record.applyAttemptId}`, replayed: false }
+    })
+  }
+
+  readDeliveryApplyOutbox(applyAttemptId: DeliveryApplyAttemptId): DeliveryApplyOutboxRecordV1 | null {
+    const row = this.db
+      .prepare(
+        'select outbox_id, apply_attempt_id, request_digest, request_json, status, claim_owner_id, claim_digest, claimed_at, completed_at, created_at from delivery_apply_outbox where apply_attempt_id = ?',
+      )
+      .get(applyAttemptId) as DeliveryApplyOutboxRow | undefined
+    return row ? toDeliveryApplyOutboxRecord(row) : null
+  }
+
+  claimDeliveryApplyOutbox(input: {
+    applyAttemptId: DeliveryApplyAttemptId
+    ownerId: string
+    claimDigest: string
+    now: string
+  }): DeliveryApplyOutboxRecordV1 | null {
+    return this.transaction(() => {
+      this.db
+        .prepare(
+          "update delivery_apply_outbox set status = 'CLAIMED', claim_owner_id = ?, claim_digest = ?, claimed_at = ? where apply_attempt_id = ? and status = 'READY'",
+        )
+        .run(input.ownerId, input.claimDigest, input.now, input.applyAttemptId)
+      const row = this.db
+        .prepare(
+          'select outbox_id, apply_attempt_id, request_digest, request_json, status, claim_owner_id, claim_digest, claimed_at, completed_at, created_at from delivery_apply_outbox where apply_attempt_id = ?',
+        )
+        .get(input.applyAttemptId) as DeliveryApplyOutboxRow | undefined
+      if (
+        !row ||
+        row.status !== 'CLAIMED' ||
+        row.claim_owner_id !== input.ownerId ||
+        row.claim_digest !== input.claimDigest
+      ) {
+        return null
+      }
+      return toDeliveryApplyOutboxRecord(row)
+    })
+  }
+
+  readDeliveryApplyAttempt(applyAttemptId: DeliveryApplyAttemptId): DeliveryApplyAttemptV1 | null {
+    const row = this.deliveryApplyAttempt(applyAttemptId)
+    return row ? toDeliveryApplyAttempt(row) : null
+  }
+
+  readDeliveryApplyPackage(applyAttemptId: DeliveryApplyAttemptId): DeliveryApplyPackageRecordV1 | null {
+    const attempt = this.deliveryApplyAttempt(applyAttemptId)
+    if (!attempt) return null
+    const changeSet = this.readDeliveryChangeSet(attempt.delivery_change_set_id)
+    if (!changeSet) throw deliveryStoreError('DELIVERY_CHANGESET_NOT_FOUND')
+    const fileArtifacts = changeSet.fileChanges.map((file) => {
+      const artifact = this.readArtifact(file.contentArtifactId)
+      if (!artifact || artifact.kind !== 'DELIVERY_FILE_CONTENT' || artifact.contentDigest !== file.contentDigest) {
+        throw deliveryStoreError('DELIVERY_ARTIFACT_NOT_FOUND')
+      }
+      return artifact
+    })
+    return { applyAttempt: toDeliveryApplyAttempt(attempt), changeSet, fileArtifacts }
+  }
+
+  pendingDeliveryApplyOutboxes(): readonly PendingDeliveryApplyOutboxRecordV1[] {
+    return this.db
+      .prepare(
+        "select db.project_id, db.session_key, dao.outbox_id, dao.apply_attempt_id, dao.request_digest, dao.request_json, dao.status, dao.claim_owner_id, dao.claim_digest, dao.claimed_at, dao.completed_at, dao.created_at from delivery_apply_outbox dao join delivery_apply_attempts daa on daa.apply_attempt_id = dao.apply_attempt_id join delivery_batches db on db.batch_id = daa.batch_id where dao.status in ('READY', 'CLAIMED') order by dao.rowid asc",
+      )
+      .all()
+      .map((row) => {
+        const typed = row as unknown as DeliveryApplyOutboxRow & { project_id: string; session_key: string }
+        return {
+          address: { projectId: typed.project_id, sessionKey: typed.session_key } as HubAddressV1,
+          outbox: toDeliveryApplyOutboxRecord(typed),
+        }
+      })
+  }
+
+  completeDeliveryApply(address: HubAddressV1, record: CompleteDeliveryApplyRecordV1): DeliveryApplyCompletionResultV1 {
+    return this.transaction(() => {
+      const attempt = this.deliveryApplyAttempt(record.applyAttemptId)
+      if (!attempt) throw deliveryStoreError('DELIVERY_APPLY_NOT_FOUND')
+      const batch = this.deliveryBatch(attempt.batch_id)
+      if (!batch || batch.project_id !== address.projectId || batch.session_key !== address.sessionKey) {
+        throw deliveryStoreError('DELIVERY_SCOPE_MISMATCH')
+      }
+      if (attempt.state !== 'STARTED') {
+        if (attempt.state === record.outcome && attempt.receipt_digest === record.receiptDigest) {
+          return { applyAttemptId: record.applyAttemptId, outcome: record.outcome, replayed: true }
+        }
+        throw deliveryStoreError('DELIVERY_APPLY_IDEMPOTENCY_CONFLICT')
+      }
+      const nextBatchState =
+        record.outcome === 'SUCCEEDED' ? 'APPLIED' : record.outcome === 'FAILED' ? 'APPROVED' : 'OUTCOME_UNKNOWN'
+      const nextTaskState =
+        record.outcome === 'SUCCEEDED' ? 'DONE' : record.outcome === 'FAILED' ? 'DELIVERY_PENDING' : 'APPLYING'
+      const outboxState = record.outcome === 'SUCCEEDED' ? 'DONE' : record.outcome === 'FAILED' ? 'FAILED' : 'OUTCOME_UNKNOWN'
+      this.db
+        .prepare(
+          'update delivery_apply_attempts set state = ?, receipt_digest = ?, target_fingerprint_after = ?, finished_at = ? where apply_attempt_id = ? and state = ?',
+        )
+        .run(record.outcome, record.receiptDigest, record.targetFingerprintAfter ?? null, record.now, record.applyAttemptId, 'STARTED')
+      this.db
+        .prepare('update delivery_apply_outbox set status = ?, completed_at = ? where apply_attempt_id = ?')
+        .run(outboxState, record.now, record.applyAttemptId)
+      this.db.prepare('update delivery_batches set state = ?, updated_at = ? where batch_id = ?').run(
+        nextBatchState,
+        record.now,
+        attempt.batch_id,
+      )
+      this.restoreDeliveryTasks(attempt.batch_id, nextTaskState)
+      const version = this.currentVersion(address) + 1
+      this.writeEvent(address, version, 'delivery.apply.complete', {
+        phase: 'delivery_apply.completed',
+        batchId: attempt.batch_id,
+        applyAttemptId: record.applyAttemptId,
+        outcome: record.outcome,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      return { applyAttemptId: record.applyAttemptId, outcome: record.outcome, replayed: false }
+    })
   }
 
   attempt(attemptId: AttemptId): AttemptRecord | null {
@@ -1392,6 +2328,15 @@ export class CollaborationHubSqliteStoreV1 {
       'task_evidence_bundles',
       'task_qa_results',
       'task_change_sets',
+      'delivery_batches',
+      'delivery_selection_drafts',
+      'delivery_verification_attempts',
+      'delivery_verification_outbox',
+      'delivery_verification_receipts',
+      'delivery_change_sets',
+      'delivery_human_gates',
+      'delivery_apply_attempts',
+      'delivery_apply_outbox',
     ]
     return Object.fromEntries(
       tables.map((table) => {
@@ -1778,6 +2723,135 @@ export class CollaborationHubSqliteStoreV1 {
         insert or ignore into schema_migrations (version, applied_at) values (4, datetime('now'));
       `)
     })
+    this.transaction(() => {
+      this.db.exec(`
+        create table if not exists delivery_batches (
+          batch_id text primary key,
+          project_id text not null,
+          session_key text not null,
+          flow_id text not null references flows(flow_id),
+          selection_draft_id text not null,
+          state text not null,
+          selection_digest text not null,
+          target_fingerprint text not null,
+          created_at text not null,
+          updated_at text not null,
+          unique(selection_digest)
+        );
+        create table if not exists delivery_selection_drafts (
+          draft_id text primary key,
+          batch_id text not null references delivery_batches(batch_id),
+          flow_id text not null references flows(flow_id),
+          selected_task_run_ids_json text not null,
+          resolved_task_change_set_ids_json text not null,
+          dependency_task_run_ids_json text not null,
+          selection_digest text not null,
+          draft_json text not null,
+          created_at text not null,
+          unique(batch_id),
+          unique(selection_digest)
+        );
+        create table if not exists delivery_verification_attempts (
+          delivery_verification_attempt_id text primary key,
+          verification_request_id text not null unique,
+          batch_id text not null references delivery_batches(batch_id),
+          flow_id text not null references flows(flow_id),
+          request_digest text not null,
+          selection_digest text not null,
+          qa_config_version text not null,
+          state text not null,
+          started_at text not null,
+          finished_at text,
+          outcome_receipt_digest text,
+          unique(batch_id)
+        );
+        create table if not exists delivery_verification_outbox (
+          outbox_id text primary key,
+          delivery_verification_attempt_id text not null references delivery_verification_attempts(delivery_verification_attempt_id),
+          request_digest text not null,
+          request_json text not null,
+          status text not null,
+          claim_owner_id text,
+          claim_digest text,
+          claimed_at text,
+          completed_at text,
+          created_at text not null,
+          unique(delivery_verification_attempt_id)
+        );
+        create table if not exists delivery_verification_receipts (
+          receipt_digest text primary key,
+          delivery_verification_attempt_id text not null references delivery_verification_attempts(delivery_verification_attempt_id),
+          request_digest text not null,
+          verdict text not null,
+          receipt_json text not null,
+          diagnostic_artifact_ids_json text not null,
+          created_at text not null,
+          unique(delivery_verification_attempt_id, request_digest, receipt_digest)
+        );
+        create table if not exists delivery_change_sets (
+          delivery_change_set_id text primary key,
+          batch_id text not null references delivery_batches(batch_id),
+          flow_id text not null references flows(flow_id),
+          version integer not null,
+          selection_digest text not null,
+          task_change_set_ids_json text not null,
+          evidence_artifact_ids_json text not null,
+          qa_config_version text not null,
+          digest text not null,
+          change_set_json text not null,
+          created_at text not null,
+          unique(batch_id),
+          unique(digest)
+        );
+        create table if not exists delivery_human_gates (
+          gate_id text primary key,
+          batch_id text not null references delivery_batches(batch_id),
+          delivery_change_set_id text not null references delivery_change_sets(delivery_change_set_id),
+          subject_version integer not null,
+          subject_digest text not null,
+          state text not null,
+          decision_digest text,
+          decided_at text,
+          gate_json text not null,
+          created_at text not null,
+          unique(batch_id)
+        );
+        create table if not exists delivery_apply_attempts (
+          apply_attempt_id text primary key,
+          batch_id text not null references delivery_batches(batch_id),
+          delivery_change_set_id text not null references delivery_change_sets(delivery_change_set_id),
+          request_digest text not null,
+          target_fingerprint_before text not null,
+          state text not null,
+          receipt_digest text,
+          target_fingerprint_after text,
+          started_at text not null,
+          finished_at text,
+          unique(request_digest)
+        );
+        create table if not exists delivery_apply_outbox (
+          outbox_id text primary key,
+          apply_attempt_id text not null references delivery_apply_attempts(apply_attempt_id),
+          request_digest text not null,
+          request_json text not null,
+          status text not null,
+          claim_owner_id text,
+          claim_digest text,
+          claimed_at text,
+          completed_at text,
+          created_at text not null,
+          unique(apply_attempt_id)
+        );
+        create unique index if not exists delivery_one_active_batch_per_flow
+          on delivery_batches(flow_id)
+          where state in ('COMPOSING', 'VERIFYING', 'READY_FOR_REVIEW', 'APPROVED', 'APPLYING', 'OUTCOME_UNKNOWN');
+        create index if not exists delivery_verification_outbox_status
+          on delivery_verification_outbox(status, delivery_verification_attempt_id);
+        create index if not exists delivery_apply_outbox_status
+          on delivery_apply_outbox(status, apply_attempt_id);
+        insert or ignore into schema_migrations (version, applied_at) values (5, datetime('now'));
+      `)
+    })
   }
 
   private taskRunsForFlow(flowId: FlowId | null): TaskRunRecord[] {
@@ -1868,6 +2942,233 @@ export class CollaborationHubSqliteStoreV1 {
     throw verificationStoreError('TASK_VERIFICATION_PROJECTION_INCONSISTENT')
   }
 
+  private activeDeliveryBatch(address: HubAddressV1, flowId: FlowId): DeliveryBatchRow | null {
+    const row = this.db
+      .prepare(
+        "select batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, created_at, updated_at from delivery_batches where project_id = ? and session_key = ? and flow_id = ? and state in ('COMPOSING', 'VERIFYING', 'READY_FOR_REVIEW', 'APPROVED', 'APPLYING', 'OUTCOME_UNKNOWN') order by rowid desc limit 1",
+      )
+      .get(address.projectId, address.sessionKey, flowId) as DeliveryBatchRow | undefined
+    return row ?? null
+  }
+
+  private deliveryBatch(batchId: DeliveryBatchId): DeliveryBatchRow | null {
+    const row = this.db
+      .prepare(
+        'select batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, created_at, updated_at from delivery_batches where batch_id = ?',
+      )
+      .get(batchId) as DeliveryBatchRow | undefined
+    return row ?? null
+  }
+
+  private deliveryVerificationAttempt(
+    verificationAttemptId: DeliveryVerificationAttemptId,
+  ): DeliveryVerificationAttemptRow | null {
+    const row = this.db
+      .prepare(
+        'select delivery_verification_attempt_id, verification_request_id, batch_id, flow_id, request_digest, selection_digest, qa_config_version, state, started_at, finished_at, outcome_receipt_digest from delivery_verification_attempts where delivery_verification_attempt_id = ?',
+      )
+      .get(verificationAttemptId) as DeliveryVerificationAttemptRow | undefined
+    return row ?? null
+  }
+
+  private deliveryChangeSet(changeSetId: DeliveryChangeSetId): DeliveryChangeSetRow | null {
+    const row = this.db
+      .prepare(
+        'select delivery_change_set_id, batch_id, flow_id, version, digest, change_set_json, created_at from delivery_change_sets where delivery_change_set_id = ?',
+      )
+      .get(changeSetId) as DeliveryChangeSetRow | undefined
+    return row ?? null
+  }
+
+  private deliveryGate(gateId: DeliveryGateId): DeliveryGateRow | null {
+    const row = this.db
+      .prepare(
+        'select gate_id, batch_id, delivery_change_set_id, subject_version, subject_digest, state, decision_digest, decided_at, gate_json, created_at from delivery_human_gates where gate_id = ?',
+      )
+      .get(gateId) as DeliveryGateRow | undefined
+    return row ?? null
+  }
+
+  private deliveryApplyAttempt(applyAttemptId: DeliveryApplyAttemptId): DeliveryApplyAttemptRow | null {
+    const row = this.db
+      .prepare(
+        'select apply_attempt_id, batch_id, delivery_change_set_id, request_digest, target_fingerprint_before, state, receipt_digest, target_fingerprint_after, started_at, finished_at from delivery_apply_attempts where apply_attempt_id = ?',
+      )
+      .get(applyAttemptId) as DeliveryApplyAttemptRow | undefined
+    return row ?? null
+  }
+
+  private buildDeliverySelectionDraft(record: CreateDeliverySelectionRecordV1): DeliverySelectionDraftV1 {
+    if (record.selectedTaskRunIds.length === 0) throw deliveryStoreError('DELIVERY_SELECTION_EMPTY')
+    const selected = new Set(record.selectedTaskRunIds)
+    if (selected.size !== record.selectedTaskRunIds.length) throw deliveryStoreError('DELIVERY_SELECTION_DUPLICATE')
+    const allRuns = this.taskRunsForFlow(record.flowId)
+    const byId = new Map(allRuns.map((run) => [run.task_run_id, run]))
+    const dependencyTaskRunIds: TaskRunId[] = []
+    for (const taskRunId of record.selectedTaskRunIds) {
+      const taskRun = byId.get(taskRunId)
+      if (!taskRun || taskRun.status !== 'VERIFIED') throw deliveryStoreError('DELIVERY_TASK_NOT_VERIFIED')
+      for (const dependencyKey of JSON.parse(taskRun.depends_json) as string[]) {
+        const dependency = allRuns.find((run) => run.task_key === dependencyKey)
+        if (!dependency) throw deliveryStoreError('DELIVERY_DEPENDENCY_NOT_FOUND')
+        if (!selected.has(dependency.task_run_id)) throw deliveryStoreError('DELIVERY_DEPENDENCY_CLOSURE_INCOMPLETE')
+      }
+    }
+    for (const run of allRuns) {
+      if (selected.has(run.task_run_id)) dependencyTaskRunIds.push(run.task_run_id)
+    }
+    const refs = dependencyTaskRunIds.map((taskRunId) => {
+      const row = this.db
+        .prepare('select task_run_id, task_change_set_id, digest, patch_artifact_id from task_change_sets where task_run_id = ?')
+        .get(taskRunId) as
+        | {
+            task_run_id: TaskRunId
+            task_change_set_id: TaskChangeSetId
+            digest: Sha256Digest
+            patch_artifact_id: ArtifactId
+          }
+        | undefined
+      if (!row) throw deliveryStoreError('DELIVERY_TASK_CHANGESET_NOT_FOUND')
+      return {
+        taskRunId: row.task_run_id,
+        taskChangeSetId: row.task_change_set_id,
+        digest: row.digest,
+        patchArtifactId: row.patch_artifact_id,
+      }
+    })
+    const draftWithoutDigest = {
+      kind: 'DELIVERY_SELECTION_DRAFT' as const,
+      version: 1 as const,
+      draftId: record.draftId,
+      batchId: record.batchId,
+      selectionDraftId: record.draftId,
+      deliveryBatchId: record.batchId,
+      flowId: record.flowId,
+      selectedTaskRunIds: dependencyTaskRunIds,
+      resolvedTaskChangeSets: refs,
+      dependencyTaskRunIds,
+      taskChangeSetIds: refs.map((item) => item.taskChangeSetId),
+      dependencyOrder: refs.map((item) => item.taskChangeSetId),
+      baselineTreeHash: record.targetFingerprint,
+      targetFingerprint: record.targetFingerprint,
+      createdAt: record.now as never,
+    }
+    return { ...draftWithoutDigest, digest: deliverySelectionDigestV1(draftWithoutDigest) }
+  }
+
+  private deliveryProjection(batchId: DeliveryBatchId): DeliveryBatchProjectionV1 | null {
+    const batch = this.deliveryBatch(batchId)
+    if (!batch) return null
+    const draftRow = this.db
+      .prepare(
+        'select draft_id, batch_id, flow_id, selected_task_run_ids_json, resolved_task_change_set_ids_json, dependency_task_run_ids_json, selection_digest, draft_json, created_at from delivery_selection_drafts where batch_id = ?',
+      )
+      .get(batchId) as DeliverySelectionDraftRow | undefined
+    if (!draftRow) throw deliveryStoreError('DELIVERY_PROJECTION_INCONSISTENT')
+    const selectedTaskRunIds = JSON.parse(draftRow.selected_task_run_ids_json) as TaskRunId[]
+    const taskChangeSetIds = JSON.parse(draftRow.resolved_task_change_set_ids_json) as TaskChangeSetId[]
+    const changeSetRow = this.db
+      .prepare(
+        'select delivery_change_set_id, batch_id, flow_id, version, digest, change_set_json, created_at from delivery_change_sets where batch_id = ?',
+      )
+      .get(batchId) as DeliveryChangeSetRow | undefined
+    const gateRow = this.db
+      .prepare(
+        'select gate_id, batch_id, delivery_change_set_id, subject_version, subject_digest, state, decision_digest, decided_at, gate_json, created_at from delivery_human_gates where batch_id = ?',
+      )
+      .get(batchId) as DeliveryGateRow | undefined
+    const applyRow = this.db
+      .prepare(
+        'select apply_attempt_id, batch_id, delivery_change_set_id, request_digest, target_fingerprint_before, state, receipt_digest, target_fingerprint_after, started_at, finished_at from delivery_apply_attempts where batch_id = ? order by rowid desc limit 1',
+      )
+      .get(batchId) as DeliveryApplyAttemptRow | undefined
+    const changeSet = changeSetRow ? (JSON.parse(changeSetRow.change_set_json) as DeliveryChangeSetV1) : null
+    return {
+      batchId: batch.batch_id,
+      flowId: batch.flow_id,
+      state: batch.state,
+      selectionDigest: batch.selection_digest,
+      selectedTaskRunIds,
+      taskChangeSetIds,
+      targetFingerprint: batch.target_fingerprint,
+      ...(changeSetRow
+        ? {
+            deliveryChangeSetId: changeSetRow.delivery_change_set_id,
+            deliveryChangeSetDigest: changeSetRow.digest,
+            fileChangeSummaries: changeSet?.fileChanges ?? [],
+            evidenceArtifactIds: changeSet?.evidenceArtifactIds ?? [],
+            ...(changeSet?.qaConfigVersion ? { qaConfigVersion: changeSet.qaConfigVersion } : {}),
+          }
+        : {}),
+      ...(gateRow ? { gate: toDeliveryHumanGate(gateRow) } : {}),
+      ...(applyRow ? { applyAttempt: toDeliveryApplyAttempt(applyRow) } : {}),
+    }
+  }
+
+  private insertDeliveryChangeSet(changeSet: DeliveryChangeSetV1): void {
+    const batchId = changeSet.batchId
+    if (!batchId) throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
+    if (!changeSet.selectionDigest) throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
+    if (!changeSet.qaConfigVersion) throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
+    if (!changeSet.taskChangeSetIds || !changeSet.evidenceArtifactIds) {
+      throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
+    }
+    this.db
+      .prepare(
+        'insert into delivery_change_sets (delivery_change_set_id, batch_id, flow_id, version, selection_digest, task_change_set_ids_json, evidence_artifact_ids_json, qa_config_version, digest, change_set_json, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        String(changeSet.deliveryChangeSetId),
+        String(batchId),
+        String(changeSet.flowId),
+        changeSet.version,
+        String(changeSet.selectionDigest),
+        JSON.stringify(changeSet.taskChangeSetIds),
+        JSON.stringify(changeSet.evidenceArtifactIds),
+        changeSet.qaConfigVersion,
+        String(changeSet.digest),
+        JSON.stringify(changeSet),
+        String(changeSet.createdAt),
+      )
+  }
+
+  private finishDeliveryVerificationRows(
+    attempt: DeliveryVerificationAttemptRow,
+    verificationState: 'SUCCEEDED' | 'FAILED' | 'OUTCOME_UNKNOWN',
+    outboxState: DeliveryVerificationOutboxStateV1,
+    batchState: DeliveryBatchStateV1,
+    receiptDigest: Sha256Digest,
+    now: string,
+  ): void {
+    const attemptUpdated = this.db
+      .prepare(
+        'update delivery_verification_attempts set state = ?, finished_at = ?, outcome_receipt_digest = ? where delivery_verification_attempt_id = ? and state = ?',
+      )
+      .run(verificationState, now, receiptDigest, attempt.delivery_verification_attempt_id, 'STARTED')
+    const outboxUpdated = this.db
+      .prepare(
+        'update delivery_verification_outbox set status = ?, completed_at = ? where delivery_verification_attempt_id = ? and status = ?',
+      )
+      .run(outboxState, now, attempt.delivery_verification_attempt_id, 'CLAIMED')
+    const batchUpdated = this.db
+      .prepare('update delivery_batches set state = ?, updated_at = ? where batch_id = ? and state = ?')
+      .run(batchState, now, attempt.batch_id, 'VERIFYING')
+    if (attemptUpdated.changes !== 1 || outboxUpdated.changes !== 1 || batchUpdated.changes !== 1) {
+      throw deliveryStoreError('DELIVERY_ILLEGAL_TRANSITION')
+    }
+  }
+
+  private restoreDeliveryTasks(batchId: DeliveryBatchId, status: string): void {
+    const draft = this.db
+      .prepare('select selected_task_run_ids_json from delivery_selection_drafts where batch_id = ?')
+      .get(batchId) as { selected_task_run_ids_json: string } | undefined
+    if (!draft) throw deliveryStoreError('DELIVERY_SELECTION_NOT_FOUND')
+    const taskRunIds = JSON.parse(draft.selected_task_run_ids_json) as TaskRunId[]
+    for (const taskRunId of taskRunIds) {
+      this.db.prepare('update task_runs set status = ? where task_run_id = ?').run(status, taskRunId)
+    }
+  }
+
   private bumpProjectionVersion(address: HubAddressV1, version: number): void {
     const projection = this.readProjection(address)
     if (!projection) return
@@ -1951,6 +3252,120 @@ function toVerificationOutboxRecord(row: VerificationOutboxRow): VerificationOut
     ...(row.completed_at ? { completedAt: row.completed_at } : {}),
     createdAt: row.created_at,
   }
+}
+
+function toDeliveryVerificationOutboxRecord(row: DeliveryVerificationOutboxRow): DeliveryVerificationOutboxRecordV1 {
+  return {
+    outboxId: row.outbox_id,
+    verificationAttemptId: row.delivery_verification_attempt_id,
+    requestDigest: row.request_digest,
+    requestJson: row.request_json,
+    status: row.status,
+    ...(row.claim_owner_id ? { claimOwnerId: row.claim_owner_id } : {}),
+    ...(row.claim_digest ? { claimDigest: row.claim_digest } : {}),
+    ...(row.claimed_at ? { claimedAt: row.claimed_at } : {}),
+    ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+    createdAt: row.created_at,
+  }
+}
+
+function toDeliveryApplyOutboxRecord(row: DeliveryApplyOutboxRow): DeliveryApplyOutboxRecordV1 {
+  return {
+    outboxId: row.outbox_id,
+    applyAttemptId: row.apply_attempt_id,
+    requestDigest: row.request_digest,
+    requestJson: row.request_json,
+    status: row.status,
+    ...(row.claim_owner_id ? { claimOwnerId: row.claim_owner_id } : {}),
+    ...(row.claim_digest ? { claimDigest: row.claim_digest } : {}),
+    ...(row.claimed_at ? { claimedAt: row.claimed_at } : {}),
+    ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+    createdAt: row.created_at,
+  }
+}
+
+function toDeliveryHumanGate(row: DeliveryGateRow): DeliveryHumanGateV1 {
+  return {
+    gateId: row.gate_id,
+    batchId: row.batch_id,
+    subject: {
+      deliveryChangeSetId: row.delivery_change_set_id,
+      version: row.subject_version,
+      digest: row.subject_digest,
+    },
+    state: row.state as DeliveryHumanGateV1['state'],
+    ...(row.decision_digest ? { decisionDigest: row.decision_digest } : {}),
+    ...(row.decided_at ? { decidedAt: row.decided_at as never } : {}),
+    createdAt: row.created_at as never,
+  }
+}
+
+function toDeliveryApplyAttempt(row: DeliveryApplyAttemptRow): DeliveryApplyAttemptV1 {
+  return {
+    applyAttemptId: row.apply_attempt_id,
+    batchId: row.batch_id,
+    deliveryChangeSetId: row.delivery_change_set_id,
+    requestDigest: row.request_digest,
+    targetFingerprintBefore: row.target_fingerprint_before,
+    state: row.state,
+    ...(row.receipt_digest ? { receiptDigest: row.receipt_digest } : {}),
+    ...(row.target_fingerprint_after ? { targetFingerprintAfter: row.target_fingerprint_after } : {}),
+    startedAt: row.started_at as never,
+    ...(row.finished_at ? { finishedAt: row.finished_at as never } : {}),
+  }
+}
+
+function parseDeliveryVerificationRequest(raw: string): DeliveryVerificationRequestV1 {
+  const request = JSON.parse(raw) as DeliveryVerificationRequestV1
+  if (request.scope !== 'DELIVERY' || deliveryVerificationRequestDigestV1(request) !== request.requestDigest) {
+    throw deliveryStoreError('DELIVERY_VERIFICATION_REQUEST_DIGEST_MISMATCH')
+  }
+  return request
+}
+
+function validateDeliveryVerificationReceipt(receipt: DeliveryVerificationReceiptV1): void {
+  if (receipt.scope !== 'DELIVERY' || deliveryVerificationReceiptDigestV1(receipt) !== receipt.receiptDigest) {
+    throw deliveryStoreError('DELIVERY_VERIFICATION_RECEIPT_DIGEST_MISMATCH')
+  }
+  if (receipt.verdict === 'PASS') {
+    if ((receipt.checks ?? []).some((check) => check.verdict !== 'PASS') || (receipt.evidenceArtifactIds ?? []).length === 0) {
+      throw deliveryStoreError('DELIVERY_VERIFICATION_RECEIPT_SHAPE_INVALID')
+    }
+  } else if (receipt.verdict === 'FAIL') {
+    if ((receipt.checks ?? []).length === 0 || receipt.checks?.[0]?.verdict !== 'FAIL' || !receipt.reason) {
+      throw deliveryStoreError('DELIVERY_VERIFICATION_RECEIPT_SHAPE_INVALID')
+    }
+  } else if (receipt.verdict === 'OUTCOME_UNKNOWN') {
+    if (!receipt.reason || (receipt.checks ?? []).length !== 0 || (receipt.evidenceArtifactIds ?? []).length !== 0) {
+      throw deliveryStoreError('DELIVERY_VERIFICATION_RECEIPT_SHAPE_INVALID')
+    }
+  }
+}
+
+function validateDeliveryChangeSet(
+  batch: DeliveryBatchRow,
+  receipt: DeliveryVerificationReceiptV1,
+  changeSet: DeliveryChangeSetV1,
+): void {
+  if (
+    changeSet.kind !== 'DELIVERY_CHANGESET' ||
+    changeSet.version !== 1 ||
+    changeSet.batchId !== batch.batch_id ||
+    changeSet.flowId !== batch.flow_id ||
+    changeSet.selectionDigest !== batch.selection_digest ||
+    changeSet.digest !== receipt.deliveryChangeSetDigest ||
+    deliveryChangeSetDigestV1(changeSet) !== changeSet.digest ||
+    !(changeSet.fileChanges ?? []).every((item) => item.operation === 'CREATE' || item.operation === 'MODIFY') ||
+    (changeSet.fileChanges ?? []).some((item) => item.relativePath.includes('..') || /^[A-Za-z]:[\\/]|^\\\\|^file:\/\//.test(item.relativePath))
+  ) {
+    throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
+  }
+}
+
+function deliveryVerificationStateForVerdict(verdict: DeliveryVerificationReceiptV1['verdict']): string {
+  if (verdict === 'PASS') return 'SUCCEEDED'
+  if (verdict === 'FAIL') return 'FAILED'
+  return 'OUTCOME_UNKNOWN'
 }
 
 function parseTaskVerificationRequest(value: string): TaskVerificationRequestV1 {
@@ -2581,6 +3996,10 @@ function digestBytes(value: Uint8Array): string {
 }
 
 function verificationStoreError(code: string): Error & { code: string } {
+  return Object.assign(new Error(code), { code })
+}
+
+function deliveryStoreError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code })
 }
 

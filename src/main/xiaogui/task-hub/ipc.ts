@@ -12,6 +12,7 @@ import type {
   HubReadEventsIpcRequestV1,
   HubReadIpcRequestV1,
 } from '@shared/xiaogui-collaboration-hub'
+import type { XiaoguiDeliveryCoordinatorPortV1 } from '@shared/xiaogui-delivery-ipc'
 import type { XiaoguiTaskExecutionStartRequestV1 } from '@shared/xiaogui-task-execution'
 import { configStore } from '../../config-store'
 import { registerHandler } from '../../ipc/registry'
@@ -24,6 +25,7 @@ import {
   createXiaoguiRuntimeCompositionV1,
   type XiaoguiRuntimeCompositionV1,
 } from './runtime-composition'
+import { registerXiaoguiDeliveryHandlers } from './delivery-ipc'
 
 const AddressSchema = z
   .object({
@@ -151,6 +153,10 @@ export function getDefaultTaskExecutionOrchestrator(): XiaoguiTaskExecutionOrche
   return getDefaultRuntimeLifecycle().composition.taskExecution
 }
 
+export function getDefaultDeliveryCoordinator(): XiaoguiDeliveryCoordinatorPortV1 {
+  return getDefaultRuntimeLifecycle().composition.delivery
+}
+
 export async function closeDefaultCollaborationHubRuntimeComposition(): Promise<void> {
   const lifecycle = defaultRuntimeLifecycle
   defaultRuntimeLifecycle = null
@@ -162,9 +168,15 @@ export function registerCollaborationHubHandlers(
   application = getDefaultCollaborationHubApplication(),
   kimiLogin?: KimiLoginCoordinatorV1,
   taskExecution?: XiaoguiTaskExecutionOrchestratorV1,
+  deliveryCoordinator?: XiaoguiDeliveryCoordinatorPortV1,
 ): void {
   const resolveKimiLogin = () => kimiLogin ?? getDefaultKimiLoginCoordinator()
   const resolveTaskExecution = () => taskExecution ?? getDefaultTaskExecutionOrchestrator()
+  if (deliveryCoordinator) {
+    registerXiaoguiDeliveryHandlers(deliveryCoordinator)
+  } else if (arguments.length === 0) {
+    registerXiaoguiDeliveryHandlers(getDefaultDeliveryCoordinator())
+  }
 
   registerHandler('ipc:xiaogui.hub.observe', async (payload) => {
     const parsed = parseIpc(ObserveSchema, payload)
