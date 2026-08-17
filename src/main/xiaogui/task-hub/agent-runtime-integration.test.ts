@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -18,9 +19,11 @@ import type {
   RuntimeCapabilityV1,
   RuntimeCreateOrResumeOutcomeV1,
   RuntimeCreateOrResumeRequestV1,
+  RuntimeOutcomeV1,
   RuntimeScopeBindingV1,
 } from '@shared/xiaogui-agent-runtime'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
+import type { VerificationAttemptId } from '@shared/xiaogui-task-verification'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import { createCollaborationHubApplicationV1, type ExecutionWorkspaceBridgeV1, type RuntimePromptVaultV1 } from './application'
@@ -28,6 +31,7 @@ import { GitAttemptWorkspaceServiceV1, SqliteAttemptWorkspaceRegistryV1, digestB
 import { digestJson } from './digest'
 import { PrivateRuntimePayloadVaultV1 } from './private-payload-vault'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import type { TaskVerificationCoordinatorV1, TaskVerificationSucceededInputV1 } from './task-verification-coordinator'
 
 const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
@@ -81,6 +85,31 @@ async function tempDb(name = 'hub.sqlite') {
   return join(root, name)
 }
 
+function writeSystemIdempotencyForTest(
+  dbPath: string,
+  reconcileStart: TaskVerificationSucceededInputV1['reconcileStart'],
+): void {
+  if (!reconcileStart) throw new Error('missing reconcile start')
+  const db = new DatabaseSync(dbPath)
+  try {
+    const projection = db
+      .prepare('select version from session_projection where project_id = ? and session_key = ?')
+      .get(ADDRESS.projectId, ADDRESS.sessionKey) as { version: number } | undefined
+    if (!projection) throw new Error('missing session projection')
+    db.prepare(
+      'insert into idempotency_keys (scope_key, request_id, command_type, payload_hash, receipt_json) values (?, ?, ?, ?, ?)',
+    ).run(
+      `${ADDRESS.projectId}:${ADDRESS.sessionKey}`,
+      reconcileStart.idempotency.requestId,
+      reconcileStart.idempotency.commandType,
+      reconcileStart.idempotency.payloadHash,
+      JSON.stringify({ ...reconcileStart.receipt, sessionVersion: projection.version }),
+    )
+  } finally {
+    db.close()
+  }
+}
+
 function lookup(mode: SessionMode): SessionScopeLookupV1 {
   return {
     lookup: async (address: SessionAddressV1) => ({
@@ -100,16 +129,27 @@ function draft(): InitialPlanDraftInputV1 {
 async function readyAttempt(
   dbPath: string,
   capabilities: readonly RuntimeCapabilityV1[] = [approvedCapability],
-  options: { afterAgentDispatchStart?: (requestId: string) => void; createOutcome?: RuntimeCreateOrResumeOutcomeV1 } = {},
+  options: {
+    afterAgentDispatchStart?: (requestId: string) => void
+    createOutcome?: RuntimeCreateOrResumeOutcomeV1
+    outcomesBySession?: Record<string, RuntimeOutcomeV1>
+    taskVerificationCoordinator?: TaskVerificationCoordinatorV1
+  } = {},
 ) {
   let id = 0
   const app = createCollaborationHubApplicationV1({
     lookup: lookup('CODING'),
     storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
-    agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities, createRuntimeSessionId: 'runtime-1', createOutcome: options.createOutcome })),
+    agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({
+      capabilities,
+      createRuntimeSessionId: 'runtime-1',
+      createOutcome: options.createOutcome,
+      outcomesBySession: options.outcomesBySession,
+    })),
     baselineProvider: { capture: async () => scriptedBaseline() },
     workspaceBridge: testWorkspaceBridge(scriptedBaseline()),
     runtimePromptVault: testPromptVault(),
+    taskVerificationCoordinator: options.taskVerificationCoordinator,
     afterAgentDispatchStart: options.afterAgentDispatchStart,
     now: () => '2026-08-17T00:00:00.000Z',
     idFactory: (prefix) => `${prefix}_${++id}`,
@@ -466,8 +506,21 @@ describe('M2B fake agent runtime integration', () => {
     app.close()
   })
 
-  it('audits immediate SUCCEEDED candidate facts while leaving the M2B1 domain in a safe state', async () => {
+  it('hands an immediate SUCCEEDED outcome to task verification without downgrading the attempt', async () => {
     const dbPath = await tempDb()
+    const verificationInputs: TaskVerificationSucceededInputV1[] = []
+    const taskVerificationCoordinator: TaskVerificationCoordinatorV1 = {
+      handleSucceeded: async (input) => {
+        verificationInputs.push(input)
+        return {
+          ok: true,
+          verificationAttemptId: 'xhbva_immediate_success' as VerificationAttemptId,
+          verdict: 'PASS',
+        }
+      },
+      recoverPending: async () => [],
+      close: async () => undefined,
+    }
     const { app, flowId, taskRunId, attemptId } = await readyAttempt(dbPath, [approvedCapability], {
       createOutcome: {
         state: 'SUCCEEDED',
@@ -475,6 +528,7 @@ describe('M2B fake agent runtime integration', () => {
         receiptDigest: 'sha256:agent-succeeded',
         candidateDigest: 'sha256:candidate',
       },
+      taskVerificationCoordinator,
     })
     const beforeReport = await app.observeM2B(ADDRESS)
     await expect(
@@ -487,13 +541,215 @@ describe('M2B fake agent runtime integration', () => {
         intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
       }),
     ).resolves.toMatchObject({ ok: true })
+    expect(verificationInputs).toEqual([
+      {
+        address: ADDRESS,
+        flowId,
+        taskRunId,
+        attemptId,
+        outcome: {
+          state: 'SUCCEEDED',
+          runtimeSessionId: 'runtime-1',
+          receiptDigest: 'sha256:agent-succeeded',
+          candidateDigest: 'sha256:candidate',
+        },
+        createdAt: '2026-08-17T00:00:00.000Z',
+      },
+    ])
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { attempts: [expect.objectContaining({ status: 'RUNNING', runtimeSessionId: 'runtime-1' })] },
+    })
+    app.close()
+  })
+
+  it('closes immediate SUCCEEDED candidate capture failure as a closed agent failure', async () => {
+    const dbPath = await tempDb()
+    const taskVerificationCoordinator: TaskVerificationCoordinatorV1 = {
+      handleSucceeded: async () => ({ ok: false, reasonCode: 'TASK_VERIFICATION_CAPTURE_FAILED' }),
+      recoverPending: async () => [],
+      close: async () => undefined,
+    }
+    const { app, flowId, taskRunId, attemptId } = await readyAttempt(dbPath, [approvedCapability], {
+      createOutcome: {
+        state: 'SUCCEEDED',
+        runtimeSessionId: 'runtime-1',
+        receiptDigest: 'sha256:agent-succeeded-capture-failed',
+        candidateDigest: 'sha256:candidate',
+      },
+      taskVerificationCoordinator,
+    })
+    const beforeReport = await app.observeM2B(ADDRESS)
+    await expect(
+      app.executeSystem({
+        contractVersion: 'm2b.v1',
+        address: ADDRESS as HubAddressV1,
+        trustedActor: { kind: 'main-process-system' },
+        requestId: 'sys-agent-report-capture-failed',
+        expectedSessionVersion: beforeReport.ok ? beforeReport.value.sessionVersion : 0,
+        intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
+      }),
+    ).resolves.toMatchObject({ ok: true })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { attempts: [expect.objectContaining({ status: 'FAILED', runtimeSessionId: 'runtime-1' })] },
+    })
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.tableCounts()).toMatchObject({ agent_failures: 1, verification_attempts: 0 })
+    store.close()
+    app.close()
+  })
+
+  it('closes immediate SUCCEEDED verification start failure as OUTCOME_UNKNOWN', async () => {
+    const dbPath = await tempDb()
+    const taskVerificationCoordinator: TaskVerificationCoordinatorV1 = {
+      handleSucceeded: async () => ({ ok: false, reasonCode: 'TASK_VERIFICATION_STORE_REJECTED' }),
+      recoverPending: async () => [],
+      close: async () => undefined,
+    }
+    const { app, flowId, taskRunId, attemptId } = await readyAttempt(dbPath, [approvedCapability], {
+      createOutcome: {
+        state: 'SUCCEEDED',
+        runtimeSessionId: 'runtime-1',
+        receiptDigest: 'sha256:agent-succeeded-start-failed',
+        candidateDigest: 'sha256:candidate',
+      },
+      taskVerificationCoordinator,
+    })
+    const beforeReport = await app.observeM2B(ADDRESS)
+    await expect(
+      app.executeSystem({
+        contractVersion: 'm2b.v1',
+        address: ADDRESS as HubAddressV1,
+        trustedActor: { kind: 'main-process-system' },
+        requestId: 'sys-agent-report-start-failed',
+        expectedSessionVersion: beforeReport.ok ? beforeReport.value.sessionVersion : 0,
+        intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
+      }),
+    ).resolves.toMatchObject({ ok: true })
     await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
       ok: true,
       value: { attempts: [expect.objectContaining({ status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1' })] },
     })
     const store = new CollaborationHubSqliteStoreV1(dbPath)
-    expect(store.tableCounts()).toMatchObject({ agent_succeeded_audits: 1, agent_failures: 0 })
+    expect(store.tableCounts()).toMatchObject({ agent_failures: 0, verification_attempts: 0 })
     store.close()
+    app.close()
+  })
+
+  it('closes immediate SUCCEEDED as OUTCOME_UNKNOWN when task verification is not wired', async () => {
+    const dbPath = await tempDb()
+    const { app, flowId, taskRunId, attemptId } = await readyAttempt(dbPath, [approvedCapability], {
+      createOutcome: {
+        state: 'SUCCEEDED',
+        runtimeSessionId: 'runtime-1',
+        receiptDigest: 'sha256:agent-succeeded-without-verifier',
+        candidateDigest: 'sha256:candidate',
+      },
+    })
+    const beforeReport = await app.observeM2B(ADDRESS)
+    await expect(
+      app.executeSystem({
+        contractVersion: 'm2b.v1',
+        address: ADDRESS as HubAddressV1,
+        trustedActor: { kind: 'main-process-system' },
+        requestId: 'sys-agent-report-without-verifier',
+        expectedSessionVersion: beforeReport.ok ? beforeReport.value.sessionVersion : 0,
+        intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
+      }),
+    ).resolves.toMatchObject({ ok: true })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { attempts: [expect.objectContaining({ status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1' })] },
+    })
+    app.close()
+  })
+
+  it('passes reconcile SUCCEEDED through task verification with replayable system idempotency', async () => {
+    const dbPath = await tempDb()
+    const verificationInputs: TaskVerificationSucceededInputV1[] = []
+    const taskVerificationCoordinator: TaskVerificationCoordinatorV1 = {
+      handleSucceeded: async (input) => {
+        verificationInputs.push(input)
+        writeSystemIdempotencyForTest(dbPath, input.reconcileStart)
+        return {
+          ok: true,
+          verificationAttemptId: 'xhbva_reconcile_success' as VerificationAttemptId,
+          verdict: 'PASS',
+        }
+      },
+      recoverPending: async () => [],
+      close: async () => undefined,
+    }
+    const { app, flowId, taskRunId, attemptId } = await readyAttempt(dbPath, [approvedCapability], {
+      outcomesBySession: {
+        'runtime-1': {
+          state: 'SUCCEEDED',
+          runtimeSessionId: 'runtime-1',
+          receiptDigest: 'sha256:reconciled-success',
+          candidateDigest: 'sha256:reconciled-candidate',
+        },
+      },
+      taskVerificationCoordinator,
+    })
+    const beforeReport = await app.observeM2B(ADDRESS)
+    await app.executeSystem({
+      contractVersion: 'm2b.v1',
+      address: ADDRESS as HubAddressV1,
+      trustedActor: { kind: 'main-process-system' },
+      requestId: 'sys-agent-report-ready',
+      expectedSessionVersion: beforeReport.ok ? beforeReport.value.sessionVersion : 0,
+      intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
+    })
+    const running = await app.observeM2B(ADDRESS)
+    await app.executeSystem({
+      contractVersion: 'm2b.v1',
+      address: ADDRESS as HubAddressV1,
+      trustedActor: { kind: 'main-process-system' },
+      requestId: 'sys-agent-outcome-unknown',
+      expectedSessionVersion: running.ok ? running.value.sessionVersion : 0,
+      intent: {
+        type: 'system.agent.outcome.record',
+        flowId,
+        taskRunId,
+        attemptId,
+        runtimeSessionId: 'runtime-1',
+        outcome: 'OUTCOME_UNKNOWN',
+        receiptDigest: 'sha256:unknown-before-reconcile',
+      },
+    })
+    const unknown = await app.observeM2B(ADDRESS)
+    const reconcileRequest = {
+      contractVersion: 'm2b.v1' as const,
+      address: ADDRESS as HubAddressV1,
+      trustedActor: { kind: 'main-process-system' as const },
+      requestId: 'sys-agent-reconcile-success',
+      expectedSessionVersion: unknown.ok ? unknown.value.sessionVersion : 0,
+      intent: {
+        type: 'system.agent.reconcile' as const,
+        attemptId,
+        runtimeSessionId: 'runtime-1',
+      },
+    }
+    await expect(app.executeSystem(reconcileRequest)).resolves.toMatchObject({ ok: true })
+    await expect(app.executeSystem(reconcileRequest)).resolves.toMatchObject({ ok: true })
+    expect(verificationInputs).toHaveLength(1)
+    expect(verificationInputs[0]).toMatchObject({
+      address: ADDRESS,
+      flowId,
+      taskRunId,
+      attemptId,
+      outcome: {
+        state: 'SUCCEEDED',
+        runtimeSessionId: 'runtime-1',
+        receiptDigest: 'sha256:reconciled-success',
+        candidateDigest: 'sha256:reconciled-candidate',
+      },
+      reconcileStart: {
+        expectedReceiptDigest: 'sha256:unknown-before-reconcile',
+        receipt: { requestId: 'sys-agent-reconcile-success', intentType: 'system.agent.reconcile' },
+      },
+    })
     app.close()
   })
 

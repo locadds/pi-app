@@ -130,6 +130,55 @@ describe('TaskCandidateAuditServiceV1', () => {
     expect(captureTaskPatch).toHaveBeenCalledOnce()
   })
 
+  it.each(['tsconfig.json', 'TSCONFIG.WEB.JSON', 'tsconfig.node.json', 'tsconfig.custom.json', 'package.json'])(
+    'rejects approved verification-control file %s before producing a candidate',
+    async (relativePath) => {
+      const capture = capturedPatch()
+      const captureTaskPatch = vi.fn<AttemptTaskPatchCapturePortV1['captureTaskPatch']>().mockResolvedValue({
+        ...capture,
+        changedFiles: [{ ...capture.changedFiles[0], relativePath }],
+      })
+      const service = new TaskCandidateAuditServiceV1({ captureTaskPatch })
+
+      await expect(
+        service.captureTaskCandidate({
+          flowId: FLOW_ID,
+          taskRunId: TASK_RUN_ID,
+          attemptId: ATTEMPT_ID,
+          createdAt: FIXED_TIME,
+          runtimeSignal: {
+            runtimeSessionId: 'xhr_session',
+            receiptDigest: 'sha256:runtime-receipt',
+            candidateDigest: 'sha256:runtime-candidate',
+          },
+        }),
+      ).rejects.toMatchObject({ reasonCode: 'CANDIDATE_VERIFICATION_CONTROL_FORBIDDEN' })
+    },
+  )
+
+  it('continues to accept an ordinary approved TypeScript file', async () => {
+    const capture = capturedPatch()
+    const captureTaskPatch = vi.fn<AttemptTaskPatchCapturePortV1['captureTaskPatch']>().mockResolvedValue({
+      ...capture,
+      changedFiles: [{ ...capture.changedFiles[0], relativePath: 'src/feature.ts' }],
+    })
+    const service = new TaskCandidateAuditServiceV1({ captureTaskPatch })
+
+    await expect(
+      service.captureTaskCandidate({
+        flowId: FLOW_ID,
+        taskRunId: TASK_RUN_ID,
+        attemptId: ATTEMPT_ID,
+        createdAt: FIXED_TIME,
+        runtimeSignal: {
+          runtimeSessionId: 'xhr_session',
+          receiptDigest: 'sha256:runtime-receipt',
+          candidateDigest: 'sha256:runtime-candidate',
+        },
+      }),
+    ).resolves.toMatchObject({ changedFiles: [{ relativePath: 'src/feature.ts' }] })
+  })
+
   it('fails closed on malformed runtime identity before reading the workspace', async () => {
     const captureTaskPatch = vi.fn<AttemptTaskPatchCapturePortV1['captureTaskPatch']>()
     const service = new TaskCandidateAuditServiceV1({ captureTaskPatch })

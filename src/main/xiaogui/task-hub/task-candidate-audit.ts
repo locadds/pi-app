@@ -58,6 +58,7 @@ export interface TaskCandidateAuditResultV1 {
 export type TaskCandidateAuditReasonCodeV1 =
   | 'CANDIDATE_IDENTITY_INVALID'
   | 'CANDIDATE_TIMESTAMP_INVALID'
+  | 'CANDIDATE_VERIFICATION_CONTROL_FORBIDDEN'
 
 export class TaskCandidateAuditErrorV1 extends Error {
   constructor(readonly reasonCode: TaskCandidateAuditReasonCodeV1) {
@@ -73,6 +74,7 @@ export class TaskCandidateAuditServiceV1 {
     assertIdentity(input)
     const createdAt = canonicalTimestamp(input.createdAt)
     const capture = await this.workspace.captureTaskPatch(input.attemptId)
+    assertVerificationControlsUnchanged(capture.changedFiles)
     const ancestorTaskChangeSetIds = validatedAncestorIds(input.ancestorTaskChangeSetIds ?? [])
     const inputTreeHash = capture.inputTreeHash as Sha256Digest
     const resultTreeHash = capture.resultTreeHash as Sha256Digest
@@ -135,6 +137,21 @@ export class TaskCandidateAuditServiceV1 {
       privateVerificationContext: capture.privateVerificationContext,
     }
   }
+}
+
+function assertVerificationControlsUnchanged(changedFiles: readonly TaskPatchFileSnapshotV1[]): void {
+  if (changedFiles.some((file) => isRootVerificationControl(file.relativePath))) {
+    throw new TaskCandidateAuditErrorV1('CANDIDATE_VERIFICATION_CONTROL_FORBIDDEN')
+  }
+}
+
+function isRootVerificationControl(relativePath: string): boolean {
+  const normalized = relativePath.toLowerCase()
+  return (
+    !normalized.includes('/') &&
+    !normalized.includes('\\') &&
+    (normalized === 'package.json' || /^tsconfig.*\.json$/.test(normalized))
+  )
 }
 
 function assertIdentity(input: CaptureTaskCandidateInputV1): void {

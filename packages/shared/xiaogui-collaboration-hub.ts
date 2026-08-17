@@ -2,9 +2,7 @@ import type { SessionAddressV1, SessionMode } from './xiaogui-session-scope'
 import type {
   ChangeSetCandidateV1,
   Sha256Digest,
-  TaskVerificationReceiptV1,
   TaskVerificationSummaryV1,
-  VerificationAttemptId,
 } from './xiaogui-task-verification'
 
 export type HubAddressV1 = SessionAddressV1
@@ -404,34 +402,12 @@ export interface SystemAgentReconcileIntentM2BV1 {
   expectedReceiptDigest?: string
 }
 
-export interface SystemVerificationCompleteIntentM2BV1 {
-  type: 'system.verification.complete'
-  flowId: FlowId
-  taskRunId: TaskRunId
-  attemptId: AttemptId
-  verificationAttemptId: VerificationAttemptId
-  receipt: TaskVerificationReceiptV1
-}
-
-export interface SystemVerificationReconcileIntentM2BV1 {
-  type: 'system.verification.reconcile'
-  flowId: FlowId
-  taskRunId: TaskRunId
-  attemptId: AttemptId
-  verificationAttemptId: VerificationAttemptId
-  verificationRequestId: string
-  requestDigest: Sha256Digest
-  expectedReceiptDigest?: Sha256Digest
-}
-
 export type M2BSystemIntentV1 =
   | SystemScheduleIntentM2BV1
   | SystemWorkspacePrepareResultRecordIntentM2BV1
   | SystemAgentReportRecordIntentM2BV1
   | SystemAgentOutcomeRecordIntentM2BV1
   | SystemAgentReconcileIntentM2BV1
-  | SystemVerificationCompleteIntentM2BV1
-  | SystemVerificationReconcileIntentM2BV1
 
 export interface HubSystemCommandRequestM2BV1 {
   contractVersion: 'm2b.v1'

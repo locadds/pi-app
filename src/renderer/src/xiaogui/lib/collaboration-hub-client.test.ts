@@ -310,6 +310,47 @@ describe('collaboration-hub-client', () => {
     expect(Object.keys(payload).sort()).toEqual(['address', 'contractVersion', 'request'])
   })
 
+  it.each(['system.verification.complete', 'system.verification.reconcile'] as const)(
+    '验证写入名称 %s 仍按 M2A 禁用意图返回 INTENT_DISABLED',
+    async (intentType) => {
+      const traceId = 'xhbt_00000000-0000-4000-8000-000000000000'
+      invokeMock.mockResolvedValueOnce({
+        ok: false,
+        error: { code: 'INTENT_DISABLED', messageKey: 'xiaogui.hub.intent_disabled', traceId },
+      })
+
+      const res = await performHubIntent(address, {
+        requestId: `r-${intentType}`,
+        intent: { type: intentType },
+      })
+
+      expect(res).toEqual({
+        ok: false,
+        error: { code: 'INTENT_DISABLED', messageKey: 'xiaogui.hub.intent_disabled', traceId },
+      })
+    },
+  )
+
+  it.each(['system.verification.complete', 'system.verification.reconcile'] as const)(
+    '拒绝把未实现验证写入 %s 伪装成成功的 perform receipt',
+    async (intentType) => {
+      invokeMock.mockResolvedValueOnce({
+        ok: true,
+        value: { requestId: `r-${intentType}`, intentType, sessionVersion: 1 },
+      })
+
+      const res = await performHubIntent(address, {
+        requestId: `r-${intentType}`,
+        intent: { type: intentType },
+      })
+
+      expect(res).toEqual({
+        ok: false,
+        error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+      })
+    },
+  )
+
   it('最终执行只调用窄通道，载荷只含 address、flowId、prompt、files', async () => {
     const request = {
       address,
