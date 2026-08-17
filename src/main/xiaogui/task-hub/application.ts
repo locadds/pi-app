@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto'
 
 import {
   runtimeSelectionKey,
+  type PromptEnvelopeRefV1,
   type RuntimeAdapterSelectionV1,
   type RuntimeCapabilityV1,
   type RuntimeCreateOrResumeOutcomeV1,
   type RuntimeCreateOrResumeRequestV1,
   type RuntimeOutcomeV1,
   type RuntimeScopeBindingV1,
+  type RuntimeWorkspaceBindingV1,
 } from '@shared/xiaogui-agent-runtime'
 import type {
   AgentFailureSignalV1,
@@ -45,6 +47,8 @@ export interface CollaborationHubApplicationOptionsV1 {
   agentRuntime?: AgentRuntimeHostV1
   agentSelection?: RuntimeAdapterSelectionV1
   baselineProvider?: ExecutionBaselineProviderV1
+  workspaceBridge?: ExecutionWorkspaceBridgeV1
+  runtimePromptVault?: RuntimePromptVaultV1
   afterAgentDispatchStart?: (requestId: string) => void
   now?: () => string
   idFactory?: (prefix: string) => string
@@ -61,9 +65,24 @@ export interface ExecutionBaselineProviderV1 {
   capture(input: { address: HubAddressV1; flowId: FlowId; planRevisionId: PlanRevisionId | null }): Promise<ExecutionBaselineV1>
 }
 
+export interface ExecutionWorkspaceBridgeV1 {
+  prepare(input: {
+    address: HubAddressV1
+    attempt: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['attempt']>>
+    composition: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['compositionAttempt']>>
+    baseline: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['flowExecutionBaseline']>>
+  }): Promise<import('@shared/xiaogui-collaboration-hub').WorkspacePreparedReceiptM2BV1>
+  runtimeWorkspace(attemptId: AttemptId): RuntimeWorkspaceBindingV1 | undefined
+}
+
+export interface RuntimePromptVaultV1 {
+  promptRefForAttempt(attemptId: string): PromptEnvelopeRefV1
+}
+
 export interface CollaborationHubApplicationV1 {
   execute(request: HubCommandRequestV1): Promise<HubOutcomeV1<PerformReceiptV1>>
   executeSystem(request: HubSystemCommandRequestM2BV1): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>>
+  prepareNextWorkspace(address: HubAddressV1, request: { requestId: string; attemptId: AttemptId; expectedSessionVersion?: number }): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>>
   read(address: HubAddressV1, request: HubReadRequestV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>>
   readEvents(address: HubAddressV1, request?: HubReadEventsRequestV1): Promise<HubOutcomeV1<HubEventEnvelopeV1[]>>
   observe(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>>
@@ -192,6 +211,45 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
         default:
           return systemError('INTERNAL')
       }
+    } catch {
+      return systemError('INTERNAL')
+    }
+  }
+
+  async prepareNextWorkspace(
+    address: HubAddressV1,
+    request: { requestId: string; attemptId: AttemptId; expectedSessionVersion?: number },
+  ): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
+    try {
+      const scope = await this.resolve(address)
+      if (!scope.ok) return systemError(scope.error.code === 'SESSION_SCOPE_MISMATCH' ? 'SESSION_SCOPE_MISMATCH' : 'INTERNAL')
+      if (scope.value.mode === 'DESIGN') return systemError('DESIGN_RESERVED')
+      const bridge = this.options.workspaceBridge
+      if (!bridge) return systemError('INTERNAL', { reason: 'NO_WORKSPACE_BRIDGE' })
+      const store = this.getStore()
+      if (this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
+      const attempt = store.attempt(request.attemptId)
+      if (!attempt || attempt.status !== 'WORKSPACE_PREPARING') return systemError('ILLEGAL_TRANSITION')
+      if (store.workspacePrepareOutboxStatus(request.attemptId) !== 'READY') return systemError('ILLEGAL_TRANSITION')
+      const composition = store.compositionAttempt(request.attemptId)
+      if (!composition) return systemError('ILLEGAL_TRANSITION')
+      const baseline = store.flowExecutionBaseline(attempt.flow_id)
+      if (!baseline) return systemError('BASELINE_UNAVAILABLE')
+      const receipt = await bridge.prepare({ address, attempt, composition, baseline })
+      return this.executeSystem({
+        contractVersion: 'm2b.v1',
+        address,
+        trustedActor: { kind: 'main-process-system' },
+        requestId: request.requestId,
+        expectedSessionVersion: request.expectedSessionVersion,
+        intent: {
+          type: 'system.workspace.prepare.result.record',
+          flowId: attempt.flow_id,
+          taskRunId: attempt.task_run_id,
+          attemptId: request.attemptId,
+          receipt,
+        },
+      })
     } catch {
       return systemError('INTERNAL')
     }
@@ -627,10 +685,15 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       workspaceReceiptId: attempt.workspace_receipt_id ?? '',
       workspaceReceiptDigest,
     }
+    const bridgedWorkspace = this.options.workspaceBridge?.runtimeWorkspace(request.intent.attemptId)
+    const bridgedPromptRef = this.options.runtimePromptVault?.promptRefForAttempt(request.intent.attemptId)
+    if ((this.options.workspaceBridge && !bridgedWorkspace) || (this.options.runtimePromptVault && !bridgedPromptRef)) {
+      throw new Error('RUNTIME_PRIVATE_BINDING_MISSING')
+    }
     return {
       requestId: request.requestId,
       scope,
-      workspace: {
+      workspace: bridgedWorkspace ?? {
         attemptWorktreeId: `xhbwt_${baseline.baseline_id}`,
         worktreeRootDigest: payloadDigest({ baselineDigest: baseline.baseline_digest, workspaceReceiptDigest, role: 'worktree-root' }),
         baseRevisionDigest: baseline.baseline_tree_hash,
@@ -639,7 +702,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       },
       selection,
       productionPolicy: { allowedSelections: [selection], rejectDiagnosticOnly: true },
-      promptEnvelopeRef: {
+      promptEnvelopeRef: bridgedPromptRef ?? {
         refId: `xhbprompt_${request.intent.attemptId}`,
         digest: payloadDigest({ flowId: request.intent.flowId, taskRunId: request.intent.taskRunId, attemptId: request.intent.attemptId, role: 'runtime-prompt' }),
         mediaType: 'application/vnd.xiaogui.runtime-prompt+json',

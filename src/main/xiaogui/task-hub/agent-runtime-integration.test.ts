@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -23,7 +24,9 @@ import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@share
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import { createCollaborationHubApplicationV1 } from './application'
+import { GitAttemptWorkspaceServiceV1, SqliteAttemptWorkspaceRegistryV1, digestBytes } from './attempt-workspace'
 import { digestJson } from './digest'
+import { PrivateRuntimePayloadVaultV1 } from './private-payload-vault'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 
 const ADDRESS = {
@@ -178,6 +181,32 @@ function scriptedBaseline() {
   return { ...base, baselineDigest: digestJson(base) }
 }
 
+async function gitRepo() {
+  const root = await mkdtemp(join(tmpdir(), 'xiaogui-hub-real-git-'))
+  roots.push(root)
+  await mkdir(join(root, 'src'), { recursive: true })
+  await writeFile(join(root, 'src', 'existing.txt'), 'before')
+  git(root, ['init'])
+  git(root, ['config', 'user.email', 'xiaogui@example.test'])
+  git(root, ['config', 'user.name', 'Xiaogui Test'])
+  git(root, ['add', '.'])
+  git(root, ['commit', '-m', 'baseline'])
+  return root
+}
+
+function git(cwd: string, args: string[]) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }).trim()
+}
+
+function gitBaseline(projectRoot: string) {
+  const base = {
+    baselineId: git(projectRoot, ['rev-parse', 'HEAD']),
+    baselineTreeHash: git(projectRoot, ['rev-parse', 'HEAD^{tree}']),
+    initialTargetFingerprint: digestJson({ projectRoot: 'redacted-test-root' }),
+  }
+  return { ...base, baselineDigest: digestJson(base) }
+}
+
 function runtimeRequest(scope: RuntimeScopeBindingV1): RuntimeCreateOrResumeRequestV1 {
   return {
     requestId: 'runtime-create',
@@ -268,6 +297,127 @@ describe('M2B fake agent runtime integration', () => {
     expect(store.tableCounts()).toMatchObject({ attempts: 1, agent_dispatch_outbox: 1, runtime_session_bindings: 1 })
     store.close()
     recovered.close()
+  })
+
+  it('bootstraps schedule to real attempt worktree, private prompt ref, and scripted runtime READY without leaking payload bytes or paths', async () => {
+    const dbPath = await tempDb()
+    const projectRoot = await gitRepo()
+    const managedRoot = await mkdtemp(join(tmpdir(), 'xiaogui-hub-managed-worktrees-'))
+    roots.push(managedRoot)
+    const workspaceDbRoot = await mkdtemp(join(tmpdir(), 'xiaogui-hub-workspace-db-'))
+    const payloadDbRoot = await mkdtemp(join(tmpdir(), 'xiaogui-hub-payload-db-'))
+    roots.push(workspaceDbRoot, payloadDbRoot)
+    const workspaceRegistry = new SqliteAttemptWorkspaceRegistryV1({ dbPath: join(workspaceDbRoot, 'workspace.sqlite') })
+    const workspaceService = new GitAttemptWorkspaceServiceV1(workspaceRegistry)
+    const promptVault = new PrivateRuntimePayloadVaultV1({ dbPath: join(payloadDbRoot, 'payload.sqlite') })
+    const app = createCollaborationHubApplicationV1({
+      lookup: lookup('CODING'),
+      storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
+      agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [approvedCapability], createRuntimeSessionId: 'runtime-real-worktree' })),
+      baselineProvider: { capture: async () => gitBaseline(projectRoot) },
+      workspaceBridge: {
+        prepare: async ({ attempt, composition, baseline }) =>
+          (
+            await workspaceService.prepare({
+              attemptId: attempt.attempt_id,
+              compositionAttemptId: composition.compositionAttemptId,
+              requestDigest: composition.requestDigest,
+              baselineBindingDigest: composition.baselineBindingDigest,
+              compositionDigest: composition.compositionDigest,
+              targetProjectRoot: projectRoot,
+              managedRoot,
+              baseRevision: baseline.baseline_id,
+              baselineTreeHash: baseline.baseline_tree_hash,
+              manifest: {
+                attemptId: attempt.attempt_id,
+                version: 1,
+                grants: [
+                  { operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') },
+                  { operation: 'CREATE', relativePath: 'src/created.txt' },
+                ],
+              },
+              ownerId: 'codex-project-lead',
+            })
+          ).receipt,
+        runtimeWorkspace: (attemptId) => workspaceService.runtimeBinding(attemptId),
+      },
+      runtimePromptVault: promptVault,
+      now: () => '2026-08-17T00:00:00.000Z',
+      idFactory: (() => {
+        let id = 0
+        return (prefix: string) => `${prefix}_${++id}`
+      })(),
+    })
+
+    const start = await app.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'req-real-start',
+      intent: { type: 'flow.start.with_draft', draft: draft() },
+    })
+    if (!start.ok || !start.value.flowId || !start.value.revisionId) throw new Error('start failed')
+    const beforeApprove = await app.observe(ADDRESS)
+    if (!beforeApprove.ok || !beforeApprove.value.activeRevision) throw new Error('missing draft')
+    await app.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'req-real-approve',
+      expectedSessionVersion: beforeApprove.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: start.value.flowId,
+        baseRevisionId: start.value.revisionId,
+        draft: beforeApprove.value.activeRevision.draft,
+      },
+    })
+    const beforeSchedule = await app.observeM2B(ADDRESS)
+    const scheduled = await app.executeSystem({
+      contractVersion: 'm2b.v1',
+      address: ADDRESS as HubAddressV1,
+      trustedActor: { kind: 'main-process-system' },
+      requestId: 'sys-real-schedule',
+      expectedSessionVersion: beforeSchedule.ok ? beforeSchedule.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: start.value.flowId as FlowId },
+    })
+    if (!scheduled.ok || !scheduled.value.attemptId || !scheduled.value.taskRunId) throw new Error('schedule failed')
+    promptVault.putPrompt({ attemptId: scheduled.value.attemptId, payloadBytes: '{"task":"edit existing and create file"}' })
+    const beforePrepare = await app.observeM2B(ADDRESS)
+    await expect(
+      app.prepareNextWorkspace(ADDRESS as HubAddressV1, {
+        requestId: 'sys-real-workspace-prepare',
+        attemptId: scheduled.value.attemptId,
+        expectedSessionVersion: beforePrepare.ok ? beforePrepare.value.sessionVersion : 0,
+      }),
+    ).resolves.toMatchObject({ ok: true })
+    const beforeReport = await app.observeM2B(ADDRESS)
+    await expect(
+      app.executeSystem({
+        contractVersion: 'm2b.v1',
+        address: ADDRESS as HubAddressV1,
+        trustedActor: { kind: 'main-process-system' },
+        requestId: 'sys-real-agent-report',
+        expectedSessionVersion: beforeReport.ok ? beforeReport.value.sessionVersion : 0,
+        intent: { type: 'system.agent.report.record', flowId: start.value.flowId as FlowId, taskRunId: scheduled.value.taskRunId, attemptId: scheduled.value.attemptId },
+      }),
+    ).resolves.toMatchObject({ ok: true })
+
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    const outbox = store.agentDispatchOutbox(scheduled.value.attemptId)
+    if (!outbox?.runtime_request_json) throw new Error('missing runtime request')
+    const runtimeRequestText = outbox.runtime_request_json
+    expect(runtimeRequestText).not.toContain('edit existing and create file')
+    expect(runtimeRequestText).not.toContain(projectRoot)
+    expect(runtimeRequestText).not.toContain(managedRoot)
+    const runtimeRequest = JSON.parse(runtimeRequestText) as RuntimeCreateOrResumeRequestV1
+    expect(runtimeRequest.workspace).toEqual(workspaceService.runtimeBinding(scheduled.value.attemptId))
+    expect(runtimeRequest.promptEnvelopeRef).toEqual(promptVault.promptRefForAttempt(scheduled.value.attemptId))
+    expect(store.tableCounts()).toMatchObject({ workspace_receipts: 1, agent_dispatch_outbox: 1, runtime_session_bindings: 1 })
+    store.close()
+    promptVault.close()
+    workspaceRegistry.close()
+    app.close()
   })
 
   it('audits immediate SUCCEEDED candidate facts while leaving the M2B1 domain in a safe state', async () => {
