@@ -30,6 +30,10 @@ import type {
   WorkDocxPrepareResultV1,
   WorkDocxPublishedResultV1,
 } from './xiaogui-work-docx'
+import type {
+  XiaoguiKimiNoParamsV1,
+  XiaoguiKimiRuntimeStatusSnapshotV1,
+} from './xiaogui-kimi-runtime'
 
 // ── Workspace ──
 export interface WorkspaceOpenRequest { path?: string; awaitWorker?: boolean }
@@ -349,6 +353,14 @@ export interface IpcMethodMap {
   'xiaogui.hub.readEvents': {
     request: HubReadEventsIpcRequestV1
     response: HubOutcomeV1<HubEventEnvelopeV1[]>
+  }
+  'xiaogui.kimi.status': {
+    request: XiaoguiKimiNoParamsV1
+    response: XiaoguiKimiRuntimeStatusSnapshotV1
+  }
+  'xiaogui.kimi.login.start': {
+    request: XiaoguiKimiNoParamsV1
+    response: XiaoguiKimiRuntimeStatusSnapshotV1
   }
   'xiaogui.work.docx.discover': {
     request: WorkDocxDiscoverRequestV1

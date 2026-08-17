@@ -25,6 +25,12 @@ const mocks = vi.hoisted(() => ({
     close: ReturnType<typeof vi.fn>
     stageAttemptInput: ReturnType<typeof vi.fn>
   }>,
+  loginCoordinators: [] as Array<{
+    options: { effectiveEnabled: boolean; userDataDir: string }
+    inspect: ReturnType<typeof vi.fn>
+    startLogin: ReturnType<typeof vi.fn>
+    close: ReturnType<typeof vi.fn>
+  }>,
   createRuntimeComposition: vi.fn(),
 }))
 
@@ -64,6 +70,25 @@ vi.mock('./runtime-composition', () => ({
   createXiaoguiRuntimeCompositionV1: mocks.createRuntimeComposition,
 }))
 
+vi.mock('../agent-runtime/kimi-login', () => ({
+  KimiLoginCoordinatorV1: class {
+    readonly inspect: ReturnType<typeof vi.fn>
+    readonly startLogin: ReturnType<typeof vi.fn>
+    readonly close = vi.fn()
+
+    constructor(readonly options: { effectiveEnabled: boolean; userDataDir: string }) {
+      const result = () => ({
+        status: options.effectiveEnabled ? 'LOGIN_REQUIRED' : 'DISABLED',
+        reasonCode: options.effectiveEnabled ? 'KIMI_CREDENTIAL_MISSING' : 'PRODUCTION_DISABLED',
+        approvedVersion: '0.34.0',
+      })
+      this.inspect = vi.fn(async () => result())
+      this.startLogin = vi.fn(async () => result())
+      mocks.loginCoordinators.push(this)
+    }
+  },
+}))
+
 const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
   sessionKey: `xgs1_${'2'.repeat(64)}`,
@@ -75,6 +100,7 @@ afterEach(async () => {
   await closeDefaultCollaborationHubRuntimeComposition()
   mocks.handlers.clear()
   mocks.runtimeCompositions.splice(0)
+  mocks.loginCoordinators.splice(0)
   mocks.kimiProductionEnabled = false
   vi.clearAllMocks()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -126,6 +152,11 @@ describe('M2A collaboration hub IPC adapter', () => {
     expect(mocks.getElectronPath).toHaveBeenCalledOnce()
     expect(mocks.getElectronPath).toHaveBeenCalledWith('userData')
     expect(mocks.createRuntimeComposition).toHaveBeenCalledOnce()
+    expect(mocks.loginCoordinators).toHaveLength(1)
+    expect(mocks.loginCoordinators[0]!.options).toEqual({
+      effectiveEnabled: false,
+      userDataDir: 'D:/fake-xiaogui-user-data',
+    })
     expect(mocks.createRuntimeComposition).toHaveBeenCalledWith({
       userDataDir: 'D:/fake-xiaogui-user-data',
       productionEnabled: false,
@@ -141,6 +172,7 @@ describe('M2A collaboration hub IPC adapter', () => {
     await closeDefaultCollaborationHubRuntimeComposition()
     await closeDefaultCollaborationHubRuntimeComposition()
     expect(firstComposition.close).toHaveBeenCalledOnce()
+    expect(mocks.loginCoordinators[0]!.close).toHaveBeenCalledOnce()
 
     expect(getDefaultCollaborationHubApplication()).not.toBe(firstApplication)
     expect(mocks.createRuntimeComposition).toHaveBeenCalledTimes(2)
@@ -149,6 +181,36 @@ describe('M2A collaboration hub IPC adapter', () => {
       productionEnabled: true,
       lookup: mocks.scopeLookup,
     })
+    expect(mocks.loginCoordinators[1]!.options).toEqual({
+      effectiveEnabled: true,
+      userDataDir: 'D:/fake-xiaogui-user-data',
+    })
+  })
+
+  it('exposes strict empty-object Kimi IPC bound to the current effective enablement snapshot', async () => {
+    registerCollaborationHubHandlers()
+    const status = mocks.handlers.get('ipc:xiaogui.kimi.status')!
+    const startLogin = mocks.handlers.get('ipc:xiaogui.kimi.login.start')!
+    const coordinator = mocks.loginCoordinators[0]!
+
+    mocks.kimiProductionEnabled = true
+    await expect(status({})).resolves.toMatchObject({
+      status: 'DISABLED',
+    })
+    await expect(startLogin({})).resolves.toMatchObject({
+      status: 'DISABLED',
+    })
+    expect(coordinator.inspect).toHaveBeenCalledWith()
+    expect(coordinator.startLogin).toHaveBeenCalledWith()
+
+    await expect(status({ command: 'evil', path: 'D:/private' })).rejects.toThrow(
+      'XIAOGUI_KIMI_IPC_PARAMETERS_NOT_ALLOWED',
+    )
+    await expect(startLogin(undefined)).rejects.toThrow(
+      'XIAOGUI_KIMI_IPC_PARAMETERS_NOT_ALLOWED',
+    )
+    expect(coordinator.inspect).toHaveBeenCalledOnce()
+    expect(coordinator.startLogin).toHaveBeenCalledOnce()
   })
 
   it('matches Direct outputs for the same observe/perform/readEvents fixture', async () => {

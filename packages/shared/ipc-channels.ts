@@ -131,6 +131,8 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.hub.perform',
   'ipc:xiaogui.hub.read',
   'ipc:xiaogui.hub.readEvents',
+  'ipc:xiaogui.kimi.login.start',
+  'ipc:xiaogui.kimi.status',
   'ipc:xiaogui.mode.get',
   'ipc:xiaogui.mode.switch',
   'ipc:xiaogui.phase.get',

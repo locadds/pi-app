@@ -128,7 +128,19 @@
     "xiaoguiKimiProductionEnabled": "Enable Kimi task execution",
     "xiaoguiKimiProductionEnabledDesc": "Off by default. Enabling only permits Kimi execution assembly; it does not sign in, start tasks, or grant file access. Every task still requires confirmation of files that may be modified or created.",
     "xiaoguiKimiEnableConfirmTitle": "Enable Kimi task execution?",
-    "xiaoguiKimiEnableConfirmMessage": "Save and restart Xiaogui for this setting to take effect. Enabling only permits execution assembly; it will not sign in, start tasks, or grant file access. Every task still requires file-scope confirmation."
+    "xiaoguiKimiEnableConfirmMessage": "Save and restart Xiaogui for this setting to take effect. Enabling only permits execution assembly; it will not sign in, start tasks, or grant file access. Every task still requires file-scope confirmation.",
+    "xiaoguiKimiRuntimeStatus": "Kimi status",
+    "xiaoguiKimiStatusDisabled": "Currently disabled. Save the enabled setting and restart Xiaogui to apply it.",
+    "xiaoguiKimiStatusCliNotFound": "Kimi CLI was not found.",
+    "xiaoguiKimiStatusVersionUnapproved": "The Kimi CLI version does not meet the requirement.",
+    "xiaoguiKimiStatusLoginRequired": "Sign-in is required.",
+    "xiaoguiKimiStatusCredentialPresent": "Local credentials found (verified when a task runs).",
+    "xiaoguiKimiStatusLoginInProgress": "Sign-in is in progress. Complete it in the opened terminal.",
+    "xiaoguiKimiStatusUnavailable": "Status is temporarily unavailable.",
+    "xiaoguiKimiStatusRefresh": "Refresh status",
+    "xiaoguiKimiLogin": "Sign in",
+    "xiaoguiKimiRelogin": "Sign in again",
+    "xiaoguiKimiLoginInProgress": "Signing in"
   },
   "appearance": {
     "timeline": "Timeline",
