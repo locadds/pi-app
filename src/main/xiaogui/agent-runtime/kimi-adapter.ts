@@ -6,6 +6,8 @@ import { join } from 'node:path'
 
 import {
   isRuntimeContractTestSelectionAllowed,
+  isRuntimeSelectionAllowed,
+  runtimeSelectionKey,
   validateRuntimeContractTestCreateRequestShapeV1,
   validateRuntimeProductionCreateRequestShapeV1,
 } from '@shared/xiaogui-agent-runtime'
@@ -13,6 +15,7 @@ import type {
   AgentRuntimeAdapterV1,
   AgentRuntimeContractTestAdapterV1,
   AdapterIdV1,
+  RuntimeAdapterSelectionV1,
   RuntimeCapabilityV1,
   RuntimeContractTestCreateOrResumeRequestV1,
   RuntimeCreateOrResumeOutcomeV1,
@@ -73,6 +76,9 @@ export interface KimiAcpRuntimeAdapterOptionsV1 {
   workspaceResolver: KimiAcpWorkspaceResolverV1
   probe?: KimiAcpProbeV1
   transportFactory?: AcpTransportFactoryV1
+  productionGate?:
+    | { enabled: false }
+    | { enabled: true; selection: RuntimeAdapterSelectionV1 }
 }
 
 interface RuntimeSessionState {
@@ -148,7 +154,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   }
 
   async health(adapterId: AdapterIdV1 | string): Promise<RuntimeCapabilityV1> {
-    if (adapterId !== ADAPTER_ID) return unavailable('RUNTIME_ADAPTER_NOT_FOUND')
+    if (adapterId !== ADAPTER_ID) return this.unavailableCapability('RUNTIME_ADAPTER_NOT_FOUND')
     return this.capability()
   }
 
@@ -157,7 +163,18 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   async createOrResume(request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1> {
     if (!isContractTestCreateRequestShape(request)) {
       const productionShape = validateRuntimeProductionCreateRequestShapeV1(request)
-      return failed('runtime-unbound', productionShape.ok ? 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST' : productionShape.reasonCode)
+      if (!productionShape.ok) return failed('runtime-unbound', productionShape.reasonCode)
+      const productionGate = this.options.productionGate
+      if (!productionGate?.enabled) return failed('runtime-unbound', 'KIMI_PRODUCTION_DISABLED')
+      const probe = await this.probe.findExecutable()
+      if (!probe.available) return failed('runtime-unbound', probe.reasonCode)
+      if (!isApprovedKimiVersion(probe.version)) return failed('runtime-unbound', 'KIMI_VERSION_UNAPPROVED')
+      const selection = isRuntimeSelectionAllowed(request.selection, request.productionPolicy)
+      if (!selection.ok) return failed('runtime-unbound', selection.reasonCode)
+      if (!productionSelectionMatchesCandidate(request.selection, productionGate.selection, kimiAcpCapabilityDigestForVersionV1(probe.version))) {
+        return failed('runtime-unbound', 'KIMI_PRODUCTION_SELECTION_MISMATCH')
+      }
+      return this.createVerifiedSession(request, probe)
     }
     const shape = validateRuntimeContractTestCreateRequestShapeV1(request)
     if (!shape.ok) return failed('runtime-unbound', shape.reasonCode)
@@ -168,6 +185,13 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     if (!selection.ok) return failed('runtime-unbound', selection.reasonCode)
     if (!selectionMatchesCandidate(request, kimiAcpCapabilityDigestForVersionV1(probe.version))) return failed('runtime-unbound', 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST')
 
+    return this.createVerifiedSession(request, probe)
+  }
+
+  private async createVerifiedSession(
+    request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1,
+    probe: { available: true; command: string; version?: string },
+  ): Promise<RuntimeCreateOrResumeOutcomeV1> {
     const idemKey = createIdempotencyKey(request)
     const payloadDigest = digestJson(request)
     const existing = this.idempotency.get(idemKey)
@@ -399,15 +423,21 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   }
 
   private async capability(): Promise<RuntimeCapabilityV1> {
+    const productionGate = this.options.productionGate
+    const approvedProductionDigest = kimiAcpCapabilityDigestForVersionV1(KIMI_ACP_APPROVED_VERSION_V1)
+    if (productionGate?.enabled && !isExactKimiProductionSelection(productionGate.selection, approvedProductionDigest)) {
+      return unavailable('KIMI_PRODUCTION_SELECTION_INVALID', 'REJECTED')
+    }
+    const approvalStatus = productionGate?.enabled ? 'APPROVED_FOR_PRODUCTION' : 'APPROVED_FOR_TEST'
     const probe = await this.probe.findExecutable()
-    if (!probe.available) return unavailable(probe.reasonCode)
-    if (!isApprovedKimiVersion(probe.version)) return unavailable('KIMI_VERSION_UNAPPROVED')
+    if (!probe.available) return unavailable(probe.reasonCode, approvalStatus)
+    if (!isApprovedKimiVersion(probe.version)) return unavailable('KIMI_VERSION_UNAPPROVED', approvalStatus)
     return {
       adapterId: ADAPTER_ID,
       runtimeKind: 'KIMI',
       protocol: 'ACP',
       capabilityDigest: kimiAcpCapabilityDigestForVersionV1(probe.version),
-      approvalStatus: 'APPROVED_FOR_TEST',
+      approvalStatus,
       health: 'AVAILABLE',
       canCreateSession: true,
       canResumeSession: true,
@@ -418,6 +448,16 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       diagnosticOnly: false,
       reasonCode: probe.version ? `KIMI_${probe.version}` : undefined,
     }
+  }
+
+  private unavailableCapability(reasonCode: string): RuntimeCapabilityV1 {
+    const productionGate = this.options.productionGate
+    if (!productionGate?.enabled) return unavailable(reasonCode)
+    const expectedDigest = kimiAcpCapabilityDigestForVersionV1(KIMI_ACP_APPROVED_VERSION_V1)
+    const approvalStatus = isExactKimiProductionSelection(productionGate.selection, expectedDigest)
+      ? 'APPROVED_FOR_PRODUCTION'
+      : 'REJECTED'
+    return unavailable(reasonCode, approvalStatus)
   }
 
   private handlePermissionRequest(state: RuntimeSessionState, params: AcpRequestPermissionParamsV1): Promise<AcpRequestPermissionResultV1> {
@@ -513,6 +553,32 @@ function selectionMatchesCandidate(request: RuntimeContractTestCreateOrResumeReq
     candidate.stream === 'POLL' &&
     candidate.interrupt === 'BEST_EFFORT' &&
     candidate.inspect === 'RECONCILE'
+  )
+}
+
+function productionSelectionMatchesCandidate(
+  requestSelection: RuntimeAdapterSelectionV1,
+  approvedSelection: RuntimeAdapterSelectionV1,
+  expectedCapabilityDigest: string,
+): boolean {
+  return (
+    isExactKimiProductionSelection(requestSelection, expectedCapabilityDigest) &&
+    isExactKimiProductionSelection(approvedSelection, expectedCapabilityDigest) &&
+    runtimeSelectionKey(requestSelection) === runtimeSelectionKey(approvedSelection)
+  )
+}
+
+function isExactKimiProductionSelection(selection: RuntimeAdapterSelectionV1, expectedCapabilityDigest: string): boolean {
+  return (
+    selection.adapterId === ADAPTER_ID &&
+    selection.runtimeKind === 'KIMI' &&
+    selection.protocol === 'ACP' &&
+    selection.capabilityDigest === expectedCapabilityDigest &&
+    selection.approvalStatus === 'APPROVED_FOR_PRODUCTION' &&
+    selection.diagnosticOnly === false &&
+    selection.stream === 'POLL' &&
+    selection.interrupt === 'BEST_EFFORT' &&
+    selection.inspect === 'RECONCILE'
   )
 }
 
@@ -669,13 +735,16 @@ function unknown(runtimeSessionId: string, reasonCode: string): RuntimeOutcomeV1
   return { state: 'OUTCOME_UNKNOWN', runtimeSessionId, inspectHandleDigest: digestJson({ reasonCode }), reasonCode }
 }
 
-function unavailable(reasonCode: string): RuntimeCapabilityV1 {
+function unavailable(
+  reasonCode: string,
+  approvalStatus: RuntimeCapabilityV1['approvalStatus'] = 'APPROVED_FOR_TEST',
+): RuntimeCapabilityV1 {
   return {
     adapterId: ADAPTER_ID,
     runtimeKind: 'KIMI',
     protocol: 'ACP',
     capabilityDigest: kimiAcpCapabilityDigestForVersionV1(undefined),
-    approvalStatus: 'APPROVED_FOR_TEST',
+    approvalStatus,
     health: 'UNAVAILABLE',
     canCreateSession: false,
     canResumeSession: false,

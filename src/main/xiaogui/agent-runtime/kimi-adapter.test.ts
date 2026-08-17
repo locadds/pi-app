@@ -334,12 +334,18 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     }
   })
 
-  it('discovers only APPROVED_FOR_TEST and cannot be selected through production Host policy', async () => {
+  it('defaults to APPROVED_FOR_TEST and rejects production before resolving a workspace', async () => {
     const root = workspace({ 'a.txt': 'before' })
     const factory = new FakeTransportFactory()
+    let resolveCalls = 0
     const adapter = createKimiAcpRuntimeAdapterV1({
       payloadResolver: payloadResolver(),
-      workspaceResolver: resolver(root),
+      workspaceResolver: {
+        async resolve(input) {
+          resolveCalls += 1
+          return resolver(root).resolve(input)
+        },
+      },
       probe: new FakeProbe(),
       transportFactory: factory,
     })
@@ -348,7 +354,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     const host = createAgentRuntimeHostV1(adapter)
     await expect(host.createOrResume(productionRequest(root))).resolves.toMatchObject({
       state: 'FAILED',
-      reasonCode: 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST',
+      reasonCode: 'KIMI_PRODUCTION_DISABLED',
     })
     await expect(
       Reflect.apply(host.createOrResume, host, [request(root)]),
@@ -356,6 +362,58 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       state: 'FAILED',
       reasonCode: 'RUNTIME_CONTRACT_TEST_REQUEST_NOT_ALLOWED',
     })
+    expect(resolveCalls).toBe(0)
+    expect(factory.transports).toHaveLength(0)
+  })
+
+  it('runs an exact production selection only when the trusted production gate is enabled', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const factory = new FakeTransportFactory()
+    const adapter = createKimiAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver(),
+      workspaceResolver: resolver(root),
+      probe: new FakeProbe(),
+      transportFactory: factory,
+      productionGate: { enabled: true, selection: productionSelection },
+    })
+
+    await expect(adapter.discover()).resolves.toMatchObject([
+      { approvalStatus: 'APPROVED_FOR_PRODUCTION', health: 'AVAILABLE', capabilityDigest: productionSelection.capabilityDigest },
+    ])
+    await expect(createAgentRuntimeHostV1(adapter).createOrResume(productionRequest(root))).resolves.toMatchObject({
+      state: 'READY',
+    })
+    expect(factory.transports).toHaveLength(1)
+  })
+
+  it('rejects production selection drift before workspace resolution or transport creation', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const factory = new FakeTransportFactory()
+    let resolveCalls = 0
+    const adapter = createKimiAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver(),
+      workspaceResolver: {
+        async resolve(input) {
+          resolveCalls += 1
+          return resolver(root).resolve(input)
+        },
+      },
+      probe: new FakeProbe(),
+      transportFactory: factory,
+      productionGate: { enabled: true, selection: productionSelection },
+    })
+    const driftedSelection = { ...productionSelection, capabilityDigest: 'sha256:drift' }
+    const driftedRequest: RuntimeCreateOrResumeRequestV1 = {
+      ...productionRequest(root),
+      selection: driftedSelection,
+      productionPolicy: { rejectDiagnosticOnly: true, allowedSelections: [driftedSelection] },
+    }
+
+    await expect(adapter.createOrResume(driftedRequest)).resolves.toMatchObject({
+      state: 'FAILED',
+      reasonCode: 'KIMI_PRODUCTION_SELECTION_MISMATCH',
+    })
+    expect(resolveCalls).toBe(0)
     expect(factory.transports).toHaveLength(0)
   })
 
