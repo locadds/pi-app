@@ -26,6 +26,18 @@ export interface AttemptFileGrantV1 {
   readonly baselineDigest?: string
 }
 
+export interface UserApprovedFileSelectionV1 {
+  readonly operation: 'MODIFY' | 'CREATE'
+  readonly relativePath: string
+}
+
+export interface AttemptFileScopeResolverV1 {
+  resolveApprovedFiles(
+    projectId: string,
+    selections: readonly UserApprovedFileSelectionV1[],
+  ): Promise<readonly AttemptFileGrantV1[]>
+}
+
 export interface AttemptFileManifestV1 {
   readonly attemptId: string
   readonly version: number
@@ -460,7 +472,7 @@ export interface ProjectWorkspaceResolverV1 {
   resolveProjectRoot(projectId: string): string | Promise<string>
 }
 
-export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
+export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, AttemptFileScopeResolverV1 {
   private readonly managedRoot: string
 
   constructor(
@@ -469,6 +481,15 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
     options: { managedRoot: string },
   ) {
     this.managedRoot = ensureManagedRoot(options.managedRoot)
+  }
+
+  async resolveApprovedFiles(
+    projectId: string,
+    selections: readonly UserApprovedFileSelectionV1[],
+  ): Promise<readonly AttemptFileGrantV1[]> {
+    const authoritativeRoot = safeRealpath(resolve(await this.resolver.resolveProjectRoot(cleanId(projectId))), 'REPO_NOT_GIT')
+    assertGitRepository(authoritativeRoot)
+    return resolveApprovedFileSelections(authoritativeRoot, selections)
   }
 
   async prepare(request: AttemptWorkspacePrepareRequestV1): Promise<AttemptWorkspacePreparedV1> {
@@ -907,6 +928,33 @@ function assertOwnedEmptyCreateTarget(target: CreateBatchTargetV1): void {
   const identity = readFileIdentity(target.realPath)
   if (target.identityDigest && identity.identityDigest !== target.identityDigest) throw new AttemptWorkspaceError('PATH_CONFLICT')
   if (readFileSync(target.realPath).length !== 0) throw new AttemptWorkspaceError('TARGET_NOT_EMPTY')
+}
+
+function resolveApprovedFileSelections(
+  rootPath: string,
+  selections: readonly UserApprovedFileSelectionV1[],
+): readonly AttemptFileGrantV1[] {
+  if (!Array.isArray(selections)) throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+  const seen = new Set<string>()
+  const grants: AttemptFileGrantV1[] = selections.map((selection) => {
+    if (typeof selection !== 'object' || selection === null || Array.isArray(selection)) {
+      throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+    }
+    const operation = (selection as { operation?: unknown }).operation
+    if (operation === 'DELETE') throw new AttemptWorkspaceError('DELETE_FORBIDDEN')
+    if (operation !== 'MODIFY' && operation !== 'CREATE') throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+    const relativePath = normalizeRelativePath((selection as { relativePath?: unknown }).relativePath as string)
+    const manifestKey = pathKey(relativePath)
+    if (seen.has(manifestKey)) throw new AttemptWorkspaceError('PATH_CONFLICT')
+    seen.add(manifestKey)
+    const target = resolveManifestPath(rootPath, relativePath)
+    if (operation === 'MODIFY') {
+      return { operation, relativePath, baselineDigest: readFileIdentity(target.realPath).contentDigest }
+    }
+    assertCreateTarget(target.realPath)
+    return { operation, relativePath }
+  })
+  return sortManifestGrants(grants)
 }
 
 function normalizeManifestGrants(

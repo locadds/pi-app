@@ -15,6 +15,7 @@ import {
   type AttemptFileGrantV1,
   type AttemptFileManifestV1,
   type AttemptWorkspacePrepareRequestV1,
+  type UserApprovedFileSelectionV1,
 } from './attempt-workspace'
 
 const roots: string[] = []
@@ -97,6 +98,70 @@ function prepareRequest(input: {
 }
 
 describe('GitAttemptWorkspaceServiceV1', () => {
+  it('resolves approved MODIFY and CREATE files while deriving the MODIFY digest from the authoritative project root', async () => {
+    const projectRoot = await gitRepo()
+    projectRoots.set(PROJECT_ID, projectRoot)
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    try {
+      await expect(
+        workspace.resolveApprovedFiles(PROJECT_ID, [
+          { operation: 'CREATE', relativePath: 'src/new-file.txt' },
+          { operation: 'MODIFY', relativePath: 'src/existing.txt' },
+        ]),
+      ).resolves.toEqual([
+        { operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') },
+        { operation: 'CREATE', relativePath: 'src/new-file.txt' },
+      ])
+      expect(existsSync(join(projectRoot, 'src', 'new-file.txt'))).toBe(false)
+    } finally {
+      registry.close()
+    }
+  })
+
+  it('fails the whole file selection on an invalid path or DELETE without materializing CREATE targets', async () => {
+    const projectRoot = await gitRepo()
+    projectRoots.set(PROJECT_ID, projectRoot)
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const createTarget = join(projectRoot, 'src', 'must-not-exist.txt')
+    try {
+      await expect(
+        workspace.resolveApprovedFiles(PROJECT_ID, [
+          { operation: 'CREATE', relativePath: 'src/must-not-exist.txt' },
+          { operation: 'MODIFY', relativePath: '../escape.txt' },
+        ]),
+      ).rejects.toMatchObject({ reasonCode: 'PATH_FORBIDDEN' })
+      await expect(
+        workspace.resolveApprovedFiles(PROJECT_ID, [
+          { operation: 'CREATE', relativePath: 'src/must-not-exist.txt' },
+          { operation: 'DELETE', relativePath: 'src/existing.txt' },
+        ] as unknown as readonly UserApprovedFileSelectionV1[]),
+      ).rejects.toMatchObject({ reasonCode: 'DELETE_FORBIDDEN' })
+      expect(existsSync(createTarget)).toBe(false)
+    } finally {
+      registry.close()
+    }
+  })
+
+  it('rejects duplicate selections and hard-link aliases with the existing closed failure codes', async () => {
+    const projectRoot = await gitRepo()
+    projectRoots.set(PROJECT_ID, projectRoot)
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    try {
+      await expect(
+        workspace.resolveApprovedFiles(PROJECT_ID, [
+          { operation: 'MODIFY', relativePath: 'src/existing.txt' },
+          { operation: 'CREATE', relativePath: 'src/existing.txt' },
+        ]),
+      ).rejects.toMatchObject({ reasonCode: 'PATH_CONFLICT' })
+      await link(join(projectRoot, 'src', 'existing.txt'), join(projectRoot, 'src', 'hardlink.txt'))
+      await expect(
+        workspace.resolveApprovedFiles(PROJECT_ID, [{ operation: 'MODIFY', relativePath: 'src/hardlink.txt' }]),
+      ).rejects.toMatchObject({ reasonCode: 'TARGET_HARDLINK' })
+    } finally {
+      registry.close()
+    }
+  })
+
   it('allows only one manifest successor for a base version across SQLite connections', async () => {
     const dbPath = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
     const first = new SqliteAttemptWorkspaceRegistryV1({ dbPath })

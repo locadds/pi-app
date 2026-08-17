@@ -181,7 +181,8 @@ export interface AttemptProjectionM2BV1 {
 }
 
 export type CollaborationHubActionM2BV1 =
-  CollaborationHubActionV1
+  | CollaborationHubActionV1
+  | 'execution.next.confirm'
 
 export interface SessionCollaborationProjectionV1 {
   kind: 'SESSION_COLLABORATION_PROJECTION'

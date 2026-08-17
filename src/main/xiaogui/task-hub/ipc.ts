@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto'
+import { posix, win32 } from 'node:path'
+
 import { app } from 'electron'
 import { z } from 'zod'
 
@@ -9,12 +12,14 @@ import type {
   HubReadEventsIpcRequestV1,
   HubReadIpcRequestV1,
 } from '@shared/xiaogui-collaboration-hub'
+import type { XiaoguiTaskExecutionStartRequestV1 } from '@shared/xiaogui-task-execution'
 import { configStore } from '../../config-store'
 import { registerHandler } from '../../ipc/registry'
 import { KimiLoginCoordinatorV1 } from '../agent-runtime/kimi-login'
 import { sessionScopeResolverV1 } from '../scope-service'
 import type { CollaborationHubApplicationV1 } from './application'
 import { hubError } from './errors'
+import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
 import {
   createXiaoguiRuntimeCompositionV1,
   type XiaoguiRuntimeCompositionV1,
@@ -110,6 +115,23 @@ const ReadEventsSchema = z
   })
   .strict()
 
+const ExecutionFileSchema = z
+  .object({
+    operation: z.enum(['MODIFY', 'CREATE']),
+    relativePath: z.string().min(1).max(1024).refine(isSafeExecutionRelativePath),
+  })
+  .strict()
+const ExecutionStartSchema = z
+  .object({
+    address: AddressSchema,
+    flowId: z.string().min(1).max(256).refine((value) => value === value.trim()),
+    prompt: z
+      .string()
+      .refine((value) => value.trim().length > 0 && Buffer.byteLength(value, 'utf8') <= 1024 * 1024),
+    files: z.array(ExecutionFileSchema).min(1).max(256),
+  })
+  .strict()
+
 interface DefaultRuntimeLifecycleV1 {
   readonly composition: XiaoguiRuntimeCompositionV1
   readonly kimiLogin: KimiLoginCoordinatorV1
@@ -125,6 +147,10 @@ export function getDefaultKimiLoginCoordinator(): KimiLoginCoordinatorV1 {
   return getDefaultRuntimeLifecycle().kimiLogin
 }
 
+export function getDefaultTaskExecutionOrchestrator(): XiaoguiTaskExecutionOrchestratorV1 {
+  return getDefaultRuntimeLifecycle().composition.taskExecution
+}
+
 export async function closeDefaultCollaborationHubRuntimeComposition(): Promise<void> {
   const lifecycle = defaultRuntimeLifecycle
   defaultRuntimeLifecycle = null
@@ -135,8 +161,10 @@ export async function closeDefaultCollaborationHubRuntimeComposition(): Promise<
 export function registerCollaborationHubHandlers(
   application = getDefaultCollaborationHubApplication(),
   kimiLogin?: KimiLoginCoordinatorV1,
+  taskExecution?: XiaoguiTaskExecutionOrchestratorV1,
 ): void {
   const resolveKimiLogin = () => kimiLogin ?? getDefaultKimiLoginCoordinator()
+  const resolveTaskExecution = () => taskExecution ?? getDefaultTaskExecutionOrchestrator()
 
   registerHandler('ipc:xiaogui.hub.observe', async (payload) => {
     const parsed = parseIpc(ObserveSchema, payload)
@@ -147,6 +175,11 @@ export function registerCollaborationHubHandlers(
     return typed.contractVersion === 'm2b.v1'
       ? application.observeM2B(typed.address)
       : application.observe(typed.address)
+  })
+  registerHandler('ipc:xiaogui.hub.execution.start', async (payload) => {
+    const parsed = ExecutionStartSchema.safeParse(payload)
+    if (!parsed.success) return invalidExecutionInput()
+    return resolveTaskExecution().start(parsed.data as unknown as XiaoguiTaskExecutionStartRequestV1)
   })
   registerHandler('ipc:xiaogui.hub.perform', async (payload) => {
     const parsed = parseIpc(PerformSchema, payload)
@@ -215,6 +248,33 @@ function assertEmptyKimiIpcPayload(payload: unknown): asserts payload is Record<
     Object.keys(payload).length !== 0
   ) {
     throw new Error('XIAOGUI_KIMI_IPC_PARAMETERS_NOT_ALLOWED')
+  }
+}
+
+function isSafeExecutionRelativePath(value: string): boolean {
+  if (
+    value !== value.trim() ||
+    value.includes('\0') ||
+    value.includes(':') ||
+    win32.isAbsolute(value) ||
+    posix.isAbsolute(value) ||
+    value.startsWith('\\\\') ||
+    value.startsWith('//')
+  ) return false
+  const parts = value.replace(/[\\]+/g, '/').split('/')
+  return !parts.some(
+    (part) => part.length === 0 || part === '.' || part === '..' || part.toLowerCase() === '.git',
+  )
+}
+
+function invalidExecutionInput() {
+  return {
+    ok: false as const,
+    error: {
+      code: 'EXECUTION_INPUT_INVALID' as const,
+      messageKey: 'xiaogui.hub.execution.execution_input_invalid',
+      traceId: `xhbet_${randomUUID()}`,
+    },
   }
 }
 

@@ -18,12 +18,14 @@ import type { SessionItem } from '@renderer/stores/ui-store-types'
 
 const observeMock = vi.fn()
 const performMock = vi.fn()
+const executeMock = vi.fn()
 let requestCounter = 0
 vi.mock('../lib/collaboration-hub-client', () => ({
   HUB_CONTRACT_VERSION: 'm2a.v1',
   HUB_OBSERVE_CONTRACT_VERSION: 'm2b.v1',
   observeCollaborationHub: (address: HubAddressV1) => observeMock(address),
   performHubIntent: (address: HubAddressV1, request: unknown) => performMock(address, request),
+  startTaskExecution: (request: unknown) => executeMock(request),
   newHubRequestId: () => `test-req-${++requestCounter}`,
 }))
 
@@ -175,11 +177,21 @@ function activeProjection(address: HubAddressV1): SessionCollaborationProjection
   })
 }
 
+function executableProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
+  return {
+    ...activeProjection(address),
+    taskRuns: [],
+    attempts: [],
+    availableActions: ['flow.cancel', 'execution.next.confirm'],
+  }
+}
+
 let uiSnapshot: ReturnType<typeof useUIStore.getState>
 
 beforeEach(() => {
   observeMock.mockReset()
   performMock.mockReset()
+  executeMock.mockReset()
   requestCounter = 0
   uiSnapshot = useUIStore.getState()
   useCollaborationHubStore.getState().setAddress(null)
@@ -357,6 +369,61 @@ describe('CollaborationHubPanel', () => {
     // 不出现任何执行/领取/交付类按钮
     expect(screen.queryByRole('button', { name: '批准计划' })).toBeNull()
     expect(performMock).not.toHaveBeenCalled()
+  })
+
+  it('执行入口先本地核对零 IPC，最终确认只提交一次窄请求', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    let resolveExecution!: (value: unknown) => void
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection(address) })
+    executeMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
+    showSession(sessionWith('s-execution', scopeCoding))
+    const user = userEvent.setup()
+    render(<CollaborationHubPanel />)
+
+    await screen.findByTestId('hub-task-execution-edit')
+    await user.type(screen.getByLabelText('本次任务说明'), '完成当前任务')
+    await user.type(screen.getByLabelText('允许修改的已有文件'), 'src/a.ts')
+    await user.type(screen.getByLabelText('允许新建的文件'), 'src/new.ts')
+    await user.click(screen.getByRole('button', { name: '核对执行范围' }))
+
+    expect(executeMock).not.toHaveBeenCalled()
+    const review = screen.getByTestId('hub-task-execution-review')
+    expect(review).toHaveTextContent('完成当前任务')
+    expect(review).toHaveTextContent('src/a.ts')
+    expect(review).toHaveTextContent('src/new.ts')
+    expect(review).toHaveTextContent('不能删除文件')
+
+    const confirm = screen.getByRole('button', { name: '确认并执行' })
+    await user.click(confirm)
+    await user.click(confirm)
+    expect(executeMock).toHaveBeenCalledTimes(1)
+    expect(executeMock.mock.calls[0]![0]).toEqual({
+      address,
+      flowId: 'xhbf_flow1',
+      prompt: '完成当前任务',
+      files: [
+        { operation: 'MODIFY', relativePath: 'src/a.ts' },
+        { operation: 'CREATE', relativePath: 'src/new.ts' },
+      ],
+    })
+
+    resolveExecution({
+      ok: true,
+      value: {
+        taskRun: {
+          taskRunId: 'xhbtr_3' as TaskRunId,
+          taskSpecId: 'xhbts_1' as TaskSpecId,
+          taskKey: 't1',
+          status: 'RUNNING',
+          attemptId: 'xhba_3' as AttemptId,
+        },
+        attempt: { attemptId: 'xhba_3' as AttemptId, taskRunId: 'xhbtr_3' as TaskRunId, status: 'RUNNING' },
+      },
+    })
+    await waitFor(() => expect(observeMock).toHaveBeenCalledTimes(2))
   })
 
   it('切换会话后旧投影不串到新会话', async () => {

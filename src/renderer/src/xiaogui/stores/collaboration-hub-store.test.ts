@@ -1,24 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { FlowId, HubAddressV1, PlanRevisionId, SessionCollaborationProjectionM2BV1 } from '@shared/xiaogui-collaboration-hub'
+import type {
+  AttemptId,
+  FlowId,
+  HubAddressV1,
+  PlanRevisionId,
+  SessionCollaborationProjectionM2BV1,
+  TaskRunId,
+  TaskSpecId,
+} from '@shared/xiaogui-collaboration-hub'
 
 const observeMock = vi.fn()
 const performMock = vi.fn()
+const executeMock = vi.fn()
 let requestCounter = 0
 vi.mock('../lib/collaboration-hub-client', () => ({
   HUB_CONTRACT_VERSION: 'm2a.v1',
   HUB_OBSERVE_CONTRACT_VERSION: 'm2b.v1',
   observeCollaborationHub: (address: HubAddressV1) => observeMock(address),
   performHubIntent: (address: HubAddressV1, request: unknown) => performMock(address, request),
+  startTaskExecution: (request: unknown) => executeMock(request),
   newHubRequestId: () => `test-req-${++requestCounter}`,
 }))
 
 import {
   emptyPlanDraftForm,
+  emptyTaskExecutionForm,
   parseDependsOnText,
+  parseTaskExecutionPaths,
+  toTaskExecutionStartRequest,
   toInitialPlanDraft,
   useCollaborationHubStore,
   validatePlanDraftForm,
+  validateTaskExecutionForm,
 } from './collaboration-hub-store'
 
 const addressA: HubAddressV1 = {
@@ -74,9 +88,24 @@ function awaitingProjection(): SessionCollaborationProjectionM2BV1 {
   })
 }
 
+function executableProjection(flowId = 'xhbf_flow1' as FlowId): SessionCollaborationProjectionM2BV1 {
+  return projectionFixture({
+    sessionMode: 'CODING',
+    authoritativeMode: 'CODING',
+    activeFlow: {
+      flowId,
+      status: 'PLAN_ACTIVE',
+      activeRevisionId: null,
+      objective: '目标X',
+    },
+    availableActions: ['flow.cancel', 'execution.next.confirm'],
+  })
+}
+
 beforeEach(() => {
   observeMock.mockReset()
   performMock.mockReset()
+  executeMock.mockReset()
   requestCounter = 0
   useCollaborationHubStore.getState().setAddress(null)
 })
@@ -148,6 +177,54 @@ describe('validatePlanDraftForm', () => {
       ],
     })
     expect(parseDependsOnText('a，b  c')).toEqual(['a', 'b', 'c'])
+  })
+})
+
+describe('task execution form', () => {
+  it('按行生成最小执行请求，不产生内部字段', () => {
+    const form = {
+      prompt: '  完成任务  ',
+      modifyPathsText: 'src/a.ts\r\nsrc/b.ts',
+      createPathsText: 'src/new.ts',
+    }
+    expect(validateTaskExecutionForm(form)).toEqual([])
+    expect(parseTaskExecutionPaths(form.modifyPathsText)).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(toTaskExecutionStartRequest(addressA, 'xhbf_flow1' as FlowId, form)).toEqual({
+      address: addressA,
+      flowId: 'xhbf_flow1',
+      prompt: '完成任务',
+      files: [
+        { operation: 'MODIFY', relativePath: 'src/a.ts' },
+        { operation: 'MODIFY', relativePath: 'src/b.ts' },
+        { operation: 'CREATE', relativePath: 'src/new.ts' },
+      ],
+    })
+  })
+
+  it('本地拦截空内容、绝对路径、路径穿越和重复范围', () => {
+    const errors = validateTaskExecutionForm({
+      prompt: '',
+      modifyPathsText: 'C:\\secret.ts\nsrc/../secret.ts\nsrc/same.ts',
+      createPathsText: 'src\\same.ts',
+    })
+    expect(errors).toContain('任务说明不能为空')
+    expect(errors.some((error) => error.includes('只允许项目内相对路径'))).toBe(true)
+    expect(errors.some((error) => error.includes('不能包含空段、. 或 ..'))).toBe(true)
+    expect(errors).toContain('文件范围重复：src\\same.ts')
+  })
+
+  it('非空路径行保留原文，首尾空白必须显式修正', () => {
+    const form = {
+      prompt: '任务',
+      modifyPathsText: ' src/a.ts \n   \nsrc/b.ts',
+      createPathsText: '',
+    }
+    expect(parseTaskExecutionPaths(form.modifyPathsText)).toEqual([' src/a.ts ', 'src/b.ts'])
+    expect(validateTaskExecutionForm(form)).toContain('修改文件路径不能带首尾空白：src/a.ts')
+    expect(toTaskExecutionStartRequest(addressA, 'xhbf_flow1' as FlowId, form).files[0]).toEqual({
+      operation: 'MODIFY',
+      relativePath: ' src/a.ts ',
+    })
   })
 })
 
@@ -375,5 +452,153 @@ describe('collaboration-hub-store', () => {
     const error = useCollaborationHubStore.getState().error
     expect(error?.code).toBe('REVISION_CONFLICT')
     expect(error?.traceId).toBe('tr-1')
+  })
+
+  it('核对执行范围不调用 IPC，最终确认提交一次并刷新投影', async () => {
+    let resolveExecution!: (value: unknown) => void
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    executeMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+
+    const executionForm = {
+      prompt: '完成当前任务',
+      modifyPathsText: 'src/a.ts',
+      createPathsText: 'src/new.ts',
+    }
+    useCollaborationHubStore.getState().setExecutionForm(executionForm)
+    expect(useCollaborationHubStore.getState().reviewTaskExecution()).toBe(true)
+    expect(executeMock).not.toHaveBeenCalled()
+
+    const first = useCollaborationHubStore.getState().startNextTaskExecution()
+    const duplicate = useCollaborationHubStore.getState().startNextTaskExecution()
+    await vi.waitFor(() => expect(executeMock).toHaveBeenCalledTimes(1))
+    expect(executeMock.mock.calls[0]![0]).toEqual({
+      address: addressA,
+      flowId: 'xhbf_flow1',
+      prompt: '完成当前任务',
+      files: [
+        { operation: 'MODIFY', relativePath: 'src/a.ts' },
+        { operation: 'CREATE', relativePath: 'src/new.ts' },
+      ],
+    })
+
+    resolveExecution({
+      ok: true,
+      value: {
+        taskRun: {
+          taskRunId: 'xhbtr_1' as TaskRunId,
+          taskSpecId: 'xhbts_1' as TaskSpecId,
+          taskKey: 't1',
+          status: 'RUNNING',
+          attemptId: 'xhba_1' as AttemptId,
+        },
+        attempt: { attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING' },
+      },
+    })
+    await Promise.all([first, duplicate])
+
+    expect(observeMock).toHaveBeenCalledTimes(2)
+    expect(useCollaborationHubStore.getState().executionForm).toEqual(emptyTaskExecutionForm())
+    expect(useCollaborationHubStore.getState().executionReviewing).toBe(false)
+  })
+
+  it('执行失败保留核对内容；结果未知仍刷新投影', async () => {
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    executeMock.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'OUTCOME_UNKNOWN', messageKey: 'xiaogui.execution.outcome_unknown', traceId: '' },
+    })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    const executionForm = { prompt: '保留我', modifyPathsText: 'src/a.ts', createPathsText: '' }
+    useCollaborationHubStore.getState().setExecutionForm(executionForm)
+    useCollaborationHubStore.getState().reviewTaskExecution()
+
+    await useCollaborationHubStore.getState().startNextTaskExecution()
+
+    expect(observeMock).toHaveBeenCalledTimes(2)
+    expect(useCollaborationHubStore.getState().executionForm).toEqual(executionForm)
+    expect(useCollaborationHubStore.getState().executionReviewing).toBe(true)
+    expect(useCollaborationHubStore.getState().executionError?.code).toBe('OUTCOME_UNKNOWN')
+  })
+
+  it('权威 flow 变化时清空旧执行表单', async () => {
+    observeMock
+      .mockResolvedValueOnce({ ok: true, value: executableProjection('xhbf_flow1' as FlowId) })
+      .mockResolvedValueOnce({ ok: true, value: executableProjection('xhbf_flow2' as FlowId) })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    useCollaborationHubStore.getState().setExecutionForm({
+      prompt: '旧任务',
+      modifyPathsText: 'src/old.ts',
+      createPathsText: '',
+    })
+    useCollaborationHubStore.getState().reviewTaskExecution()
+
+    await useCollaborationHubStore.getState().refresh()
+
+    expect(useCollaborationHubStore.getState().executionFlowId).toBe('xhbf_flow2')
+    expect(useCollaborationHubStore.getState().executionForm).toEqual(emptyTaskExecutionForm())
+    expect(useCollaborationHubStore.getState().executionReviewing).toBe(false)
+  })
+
+  it('执行等待中切换 flow 会解除提交锁并丢弃晚到响应', async () => {
+    let resolveExecution!: (value: unknown) => void
+    observeMock
+      .mockResolvedValueOnce({ ok: true, value: executableProjection('xhbf_flow1' as FlowId) })
+      .mockResolvedValueOnce({ ok: true, value: executableProjection('xhbf_flow2' as FlowId) })
+    executeMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    useCollaborationHubStore.getState().setExecutionForm({
+      prompt: '旧任务',
+      modifyPathsText: 'src/old.ts',
+      createPathsText: '',
+    })
+    useCollaborationHubStore.getState().reviewTaskExecution()
+    const pending = useCollaborationHubStore.getState().startNextTaskExecution()
+    await vi.waitFor(() => expect(useCollaborationHubStore.getState().submitting).toBe(true))
+
+    await useCollaborationHubStore.getState().refresh()
+    expect(useCollaborationHubStore.getState().submitting).toBe(false)
+    expect(useCollaborationHubStore.getState().executionFlowId).toBe('xhbf_flow2')
+
+    resolveExecution({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'old', traceId: '' },
+    })
+    await pending
+    expect(useCollaborationHubStore.getState().submitting).toBe(false)
+    expect(useCollaborationHubStore.getState().executionError).toBeNull()
+    expect(useCollaborationHubStore.getState().executionForm).toEqual(emptyTaskExecutionForm())
+  })
+
+  it('执行等待中切换 address 会解除提交锁并丢弃晚到响应', async () => {
+    let resolveExecution!: (value: unknown) => void
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    executeMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    useCollaborationHubStore.getState().setExecutionForm({
+      prompt: '旧会话任务',
+      modifyPathsText: 'src/old.ts',
+      createPathsText: '',
+    })
+    useCollaborationHubStore.getState().reviewTaskExecution()
+    const pending = useCollaborationHubStore.getState().startNextTaskExecution()
+    await vi.waitFor(() => expect(useCollaborationHubStore.getState().submitting).toBe(true))
+
+    useCollaborationHubStore.getState().setAddress(addressB)
+    expect(useCollaborationHubStore.getState().submitting).toBe(false)
+
+    resolveExecution({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'old', traceId: '' },
+    })
+    await pending
+    expect(useCollaborationHubStore.getState().address).toEqual(addressB)
+    expect(useCollaborationHubStore.getState().submitting).toBe(false)
+    expect(useCollaborationHubStore.getState().executionError).toBeNull()
   })
 })

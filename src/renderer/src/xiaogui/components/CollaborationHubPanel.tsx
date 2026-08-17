@@ -1,11 +1,11 @@
 /**
  * 协作计划面板（右栏「协作」Tab）。
  *
- * 只读呈现主进程 SESSION_COLLABORATION_PROJECTION（m2b.v1），三个可用动作
- * （flow.start.with_draft / plan.revision.submit / flow.cancel）是否可执行
+ * 呈现主进程 SESSION_COLLABORATION_PROJECTION（m2b.v1），所有可用动作
  * 完全由 projection.availableActions 决定；Renderer 不自行推导。
+ * execution.next.confirm 只开放本地两阶段确认，最终只调用一次窄执行 IPC。
  * DESIGN 模式只显示预留说明，不出现任何动作按钮。
- * 不展示路径、异常栈或原始对象；错误只显示安全码 + 中文短文案 + traceId。
+ * 不展示绝对路径、异常栈或原始对象；错误只显示安全码 + 中文短文案 + traceId。
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -21,7 +21,14 @@ import type {
 
 import { useUIStore } from '@renderer/stores/ui-store'
 
-import { DEFAULT_CANCEL_REASON, HUB_ERROR_TEXT, useCollaborationHubStore, type PlanTaskFormItem } from '../stores/collaboration-hub-store'
+import {
+  DEFAULT_CANCEL_REASON,
+  HUB_ERROR_TEXT,
+  TASK_EXECUTION_ERROR_TEXT,
+  parseTaskExecutionPaths,
+  useCollaborationHubStore,
+  type PlanTaskFormItem,
+} from '../stores/collaboration-hub-store'
 
 const FLOW_STATUS_TEXT: Record<CollaborationFlowSummaryV1['status'], string> = {
   AWAITING_PLAN_APPROVAL: '待批准',
@@ -278,6 +285,142 @@ function CancelFlowSection({ flowId }: { flowId: string }) {
   )
 }
 
+function TaskExecutionSection({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
+  const executionForm = useCollaborationHubStore((s) => s.executionForm)
+  const executionFormErrors = useCollaborationHubStore((s) => s.executionFormErrors)
+  const executionReviewing = useCollaborationHubStore((s) => s.executionReviewing)
+  const executionError = useCollaborationHubStore((s) => s.executionError)
+  const submitting = useCollaborationHubStore((s) => s.submitting)
+  const setExecutionForm = useCollaborationHubStore((s) => s.setExecutionForm)
+  const reviewTaskExecution = useCollaborationHubStore((s) => s.reviewTaskExecution)
+  const returnToTaskExecutionEdit = useCollaborationHubStore((s) => s.returnToTaskExecutionEdit)
+  const startNextTaskExecution = useCollaborationHubStore((s) => s.startNextTaskExecution)
+  const clearExecutionError = useCollaborationHubStore((s) => s.clearExecutionError)
+
+  if (!projection.availableActions.includes('execution.next.confirm')) return null
+
+  const modifyPaths = parseTaskExecutionPaths(executionForm.modifyPathsText)
+  const createPaths = parseTaskExecutionPaths(executionForm.createPathsText)
+  const inputCls =
+    'w-full resize-y rounded-md border border-border/60 bg-transparent px-2 py-1 text-[12px] outline-none focus:border-primary/60 disabled:opacity-50'
+
+  return (
+    <div className="mt-3 rounded-lg border border-border/50 p-2.5" data-testid="hub-task-execution">
+      <div className="mb-1 text-[12px] font-medium text-foreground">执行当前可执行任务</div>
+      <div className="mb-2 text-[11px] text-muted-foreground">主进程会在最终确认后选择当前可执行任务。</div>
+
+      {executionError && (
+        <div className="mb-2 rounded-md border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
+          <div className="flex items-start justify-between gap-2">
+            <span>
+              错误 {executionError.code}：{TASK_EXECUTION_ERROR_TEXT[executionError.code]}
+            </span>
+            <button type="button" onClick={clearExecutionError} className="shrink-0 text-red-500/70 hover:text-red-500">
+              ✕
+            </button>
+          </div>
+          {executionError.traceId && <div className="mt-1 font-mono text-[10px] opacity-70">traceId: {executionError.traceId}</div>}
+        </div>
+      )}
+
+      {!executionReviewing ? (
+        <div data-testid="hub-task-execution-edit">
+          <textarea
+            aria-label="本次任务说明"
+            placeholder="说明本次任务要完成什么"
+            value={executionForm.prompt}
+            onChange={(event) => setExecutionForm({ ...executionForm, prompt: event.target.value })}
+            rows={3}
+            className={`${inputCls} mb-2`}
+          />
+          <textarea
+            aria-label="允许修改的已有文件"
+            placeholder={'允许修改的已有文件（每行一条项目内相对路径）\nsrc/example.ts'}
+            value={executionForm.modifyPathsText}
+            onChange={(event) => setExecutionForm({ ...executionForm, modifyPathsText: event.target.value })}
+            rows={3}
+            className={`${inputCls} mb-2`}
+          />
+          <textarea
+            aria-label="允许新建的文件"
+            placeholder={'允许新建的文件（每行一条项目内相对路径）\nsrc/new-file.ts'}
+            value={executionForm.createPathsText}
+            onChange={(event) => setExecutionForm({ ...executionForm, createPathsText: event.target.value })}
+            rows={3}
+            className={inputCls}
+          />
+          <div className="mt-1.5 text-[11px] text-muted-foreground">只允许项目内相对路径；本次不允许删除文件。</div>
+          {executionFormErrors.length > 0 && (
+            <ul className="mt-2 list-disc pl-4 text-[11px] text-amber-700 dark:text-amber-300">
+              {executionFormErrors.map((message) => (
+                <li key={message}>{message}</li>
+              ))}
+            </ul>
+          )}
+          <button
+            type="button"
+            onClick={reviewTaskExecution}
+            className="mt-2 rounded-md bg-primary px-3 py-1 text-[12px] text-primary-foreground hover:bg-primary/90"
+          >
+            核对执行范围
+          </button>
+        </div>
+      ) : (
+        <div data-testid="hub-task-execution-review">
+          <div className="rounded-md bg-muted/50 p-2">
+            <div className="text-[11px] font-medium text-muted-foreground">任务说明</div>
+            <div className="mt-1 whitespace-pre-wrap break-words text-[12px] text-foreground">{executionForm.prompt.trim()}</div>
+          </div>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <ReadonlyExecutionPaths title="允许修改" paths={modifyPaths} />
+            <ReadonlyExecutionPaths title="允许新建" paths={createPaths} />
+          </div>
+          <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
+            最终确认后，智能体不能删除文件，也不能操作清单之外的文件。
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={returnToTaskExecutionEdit}
+              className="rounded-md border border-border/60 px-2 py-1 text-[12px] text-foreground-secondary hover:bg-accent disabled:opacity-40"
+            >
+              返回修改
+            </button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => void startNextTaskExecution()}
+              className="rounded-md bg-primary px-3 py-1 text-[12px] text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+            >
+              {submitting ? '正在提交…' : '确认并执行'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReadonlyExecutionPaths({ title, paths }: { title: string; paths: string[] }) {
+  return (
+    <div className="rounded-md border border-border/40 p-2">
+      <div className="text-[11px] font-medium text-muted-foreground">{title}</div>
+      {paths.length === 0 ? (
+        <div className="mt-1 text-[11px] text-muted-foreground">无</div>
+      ) : (
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {paths.map((relativePath) => (
+            <li key={relativePath} className="break-all font-mono text-[10px] text-foreground-secondary">
+              {relativePath}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 function AwaitingApprovalView({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
   const submitting = useCollaborationHubStore((s) => s.submitting)
   const approveActiveRevision = useCollaborationHubStore((s) => s.approveActiveRevision)
@@ -363,6 +506,7 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
           </ul>
         </div>
       )}
+      <TaskExecutionSection projection={projection} />
       <div className="mt-3">
         <CancelFlowSection flowId={flow.flowId} />
       </div>
