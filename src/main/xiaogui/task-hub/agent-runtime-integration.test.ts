@@ -150,8 +150,15 @@ async function readyAttempt(
   const afterSchedule = await app.observeM2B(ADDRESS)
   const bindingStore = new CollaborationHubSqliteStoreV1(dbPath)
   const binding = bindingStore.compositionAttempt(scheduled.value.attemptId)
+  const workspaceClaim = bindingStore.claimWorkspacePrepareOutbox({
+    attemptId: scheduled.value.attemptId,
+    ownerId: 'test-main-process',
+    claimDigest: digestJson({ attemptId: scheduled.value.attemptId, role: 'test-workspace-claim' }),
+    now: '2026-08-17T00:00:00.000Z',
+  })
   bindingStore.close()
   if (!binding) throw new Error('missing workspace binding')
+  if (!workspaceClaim) throw new Error('missing workspace prepare claim')
   await expect(app.executeSystem({
     contractVersion: 'm2b.v1',
     address: ADDRESS as HubAddressV1,
