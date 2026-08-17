@@ -80,6 +80,17 @@ export interface AttemptWorkspaceInspectionV1 {
   readonly inspectionDigest: string
 }
 
+export interface AttemptRuntimeAllowedFileV1 {
+  readonly relativePath: string
+  readonly contentDigest: string
+}
+
+export interface AttemptRuntimeWorkspaceAccessV1 {
+  readonly workspace: RuntimeWorkspaceBindingV1
+  readonly rootPath: string
+  readonly allowedFiles: readonly AttemptRuntimeAllowedFileV1[]
+}
+
 interface PorcelainChangeV1 {
   readonly status: string
   readonly relativePath: string
@@ -425,6 +436,7 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
 
 export interface AttemptWorkspacePortV1 {
   prepare(request: AttemptWorkspacePrepareRequestV1): Promise<AttemptWorkspacePreparedV1>
+  runtimeAccess(attemptId: string): Promise<AttemptRuntimeWorkspaceAccessV1 | undefined>
   runtimeBinding(attemptId: string): Promise<RuntimeWorkspaceBindingV1 | undefined>
   manifest(attemptId: string): AttemptFileManifestV1 | undefined
   requestScopeExpansion(input: {
@@ -550,10 +562,27 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
     return result
   }
 
-  async runtimeBinding(attemptId: string): Promise<RuntimeWorkspaceBindingV1 | undefined> {
+  async runtimeAccess(attemptId: string): Promise<AttemptRuntimeWorkspaceAccessV1 | undefined> {
     const manifest = this.registry.getManifest(attemptId)
     if (!manifest) return undefined
-    return (await this.validateCurrentWorkspace(attemptId, manifest)).result.workspace
+    const prepared = await this.validateCurrentWorkspace(attemptId, manifest)
+    const rootPath = prepared.result.handle.rootPath
+    const allowedFiles = manifest.grants.map((grant) => {
+      const target = resolveManifestPath(rootPath, grant.relativePath)
+      return {
+        relativePath: grant.relativePath,
+        contentDigest: readFileIdentity(target.realPath).contentDigest,
+      }
+    })
+    return {
+      workspace: { ...prepared.result.workspace },
+      rootPath,
+      allowedFiles,
+    }
+  }
+
+  async runtimeBinding(attemptId: string): Promise<RuntimeWorkspaceBindingV1 | undefined> {
+    return (await this.runtimeAccess(attemptId))?.workspace
   }
 
   manifest(attemptId: string): AttemptFileManifestV1 | undefined {

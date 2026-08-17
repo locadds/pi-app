@@ -165,6 +165,36 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     registry.close()
   })
 
+  it('revalidates the prepared worktree and exposes only current manifest file digests to the runtime', async () => {
+    const projectRoot = await gitRepo()
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const prepared = await workspace.prepare(
+      prepareRequest({
+        projectRoot,
+        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+        grants: [
+          { operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') },
+          { operation: 'CREATE', relativePath: 'src/new-file.txt' },
+        ],
+      }),
+    )
+    writeFileSync(join(prepared.handle.rootPath, 'src', 'existing.txt'), 'current existing')
+    writeFileSync(join(prepared.handle.rootPath, 'src', 'new-file.txt'), 'current new')
+
+    const access = await workspace.runtimeAccess(prepared.handle.attemptId)
+
+    expect(access).toEqual({
+      workspace: prepared.workspace,
+      rootPath: prepared.handle.rootPath,
+      allowedFiles: [
+        { relativePath: 'src/existing.txt', contentDigest: digestBytes('current existing') },
+        { relativePath: 'src/new-file.txt', contentDigest: digestBytes('current new') },
+      ],
+    })
+    await expect(workspace.runtimeBinding(prepared.handle.attemptId)).resolves.toEqual(access?.workspace)
+    registry.close()
+  })
+
   it('replays the same request and rejects manifest or source-worktree drift', async () => {
     const projectRoot = await gitRepo()
     const managedRoot = await tempRoot('xiaogui-attempt-managed-')
