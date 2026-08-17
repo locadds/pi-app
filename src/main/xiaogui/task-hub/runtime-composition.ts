@@ -33,6 +33,7 @@ import { GitExecutionBaselineProviderV1 } from './git-execution-baseline'
 import { PrivateRuntimePayloadVaultV1 } from './private-payload-vault'
 import { MainProjectWorkspaceResolverV1 } from './project-workspace-resolver'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
@@ -50,6 +51,7 @@ export interface XiaoguiRuntimeCompositionOptionsV1 {
  */
 export interface XiaoguiRuntimeCompositionV1 {
   readonly application: CollaborationHubApplicationV1
+  readonly taskExecution: XiaoguiTaskExecutionOrchestratorV1
   stageAttemptInput(input: StageAttemptExecutionInputV1): ResolvedAttemptExecutionInputV1
   close(): Promise<void>
 }
@@ -79,6 +81,7 @@ export function createXiaoguiRuntimeCompositionV1(
   let inputStore: AttemptExecutionInputStoreV1 | undefined
   let application: CollaborationHubApplicationV1 | undefined
   let kimiAdapter: KimiAcpRuntimeAdapterV1 | undefined
+  let taskExecution: XiaoguiTaskExecutionOrchestratorV1 | undefined
 
   try {
     const projectResolver = options.projectResolver ?? new MainProjectWorkspaceResolverV1()
@@ -121,13 +124,12 @@ export function createXiaoguiRuntimeCompositionV1(
     })
     const runtimeHost = createAgentRuntimeHostV1(kimiAdapter)
 
+    const hubDbPath = join(userDataDir, 'xiaogui-task-hub-m2a.sqlite')
     application = createCollaborationHubApplicationV1({
       lookup: options.lookup,
       // Keep the existing desktop database location so installing the runtime
       // composition does not make previously created plans disappear.
-      storeFactory: () => new CollaborationHubSqliteStoreV1(
-        join(userDataDir, 'xiaogui-task-hub-m2a.sqlite'),
-      ),
+      storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
       ...(options.productionEnabled
         ? { agentRuntime: runtimeHost, agentSelection: KIMI_PRODUCTION_SELECTION_V1 }
         : {}),
@@ -137,14 +139,25 @@ export function createXiaoguiRuntimeCompositionV1(
       now: options.now,
     })
 
+    taskExecution = new XiaoguiTaskExecutionOrchestratorV1({
+      dbPath: hubDbPath,
+      application,
+      inputStage: { stageAttemptInput: (input) => inputStore!.stage(input) },
+      fileScopeResolver: attemptWorkspaces,
+      now: options.now,
+    })
+    void taskExecution.recover().catch(() => undefined)
+
     return createCompositionInterface(
       application,
+      taskExecution,
       kimiAdapter,
       inputStore,
       payloadVault,
       workspaceRegistry,
     )
   } catch (error) {
+    closeQuietly(taskExecution)
     closeQuietly(kimiAdapter)
     closeQuietly(application)
     closeQuietly(inputStore)
@@ -156,6 +169,7 @@ export function createXiaoguiRuntimeCompositionV1(
 
 function createCompositionInterface(
   application: CollaborationHubApplicationV1,
+  taskExecution: XiaoguiTaskExecutionOrchestratorV1,
   kimiAdapter: KimiAcpRuntimeAdapterV1,
   inputStore: AttemptExecutionInputStoreV1,
   payloadVault: PrivateRuntimePayloadVaultV1,
@@ -166,6 +180,7 @@ function createCompositionInterface(
 
   return {
     application,
+    taskExecution,
     stageAttemptInput(input) {
       if (closed) throw new Error('XIAOGUI_RUNTIME_COMPOSITION_CLOSED')
       return inputStore.stage(input)
@@ -173,13 +188,13 @@ function createCompositionInterface(
     close() {
       if (closePromise) return closePromise
       closed = true
-      closePromise = closeAll([
-        kimiAdapter,
-        application,
-        inputStore,
-        payloadVault,
-        workspaceRegistry,
-      ])
+      closePromise = taskExecution.close().then(() => closeAll([
+          kimiAdapter,
+          application,
+          inputStore,
+          payloadVault,
+          workspaceRegistry,
+        ]))
       return closePromise
     },
   }

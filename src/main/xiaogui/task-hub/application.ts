@@ -34,6 +34,8 @@ import type {
   TaskSpecId,
   TaskSpecProjectionV1,
   UserIntentRequestV1,
+  WorkspacePreparedReceiptM2BV1,
+  WorkspaceReceiptId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { canonicalizePlanDraft, payloadDigest, type CanonicalPlanDraftV1 } from './digest'
@@ -132,7 +134,10 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
         attempts: [],
         availableActions: ['flow.start.with_draft'],
       }
-      return { ok: true, value: projection }
+      return {
+        ok: true,
+        value: withAuthoritativeM2BActions(projection, this.options.agentRuntime !== undefined),
+      }
     } catch {
       return hubError('INTERNAL')
     }
@@ -273,7 +278,12 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       })
       if (!claim) return systemError('ILLEGAL_TRANSITION')
       if (claim.requestDigest !== composition.requestDigest) return systemError('INTERNAL', { reason: 'WORKSPACE_CLAIM_BINDING_MISMATCH' })
-      const receipt = await bridge.prepare({ address, attempt, composition, baseline })
+      let receipt: WorkspacePreparedReceiptM2BV1
+      try {
+        receipt = await bridge.prepare({ address, attempt, composition, baseline })
+      } catch (error) {
+        receipt = failedWorkspaceReceipt(attempt.attempt_id, composition, error)
+      }
       return this.executeSystem({
         contractVersion: 'm2b.v1',
         address,
@@ -627,7 +637,14 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     const attempt = store.attempt(request.intent.attemptId)
     if (!attempt || attempt.task_run_id !== request.intent.taskRunId) return systemError('ILLEGAL_TRANSITION')
     if (!['STARTING', 'RUNNING'].includes(attempt.status)) return systemError('ILLEGAL_TRANSITION')
-    if (attempt.runtime_session_id && attempt.runtime_session_id !== request.intent.runtimeSessionId) return systemError('ILLEGAL_TRANSITION')
+    const restartOutcomeUnknown =
+      request.intent.outcome === 'OUTCOME_UNKNOWN' &&
+      request.intent.runtimeSessionId === 'runtime-unbound'
+    if (
+      attempt.runtime_session_id &&
+      attempt.runtime_session_id !== request.intent.runtimeSessionId &&
+      !restartOutcomeUnknown
+    ) return systemError('ILLEGAL_TRANSITION')
     const receipt = {
       requestId: request.requestId,
       intentType: request.intent.type,
@@ -872,6 +889,87 @@ function matchesWorkspaceBinding(
     receipt.baselineBindingDigest === composition.baselineBindingDigest &&
     receipt.compositionDigest === composition.compositionDigest
   )
+}
+
+function failedWorkspaceReceipt(
+  attemptId: AttemptId,
+  composition: {
+    attemptId: AttemptId
+    compositionAttemptId: string
+    requestDigest: string
+    baselineBindingDigest: string
+    compositionDigest: string
+  },
+  error: unknown,
+): WorkspacePreparedReceiptM2BV1 {
+  const reasonCode = safeReasonCode(error)
+  const failure = {
+    kind: reasonCode === 'BASE_REVISION_UNAVAILABLE'
+      ? 'BASE_REVISION_UNAVAILABLE' as const
+      : 'WORKTREE_CREATE_FAILED' as const,
+    failureDigest: payloadDigest({ attemptId, reasonCode, purpose: 'workspace.prepare.failed.v1' }),
+  }
+  const binding = {
+    compositionAttemptId: composition.compositionAttemptId,
+    attemptId,
+    requestDigest: composition.requestDigest,
+    baselineBindingDigest: composition.baselineBindingDigest,
+    compositionDigest: composition.compositionDigest,
+  }
+  const receiptDigest = payloadDigest({ status: 'FAILED', binding, failure })
+  return {
+    status: 'FAILED',
+    workspaceReceiptId: `xhbw_failed_${receiptDigest.slice(-32)}` as WorkspaceReceiptId,
+    receiptDigest,
+    failure,
+    ...binding,
+  }
+}
+
+function safeReasonCode(error: unknown): string {
+  const candidate =
+    typeof error === 'object' && error !== null && 'reasonCode' in error
+      ? (error as { reasonCode?: unknown }).reasonCode
+      : undefined
+  return typeof candidate === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(candidate)
+    ? candidate
+    : 'WORKSPACE_BRIDGE_FAILED'
+}
+
+function withAuthoritativeM2BActions(
+  projection: SessionCollaborationProjectionM2BV1,
+  runtimeConfigured: boolean,
+): SessionCollaborationProjectionM2BV1 {
+  const baseActions = projection.availableActions.filter(
+    (action) => action !== 'execution.next.confirm',
+  )
+  if (
+    !runtimeConfigured ||
+    projection.authoritativeMode !== 'CODING' ||
+    projection.activeFlow?.status !== 'PLAN_ACTIVE' ||
+    projection.attempts.some((attempt) =>
+      [
+        'CREATED',
+        'WORKSPACE_PREPARING',
+        'READY',
+        'STARTING',
+        'RUNNING',
+        'VERIFYING',
+        'INTERRUPT_REQUESTED',
+        'OUTCOME_UNKNOWN',
+      ].includes(attempt.status),
+    )
+  ) {
+    return { ...projection, availableActions: baseActions }
+  }
+  const executable = projection.taskRuns.some((run) => {
+    if (run.status !== 'BLOCKED' || run.attemptId) return false
+    const spec = projection.taskSpecs.find((candidate) => candidate.taskSpecId === run.taskSpecId)
+    return spec?.dependsOn.length === 0
+  })
+  return executable
+    ? { ...projection, availableActions: [...baseActions, 'execution.next.confirm'] }
+    : { ...projection, availableActions: baseActions }
 }
 
 function matchesCapturedFlowBaseline(

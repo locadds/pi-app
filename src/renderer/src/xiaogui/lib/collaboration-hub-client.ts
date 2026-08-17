@@ -11,7 +11,9 @@
  */
 
 import type {
+  AttemptProjectionM2BV1,
   AttemptStatusM2BV1,
+  CollaborationHubActionM2BV1,
   CollaborationHubActionV1,
   HubAddressV1,
   HubErrorCodeV1,
@@ -19,9 +21,17 @@ import type {
   HubSafeErrorV1,
   PerformReceiptV1,
   SessionCollaborationProjectionM2BV1,
+  TaskRunProjectionM2BV1,
   TaskRunStatusM2BV1,
   UserIntentRequestV1,
 } from '@shared/xiaogui-collaboration-hub'
+import type {
+  XiaoguiTaskExecutionErrorCodeV1,
+  XiaoguiTaskExecutionSafeErrorV1,
+  XiaoguiTaskExecutionStartOutcomeV1,
+  XiaoguiTaskExecutionStartRequestV1,
+  XiaoguiTaskExecutionStartResultV1,
+} from '@shared/xiaogui-task-execution'
 
 import { ipcClient } from '@renderer/lib/ipc-client'
 
@@ -55,7 +65,23 @@ const HUB_ERROR_CODES = new Set<HubErrorCodeV1>([
 ])
 
 const HUB_ACTIONS = new Set<CollaborationHubActionV1>(['flow.start.with_draft', 'plan.revision.submit', 'flow.cancel'])
+const HUB_M2B_ACTIONS = new Set<CollaborationHubActionM2BV1>([...HUB_ACTIONS, 'execution.next.confirm'])
 const HUB_TRACE_ID = /^xhbt_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const TASK_EXECUTION_TRACE_ID = /^xhbet_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const TASK_EXECUTION_ERROR_CODES = new Set<XiaoguiTaskExecutionErrorCodeV1>([
+  'SESSION_SCOPE_MISMATCH',
+  'DESIGN_RESERVED',
+  'WORK_NOT_SUPPORTED',
+  'FLOW_NOT_READY',
+  'EXECUTION_INPUT_INVALID',
+  'EXECUTION_IN_PROGRESS',
+  'AGENT_UNAVAILABLE',
+  'BASELINE_UNAVAILABLE',
+  'WORKSPACE_PREPARATION_FAILED',
+  'OUTCOME_UNKNOWN',
+  'INTERNAL',
+])
 
 const INTENT_TYPES = new Set([
   ...HUB_ACTIONS,
@@ -94,6 +120,17 @@ function isSafeError(value: unknown): value is HubSafeErrorV1 {
     return false
   if (value.safeArgs === undefined) return true
   return isRecord(value.safeArgs) && Object.values(value.safeArgs).every((item) => ['string', 'number', 'boolean'].includes(typeof item))
+}
+
+function isTaskExecutionSafeError(value: unknown): value is XiaoguiTaskExecutionSafeErrorV1 {
+  return (
+    isRecord(value) &&
+    typeof value.code === 'string' &&
+    TASK_EXECUTION_ERROR_CODES.has(value.code as XiaoguiTaskExecutionErrorCodeV1) &&
+    typeof value.messageKey === 'string' &&
+    typeof value.traceId === 'string' &&
+    (value.traceId === '' || TASK_EXECUTION_TRACE_ID.test(value.traceId))
+  )
 }
 
 function isPlanTask(value: unknown): boolean {
@@ -154,7 +191,7 @@ const ATTEMPT_STATUSES_M2B = new Set<AttemptStatusM2BV1>([
   'CANCELLED',
 ])
 
-function isTaskRunM2B(value: unknown): boolean {
+function isTaskRunM2B(value: unknown): value is TaskRunProjectionM2BV1 {
   return (
     isRecord(value) &&
     typeof value.taskRunId === 'string' &&
@@ -166,7 +203,7 @@ function isTaskRunM2B(value: unknown): boolean {
   )
 }
 
-function isAttemptM2B(value: unknown): boolean {
+function isAttemptM2B(value: unknown): value is AttemptProjectionM2BV1 {
   return (
     isRecord(value) &&
     typeof value.attemptId === 'string' &&
@@ -245,7 +282,17 @@ function isProjection(value: unknown): value is SessionCollaborationProjectionM2
 
   return (
     Array.isArray(value.availableActions) &&
-    value.availableActions.every((action) => typeof action === 'string' && HUB_ACTIONS.has(action as CollaborationHubActionV1))
+    value.availableActions.every(
+      (action) => typeof action === 'string' && HUB_M2B_ACTIONS.has(action as CollaborationHubActionM2BV1),
+    )
+  )
+}
+
+function isTaskExecutionResult(value: unknown): value is XiaoguiTaskExecutionStartResultV1 {
+  if (!isRecord(value) || !isTaskRunM2B(value.taskRun) || !isAttemptM2B(value.attempt)) return false
+  return (
+    value.attempt.taskRunId === value.taskRun.taskRunId &&
+    (value.taskRun.attemptId === undefined || value.taskRun.attemptId === value.attempt.attemptId)
   )
 }
 
@@ -306,6 +353,20 @@ export async function performHubIntent(address: HubAddressV1, request: UserInten
     return res
   } catch {
     return { ok: false, error: ipcFailureError() }
+  }
+}
+
+/** 最终确认一次受控执行；请求不含内部版本、actor、摘要或系统指令。 */
+export async function startTaskExecution(
+  request: XiaoguiTaskExecutionStartRequestV1,
+): Promise<XiaoguiTaskExecutionStartOutcomeV1> {
+  try {
+    const res: unknown = await ipcClient.invoke('xiaogui.hub.execution.start', request)
+    if (isRecord(res) && res.ok === true && isTaskExecutionResult(res.value)) return { ok: true, value: res.value }
+    if (isRecord(res) && res.ok === false && isTaskExecutionSafeError(res.error)) return { ok: false, error: res.error }
+    return { ok: false, error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' } }
+  } catch {
+    return { ok: false, error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' } }
   }
 }
 

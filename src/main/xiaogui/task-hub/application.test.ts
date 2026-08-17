@@ -1115,6 +1115,39 @@ describe('M2A collaboration hub application', () => {
     app.close()
   })
 
+  it('records a bound FAILED workspace receipt when the private bridge throws instead of leaving the Attempt preparing', async () => {
+    const dbPath = await tempDb()
+    const bridge: ExecutionWorkspaceBridgeV1 = {
+      prepare: vi.fn(async () => {
+        throw Object.assign(new Error('private path must not escape'), { reasonCode: 'ATTEMPT_INPUT_MISSING' })
+      }),
+      runtimeWorkspace: () => undefined,
+    }
+    const app = appFor(
+      dbPath,
+      'CODING',
+      ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'],
+      'runtime-1',
+      bridge,
+    )
+    const scheduled = await scheduleWorkspaceAttempt(app)
+
+    await expect(app.prepareNextWorkspace(ADDRESS, {
+      requestId: 'sys-workspace-bridge-failed',
+      attemptId: scheduled.attempt.attemptId,
+      expectedSessionVersion: scheduled.sessionVersion,
+    })).resolves.toMatchObject({ ok: true })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        taskRuns: expect.arrayContaining([expect.objectContaining({ status: 'FAILED' })]),
+        attempts: [expect.objectContaining({ status: 'FAILED' })],
+      },
+    })
+    expect(JSON.stringify(journalPayloads(dbPath, 'system.workspace.prepare.result.record'))).not.toContain('private path')
+    app.close()
+  })
+
   it('rejects workspace receipt drift for each persisted composition binding field', async () => {
     const fields = ['attemptId', 'compositionAttemptId', 'requestDigest', 'baselineBindingDigest', 'compositionDigest'] as const
     for (const field of fields) {

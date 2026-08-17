@@ -23,6 +23,7 @@ import {
   newHubRequestId,
   observeCollaborationHub,
   performHubIntent,
+  startTaskExecution,
 } from './collaboration-hub-client'
 
 const address: HubAddressV1 = {
@@ -107,7 +108,7 @@ describe('collaboration-hub-client', () => {
         { attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING', runtimeSessionId: 'rs-1' },
         { attemptId: 'xhba_0' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'FAILED' },
       ],
-      availableActions: ['flow.cancel'],
+      availableActions: ['flow.cancel', 'execution.next.confirm'],
     }
     invokeMock.mockResolvedValueOnce({ ok: true, value: valid })
 
@@ -197,6 +198,98 @@ describe('collaboration-hub-client', () => {
     })
     const payload = invokeMock.mock.calls[0]![1] as Record<string, unknown>
     expect(Object.keys(payload).sort()).toEqual(['address', 'contractVersion', 'request'])
+  })
+
+  it('最终执行只调用窄通道，载荷只含 address、flowId、prompt、files', async () => {
+    const request = {
+      address,
+      flowId: 'xhbf_flow1' as FlowId,
+      prompt: '完成当前任务',
+      files: [
+        { operation: 'MODIFY' as const, relativePath: 'src/a.ts' },
+        { operation: 'CREATE' as const, relativePath: 'src/new.ts' },
+      ],
+    }
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        taskRun: {
+          taskRunId: 'xhbtr_1' as TaskRunId,
+          taskSpecId: 'xhbts_1' as TaskSpecId,
+          taskKey: 't1',
+          status: 'RUNNING',
+          attemptId: 'xhba_1' as AttemptId,
+        },
+        attempt: {
+          attemptId: 'xhba_1' as AttemptId,
+          taskRunId: 'xhbtr_1' as TaskRunId,
+          status: 'RUNNING',
+        },
+      },
+    })
+
+    const result = await startTaskExecution(request)
+
+    expect(result.ok).toBe(true)
+    expect(invokeMock).toHaveBeenCalledWith('xiaogui.hub.execution.start', request)
+    expect(Object.keys(invokeMock.mock.calls[0]![1]).sort()).toEqual(['address', 'files', 'flowId', 'prompt'])
+    expect(JSON.stringify(invokeMock.mock.calls[0]![1])).not.toMatch(/requestId|version|actor|adapter|digest|absolute/i)
+  })
+
+  it('最终执行拒绝关系不一致的结果并映射为安全 INTERNAL', async () => {
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        taskRun: {
+          taskRunId: 'xhbtr_1',
+          taskSpecId: 'xhbts_1',
+          taskKey: 't1',
+          status: 'RUNNING',
+          attemptId: 'xhba_1',
+        },
+        attempt: { attemptId: 'xhba_other', taskRunId: 'xhbtr_1', status: 'RUNNING' },
+      },
+    })
+
+    await expect(
+      startTaskExecution({
+        address,
+        flowId: 'xhbf_flow1' as FlowId,
+        prompt: 'x',
+        files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }],
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' },
+    })
+  })
+
+  it('最终执行仅接受约定的安全错误', async () => {
+    const executionTraceId = 'xhbet_00000000-0000-4000-8000-000000000000'
+    invokeMock.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'OUTCOME_UNKNOWN', messageKey: 'xiaogui.execution.outcome_unknown', traceId: executionTraceId },
+    })
+    const request = {
+      address,
+      flowId: 'xhbf_flow1' as FlowId,
+      prompt: 'x',
+      files: [{ operation: 'CREATE' as const, relativePath: 'src/new.ts' }],
+    }
+
+    await expect(startTaskExecution(request)).resolves.toEqual({
+      ok: false,
+      error: { code: 'OUTCOME_UNKNOWN', messageKey: 'xiaogui.execution.outcome_unknown', traceId: executionTraceId },
+    })
+
+    invokeMock.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'SECRET_PATH', messageKey: 'x', traceId: 'C:\\secret' },
+    })
+    await expect(startTaskExecution(request)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' },
+    })
   })
 
   it('IPC 抛异常时映射为安全 INTERNAL 错误且不泄露异常内容', async () => {

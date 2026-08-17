@@ -34,6 +34,10 @@ import type {
   XiaoguiKimiNoParamsV1,
   XiaoguiKimiRuntimeStatusSnapshotV1,
 } from './xiaogui-kimi-runtime'
+import type {
+  XiaoguiTaskExecutionStartOutcomeV1,
+  XiaoguiTaskExecutionStartRequestV1,
+} from './xiaogui-task-execution'
 
 // ── Workspace ──
 export interface WorkspaceOpenRequest { path?: string; awaitWorker?: boolean }
@@ -341,6 +345,10 @@ export interface IpcMethodMap {
   'xiaogui.hub.observe': {
     request: HubObserveIpcRequestV1
     response: HubOutcomeV1<SessionCollaborationProjectionV1>
+  }
+  'xiaogui.hub.execution.start': {
+    request: XiaoguiTaskExecutionStartRequestV1
+    response: XiaoguiTaskExecutionStartOutcomeV1
   }
   'xiaogui.hub.perform': {
     request: HubPerformIpcRequestV1

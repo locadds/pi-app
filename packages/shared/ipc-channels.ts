@@ -128,6 +128,7 @@ export const IPC_INVOKE_CHANNELS = [
   // ipcClient.invoke('xiaogui.*') 调用，模式切换 / DESIGN Tool 调用 / sidecar 状态）
   'ipc:xiaogui.guard.status',
   'ipc:xiaogui.hub.observe',
+  'ipc:xiaogui.hub.execution.start',
   'ipc:xiaogui.hub.perform',
   'ipc:xiaogui.hub.read',
   'ipc:xiaogui.hub.readEvents',

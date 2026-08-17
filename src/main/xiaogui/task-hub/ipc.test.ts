@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
     application: { generation: number }
     close: ReturnType<typeof vi.fn>
     stageAttemptInput: ReturnType<typeof vi.fn>
+    taskExecution: { start: ReturnType<typeof vi.fn> }
   }>,
   loginCoordinators: [] as Array<{
     options: { effectiveEnabled: boolean; userDataDir: string }
@@ -39,6 +40,15 @@ mocks.createRuntimeComposition.mockImplementation(() => {
     application: { generation: mocks.runtimeCompositions.length + 1 },
     close: vi.fn(async () => undefined),
     stageAttemptInput: vi.fn(),
+    taskExecution: {
+      start: vi.fn(async () => ({
+        ok: true,
+        value: {
+          taskRun: { taskRunId: 'xhbtr_task', taskSpecId: 'xhbts_task', taskKey: 'task', status: 'RUNNING' },
+          attempt: { attemptId: 'xhba_attempt', taskRunId: 'xhbtr_task', status: 'RUNNING' },
+        },
+      })),
+    },
   }
   mocks.runtimeCompositions.push(composition)
   return composition
@@ -211,6 +221,37 @@ describe('M2A collaboration hub IPC adapter', () => {
     )
     expect(coordinator.inspect).toHaveBeenCalledOnce()
     expect(coordinator.startLogin).toHaveBeenCalledOnce()
+  })
+
+  it('accepts only the narrow execution confirmation shape and rejects internal or unsafe fields before orchestration', async () => {
+    registerCollaborationHubHandlers()
+    const startExecution = mocks.handlers.get('ipc:xiaogui.hub.execution.start')!
+    const taskExecution = mocks.runtimeCompositions[0]!.taskExecution
+    const valid = {
+      address: ADDRESS,
+      flowId: 'xhbf_flow',
+      prompt: '完成当前任务',
+      files: [{ operation: 'MODIFY', relativePath: 'src/task.ts' }],
+    }
+
+    await expect(startExecution(valid)).resolves.toMatchObject({ ok: true })
+    expect(taskExecution.start).toHaveBeenCalledOnce()
+
+    for (const payload of [
+      { ...valid, requestId: 'renderer-owned' },
+      { ...valid, trustedActor: { kind: 'main-process-system' } },
+      { ...valid, adapterId: 'kimi-acp' },
+      { ...valid, files: [{ operation: 'MODIFY', relativePath: 'src/task.ts', baselineDigest: 'forged' }] },
+      { ...valid, files: [{ operation: 'DELETE', relativePath: 'src/task.ts' }] },
+      { ...valid, files: [{ operation: 'MODIFY', relativePath: '../outside.ts' }] },
+      { ...valid, files: [{ operation: 'CREATE', relativePath: 'D:/absolute.ts' }] },
+    ]) {
+      await expect(startExecution(payload)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'EXECUTION_INPUT_INVALID' },
+      })
+    }
+    expect(taskExecution.start).toHaveBeenCalledOnce()
   })
 
   it('matches Direct outputs for the same observe/perform/readEvents fixture', async () => {
