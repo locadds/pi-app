@@ -111,37 +111,25 @@ describe('xiaogui collaboration hub shared contract', () => {
     expect(succeeded.candidate.candidateDigest).not.toBe(succeeded.runtimeCandidateDigest)
   })
 
-  it('keeps verification writers main-only while exposing an opaque read summary', () => {
-    const disabled: M2ADisabledIntentTypeV1 = 'system.verification.complete'
-    expect(disabled).toBe('system.verification.complete')
+  it('keeps verification writer names disabled instead of executable while exposing an opaque read summary', () => {
+    const disabledComplete: M2ADisabledIntentTypeV1 = 'system.verification.complete'
+    const disabledReconcile: M2ADisabledIntentTypeV1 = 'system.verification.reconcile'
+    expect([disabledComplete, disabledReconcile]).toEqual([
+      'system.verification.complete',
+      'system.verification.reconcile',
+    ])
+
+    type ExecutableSystemIntentType = M2BSystemIntentV1['type']
+    // @ts-expect-error Verification completion is coordinated internally, not exposed as an M2B system command payload.
+    const completeWriter: ExecutableSystemIntentType = 'system.verification.complete'
+    // @ts-expect-error Verification reconciliation is coordinated internally, not exposed as an M2B system command payload.
+    const reconcileWriter: ExecutableSystemIntentType = 'system.verification.reconcile'
+    expect([completeWriter, reconcileWriter]).toEqual([
+      'system.verification.complete',
+      'system.verification.reconcile',
+    ])
 
     const verificationAttemptId = 'verify-attempt-1' as VerificationAttemptId
-    const complete = {
-      type: 'system.verification.complete',
-      flowId,
-      taskRunId,
-      attemptId,
-      verificationAttemptId,
-      receipt: {
-        scope: 'TASK',
-        verificationAttemptId,
-        verificationRequestId: 'verify-request-1',
-        flowId,
-        taskRunId,
-        attemptId,
-        candidateId: 'candidate-1' as TaskChangeSetCandidateId,
-        requestDigest: 'sha256:request' as Sha256Digest,
-        changeSetDigest: 'sha256:changeset' as Sha256Digest,
-        qaConfigVersion: 'task-fixed.v1',
-        diagnosticArtifactIds: [],
-        receiptDigest: 'sha256:receipt' as Sha256Digest,
-        verdict: 'PASS',
-        checks: [],
-        evidenceArtifactIds: [],
-      },
-    } satisfies M2BSystemIntentV1
-    expect(complete.receipt.verdict).toBe('PASS')
-
     const projection = {
       attemptId,
       taskRunId,

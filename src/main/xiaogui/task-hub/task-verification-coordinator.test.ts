@@ -129,6 +129,85 @@ describe('SqliteTaskVerificationCoordinatorV1', () => {
     expect(completed[0]?.qaResult).toBeUndefined()
     expect(completed[0]?.taskChangeSet).toBeUndefined()
   })
+
+  it('degrades a rejected PASS completion to OUTCOME_UNKNOWN', async () => {
+    const completed: CompleteTaskVerificationRecordV1[] = []
+    const store = fakeStore(completed)
+    let completionCalls = 0
+    store.completeTaskVerification.mockImplementation((_address, record) => {
+      completionCalls += 1
+      if (completionCalls === 1) throw new Error('PASS_COMPLETION_REJECTED')
+      completed.push(record)
+      return {
+        verificationAttemptId: record.receipt.verificationAttemptId,
+        verdict: record.receipt.verdict,
+        replayed: false,
+      }
+    })
+    const candidate = candidateFixture([])
+    const coordinator = createTaskVerificationCoordinatorV1({
+      storeFactory: () => store as never,
+      candidateAudit: { captureTaskCandidate: vi.fn(async () => auditFixture(candidate)) } as never,
+      verificationPort: {
+        verify: vi.fn(async (request, context) => (
+          passVerification(request, context.scopeEvidenceArtifactId, context.inspectionArtifactId)
+        )),
+      },
+      projectResolver: { resolveProjectRoot: vi.fn(async () => process.cwd()) },
+      now: () => '2026-08-17T00:00:02.000Z',
+    })
+
+    await expect(coordinator.handleSucceeded({
+      address: ADDRESS,
+      flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID,
+      outcome: RUNTIME_OUTCOME,
+      createdAt: '2026-08-17T00:00:01.000Z',
+    })).resolves.toMatchObject({ ok: true, verdict: 'OUTCOME_UNKNOWN' })
+
+    expect(store.completeTaskVerification).toHaveBeenCalledTimes(2)
+    expect(completed).toHaveLength(1)
+    expect(completed[0]).toMatchObject({
+      receipt: {
+        verdict: 'OUTCOME_UNKNOWN',
+        reason: 'TASK_VERIFICATION_COMPLETION_REJECTED',
+      },
+    })
+    expect(completed[0]?.evidenceBundle).toBeUndefined()
+    expect(completed[0]?.qaResult).toBeUndefined()
+    expect(completed[0]?.taskChangeSet).toBeUndefined()
+  })
+
+  it('returns a typed store failure when completion and UNKNOWN fallback are both rejected', async () => {
+    const store = fakeStore([])
+    store.completeTaskVerification.mockImplementation(() => {
+      throw new Error('STORE_UNAVAILABLE')
+    })
+    const candidate = candidateFixture([])
+    const coordinator = createTaskVerificationCoordinatorV1({
+      storeFactory: () => store as never,
+      candidateAudit: { captureTaskCandidate: vi.fn(async () => auditFixture(candidate)) } as never,
+      verificationPort: {
+        verify: vi.fn(async (request, context) => (
+          passVerification(request, context.scopeEvidenceArtifactId, context.inspectionArtifactId)
+        )),
+      },
+      projectResolver: { resolveProjectRoot: vi.fn(async () => process.cwd()) },
+      now: () => '2026-08-17T00:00:02.000Z',
+    })
+
+    await expect(coordinator.handleSucceeded({
+      address: ADDRESS,
+      flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID,
+      outcome: RUNTIME_OUTCOME,
+      createdAt: '2026-08-17T00:00:01.000Z',
+    })).resolves.toEqual({ ok: false, reasonCode: 'TASK_VERIFICATION_STORE_REJECTED' })
+
+    expect(store.completeTaskVerification).toHaveBeenCalledTimes(2)
+  })
 })
 
 function projection(): SessionCollaborationProjectionM2BV1 {

@@ -608,8 +608,6 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     const startingAttempt = store.attempt(request.intent.attemptId)
     if (!startingAttempt || startingAttempt.status !== 'STARTING') return systemError('ILLEGAL_TRANSITION')
     if (outcome.state === 'SUCCEEDED') {
-      const coordinator = this.options.taskVerificationCoordinator
-      if (!coordinator) return systemError('INTERNAL', { reason: 'TASK_VERIFICATION_COORDINATOR_MISSING' })
       store.writeAgentReport(address, this.idempotency(request), {
         attemptId: request.intent.attemptId,
         taskRunId: request.intent.taskRunId,
@@ -623,7 +621,12 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
         receipt,
         now: this.now(),
       })
-      const verified = await coordinator.handleSucceeded({
+      const coordinator = this.options.taskVerificationCoordinator
+      if (!coordinator) {
+        this.closeDirectSucceededStartFailure(address, request, outcome, 'TASK_VERIFICATION_COORDINATOR_MISSING')
+        return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
+      }
+      const verified = await this.coordinateSucceededTaskVerification(coordinator, {
         address,
         flowId: request.intent.flowId,
         taskRunId: request.intent.taskRunId,
@@ -631,8 +634,10 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
         outcome,
         createdAt: this.now(),
       })
-      if (!verified.ok) return systemError('INTERNAL', { reason: verified.reasonCode })
-      return { ok: true, value: { ...receipt, sessionVersion: store.currentVersion(address) } }
+      if (!verified.ok) {
+        this.closeDirectSucceededStartFailure(address, request, outcome, verified.reasonCode)
+      }
+      return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
     }
     if (outcome.state !== 'READY') {
       store.writeAgentOutcome(address, this.idempotency(request), this.agentOutcomeRecord(request, outcome, receipt))
@@ -688,7 +693,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       if (!attempt.runtime_session_id || attempt.runtime_session_id !== request.intent.runtimeSessionId) {
         return systemError('ILLEGAL_TRANSITION')
       }
-      const verified = await coordinator.handleSucceeded({
+      const verified = await this.coordinateSucceededTaskVerification(coordinator, {
         address,
         flowId: request.intent.flowId,
         taskRunId: request.intent.taskRunId,
@@ -742,6 +747,30 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       sessionVersion: 0,
       attemptId: request.intent.attemptId,
     }
+    if (outcome.state === 'SUCCEEDED') {
+      const coordinator = this.options.taskVerificationCoordinator
+      if (!coordinator) return systemError('INTERNAL', { reason: 'TASK_VERIFICATION_COORDINATOR_MISSING' })
+      const verified = await this.coordinateSucceededTaskVerification(coordinator, {
+        address,
+        flowId: attempt.flow_id,
+        taskRunId: attempt.task_run_id,
+        attemptId: request.intent.attemptId,
+        outcome,
+        createdAt: this.now(),
+        reconcileStart: {
+          idempotency: this.idempotency(request),
+          receipt,
+          expectedReceiptDigest: request.intent.expectedReceiptDigest ?? attempt.outcome_receipt_digest ?? undefined,
+        },
+      })
+      if (!verified.ok) {
+        this.closeReconcileSucceededStartFailure(address, request, outcome, receipt, verified.reasonCode)
+      }
+      const stored = store.idempotency(address, request.requestId)
+      return stored
+        ? { ok: true, value: JSON.parse(stored.receipt_json) as PerformReceiptV1 }
+        : systemError('INTERNAL', { reason: verified.ok ? 'TASK_VERIFICATION_RECEIPT_MISSING' : verified.reasonCode })
+    }
     const mapped = mapRuntimeOutcome(outcome)
     store.writeAgentReconcile(address, this.idempotency(request), {
       attemptId: request.intent.attemptId,
@@ -754,6 +783,90 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       now: this.now(),
     })
     return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
+  }
+
+  private async coordinateSucceededTaskVerification(
+    coordinator: TaskVerificationCoordinatorV1,
+    input: Parameters<TaskVerificationCoordinatorV1['handleSucceeded']>[0],
+  ): ReturnType<TaskVerificationCoordinatorV1['handleSucceeded']> {
+    try {
+      return await coordinator.handleSucceeded(input)
+    } catch {
+      return { ok: false, reasonCode: 'TASK_VERIFICATION_STORE_REJECTED' }
+    }
+  }
+
+  private closeDirectSucceededStartFailure(
+    address: HubAddressV1,
+    request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> },
+    outcome: Extract<RuntimeCreateOrResumeOutcomeV1, { state: 'SUCCEEDED' }>,
+    reasonCode: string,
+  ): void {
+    const store = this.getStore()
+    const current = store.attempt(request.intent.attemptId)
+    if (!current || current.status !== 'RUNNING') return
+    const requestId = `${request.requestId}:task-verification-start-fallback`
+    const receiptDigest = payloadDigest({
+      role: 'direct-succeeded-task-verification-start-fallback',
+      requestId,
+      attemptId: request.intent.attemptId,
+      runtimeSessionId: outcome.runtimeSessionId,
+      runtimeReceiptDigest: outcome.receiptDigest,
+      reasonCode,
+    })
+    const failed = reasonCode === 'TASK_VERIFICATION_CAPTURE_FAILED'
+    store.writeAgentOutcome(address, {
+      requestId,
+      commandType: 'system.agent.outcome.record',
+      payloadHash: payloadDigest({ requestId, reasonCode, outcome: failed ? 'FAILED' : 'OUTCOME_UNKNOWN' }),
+    }, {
+      attemptId: request.intent.attemptId,
+      taskRunId: request.intent.taskRunId,
+      runtimeSessionId: outcome.runtimeSessionId,
+      outcome: failed ? 'FAILED' : 'OUTCOME_UNKNOWN',
+      receiptDigest,
+      failure: failed ? failureSignal('CANDIDATE_AUDIT_FAILED', receiptDigest) : undefined,
+      receipt: {
+        requestId,
+        intentType: 'system.agent.outcome.record',
+        sessionVersion: 0,
+        flowId: request.intent.flowId,
+        taskRunId: request.intent.taskRunId,
+        attemptId: request.intent.attemptId,
+      },
+      now: this.now(),
+    })
+  }
+
+  private closeReconcileSucceededStartFailure(
+    address: HubAddressV1,
+    request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.reconcile' }> },
+    outcome: Extract<RuntimeOutcomeV1, { state: 'SUCCEEDED' }>,
+    receipt: PerformReceiptV1,
+    reasonCode: string,
+  ): void {
+    const store = this.getStore()
+    const current = store.attempt(request.intent.attemptId)
+    if (!current || current.status !== 'OUTCOME_UNKNOWN') return
+    const receiptDigest = payloadDigest({
+      role: 'reconcile-succeeded-task-verification-start-fallback',
+      requestId: request.requestId,
+      attemptId: request.intent.attemptId,
+      runtimeSessionId: outcome.runtimeSessionId,
+      runtimeReceiptDigest: outcome.receiptDigest,
+      reasonCode,
+    })
+    const failed = reasonCode === 'TASK_VERIFICATION_CAPTURE_FAILED'
+    store.writeAgentReconcile(address, this.idempotency(request), {
+      attemptId: request.intent.attemptId,
+      runtimeSessionId: outcome.runtimeSessionId,
+      expectedReceiptDigest: request.intent.expectedReceiptDigest,
+      outcome: failed ? 'FAILED' : 'OUTCOME_UNKNOWN',
+      receiptDigest,
+      failure: failed ? failureSignal('CANDIDATE_AUDIT_FAILED', receiptDigest) : undefined,
+      receipt,
+      now: this.now(),
+    })
   }
 
   private async preflightAgent(): Promise<

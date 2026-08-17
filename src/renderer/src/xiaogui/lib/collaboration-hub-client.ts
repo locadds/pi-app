@@ -102,8 +102,6 @@ const INTENT_TYPES = new Set([
   'system.agent.report.record',
   'system.agent.outcome.record',
   'system.agent.reconcile',
-  'system.verification.complete',
-  'system.verification.reconcile',
 ])
 
 function isStringArray(value: unknown): value is string[] {

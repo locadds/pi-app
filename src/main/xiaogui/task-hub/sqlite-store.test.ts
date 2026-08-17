@@ -205,6 +205,26 @@ function setAttemptRunning(dbPath: string, attemptId: AttemptId, taskRunId: Task
   }
 }
 
+function setAttemptOutcomeUnknown(
+  dbPath: string,
+  attemptId: AttemptId,
+  taskRunId: TaskRunId,
+  runtimeSessionId: string,
+  receiptDigest: string,
+): void {
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.prepare("update attempts set status = 'OUTCOME_UNKNOWN', runtime_session_id = ?, outcome_receipt_digest = ? where attempt_id = ?").run(
+      runtimeSessionId,
+      receiptDigest,
+      attemptId,
+    )
+    db.prepare("update task_runs set status = 'OUTCOME_UNKNOWN' where task_run_id = ?").run(taskRunId)
+  } finally {
+    db.close()
+  }
+}
+
 async function startedTaskVerification(dbPath: string, suffix: string) {
   const { app, flowId } = await activePlan(dbPath)
   app.close()
@@ -911,6 +931,73 @@ describe('M4C task verification persistence', () => {
     ).toMatchObject({ replayed: true })
     expect(fixture.store.tableCounts()).toEqual(sealedCounts)
     expect(fixture.store.currentVersion(ADDRESS)).toBe(sealedVersion)
+    fixture.store.close()
+  })
+
+  it('atomically starts verification from a reconciled SUCCEEDED runtime outcome', async () => {
+    const dbPath = await tempDb('verification-reconcile.sqlite')
+    const fixture = await startedTaskVerification(dbPath, 'reconcile')
+    setAttemptOutcomeUnknown(
+      dbPath,
+      fixture.attemptId,
+      fixture.taskRunId,
+      'runtime-reconcile',
+      'sha256:unknown-before-reconcile',
+    )
+    const record: BeginTaskVerificationRecordV1 = {
+      ...fixture.beginRecord,
+      reconcileStart: {
+        idempotency: {
+          requestId: 'sys-agent-reconcile-success',
+          commandType: 'system.agent.reconcile',
+          payloadHash: 'sha256:reconcile-payload',
+        },
+        receipt: {
+          requestId: 'sys-agent-reconcile-success',
+          intentType: 'system.agent.reconcile',
+          sessionVersion: 0,
+          attemptId: fixture.attemptId,
+        },
+        runtimeSessionId: 'runtime-reconcile',
+        expectedReceiptDigest: 'sha256:unknown-before-reconcile',
+        receiptDigest: fixture.beginRecord.succeededAudit.receiptDigest,
+      },
+    }
+
+    const result = fixture.store.beginTaskVerification(ADDRESS, record)
+    expect(result).toMatchObject({ replayed: false })
+    expect(fixture.store.attempt(fixture.attemptId)?.status).toBe('VERIFYING')
+    expect(fixture.store.taskRun(fixture.taskRunId)?.status).toBe('VERIFYING')
+    expect(fixture.store.idempotency(ADDRESS, 'sys-agent-reconcile-success')).toMatchObject({
+      command_type: 'system.agent.reconcile',
+      payload_hash: 'sha256:reconcile-payload',
+    })
+    expect(fixture.store.tableCounts()).toMatchObject({
+      agent_reconcile_results: 1,
+      agent_succeeded_audits: 1,
+      change_set_candidates: 1,
+      verification_attempts: 1,
+      verification_outbox: 1,
+    })
+    const version = fixture.store.currentVersion(ADDRESS)
+    const counts = fixture.store.tableCounts()
+    expect(fixture.store.beginTaskVerification(ADDRESS, record)).toMatchObject({ replayed: true })
+    expect(fixture.store.currentVersion(ADDRESS)).toBe(version)
+    expect(fixture.store.tableCounts()).toEqual(counts)
+    expect(() =>
+      fixture.store.beginTaskVerification(ADDRESS, {
+        ...record,
+        reconcileStart: {
+          ...record.reconcileStart!,
+          idempotency: {
+            ...record.reconcileStart!.idempotency,
+            payloadHash: 'sha256:different-reconcile-payload',
+          },
+        },
+      }),
+    ).toThrow('TASK_VERIFICATION_IDEMPOTENCY_CONFLICT')
+    expect(fixture.store.currentVersion(ADDRESS)).toBe(version)
+    expect(fixture.store.tableCounts()).toEqual(counts)
     fixture.store.close()
   })
 

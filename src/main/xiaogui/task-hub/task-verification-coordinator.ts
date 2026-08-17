@@ -5,7 +5,7 @@ import type {
   AttemptId,
   FlowId,
   HubAddressV1,
-  SessionCollaborationProjectionM2BV1,
+  PerformReceiptV1,
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
 import {
@@ -40,6 +40,7 @@ import type {
   TaskVerificationExecutionPortV1,
 } from './verification-port'
 import { CollaborationHubSqliteStoreV1, type VerificationOutboxRecordV1 } from './sqlite-store'
+import type { IdempotencyInput } from './sqlite-store'
 
 const VERIFIER_OWNER_ID = 'xiaogui-main-process-task-verifier'
 const QA_CONFIG_VERSION = 'xiaogui.coding.task.v1'
@@ -52,6 +53,11 @@ export interface TaskVerificationSucceededInputV1 {
   readonly attemptId: AttemptId
   readonly outcome: Extract<RuntimeOutcomeV1, { state: 'SUCCEEDED' }>
   readonly createdAt: string
+  readonly reconcileStart?: {
+    readonly idempotency: IdempotencyInput
+    readonly receipt: PerformReceiptV1
+    readonly expectedReceiptDigest?: string
+  }
 }
 
 export type TaskVerificationCoordinatorResultV1 =
@@ -130,15 +136,16 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
     const planRevisionId = projection?.activeFlow?.activeRevisionId
     const attempt = projection?.attempts.find((candidate) => candidate.attemptId === input.attemptId)
     const taskRun = projection?.taskRuns.find((candidate) => candidate.taskRunId === input.taskRunId)
+    const sourceStatus = input.reconcileStart ? 'OUTCOME_UNKNOWN' : 'RUNNING'
     if (
       !projection ||
       !planRevisionId ||
       projection.activeFlow?.flowId !== input.flowId ||
       attempt?.taskRunId !== input.taskRunId ||
-      attempt.status !== 'RUNNING' ||
+      attempt.status !== sourceStatus ||
       attempt.runtimeSessionId !== input.outcome.runtimeSessionId ||
       taskRun?.attemptId !== input.attemptId ||
-      taskRun.status !== 'RUNNING'
+      taskRun.status !== sourceStatus
     ) {
       return { ok: false, reasonCode: 'TASK_VERIFICATION_BINDING_MISMATCH' }
     }
@@ -200,6 +207,17 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
           receiptDigest: input.outcome.receiptDigest,
           candidateDigest: input.outcome.candidateDigest,
         },
+        ...(input.reconcileStart
+          ? {
+              reconcileStart: {
+                idempotency: input.reconcileStart.idempotency,
+                receipt: input.reconcileStart.receipt,
+                runtimeSessionId: input.outcome.runtimeSessionId,
+                expectedReceiptDigest: input.reconcileStart.expectedReceiptDigest,
+                receiptDigest: input.outcome.receiptDigest,
+              },
+            }
+          : {}),
         verificationAttempt: {
           scope: 'TASK',
           verificationAttemptId: ids.verificationAttemptId,
@@ -264,13 +282,12 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
         ]
     const diagnosticArtifacts = result.artifacts.filter((artifact) => artifact.kind === 'VERIFICATION_DIAGNOSTIC')
     if (result.receipt.verdict !== 'PASS') {
-      const completed = store.completeTaskVerification(input.address, {
+      return this.completeOrDegradeToUnknown(input.address, request, ids.inspectionArtifactId, {
         receipt: result.receipt,
         evidenceArtifacts,
         diagnosticArtifacts,
         now: this.now(),
       })
-      return { ok: true, verificationAttemptId: request.verificationAttemptId, verdict: completed.verdict }
     }
 
     const evidenceWithoutDigest = {
@@ -330,7 +347,7 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
       return { ok: true, verificationAttemptId: request.verificationAttemptId, verdict: completed.verdict }
     }
 
-    const completed = store.completeTaskVerification(input.address, {
+    return this.completeOrDegradeToUnknown(input.address, request, ids.inspectionArtifactId, {
       receipt: result.receipt,
       evidenceBundle,
       qaResult,
@@ -339,70 +356,38 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
       diagnosticArtifacts,
       now: this.now(),
     })
-    return { ok: true, verificationAttemptId: request.verificationAttemptId, verdict: completed.verdict }
   }
 
-  private async completeBeginFailureAsUnknown(
-    input: TaskVerificationSucceededInputV1,
-    safeCode: string,
-  ): Promise<void> {
-    const store = this.storeInstance()
-    const attempt = store.attempt(input.attemptId)
-    if (!attempt || attempt.status !== 'RUNNING') return
-    const emptyCandidateDigest = digestJson({
-      flowId: input.flowId,
-      taskRunId: input.taskRunId,
-      attemptId: input.attemptId,
-      safeCode,
-    }) as Sha256Digest
-    const ids = verificationIds(emptyCandidateDigest)
-    const requestWithoutDigest = {
-      scope: 'TASK' as const,
-      verificationAttemptId: ids.verificationAttemptId,
-      verificationRequestId: ids.verificationRequestId,
-      flowId: input.flowId,
-      taskRunId: input.taskRunId,
-      attemptId: input.attemptId,
-      candidateId: `xhcand_${hashHex(emptyCandidateDigest).slice(0, 32)}` as never,
-      changeSetDigest: digestJson({ safeCode, role: 'begin-failed-changeset' }) as Sha256Digest,
-      preparedTreeHash: digestJson({ safeCode, role: 'begin-failed-tree' }) as Sha256Digest,
-      qaConfigVersion: QA_CONFIG_VERSION,
-      acceptanceCriteria: ACCEPTANCE_CRITERIA,
+  private async completeOrDegradeToUnknown(
+    address: HubAddressV1,
+    request: TaskVerificationRequestV1,
+    diagnosticArtifactId: ArtifactId,
+    record: Parameters<CollaborationHubSqliteStoreV1['completeTaskVerification']>[1],
+  ): Promise<TaskVerificationCoordinatorResultV1> {
+    try {
+      const completed = this.storeInstance().completeTaskVerification(address, record)
+      return {
+        ok: true,
+        verificationAttemptId: request.verificationAttemptId,
+        verdict: completed.verdict,
+      }
+    } catch {
+      try {
+        const completed = await this.completeWithUnknown(
+          address,
+          request,
+          diagnosticArtifactId,
+          'TASK_VERIFICATION_COMPLETION_REJECTED',
+        )
+        return {
+          ok: true,
+          verificationAttemptId: request.verificationAttemptId,
+          verdict: completed.verdict,
+        }
+      } catch {
+        return { ok: false, reasonCode: 'TASK_VERIFICATION_STORE_REJECTED' }
+      }
     }
-    const request: TaskVerificationRequestV1 = Object.freeze({
-      ...requestWithoutDigest,
-      requestDigest: verificationRequestDigestV1(requestWithoutDigest),
-    })
-    await this.recordRuntimeOutcomeUnknown(input, safeCode, request.requestDigest)
-  }
-
-  private async recordRuntimeOutcomeUnknown(
-    input: TaskVerificationSucceededInputV1,
-    safeCode: string,
-    requestDigest: string,
-  ): Promise<void> {
-    const store = this.storeInstance()
-    const receipt = {
-      requestId: `xhbvr_${hashHex(`${input.attemptId}:${safeCode}:${requestDigest}`).slice(0, 48)}`,
-      intentType: 'system.agent.outcome.record' as const,
-      sessionVersion: 0,
-      flowId: input.flowId,
-      taskRunId: input.taskRunId,
-      attemptId: input.attemptId,
-    }
-    store.writeAgentOutcome(input.address, {
-      requestId: receipt.requestId,
-      commandType: 'system.agent.outcome.record',
-      payloadHash: digestJson({ input, safeCode, requestDigest }),
-    }, {
-      attemptId: input.attemptId,
-      taskRunId: input.taskRunId,
-      runtimeSessionId: input.outcome.runtimeSessionId,
-      outcome: 'OUTCOME_UNKNOWN',
-      receiptDigest: digestJson({ safeCode, requestDigest }),
-      receipt,
-      now: this.now(),
-    })
   }
 
   private async completePendingAsUnknown(
@@ -560,11 +545,4 @@ function digestBytes(value: Uint8Array): Sha256Digest {
 
 function hashHex(value: string): string {
   return createHash('sha256').update(value).digest('hex')
-}
-
-export function taskVerificationProjectionStatus(
-  projection: SessionCollaborationProjectionM2BV1,
-  attemptId: AttemptId,
-): string | undefined {
-  return projection.attempts.find((attempt) => attempt.attemptId === attemptId)?.status
 }

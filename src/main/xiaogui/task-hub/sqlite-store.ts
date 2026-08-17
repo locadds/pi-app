@@ -278,6 +278,13 @@ export interface BeginTaskVerificationRecordV1 {
   candidate: ChangeSetCandidateV1
   ancestorTaskChangeSetIds: readonly TaskChangeSetId[]
   succeededAudit: AgentSucceededAuditV1
+  reconcileStart?: {
+    idempotency: IdempotencyInput
+    receipt: PerformReceiptV1
+    runtimeSessionId: string
+    expectedReceiptDigest?: string
+    receiptDigest: string
+  }
   verificationAttempt: Extract<VerificationAttemptV1, { scope: 'TASK' }>
   verificationRequestJson: string
   now: string
@@ -930,7 +937,7 @@ export class CollaborationHubSqliteStoreV1 {
       const request = parseTaskVerificationRequest(record.verificationRequestJson)
       const attempt = this.db
         .prepare(
-          'select attempt_id, project_id, session_key, flow_id, task_run_id, status, runtime_session_id from attempts where attempt_id = ?',
+          'select attempt_id, project_id, session_key, flow_id, task_run_id, status, runtime_session_id, outcome_receipt_digest from attempts where attempt_id = ?',
         )
         .get(record.candidate.attemptId) as
         | {
@@ -941,6 +948,7 @@ export class CollaborationHubSqliteStoreV1 {
             task_run_id: TaskRunId
             status: string
             runtime_session_id: string | null
+            outcome_receipt_digest: string | null
           }
         | undefined
       const taskRun = this.taskRun(record.candidate.taskRunId)
@@ -965,15 +973,26 @@ export class CollaborationHubSqliteStoreV1 {
 
       const persisted = this.verificationAttemptForAttempt(record.candidate.attemptId)
       if (persisted) {
-        assertBeginReplay(this.db, persisted, record, request)
+        assertBeginReplay(this.db, address, persisted, record, request)
         return {
           verificationAttemptId: persisted.verification_attempt_id,
           outboxId: `xhbvo_${persisted.verification_attempt_id}`,
           replayed: true,
         }
       }
-      if (attempt.status !== 'RUNNING' || taskRun.status !== 'RUNNING') {
+      const sourceStatus = record.reconcileStart ? 'OUTCOME_UNKNOWN' : 'RUNNING'
+      if (attempt.status !== sourceStatus || taskRun.status !== sourceStatus) {
         throw verificationStoreError('TASK_VERIFICATION_ILLEGAL_TRANSITION')
+      }
+      if (record.reconcileStart) {
+        const persistedUnknownDigest = attempt.outcome_receipt_digest ?? undefined
+        if (
+          record.reconcileStart.runtimeSessionId !== attempt.runtime_session_id ||
+          record.reconcileStart.receiptDigest !== record.succeededAudit.receiptDigest ||
+          record.reconcileStart.expectedReceiptDigest !== persistedUnknownDigest
+        ) {
+          throw verificationStoreError('TASK_VERIFICATION_RECONCILE_BINDING_MISMATCH')
+        }
       }
 
       assertArtifactIdAvailable(this.db, record.patchArtifact)
@@ -1031,32 +1050,81 @@ export class CollaborationHubSqliteStoreV1 {
         )
       const attemptUpdated = this.db
         .prepare(
-          "update attempts set status = 'VERIFYING', outcome_receipt_digest = ?, updated_at = ? where attempt_id = ? and status = 'RUNNING'",
+          "update attempts set status = 'VERIFYING', outcome_receipt_digest = ?, updated_at = ? where attempt_id = ? and status = ?",
         )
-        .run(record.succeededAudit.receiptDigest, record.now, record.candidate.attemptId)
+        .run(record.succeededAudit.receiptDigest, record.now, record.candidate.attemptId, sourceStatus)
       const taskUpdated = this.db
-        .prepare("update task_runs set status = 'VERIFYING' where task_run_id = ? and status = 'RUNNING'")
-        .run(record.candidate.taskRunId)
+        .prepare("update task_runs set status = 'VERIFYING' where task_run_id = ? and status = ?")
+        .run(record.candidate.taskRunId, sourceStatus)
       if (attemptUpdated.changes !== 1 || taskUpdated.changes !== 1) {
         throw verificationStoreError('TASK_VERIFICATION_ILLEGAL_TRANSITION')
       }
 
       const version = this.currentVersion(address) + 1
-      this.writeEvent(
-        address,
-        version,
-        'system.agent.outcome.record',
-        {
-          phase: 'task_verification.started',
-          flowId: record.candidate.flowId,
-          taskRunId: record.candidate.taskRunId,
-          attemptId: record.candidate.attemptId,
-          candidateId: record.candidate.candidateId,
-          verificationAttemptId: record.verificationAttempt.verificationAttemptId,
-          outboxId,
-        },
-        record.now,
-      )
+      if (record.reconcileStart) {
+        this.db
+          .prepare(
+            'insert into agent_reconcile_results (reconcile_id, attempt_id, runtime_session_id, outcome, receipt_digest, expected_receipt_digest, failure_json, created_at) values (?, ?, ?, ?, ?, ?, null, ?)',
+          )
+          .run(
+            `xhbrecon_${record.reconcileStart.receipt.requestId}`,
+            record.candidate.attemptId,
+            record.reconcileStart.runtimeSessionId,
+            'SUCCEEDED',
+            record.reconcileStart.receiptDigest,
+            record.reconcileStart.expectedReceiptDigest ?? null,
+            record.now,
+          )
+        this.writeEvent(
+          address,
+          version,
+          'system.agent.reconcile',
+          {
+            phase: 'outcome_unknown.reconciled',
+            attemptId: record.candidate.attemptId,
+            runtimeSessionId: record.reconcileStart.runtimeSessionId,
+            expectedReceiptDigest: record.reconcileStart.expectedReceiptDigest,
+            outcome: 'SUCCEEDED',
+            receiptDigest: record.reconcileStart.receiptDigest,
+          },
+          record.now,
+        )
+        this.writeEvent(
+          address,
+          version,
+          'system.agent.outcome.record',
+          {
+            phase: 'task_verification.started',
+            flowId: record.candidate.flowId,
+            taskRunId: record.candidate.taskRunId,
+            attemptId: record.candidate.attemptId,
+            candidateId: record.candidate.candidateId,
+            verificationAttemptId: record.verificationAttempt.verificationAttemptId,
+            outboxId,
+          },
+          record.now,
+        )
+        this.writeIdempotency(address, record.reconcileStart.idempotency, {
+          ...record.reconcileStart.receipt,
+          sessionVersion: version,
+        })
+      } else {
+        this.writeEvent(
+          address,
+          version,
+          'system.agent.outcome.record',
+          {
+            phase: 'task_verification.started',
+            flowId: record.candidate.flowId,
+            taskRunId: record.candidate.taskRunId,
+            attemptId: record.candidate.attemptId,
+            candidateId: record.candidate.candidateId,
+            verificationAttemptId: record.verificationAttempt.verificationAttemptId,
+            outboxId,
+          },
+          record.now,
+        )
+      }
       this.bumpProjectionVersion(address, version)
       return {
         verificationAttemptId: record.verificationAttempt.verificationAttemptId,
@@ -2032,6 +2100,7 @@ function taskChangeSetAncestorIdsForTask(
 
 function assertBeginReplay(
   db: DatabaseSync,
+  address: HubAddressV1,
   persisted: VerificationAttemptRecord,
   record: BeginTaskVerificationRecordV1,
   request: TaskVerificationRequestV1,
@@ -2066,6 +2135,50 @@ function assertBeginReplay(
     .get(record.patchArtifact.artifactId) as
     | { kind: string; media_type: string; content_digest: string; content: Uint8Array }
     | undefined
+  const reconcile = db
+    .prepare(
+      'select reconcile_id, runtime_session_id, outcome, receipt_digest, expected_receipt_digest from agent_reconcile_results where attempt_id = ?',
+    )
+    .get(record.candidate.attemptId) as
+    | {
+        reconcile_id: string
+        runtime_session_id: string
+        outcome: string
+        receipt_digest: string
+        expected_receipt_digest: string | null
+      }
+    | undefined
+  const reconcileIdempotency = record.reconcileStart
+    ? (db
+        .prepare(
+          'select command_type, payload_hash, receipt_json from idempotency_keys where scope_key = ? and request_id = ?',
+        )
+        .get(scopeKey(address), record.reconcileStart.idempotency.requestId) as IdempotencyRecord | undefined)
+    : undefined
+  let reconcileReceipt: PerformReceiptV1 | undefined
+  try {
+    reconcileReceipt = reconcileIdempotency
+      ? (JSON.parse(reconcileIdempotency.receipt_json) as PerformReceiptV1)
+      : undefined
+  } catch {
+    throw verificationStoreError('TASK_VERIFICATION_IDEMPOTENCY_CONFLICT')
+  }
+  const reconcileMatches = record.reconcileStart
+    ? Boolean(
+        reconcile &&
+          reconcile.reconcile_id === `xhbrecon_${record.reconcileStart.receipt.requestId}` &&
+          reconcile.runtime_session_id === record.reconcileStart.runtimeSessionId &&
+          reconcile.outcome === 'SUCCEEDED' &&
+          reconcile.receipt_digest === record.reconcileStart.receiptDigest &&
+          (reconcile.expected_receipt_digest ?? undefined) === record.reconcileStart.expectedReceiptDigest &&
+          reconcileIdempotency &&
+          reconcileIdempotency.command_type === record.reconcileStart.idempotency.commandType &&
+          reconcileIdempotency.payload_hash === record.reconcileStart.idempotency.payloadHash &&
+          reconcileReceipt?.requestId === record.reconcileStart.receipt.requestId &&
+          reconcileReceipt.intentType === record.reconcileStart.receipt.intentType &&
+          reconcileReceipt.attemptId === record.reconcileStart.receipt.attemptId,
+      )
+    : !reconcile
   if (
     persisted.verification_attempt_id !== record.verificationAttempt.verificationAttemptId ||
     persisted.verification_request_id !== record.verificationAttempt.verificationRequestId ||
@@ -2092,7 +2205,8 @@ function assertBeginReplay(
     outbox.outbox_id !== `xhbvo_${persisted.verification_attempt_id}` ||
     outbox.request_digest !== request.requestDigest ||
     !artifact ||
-    !artifactMatches(artifact, record.patchArtifact)
+    !artifactMatches(artifact, record.patchArtifact) ||
+    !reconcileMatches
   ) {
     throw verificationStoreError('TASK_VERIFICATION_IDEMPOTENCY_CONFLICT')
   }
