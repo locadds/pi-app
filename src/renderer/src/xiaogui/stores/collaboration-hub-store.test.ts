@@ -9,18 +9,30 @@ import type {
   TaskRunId,
   TaskSpecId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 const observeMock = vi.fn()
 const performMock = vi.fn()
 const executeMock = vi.fn()
+const submitDeliveryMock = vi.fn()
+const approveDeliveryMock = vi.fn()
+const returnDeliveryMock = vi.fn()
+const reconcileDeliveryMock = vi.fn()
+const retryDeliveryMock = vi.fn()
 let requestCounter = 0
 vi.mock('../lib/collaboration-hub-client', () => ({
   HUB_CONTRACT_VERSION: 'm2a.v1',
   HUB_OBSERVE_CONTRACT_VERSION: 'm2b.v1',
+  DELIVERY_CONTRACT_VERSION: 'm4d.v1',
   observeCollaborationHub: (address: HubAddressV1) => observeMock(address),
   performHubIntent: (address: HubAddressV1, request: unknown) => performMock(address, request),
   startTaskExecution: (request: unknown) => executeMock(request),
+  submitDeliverySelection: (address: HubAddressV1, request: unknown) => submitDeliveryMock(address, request),
+  approveDeliveryGate: (address: HubAddressV1, request: unknown) => approveDeliveryMock(address, request),
+  returnDeliveryBatch: (address: HubAddressV1, request: unknown) => returnDeliveryMock(address, request),
+  reconcileDeliveryApply: (address: HubAddressV1, request: unknown) => reconcileDeliveryMock(address, request),
+  retryDeliveryApply: (address: HubAddressV1, request: unknown) => retryDeliveryMock(address, request),
   newHubRequestId: () => `test-req-${++requestCounter}`,
 }))
 
@@ -103,10 +115,51 @@ function executableProjection(flowId = 'xhbf_flow1' as FlowId): SessionCollabora
   })
 }
 
+function deliveryProjection(): DeliveryBatchProjectionV1 {
+  return {
+    batchId: 'xhbd_batch1' as DeliveryBatchProjectionV1['batchId'],
+    flowId: 'xhbf_flow1' as FlowId,
+    state: 'READY_FOR_REVIEW',
+    selectionDigest: `sha256:${'1'.repeat(64)}` as DeliveryBatchProjectionV1['selectionDigest'],
+    selectedTaskRunIds: ['xhbtr_delivery'] as unknown as DeliveryBatchProjectionV1['selectedTaskRunIds'],
+    taskChangeSetIds: ['xhbtcs_delivery'] as unknown as DeliveryBatchProjectionV1['taskChangeSetIds'],
+    targetFingerprint: `sha256:${'2'.repeat(64)}` as DeliveryBatchProjectionV1['targetFingerprint'],
+    deliveryChangeSetId: 'xhbdcs_delivery' as DeliveryBatchProjectionV1['deliveryChangeSetId'],
+    deliveryChangeSetDigest: `sha256:${'3'.repeat(64)}` as DeliveryBatchProjectionV1['deliveryChangeSetDigest'],
+    fileChangeSummaries: [
+      {
+        operation: 'MODIFY',
+        relativePath: 'src/a.ts',
+        baselineDigest: `sha256:${'4'.repeat(64)}` as never,
+        contentDigest: `sha256:${'5'.repeat(64)}` as never,
+        contentArtifactId: 'xhbartifact_hidden' as never,
+        sourceTaskChangeSetIds: ['xhbtcs_delivery'] as never,
+      },
+    ],
+    evidenceArtifactIds: ['xhbartifact_evidence' as never],
+    gate: {
+      gateId: 'xhbdg_delivery' as never,
+      batchId: 'xhbd_batch1' as never,
+      subject: {
+        deliveryChangeSetId: 'xhbdcs_delivery' as never,
+        version: 1,
+        digest: `sha256:${'3'.repeat(64)}` as never,
+      },
+      state: 'OPEN',
+      createdAt: '2026-08-18T00:00:00.000Z' as never,
+    },
+  }
+}
+
 beforeEach(() => {
   observeMock.mockReset()
   performMock.mockReset()
   executeMock.mockReset()
+  submitDeliveryMock.mockReset()
+  approveDeliveryMock.mockReset()
+  returnDeliveryMock.mockReset()
+  reconcileDeliveryMock.mockReset()
+  retryDeliveryMock.mockReset()
   requestCounter = 0
   useCollaborationHubStore.getState().setAddress(null)
 })
@@ -642,5 +695,89 @@ describe('collaboration-hub-store', () => {
     expect(useCollaborationHubStore.getState().address).toEqual(addressB)
     expect(useCollaborationHubStore.getState().submitting).toBe(false)
     expect(useCollaborationHubStore.getState().executionError).toBeNull()
+  })
+
+  it('交付审阅零 IPC，确认应用只提交当前 gate subject 一次', async () => {
+    const delivery = deliveryProjection()
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    approveDeliveryMock.mockResolvedValue({ ok: true, value: { ...delivery, state: 'APPLYING' } })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    useCollaborationHubStore.setState({
+      projection: {
+        ...useCollaborationHubStore.getState().projection!,
+        activeDelivery: delivery,
+        availableActions: ['flow.cancel', 'delivery.gate.approve', 'delivery.gate.reject'],
+      },
+    })
+
+    expect(useCollaborationHubStore.getState().reviewActiveDelivery()).toBe(true)
+    expect(approveDeliveryMock).not.toHaveBeenCalled()
+
+    const first = useCollaborationHubStore.getState().approveActiveDelivery()
+    const duplicate = useCollaborationHubStore.getState().approveActiveDelivery()
+    await Promise.all([first, duplicate])
+
+    expect(approveDeliveryMock).toHaveBeenCalledTimes(1)
+    expect(approveDeliveryMock.mock.calls[0]![0]).toEqual(addressA)
+    expect(approveDeliveryMock.mock.calls[0]![1]).toEqual({
+      requestId: 'test-req-1',
+      gateId: delivery.gate!.gateId,
+      subject: delivery.gate!.subject,
+    })
+  })
+
+  it('从已验证任务创建交付：本地复选后只提交一次 selection intent', async () => {
+    const delivery = deliveryProjection()
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    submitDeliveryMock.mockResolvedValue({ ok: true, value: delivery })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    useCollaborationHubStore.setState({
+      projection: {
+        ...useCollaborationHubStore.getState().projection!,
+        availableActions: ['flow.cancel', 'delivery.selection.submit'],
+      },
+    })
+
+    expect(await useCollaborationHubStore.getState().createDeliveryFromSelection()).toBe(false)
+    useCollaborationHubStore.getState().toggleDeliveryTaskSelection('xhbtr_delivery' as TaskRunId)
+    const first = useCollaborationHubStore.getState().createDeliveryFromSelection()
+    const duplicate = useCollaborationHubStore.getState().createDeliveryFromSelection()
+    await Promise.all([first, duplicate])
+
+    expect(submitDeliveryMock).toHaveBeenCalledTimes(1)
+    expect(submitDeliveryMock.mock.calls[0]![1]).toEqual({
+      requestId: 'test-req-1',
+      flowId: 'xhbf_flow1',
+      taskRunIds: ['xhbtr_delivery'],
+    })
+    expect(useCollaborationHubStore.getState().selectedDeliveryTaskRunIds).toEqual([])
+  })
+
+  it('退回交付是独立动作，不要求确认应用二次态', async () => {
+    const delivery = deliveryProjection()
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    returnDeliveryMock.mockResolvedValue({ ok: true, value: { ...delivery, state: 'REJECTED' } })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    useCollaborationHubStore.setState({
+      projection: {
+        ...useCollaborationHubStore.getState().projection!,
+        activeDelivery: delivery,
+        availableActions: ['flow.cancel', 'delivery.gate.reject'],
+      },
+    })
+
+    await useCollaborationHubStore.getState().rejectActiveDelivery('  需要调整  ')
+
+    expect(returnDeliveryMock).toHaveBeenCalledTimes(1)
+    expect(returnDeliveryMock.mock.calls[0]![1]).toEqual({
+      requestId: 'test-req-1',
+      gateId: delivery.gate!.gateId,
+      subject: delivery.gate!.subject,
+      rejectionReason: '需要调整',
+    })
+    expect(approveDeliveryMock).not.toHaveBeenCalled()
   })
 })

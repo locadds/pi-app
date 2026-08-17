@@ -38,6 +38,8 @@ import { TaskCandidateAuditServiceV1 } from './task-candidate-audit'
 import { FixedTypecheckVerificationPortV1 } from './verification-port'
 import { createRuntimeOutcomeMonitorV1, type RuntimeOutcomeMonitorV1 } from './runtime-outcome-monitor'
 import { createTaskVerificationCoordinatorV1, type TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
+import { MainProcessChangeApplyPortV1, SqliteDeliveryApplyAttemptRegistryV1 } from './change-apply'
+import { createXiaoguiDeliveryWorkflowV1, type XiaoguiDeliveryWorkflowV1 } from './delivery-workflow'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
@@ -56,6 +58,7 @@ export interface XiaoguiRuntimeCompositionOptionsV1 {
 export interface XiaoguiRuntimeCompositionV1 {
   readonly application: CollaborationHubApplicationV1
   readonly taskExecution: XiaoguiTaskExecutionOrchestratorV1
+  readonly delivery: XiaoguiDeliveryWorkflowV1
   stageAttemptInput(input: StageAttemptExecutionInputV1): ResolvedAttemptExecutionInputV1
   close(): Promise<void>
 }
@@ -88,6 +91,8 @@ export function createXiaoguiRuntimeCompositionV1(
   let taskExecution: XiaoguiTaskExecutionOrchestratorV1 | undefined
   let runtimeMonitor: RuntimeOutcomeMonitorV1 | undefined
   let taskVerificationCoordinator: TaskVerificationCoordinatorV1 | undefined
+  let deliveryWorkflow: XiaoguiDeliveryWorkflowV1 | undefined
+  let deliveryApplyRegistry: SqliteDeliveryApplyAttemptRegistryV1 | undefined
 
   try {
     const projectResolver = options.projectResolver ?? new MainProjectWorkspaceResolverV1()
@@ -131,10 +136,11 @@ export function createXiaoguiRuntimeCompositionV1(
     const runtimeHost = createAgentRuntimeHostV1(kimiAdapter)
 
     const hubDbPath = join(userDataDir, 'xiaogui-task-hub-m2a.sqlite')
+    const fixedVerificationPort = new FixedTypecheckVerificationPortV1()
     taskVerificationCoordinator = createTaskVerificationCoordinatorV1({
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
       candidateAudit: new TaskCandidateAuditServiceV1(attemptWorkspaces),
-      verificationPort: new FixedTypecheckVerificationPortV1(),
+      verificationPort: fixedVerificationPort,
       projectResolver,
       now: options.now,
     })
@@ -164,10 +170,25 @@ export function createXiaoguiRuntimeCompositionV1(
       now: options.now,
     })
     void taskExecution.recover().catch(() => undefined)
+    deliveryApplyRegistry = new SqliteDeliveryApplyAttemptRegistryV1({
+      dbPath: join(taskHubDir, 'delivery-apply-attempts.sqlite'),
+    })
+    deliveryWorkflow = createXiaoguiDeliveryWorkflowV1({
+      storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
+      baselineProvider,
+      projectResolver,
+      deliveryManagedRoot: join(xiaoguiDir, 'delivery-worktrees'),
+      verificationPort: fixedVerificationPort,
+      applyPort: new MainProcessChangeApplyPortV1({ projectResolver, registry: deliveryApplyRegistry }),
+      now: options.now,
+    })
+    void deliveryWorkflow.recover().catch(() => undefined)
 
     return createCompositionInterface(
       application,
       taskExecution,
+      deliveryWorkflow,
+      deliveryApplyRegistry,
       kimiAdapter,
       inputStore,
       payloadVault,
@@ -177,6 +198,8 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(taskExecution)
     closeQuietly(runtimeMonitor)
     closeQuietly(taskVerificationCoordinator)
+    closeQuietly(deliveryWorkflow)
+    closeQuietly(deliveryApplyRegistry)
     closeQuietly(kimiAdapter)
     closeQuietly(application)
     closeQuietly(inputStore)
@@ -189,6 +212,8 @@ export function createXiaoguiRuntimeCompositionV1(
 function createCompositionInterface(
   application: CollaborationHubApplicationV1,
   taskExecution: XiaoguiTaskExecutionOrchestratorV1,
+  delivery: XiaoguiDeliveryWorkflowV1,
+  deliveryApplyRegistry: SqliteDeliveryApplyAttemptRegistryV1,
   kimiAdapter: KimiAcpRuntimeAdapterV1,
   inputStore: AttemptExecutionInputStoreV1,
   payloadVault: PrivateRuntimePayloadVaultV1,
@@ -200,6 +225,7 @@ function createCompositionInterface(
   return {
     application,
     taskExecution,
+    delivery,
     stageAttemptInput(input) {
       if (closed) throw new Error('XIAOGUI_RUNTIME_COMPOSITION_CLOSED')
       return inputStore.stage(input)
@@ -207,13 +233,17 @@ function createCompositionInterface(
     close() {
       if (closePromise) return closePromise
       closed = true
-      closePromise = taskExecution.close().then(() => closeAll([
+      closePromise = taskExecution.close().then(async () => {
+        await delivery.close()
+        await closeAll([
+          deliveryApplyRegistry,
           kimiAdapter,
           application,
           inputStore,
           payloadVault,
           workspaceRegistry,
-        ]))
+        ])
+      })
       return closePromise
     },
   }

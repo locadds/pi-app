@@ -463,6 +463,15 @@ describe('M2B sqlite store migration', () => {
       task_evidence_bundles: 0,
       task_qa_results: 0,
       task_change_sets: 0,
+      delivery_batches: 0,
+      delivery_selection_drafts: 0,
+      delivery_verification_attempts: 0,
+      delivery_verification_outbox: 0,
+      delivery_verification_receipts: 0,
+      delivery_change_sets: 0,
+      delivery_human_gates: 0,
+      delivery_apply_attempts: 0,
+      delivery_apply_outbox: 0,
       attempt_workspace_prepared: 0,
       attempt_workspace_leases: 0,
       attempt_file_manifests: 0,
@@ -476,8 +485,8 @@ describe('M2B sqlite store migration', () => {
     reopened.close()
 
     const db = new DatabaseSync(dbPath)
-    expect(db.prepare('select version from schema_migrations order by version').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }])
-    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets') order by name").all()).toEqual([
+    expect(db.prepare('select version from schema_migrations order by version').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }])
+    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
       { name: 'agent_dispatch_outbox' },
       { name: 'agent_failures' },
       { name: 'agent_reconcile_results' },
@@ -490,6 +499,15 @@ describe('M2B sqlite store migration', () => {
       { name: 'change_set_candidates' },
       { name: 'composition_attempts' },
       { name: 'create_batches' },
+      { name: 'delivery_apply_attempts' },
+      { name: 'delivery_apply_outbox' },
+      { name: 'delivery_batches' },
+      { name: 'delivery_change_sets' },
+      { name: 'delivery_human_gates' },
+      { name: 'delivery_selection_drafts' },
+      { name: 'delivery_verification_attempts' },
+      { name: 'delivery_verification_outbox' },
+      { name: 'delivery_verification_receipts' },
       { name: 'flow_execution_baselines' },
       { name: 'private_runtime_payloads' },
       { name: 'runtime_session_bindings' },
@@ -689,6 +707,7 @@ describe('M2B sqlite store migration', () => {
         { version: 2 },
         { version: 3 },
         { version: 4 },
+        { version: 5 },
       ])
       expect(migrated.prepare('pragma table_info(flow_execution_baselines)').all()).toEqual(
         expect.arrayContaining([expect.objectContaining({ name: 'base_revision' })]),

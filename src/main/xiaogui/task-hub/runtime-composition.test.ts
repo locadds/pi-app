@@ -97,6 +97,7 @@ describe('Xiaogui runtime composition v1', () => {
       'attempt-workspaces.sqlite',
       'private-runtime-payloads.sqlite',
       'attempt-execution-inputs.sqlite',
+      'delivery-apply-attempts.sqlite',
     ].every((name) => existsSync(join(taskHubDir, name)))).toBe(true)
     expect(existsSync(join(userDataDir, 'xiaogui-task-hub-m2a.sqlite'))).toBe(true)
     expect(existsSync(join(userDataDir, 'xiaogui', 'agent-runtime'))).toBe(false)

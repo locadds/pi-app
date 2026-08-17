@@ -9,6 +9,7 @@ import type {
   TaskRunId,
   TaskSpecId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 const invokeMock = vi.fn()
@@ -21,10 +22,13 @@ vi.mock('@renderer/lib/ipc-client', () => ({
 import {
   HUB_CONTRACT_VERSION,
   HUB_OBSERVE_CONTRACT_VERSION,
+  DELIVERY_CONTRACT_VERSION,
+  approveDeliveryGate,
   newHubRequestId,
   observeCollaborationHub,
   performHubIntent,
   startTaskExecution,
+  submitDeliverySelection,
 } from './collaboration-hub-client'
 
 const address: HubAddressV1 = {
@@ -53,6 +57,42 @@ function projectionFixture(): SessionCollaborationProjectionM2BV1 {
     attempts: [],
     history: [],
     availableActions: ['flow.start.with_draft'],
+  }
+}
+
+function deliveryFixture(): DeliveryBatchProjectionV1 {
+  return {
+    batchId: 'xhbd_batch1' as DeliveryBatchProjectionV1['batchId'],
+    flowId: 'xhbf_flow1' as FlowId,
+    state: 'READY_FOR_REVIEW',
+    selectionDigest: `sha256:${'1'.repeat(64)}` as DeliveryBatchProjectionV1['selectionDigest'],
+    selectedTaskRunIds: ['xhbtr_delivery'] as unknown as DeliveryBatchProjectionV1['selectedTaskRunIds'],
+    taskChangeSetIds: ['xhbtcs_delivery'] as unknown as DeliveryBatchProjectionV1['taskChangeSetIds'],
+    targetFingerprint: `sha256:${'2'.repeat(64)}` as DeliveryBatchProjectionV1['targetFingerprint'],
+    deliveryChangeSetId: 'xhbdcs_delivery' as DeliveryBatchProjectionV1['deliveryChangeSetId'],
+    deliveryChangeSetDigest: `sha256:${'3'.repeat(64)}` as DeliveryBatchProjectionV1['deliveryChangeSetDigest'],
+    fileChangeSummaries: [
+      {
+        operation: 'MODIFY',
+        relativePath: 'src/a.ts',
+        baselineDigest: `sha256:${'4'.repeat(64)}` as never,
+        contentDigest: `sha256:${'5'.repeat(64)}` as never,
+        contentArtifactId: 'xhbartifact_hidden' as never,
+        sourceTaskChangeSetIds: ['xhbtcs_delivery'] as never,
+      },
+    ],
+    evidenceArtifactIds: ['xhbartifact_evidence' as never],
+    gate: {
+      gateId: 'xhbdg_delivery' as never,
+      batchId: 'xhbd_batch1' as never,
+      subject: {
+        deliveryChangeSetId: 'xhbdcs_delivery' as never,
+        version: 1,
+        digest: `sha256:${'3'.repeat(64)}` as never,
+      },
+      state: 'OPEN',
+      createdAt: '2026-08-18T00:00:00.000Z' as never,
+    },
   }
 }
 
@@ -177,6 +217,31 @@ describe('collaboration-hub-client', () => {
     invokeMock.mockResolvedValueOnce({ ok: true, value: valid })
 
     await expect(observeCollaborationHub(address)).resolves.toEqual({ ok: true, value: valid })
+  })
+
+  it('observe 接受 activeDelivery 公开摘要和交付动作，但拒绝绝对路径', async () => {
+    const valid = {
+      ...projectionFixture(),
+      activeDelivery: deliveryFixture(),
+      availableActions: ['flow.cancel', 'delivery.gate.approve', 'delivery.gate.reject'],
+    }
+    invokeMock.mockResolvedValueOnce({ ok: true, value: valid })
+    await expect(observeCollaborationHub(address)).resolves.toEqual({ ok: true, value: valid })
+
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...valid,
+        activeDelivery: {
+          ...deliveryFixture(),
+          fileChangeSummaries: [{ ...deliveryFixture().fileChangeSummaries![0], relativePath: 'C:\\secret.ts' }],
+        },
+      },
+    })
+    await expect(observeCollaborationHub(address)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+    })
   })
 
   it.each([
@@ -385,6 +450,51 @@ describe('collaboration-hub-client', () => {
     expect(invokeMock).toHaveBeenCalledWith('xiaogui.hub.execution.start', request)
     expect(Object.keys(invokeMock.mock.calls[0]![1]).sort()).toEqual(['address', 'files', 'flowId', 'prompt'])
     expect(JSON.stringify(invokeMock.mock.calls[0]![1])).not.toMatch(/requestId|version|actor|adapter|digest|absolute/i)
+  })
+
+  it('交付批准只调用 M4D 窄通道，载荷不含 actor、bytes 或命令', async () => {
+    const delivery = deliveryFixture()
+    invokeMock.mockResolvedValueOnce({ ok: true, value: delivery })
+
+    const result = await approveDeliveryGate(address, {
+      requestId: 'req-delivery-approve',
+      gateId: delivery.gate!.gateId,
+      subject: delivery.gate!.subject,
+    })
+
+    expect(result).toEqual({ ok: true, value: delivery })
+    expect(invokeMock).toHaveBeenCalledWith('xiaogui.delivery.gate.approve', {
+      contractVersion: DELIVERY_CONTRACT_VERSION,
+      address,
+      request: {
+        requestId: 'req-delivery-approve',
+        gateId: delivery.gate!.gateId,
+        subject: delivery.gate!.subject,
+      },
+    })
+    expect(JSON.stringify(invokeMock.mock.calls[0]![1])).not.toMatch(/actor|trusted|artifactBytes|command|absolute/i)
+  })
+
+  it('交付选择只调用 M4D selection 窄通道', async () => {
+    const delivery = deliveryFixture()
+    invokeMock.mockResolvedValueOnce({ ok: true, value: delivery })
+
+    const result = await submitDeliverySelection(address, {
+      requestId: 'req-delivery-selection',
+      flowId: 'xhbf_flow1' as FlowId,
+      taskRunIds: ['xhbtr_delivery'] as never,
+    })
+
+    expect(result).toEqual({ ok: true, value: delivery })
+    expect(invokeMock).toHaveBeenCalledWith('xiaogui.delivery.selection.submit', {
+      contractVersion: DELIVERY_CONTRACT_VERSION,
+      address,
+      request: {
+        requestId: 'req-delivery-selection',
+        flowId: 'xhbf_flow1',
+        taskRunIds: ['xhbtr_delivery'],
+      },
+    })
   })
 
   it('最终执行拒绝关系不一致的结果并映射为安全 INTERNAL', async () => {

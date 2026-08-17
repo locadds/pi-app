@@ -26,6 +26,23 @@ import type {
   UserIntentRequestV1,
 } from '@shared/xiaogui-collaboration-hub'
 import type {
+  DeliveryApplyAttemptV1,
+  DeliveryBatchProjectionV1,
+  DeliveryBatchStateV1,
+  DeliveryFileChangeSummaryV1,
+  DeliveryGateSubjectV1,
+  DeliveryHumanGateV1,
+} from '@shared/xiaogui-delivery'
+import type {
+  XiaoguiDeliveryApproveGateRequestV1,
+  XiaoguiDeliveryOutcomeV1,
+  XiaoguiDeliveryReconcileApplyRequestV1,
+  XiaoguiDeliveryReturnBatchRequestV1,
+  XiaoguiDeliveryRetryApplyRequestV1,
+  XiaoguiDeliverySafeErrorV1,
+  XiaoguiDeliverySelectTasksRequestV1,
+} from '@shared/xiaogui-delivery-ipc'
+import type {
   XiaoguiTaskExecutionErrorCodeV1,
   XiaoguiTaskExecutionSafeErrorV1,
   XiaoguiTaskExecutionStartOutcomeV1,
@@ -40,6 +57,8 @@ import { ipcClient } from '@renderer/lib/ipc-client'
 export const HUB_CONTRACT_VERSION = 'm2a.v1'
 /** observe（只读投影）契约版本：M3B 起读取 m2b.v1 投影。 */
 export const HUB_OBSERVE_CONTRACT_VERSION = 'm2b.v1'
+/** 交付审阅/应用 IPC 契约版本：Renderer 只提交用户意图。 */
+export const DELIVERY_CONTRACT_VERSION = 'm4d.v1'
 
 /** IPC 层失败（拒绝、非约定返回）的安全映射；traceId 为空表示主进程未给出。 */
 function ipcFailureError(): HubSafeErrorV1 {
@@ -68,6 +87,7 @@ const HUB_ERROR_CODES = new Set<HubErrorCodeV1>([
 const HUB_ACTIONS = new Set<CollaborationHubActionV1>(['flow.start.with_draft', 'plan.revision.submit', 'flow.cancel'])
 const HUB_M2B_ACTIONS = new Set<CollaborationHubActionM2BV1>([...HUB_ACTIONS, 'execution.next.confirm'])
 const HUB_TRACE_ID = /^xhbt_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const DELIVERY_TRACE_ID = /^xhbd_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const TASK_EXECUTION_TRACE_ID = /^xhbet_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/
 
@@ -83,6 +103,26 @@ const TASK_EXECUTION_ERROR_CODES = new Set<XiaoguiTaskExecutionErrorCodeV1>([
   'WORKSPACE_PREPARATION_FAILED',
   'OUTCOME_UNKNOWN',
   'INTERNAL',
+])
+
+const DELIVERY_ERROR_CODES = new Set<XiaoguiDeliverySafeErrorV1['code']>([
+  'IPC_VERSION_UNSUPPORTED',
+  'DELIVERY_INPUT_INVALID',
+  'STALE_DELIVERY_SUBJECT',
+  'DELIVERY_NOT_FOUND',
+  'ILLEGAL_TRANSITION',
+  'INTERNAL',
+])
+
+const DELIVERY_STATES = new Set<DeliveryBatchStateV1>([
+  'COMPOSING',
+  'VERIFYING',
+  'READY_FOR_REVIEW',
+  'APPROVED',
+  'REJECTED',
+  'APPLYING',
+  'APPLIED',
+  'OUTCOME_UNKNOWN',
 ])
 
 const INTENT_TYPES = new Set([
@@ -103,6 +143,16 @@ const INTENT_TYPES = new Set([
   'system.agent.outcome.record',
   'system.agent.reconcile',
 ])
+
+for (const action of [
+  'delivery.selection.submit',
+  'delivery.gate.approve',
+  'delivery.gate.reject',
+  'apply.reconcile.request',
+  'apply.retry.request',
+] as const) {
+  HUB_M2B_ACTIONS.add(action)
+}
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
@@ -278,6 +328,17 @@ function isTaskExecutionSafeError(value: unknown): value is XiaoguiTaskExecution
   )
 }
 
+function isDeliverySafeError(value: unknown): value is XiaoguiDeliverySafeErrorV1 {
+  return (
+    isRecord(value) &&
+    typeof value.code === 'string' &&
+    DELIVERY_ERROR_CODES.has(value.code as XiaoguiDeliverySafeErrorV1['code']) &&
+    typeof value.messageKey === 'string' &&
+    typeof value.traceId === 'string' &&
+    (value.traceId === '' || DELIVERY_TRACE_ID.test(value.traceId))
+  )
+}
+
 function isPlanTask(value: unknown): boolean {
   return (
     isRecord(value) &&
@@ -363,6 +424,138 @@ function isAttemptM2B(value: unknown): value is AttemptProjectionM2BV1 {
   )
 }
 
+function isSafeRelativePath(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value === value.trim() &&
+    !value.includes('\0') &&
+    !/^[A-Za-z]:[\\/]/.test(value) &&
+    !value.startsWith('/') &&
+    !value.startsWith('\\') &&
+    !value.startsWith('file://') &&
+    !value.split(/[\\/]/).some((segment) => segment === '' || segment === '.' || segment === '..')
+  )
+}
+
+function isDeliveryFileChangeSummary(value: unknown): value is DeliveryFileChangeSummaryV1 {
+  return (
+    isRecord(value) &&
+    Object.keys(value).every((key) =>
+      ['operation', 'relativePath', 'baselineDigest', 'contentDigest', 'contentArtifactId', 'sourceTaskChangeSetIds'].includes(key),
+    ) &&
+    (value.operation === 'MODIFY' || value.operation === 'CREATE') &&
+    typeof value.relativePath === 'string' &&
+    isSafeRelativePath(value.relativePath) &&
+    (value.baselineDigest === null || (typeof value.baselineDigest === 'string' && SHA256_DIGEST.test(value.baselineDigest))) &&
+    typeof value.contentDigest === 'string' &&
+    SHA256_DIGEST.test(value.contentDigest) &&
+    isNonEmptyString(value.contentArtifactId) &&
+    isStringArray(value.sourceTaskChangeSetIds)
+  )
+}
+
+function isDeliveryGateSubject(value: unknown): value is DeliveryGateSubjectV1 {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['deliveryChangeSetId', 'version', 'digest']) &&
+    isNonEmptyString(value.deliveryChangeSetId) &&
+    value.version === 1 &&
+    typeof value.digest === 'string' &&
+    SHA256_DIGEST.test(value.digest)
+  )
+}
+
+function isDeliveryGate(value: unknown): value is DeliveryHumanGateV1 {
+  return (
+    isRecord(value) &&
+    Object.keys(value).every((key) =>
+      ['gateId', 'batchId', 'subject', 'state', 'decisionDigest', 'decidedAt', 'createdAt'].includes(key),
+    ) &&
+    isNonEmptyString(value.gateId) &&
+    isNonEmptyString(value.batchId) &&
+    isDeliveryGateSubject(value.subject) &&
+    ['OPEN', 'APPROVED', 'REJECTED'].includes(String(value.state)) &&
+    (value.decisionDigest === undefined || (typeof value.decisionDigest === 'string' && SHA256_DIGEST.test(value.decisionDigest))) &&
+    (value.decidedAt === undefined || typeof value.decidedAt === 'string') &&
+    typeof value.createdAt === 'string'
+  )
+}
+
+function isDeliveryApplyAttempt(value: unknown): value is DeliveryApplyAttemptV1 {
+  return (
+    isRecord(value) &&
+    Object.keys(value).every((key) =>
+      [
+        'applyAttemptId',
+        'batchId',
+        'deliveryChangeSetId',
+        'requestDigest',
+        'targetFingerprintBefore',
+        'state',
+        'receiptDigest',
+        'targetFingerprintAfter',
+        'startedAt',
+        'finishedAt',
+      ].includes(key),
+    ) &&
+    isNonEmptyString(value.applyAttemptId) &&
+    isNonEmptyString(value.batchId) &&
+    isNonEmptyString(value.deliveryChangeSetId) &&
+    typeof value.requestDigest === 'string' &&
+    SHA256_DIGEST.test(value.requestDigest) &&
+    typeof value.targetFingerprintBefore === 'string' &&
+    SHA256_DIGEST.test(value.targetFingerprintBefore) &&
+    ['STARTED', 'SUCCEEDED', 'FAILED', 'FAILED_ROLLED_BACK', 'OUTCOME_UNKNOWN'].includes(String(value.state)) &&
+    (value.receiptDigest === undefined || (typeof value.receiptDigest === 'string' && SHA256_DIGEST.test(value.receiptDigest))) &&
+    (value.targetFingerprintAfter === undefined ||
+      (typeof value.targetFingerprintAfter === 'string' && SHA256_DIGEST.test(value.targetFingerprintAfter))) &&
+    typeof value.startedAt === 'string' &&
+    (value.finishedAt === undefined || typeof value.finishedAt === 'string')
+  )
+}
+
+function isDeliveryBatchProjection(value: unknown): value is DeliveryBatchProjectionV1 {
+  return (
+    isRecord(value) &&
+    Object.keys(value).every((key) =>
+      [
+        'batchId',
+        'flowId',
+        'state',
+        'selectionDigest',
+        'selectedTaskRunIds',
+        'taskChangeSetIds',
+        'targetFingerprint',
+        'deliveryChangeSetId',
+        'deliveryChangeSetDigest',
+        'fileChangeSummaries',
+        'evidenceArtifactIds',
+        'qaConfigVersion',
+        'gate',
+        'applyAttempt',
+      ].includes(key),
+    ) &&
+    isNonEmptyString(value.batchId) &&
+    isNonEmptyString(value.flowId) &&
+    DELIVERY_STATES.has(value.state as DeliveryBatchStateV1) &&
+    typeof value.selectionDigest === 'string' &&
+    SHA256_DIGEST.test(value.selectionDigest) &&
+    isStringArray(value.selectedTaskRunIds) &&
+    isStringArray(value.taskChangeSetIds) &&
+    typeof value.targetFingerprint === 'string' &&
+    SHA256_DIGEST.test(value.targetFingerprint) &&
+    (value.deliveryChangeSetId === undefined || isNonEmptyString(value.deliveryChangeSetId)) &&
+    (value.deliveryChangeSetDigest === undefined ||
+      (typeof value.deliveryChangeSetDigest === 'string' && SHA256_DIGEST.test(value.deliveryChangeSetDigest))) &&
+    (value.fileChangeSummaries === undefined ||
+      (Array.isArray(value.fileChangeSummaries) && value.fileChangeSummaries.every(isDeliveryFileChangeSummary))) &&
+    (value.evidenceArtifactIds === undefined || isStringArray(value.evidenceArtifactIds)) &&
+    (value.qaConfigVersion === undefined || typeof value.qaConfigVersion === 'string') &&
+    (value.gate === undefined || isDeliveryGate(value.gate)) &&
+    (value.applyAttempt === undefined || isDeliveryApplyAttempt(value.applyAttempt))
+  )
+}
+
 function isProjection(value: unknown): value is SessionCollaborationProjectionM2BV1 {
   if (!isRecord(value) || value.kind !== 'SESSION_COLLABORATION_PROJECTION' || value.version !== 'm2b.v1') return false
   if (
@@ -412,6 +605,7 @@ function isProjection(value: unknown): value is SessionCollaborationProjectionM2
     return false
   if (!Array.isArray(value.taskRuns) || !value.taskRuns.every(isTaskRunM2B)) return false
   if (!Array.isArray(value.attempts) || !value.attempts.every(isAttemptM2B)) return false
+  if (value.activeDelivery !== undefined && value.activeDelivery !== null && !isDeliveryBatchProjection(value.activeDelivery)) return false
 
   // 关系校验：id 唯一且引用一致，避免 orphan/mismatched attempt 被静默隐藏
   const taskRuns = value.taskRuns as SessionCollaborationProjectionM2BV1['taskRuns']
@@ -517,6 +711,64 @@ export async function startTaskExecution(
   } catch {
     return { ok: false, error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' } }
   }
+}
+
+function deliveryIpcFailureError(): XiaoguiDeliverySafeErrorV1 {
+  return { code: 'INTERNAL', messageKey: 'xiaogui.delivery.error.ipc', traceId: '' }
+}
+
+async function invokeDelivery<TRequest>(
+  channel: string,
+  address: HubAddressV1,
+  request: TRequest,
+): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+  try {
+    const res: unknown = await ipcClient.invoke(channel, {
+      contractVersion: DELIVERY_CONTRACT_VERSION,
+      address,
+      request,
+    })
+    if (isRecord(res) && res.ok === true && isDeliveryBatchProjection(res.value)) return { ok: true, value: res.value }
+    if (isRecord(res) && res.ok === false && isDeliverySafeError(res.error)) return { ok: false, error: res.error }
+    return { ok: false, error: deliveryIpcFailureError() }
+  } catch {
+    return { ok: false, error: deliveryIpcFailureError() }
+  }
+}
+
+export function submitDeliverySelection(
+  address: HubAddressV1,
+  request: XiaoguiDeliverySelectTasksRequestV1,
+): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+  return invokeDelivery('xiaogui.delivery.selection.submit', address, request)
+}
+
+export function approveDeliveryGate(
+  address: HubAddressV1,
+  request: XiaoguiDeliveryApproveGateRequestV1,
+): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+  return invokeDelivery('xiaogui.delivery.gate.approve', address, request)
+}
+
+export function returnDeliveryBatch(
+  address: HubAddressV1,
+  request: XiaoguiDeliveryReturnBatchRequestV1,
+): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+  return invokeDelivery('xiaogui.delivery.batch.return', address, request)
+}
+
+export function reconcileDeliveryApply(
+  address: HubAddressV1,
+  request: XiaoguiDeliveryReconcileApplyRequestV1,
+): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+  return invokeDelivery('xiaogui.delivery.apply.reconcile', address, request)
+}
+
+export function retryDeliveryApply(
+  address: HubAddressV1,
+  request: XiaoguiDeliveryRetryApplyRequestV1,
+): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+  return invokeDelivery('xiaogui.delivery.apply.retry', address, request)
 }
 
 /** 生成唯一请求标识（幂等键由 requestId + payload hash 在主进程判定）。 */
