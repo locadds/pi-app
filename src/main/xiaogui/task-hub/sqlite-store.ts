@@ -1365,30 +1365,46 @@ export class CollaborationHubSqliteStoreV1 {
       if (!batch || batch.project_id !== address.projectId || batch.session_key !== address.sessionKey) {
         throw deliveryStoreError('DELIVERY_SCOPE_MISMATCH')
       }
-      if (attempt.state !== 'STARTED') {
+      const reconcilesUnknown =
+        attempt.state === 'OUTCOME_UNKNOWN' && (record.outcome === 'SUCCEEDED' || record.outcome === 'FAILED')
+      if (attempt.state !== 'STARTED' && !reconcilesUnknown) {
         if (attempt.state === record.outcome && attempt.receipt_digest === record.receiptDigest) {
           return { applyAttemptId: record.applyAttemptId, outcome: record.outcome, replayed: true }
         }
         throw deliveryStoreError('DELIVERY_APPLY_IDEMPOTENCY_CONFLICT')
       }
+      const previousAttemptState = attempt.state
+      const previousBatchState = previousAttemptState === 'STARTED' ? 'APPLYING' : 'OUTCOME_UNKNOWN'
+      const previousOutboxState = previousAttemptState === 'STARTED' ? 'CLAIMED' : 'OUTCOME_UNKNOWN'
       const nextBatchState =
         record.outcome === 'SUCCEEDED' ? 'APPLIED' : record.outcome === 'FAILED' ? 'APPROVED' : 'OUTCOME_UNKNOWN'
       const nextTaskState =
         record.outcome === 'SUCCEEDED' ? 'DONE' : record.outcome === 'FAILED' ? 'DELIVERY_PENDING' : 'APPLYING'
       const outboxState = record.outcome === 'SUCCEEDED' ? 'DONE' : record.outcome === 'FAILED' ? 'FAILED' : 'OUTCOME_UNKNOWN'
-      this.db
+      const attemptUpdated = this.db
         .prepare(
           'update delivery_apply_attempts set state = ?, receipt_digest = ?, target_fingerprint_after = ?, finished_at = ? where apply_attempt_id = ? and state = ?',
         )
-        .run(record.outcome, record.receiptDigest, record.targetFingerprintAfter ?? null, record.now, record.applyAttemptId, 'STARTED')
-      this.db
-        .prepare('update delivery_apply_outbox set status = ?, completed_at = ? where apply_attempt_id = ?')
-        .run(outboxState, record.now, record.applyAttemptId)
-      this.db.prepare('update delivery_batches set state = ?, updated_at = ? where batch_id = ?').run(
+        .run(
+          record.outcome,
+          record.receiptDigest,
+          record.targetFingerprintAfter ?? null,
+          record.now,
+          record.applyAttemptId,
+          previousAttemptState,
+        )
+      const outboxUpdated = this.db
+        .prepare('update delivery_apply_outbox set status = ?, completed_at = ? where apply_attempt_id = ? and status = ?')
+        .run(outboxState, record.now, record.applyAttemptId, previousOutboxState)
+      const batchUpdated = this.db.prepare('update delivery_batches set state = ?, updated_at = ? where batch_id = ? and state = ?').run(
         nextBatchState,
         record.now,
         attempt.batch_id,
+        previousBatchState,
       )
+      if (attemptUpdated.changes !== 1 || outboxUpdated.changes !== 1 || batchUpdated.changes !== 1) {
+        throw deliveryStoreError('DELIVERY_ILLEGAL_TRANSITION')
+      }
       this.restoreDeliveryTasks(attempt.batch_id, nextTaskState)
       const version = this.currentVersion(address) + 1
       this.writeEvent(address, version, 'delivery.apply.complete', {
