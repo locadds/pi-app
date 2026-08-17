@@ -11,7 +11,10 @@
 
 import { registerXiaoguiHandlers } from './ipc-handlers'
 import { xiaogui } from './sidecar-bridge'
-import { registerCollaborationHubHandlers } from './task-hub/ipc'
+import {
+  closeDefaultCollaborationHubRuntimeComposition,
+  registerCollaborationHubHandlers,
+} from './task-hub/ipc'
 import { registerWorkDocxHandlers } from './work-docx-ipc'
 
 let initialized = false
@@ -27,7 +30,14 @@ export function initXiaogui(): void {
   console.log('[xiaogui] 集成层已初始化（sidecar 惰性启动：首次 tool.invoke 时 spawn）')
 }
 
-/** 优雅停止 Python sidecar（并入 gracefulShutdownWorkers 链，带超时 await）。 */
+/** 优雅停止 Python sidecar 与内嵌任务中枢运行时。 */
 export async function shutdownXiaoguiSidecar(): Promise<void> {
-  await xiaogui.shutdown()
+  const results = await Promise.allSettled([
+    Promise.resolve().then(() => xiaogui.shutdown()),
+    Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),
+  ])
+  const firstFailure = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  )
+  if (firstFailure) throw firstFailure.reason
 }

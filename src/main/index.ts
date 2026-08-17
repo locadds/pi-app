@@ -167,8 +167,7 @@ async function gracefulShutdownWorkers(): Promise<void> {
   } catch {
     /* optional */
   }
-  // 小规：优雅停止 Python sidecar（并入本链，带超时 await，避免 app.exit(0)
-  // 竞态残留孤儿 python 进程；shutdown 内部已有超时 + SIGKILL 兜底）
+  // 小规：优雅停止 Python sidecar 与内嵌任务中枢运行时。
   try {
     await Promise.race([
       shutdownXiaoguiSidecar(),
@@ -178,7 +177,7 @@ async function gracefulShutdownWorkers(): Promise<void> {
       }),
     ])
   } catch (error) {
-    console.error('[Main] graceful xiaogui sidecar stop failed:', error)
+    console.error('[Main] graceful xiaogui stop failed:', error)
   }
 }
 

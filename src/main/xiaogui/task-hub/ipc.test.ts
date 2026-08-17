@@ -8,15 +8,37 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { InitialPlanDraftInputV1 } from '@shared/xiaogui-collaboration-hub'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { createCollaborationHubApplicationV1 } from './application'
-import { registerCollaborationHubHandlers } from './ipc'
+import {
+  closeDefaultCollaborationHubRuntimeComposition,
+  getDefaultCollaborationHubApplication,
+  registerCollaborationHubHandlers,
+} from './ipc'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (payload: unknown) => Promise<unknown>>(),
+  getElectronPath: vi.fn(() => 'D:/fake-xiaogui-user-data'),
+  scopeLookup: { lookup: vi.fn() },
+  runtimeCompositions: [] as Array<{
+    application: { generation: number }
+    close: ReturnType<typeof vi.fn>
+    stageAttemptInput: ReturnType<typeof vi.fn>
+  }>,
+  createRuntimeComposition: vi.fn(),
 }))
 
+mocks.createRuntimeComposition.mockImplementation(() => {
+  const composition = {
+    application: { generation: mocks.runtimeCompositions.length + 1 },
+    close: vi.fn(async () => undefined),
+    stageAttemptInput: vi.fn(),
+  }
+  mocks.runtimeCompositions.push(composition)
+  return composition
+})
+
 vi.mock('electron', () => ({
-  app: { getPath: () => tmpdir() },
+  app: { getPath: mocks.getElectronPath },
 }))
 
 vi.mock('../../ipc/registry', () => ({
@@ -26,9 +48,11 @@ vi.mock('../../ipc/registry', () => ({
 }))
 
 vi.mock('../scope-service', () => ({
-  sessionScopeResolverV1: {
-    lookup: vi.fn(),
-  },
+  sessionScopeResolverV1: mocks.scopeLookup,
+}))
+
+vi.mock('./runtime-composition', () => ({
+  createXiaoguiRuntimeCompositionV1: mocks.createRuntimeComposition,
 }))
 
 const ADDRESS = {
@@ -39,7 +63,10 @@ const ADDRESS = {
 const roots: string[] = []
 
 afterEach(async () => {
+  await closeDefaultCollaborationHubRuntimeComposition()
   mocks.handlers.clear()
+  mocks.runtimeCompositions.splice(0)
+  vi.clearAllMocks()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
@@ -79,6 +106,32 @@ async function appFor(dbPath: string) {
 }
 
 describe('M2A collaboration hub IPC adapter', () => {
+  it('lazily owns one disabled runtime composition and rebuilds it only after close', async () => {
+    expect(mocks.getElectronPath).not.toHaveBeenCalled()
+    expect(mocks.createRuntimeComposition).not.toHaveBeenCalled()
+
+    const firstApplication = getDefaultCollaborationHubApplication()
+    const firstComposition = mocks.runtimeCompositions[0]!
+
+    expect(mocks.getElectronPath).toHaveBeenCalledOnce()
+    expect(mocks.getElectronPath).toHaveBeenCalledWith('userData')
+    expect(mocks.createRuntimeComposition).toHaveBeenCalledOnce()
+    expect(mocks.createRuntimeComposition).toHaveBeenCalledWith({
+      userDataDir: 'D:/fake-xiaogui-user-data',
+      productionEnabled: false,
+      lookup: mocks.scopeLookup,
+    })
+    expect(getDefaultCollaborationHubApplication()).toBe(firstApplication)
+    expect(mocks.createRuntimeComposition).toHaveBeenCalledOnce()
+
+    await closeDefaultCollaborationHubRuntimeComposition()
+    await closeDefaultCollaborationHubRuntimeComposition()
+    expect(firstComposition.close).toHaveBeenCalledOnce()
+
+    expect(getDefaultCollaborationHubApplication()).not.toBe(firstApplication)
+    expect(mocks.createRuntimeComposition).toHaveBeenCalledTimes(2)
+  })
+
   it('matches Direct outputs for the same observe/perform/readEvents fixture', async () => {
     const direct = await appFor(await tempDb('direct.sqlite'))
     const ipcApp = await appFor(await tempDb('ipc.sqlite'))
