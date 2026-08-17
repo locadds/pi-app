@@ -66,6 +66,8 @@ export interface StoreSchema {
   asrConfig: AsrConfig
   /** Agent 运行时：host = Windows 宿主，wsl = 在 WSL 发行版内运行 */
   agentRuntime: { mode: 'host' | 'wsl'; distro: string | null }
+  /** 小规 Kimi 生产执行开关；仅在下次运行时组合创建时生效 */
+  xiaoguiKimiProductionEnabled: boolean
 }
 
 const store = new Store<StoreSchema>({
@@ -119,6 +121,7 @@ const store = new Store<StoreSchema>({
       builtinServePort: 18788,
     } as AsrConfig,
     agentRuntime: { mode: 'host', distro: null },
+    xiaoguiKimiProductionEnabled: false,
   },
 })
 

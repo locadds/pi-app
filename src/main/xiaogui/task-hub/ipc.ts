@@ -9,6 +9,7 @@ import type {
   HubReadEventsIpcRequestV1,
   HubReadIpcRequestV1,
 } from '@shared/xiaogui-collaboration-hub'
+import { configStore } from '../../config-store'
 import { registerHandler } from '../../ipc/registry'
 import { sessionScopeResolverV1 } from '../scope-service'
 import type { CollaborationHubApplicationV1 } from './application'
@@ -113,7 +114,7 @@ let defaultRuntimeComposition: XiaoguiRuntimeCompositionV1 | null = null
 export function getDefaultCollaborationHubApplication(): CollaborationHubApplicationV1 {
   defaultRuntimeComposition ??= createXiaoguiRuntimeCompositionV1({
     userDataDir: app.getPath('userData'),
-    productionEnabled: false,
+    productionEnabled: configStore.get('xiaoguiKimiProductionEnabled') === true,
     lookup: sessionScopeResolverV1,
   })
   return defaultRuntimeComposition.application

@@ -49,6 +49,13 @@ export function registerSettingsHandlers(): void {
       }
       return { key: req.key, value: next }
     }
+    if (key === 'xiaoguiKimiProductionEnabled') {
+      if (typeof req.value !== 'boolean') {
+        throw new Error('XIAOGUI_KIMI_PRODUCTION_ENABLED_INVALID')
+      }
+      configStore.set(key, req.value)
+      return { key: req.key, value: req.value }
+    }
     configStore.set(key, req.value as StoreSchema[typeof key])
     return { key: req.key, value: req.value }
   })

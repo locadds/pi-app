@@ -122,7 +122,13 @@
     "missingNpm": "no npm",
     "missingGit": "no git",
     "missingPi": "no pi",
-    "noCdFlag": "distro lacks --cd (will use a shell cwd fallback)"
+    "noCdFlag": "distro lacks --cd (will use a shell cwd fallback)",
+    "sectionXiaoguiTaskExecution": "Xiaogui task execution",
+    "sectionXiaoguiTaskExecutionDesc": "Controls whether Xiaogui may assemble Kimi task execution. Save and restart Xiaogui for this setting to take effect.",
+    "xiaoguiKimiProductionEnabled": "Enable Kimi task execution",
+    "xiaoguiKimiProductionEnabledDesc": "Off by default. Enabling only permits Kimi execution assembly; it does not sign in, start tasks, or grant file access. Every task still requires confirmation of files that may be modified or created.",
+    "xiaoguiKimiEnableConfirmTitle": "Enable Kimi task execution?",
+    "xiaoguiKimiEnableConfirmMessage": "Save and restart Xiaogui for this setting to take effect. Enabling only permits execution assembly; it will not sign in, start tasks, or grant file access. Every task still requires file-scope confirmation."
   },
   "appearance": {
     "timeline": "Timeline",

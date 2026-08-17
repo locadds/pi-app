@@ -122,7 +122,13 @@
     "missingNpm": "缺少 npm",
     "missingGit": "缺少 git",
     "missingPi": "缺少 pi",
-    "noCdFlag": "发行版不支持 --cd（将使用 shell 进入项目目录）"
+    "noCdFlag": "发行版不支持 --cd（将使用 shell 进入项目目录）",
+    "sectionXiaoguiTaskExecution": "小规任务执行",
+    "sectionXiaoguiTaskExecutionDesc": "控制小规是否可以装配 Kimi 任务执行能力。设置保存后需重启小规才会生效。",
+    "xiaoguiKimiProductionEnabled": "启用 Kimi 任务执行",
+    "xiaoguiKimiProductionEnabledDesc": "默认关闭。开启只允许装配 Kimi 任务执行，不会登录、不启动任务，也不会授予文件权限；每个任务仍需逐次确认可修改和可新建的文件范围。",
+    "xiaoguiKimiEnableConfirmTitle": "确认启用 Kimi 任务执行",
+    "xiaoguiKimiEnableConfirmMessage": "保存后需重启小规才会生效。启用只允许装配执行能力，不会自动登录、启动任务或授予文件权限；每个任务仍需逐次确认文件范围。"
   },
   "appearance": {
     "timeline": "时间线",
