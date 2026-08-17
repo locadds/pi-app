@@ -12,6 +12,7 @@ import {
   GitAttemptWorkspaceServiceV1,
   SqliteAttemptWorkspaceRegistryV1,
   digestBytes,
+  digestJson,
   type AttemptFileGrantV1,
   type AttemptFileManifestV1,
   type AttemptWorkspacePrepareRequestV1,
@@ -227,6 +228,51 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       ok: true,
       actualRelativePaths: ['src/existing.txt', 'src/new-file.txt'],
     })
+    const capture = await workspace.captureTaskPatch(result.handle.attemptId)
+    expect(capture).toMatchObject({
+      inputTreeHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      patchArtifactId: expect.stringMatching(/^xhart_[0-9a-f]{32}$/),
+      patchArtifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      resultTreeHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      changedFiles: [
+        {
+          operation: 'MODIFY',
+          relativePath: 'src/existing.txt',
+          baselineDigest: digestBytes('before'),
+          contentDigest: digestBytes('after'),
+          contentBase64: Buffer.from('after').toString('base64'),
+        },
+        {
+          operation: 'CREATE',
+          relativePath: 'src/new-file.txt',
+          baselineDigest: null,
+          contentDigest: digestBytes('created'),
+          contentBase64: Buffer.from('created').toString('base64'),
+        },
+      ],
+      privateVerificationContext: {
+        attemptWorktreeId: result.handle.attemptWorktreeId,
+        worktreeRoot: result.handle.rootPath,
+        baseRevision: request.baseRevision,
+        baselineGitTreeOid: request.baselineTreeHash,
+        manifestDigest: result.manifest.manifestDigest,
+        manifestVersion: 1,
+      },
+    })
+    expect(capture.inputTreeHash).not.toBe(request.baselineTreeHash)
+    expect(capture.inputTreeHash).toBe(
+      digestJson({ kind: 'GIT_TREE_INPUT_V1', gitTreeOid: request.baselineTreeHash }),
+    )
+    expect(capture.resultTreeHash).toBe(
+      digestJson({ kind: 'TASK_RESULT_TREE_V1', inputTreeHash: capture.inputTreeHash, files: capture.changedFiles }),
+    )
+    expect(JSON.parse(Buffer.from(capture.patchArtifactBytes).toString('utf8'))).toEqual({
+      kind: 'TASK_PATCH_V1',
+      version: 1,
+      files: capture.changedFiles,
+    })
+    expect(capture.patchArtifactDigest).toBe(digestBytes(capture.patchArtifactBytes))
+    expect(Buffer.from(capture.patchArtifactBytes).toString('utf8')).not.toContain(result.handle.rootPath)
     registry.close()
   })
 
@@ -257,6 +303,37 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       ],
     })
     await expect(workspace.runtimeBinding(prepared.handle.attemptId)).resolves.toEqual(access?.workspace)
+    registry.close()
+  })
+
+  it('captures binary MODIFY baselines and content as exact bytes', async () => {
+    const projectRoot = await gitRepo()
+    const before = Buffer.from([0x00, 0xff, 0xfe, 0x80, 0x0a])
+    const after = Buffer.from([0xff, 0x00, 0x01, 0x80])
+    writeFileSync(join(projectRoot, 'src', 'binary.dat'), before)
+    git(projectRoot, ['add', 'src/binary.dat'])
+    git(projectRoot, ['commit', '-m', 'add binary fixture'])
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const prepared = await workspace.prepare(
+      prepareRequest({
+        projectRoot,
+        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+        grants: [{ operation: 'MODIFY', relativePath: 'src/binary.dat', baselineDigest: digestBytes(before) }],
+      }),
+    )
+    writeFileSync(join(prepared.handle.rootPath, 'src', 'binary.dat'), after)
+
+    await expect(workspace.captureTaskPatch(prepared.handle.attemptId)).resolves.toMatchObject({
+      changedFiles: [
+        {
+          operation: 'MODIFY',
+          relativePath: 'src/binary.dat',
+          baselineDigest: digestBytes(before),
+          contentDigest: digestBytes(after),
+          contentBase64: after.toString('base64'),
+        },
+      ],
+    })
     registry.close()
   })
 
@@ -472,6 +549,9 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       rejectedReasonCode: 'PATH_FORBIDDEN',
       actualRelativePaths: ['src/existing.txt'],
     })
+    await expect(deleteService.workspace.captureTaskPatch(deleted.handle.attemptId)).rejects.toMatchObject({
+      reasonCode: 'PATH_FORBIDDEN',
+    })
     deleteService.registry.close()
 
     const renameRoot = await gitRepo()
@@ -493,8 +573,37 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       rejectedReasonCode: 'PATH_FORBIDDEN',
       actualRelativePaths: ['src/existing.txt', 'src/renamed.txt'],
     })
+    await expect(renameService.workspace.captureTaskPatch(renamed.handle.attemptId)).rejects.toMatchObject({
+      reasonCode: 'PATH_FORBIDDEN',
+    })
     renameService.registry.close()
   }, 30000)
+
+  it('captures only actual approved changes and revalidates unchanged MODIFY baselines and single-link files', async () => {
+    const projectRoot = await gitRepo()
+    const noChanges = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const unchanged = await noChanges.workspace.prepare(
+      prepareRequest({
+        projectRoot,
+        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+        grants: [{ operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') }],
+      }),
+    )
+    await expect(noChanges.workspace.captureTaskPatch(unchanged.handle.attemptId)).rejects.toMatchObject({
+      reasonCode: 'NO_APPROVED_CHANGES',
+    })
+    writeFileSync(join(unchanged.handle.rootPath, 'src', 'existing.txt'), 'after')
+    await link(join(unchanged.handle.rootPath, 'src', 'existing.txt'), join(unchanged.handle.rootPath, 'src', 'alias.txt'))
+    await expect(noChanges.workspace.captureTaskPatch(unchanged.handle.attemptId)).rejects.toMatchObject({
+      reasonCode: 'PATH_FORBIDDEN',
+    })
+    await rm(join(unchanged.handle.rootPath, 'src', 'alias.txt'))
+    await link(join(unchanged.handle.rootPath, 'src', 'existing.txt'), join(projectRoot, 'linked-approved-file.txt'))
+    await expect(noChanges.workspace.captureTaskPatch(unchanged.handle.attemptId)).rejects.toMatchObject({
+      reasonCode: 'TARGET_HARDLINK',
+    })
+    noChanges.registry.close()
+  })
 
   it('approves scoped CREATE expansion as a new manifest version and rejects DELETE expansion', async () => {
     const projectRoot = await gitRepo()

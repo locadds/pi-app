@@ -9,6 +9,7 @@ import type {
   TaskRunId,
   TaskSpecId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 const invokeMock = vi.fn()
 vi.mock('@renderer/lib/ipc-client', () => ({
@@ -52,6 +53,39 @@ function projectionFixture(): SessionCollaborationProjectionM2BV1 {
     attempts: [],
     history: [],
     availableActions: ['flow.start.with_draft'],
+  }
+}
+
+function verifiedSummaryFixture(): TaskVerificationSummaryV1 {
+  return {
+    scope: 'TASK',
+    verificationAttemptId: 'xhbva_1' as TaskVerificationSummaryV1['verificationAttemptId'],
+    candidateId: 'xhbcandidate_1' as TaskVerificationSummaryV1['candidateId'],
+    changeSetDigest: `sha256:${'1'.repeat(64)}` as TaskVerificationSummaryV1['changeSetDigest'],
+    qaConfigVersion: 'task-fixed-typecheck.v1',
+    diagnosticArtifacts: [
+      {
+        artifactId: 'xhbartifact_diag_1' as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['artifactId'],
+        digest: `sha256:${'2'.repeat(64)}` as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['digest'],
+        kind: 'QA_DIAGNOSTIC',
+      },
+    ],
+    state: 'SUCCEEDED',
+    verdict: 'PASS',
+    checks: [
+      { checkId: 'typescript.web', verdict: 'PASS', summary: '界面类型检查通过' },
+      { checkId: 'typescript.node', verdict: 'PASS', summary: '主进程类型检查通过' },
+    ],
+    evidenceBundleId: 'xhbevidence_1' as Extract<TaskVerificationSummaryV1, { state: 'SUCCEEDED' }>['evidenceBundleId'],
+    qaResultId: 'xhbqa_1' as Extract<TaskVerificationSummaryV1, { state: 'SUCCEEDED' }>['qaResultId'],
+    taskChangeSetId: 'xhbtcs_1' as Extract<TaskVerificationSummaryV1, { state: 'SUCCEEDED' }>['taskChangeSetId'],
+    evidenceArtifacts: [
+      {
+        artifactId: 'xhbartifact_evidence_1' as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['artifactId'],
+        digest: `sha256:${'3'.repeat(64)}` as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['digest'],
+        kind: 'QA_EVIDENCE',
+      },
+    ],
   }
 }
 
@@ -115,6 +149,82 @@ describe('collaboration-hub-client', () => {
     const res = await observeCollaborationHub(address)
 
     expect(res).toEqual({ ok: true, value: valid })
+  })
+
+  it('observe 接受严格脱敏的任务验证摘要', async () => {
+    const valid: SessionCollaborationProjectionM2BV1 = {
+      ...projectionFixture(),
+      sessionMode: 'CODING',
+      authoritativeMode: 'CODING',
+      taskRuns: [
+        {
+          taskRunId: 'xhbtr_verified' as TaskRunId,
+          taskSpecId: 'xhbts_verified' as TaskSpecId,
+          taskKey: 'verified',
+          status: 'VERIFIED',
+          attemptId: 'xhba_verified' as AttemptId,
+        },
+      ],
+      attempts: [
+        {
+          attemptId: 'xhba_verified' as AttemptId,
+          taskRunId: 'xhbtr_verified' as TaskRunId,
+          status: 'SUCCEEDED',
+          verificationSummary: verifiedSummaryFixture(),
+        },
+      ],
+    }
+    invokeMock.mockResolvedValueOnce({ ok: true, value: valid })
+
+    await expect(observeCollaborationHub(address)).resolves.toEqual({ ok: true, value: valid })
+  })
+
+  it.each([
+    ['摘要未知字段', (summary: TaskVerificationSummaryV1) => ({ ...summary, prompt: '不得公开的指令' })],
+    [
+      '工件敏感路径',
+      (summary: TaskVerificationSummaryV1) => ({
+        ...summary,
+        diagnosticArtifacts: [{ ...summary.diagnosticArtifacts[0], path: 'C:\\private\\result.log' }],
+      }),
+    ],
+    [
+      '检查原始输出',
+      (summary: TaskVerificationSummaryV1) => ({
+        ...summary,
+        checks: [{ checkId: 'typescript.web', verdict: 'PASS', summary: '通过', stdout: 'raw output' }],
+      }),
+    ],
+    ['Attempt 敏感验证载荷', (summary: TaskVerificationSummaryV1) => summary],
+  ])('敏感或未知验证字段被映射为安全 INTERNAL：%s', async (label, mutate) => {
+    const attempt: Record<string, unknown> = {
+      attemptId: 'xhba_verified',
+      taskRunId: 'xhbtr_verified',
+      status: 'SUCCEEDED',
+      verificationSummary: mutate(verifiedSummaryFixture()),
+      ...(label === 'Attempt 敏感验证载荷' ? { verificationPayload: { content: 'secret' } } : {}),
+    }
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...projectionFixture(),
+        taskRuns: [
+          {
+            taskRunId: 'xhbtr_verified',
+            taskSpecId: 'xhbts_verified',
+            taskKey: 'verified',
+            status: 'VERIFIED',
+            attemptId: 'xhba_verified',
+          },
+        ],
+        attempts: [attempt],
+      },
+    })
+
+    await expect(observeCollaborationHub(address)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+    })
   })
 
   it.each([

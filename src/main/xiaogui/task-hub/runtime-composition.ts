@@ -34,6 +34,10 @@ import { PrivateRuntimePayloadVaultV1 } from './private-payload-vault'
 import { MainProjectWorkspaceResolverV1 } from './project-workspace-resolver'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
+import { TaskCandidateAuditServiceV1 } from './task-candidate-audit'
+import { FixedTypecheckVerificationPortV1 } from './verification-port'
+import { createRuntimeOutcomeMonitorV1, type RuntimeOutcomeMonitorV1 } from './runtime-outcome-monitor'
+import { createTaskVerificationCoordinatorV1, type TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
@@ -82,6 +86,8 @@ export function createXiaoguiRuntimeCompositionV1(
   let application: CollaborationHubApplicationV1 | undefined
   let kimiAdapter: KimiAcpRuntimeAdapterV1 | undefined
   let taskExecution: XiaoguiTaskExecutionOrchestratorV1 | undefined
+  let runtimeMonitor: RuntimeOutcomeMonitorV1 | undefined
+  let taskVerificationCoordinator: TaskVerificationCoordinatorV1 | undefined
 
   try {
     const projectResolver = options.projectResolver ?? new MainProjectWorkspaceResolverV1()
@@ -125,6 +131,14 @@ export function createXiaoguiRuntimeCompositionV1(
     const runtimeHost = createAgentRuntimeHostV1(kimiAdapter)
 
     const hubDbPath = join(userDataDir, 'xiaogui-task-hub-m2a.sqlite')
+    taskVerificationCoordinator = createTaskVerificationCoordinatorV1({
+      storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
+      candidateAudit: new TaskCandidateAuditServiceV1(attemptWorkspaces),
+      verificationPort: new FixedTypecheckVerificationPortV1(),
+      projectResolver,
+      now: options.now,
+    })
+    runtimeMonitor = createRuntimeOutcomeMonitorV1({ runtime: runtimeHost })
     application = createCollaborationHubApplicationV1({
       lookup: options.lookup,
       // Keep the existing desktop database location so installing the runtime
@@ -136,6 +150,7 @@ export function createXiaoguiRuntimeCompositionV1(
       baselineProvider,
       workspaceBridge: inputStore.bridge,
       runtimePromptVault: inputStore,
+      taskVerificationCoordinator,
       now: options.now,
     })
 
@@ -144,6 +159,8 @@ export function createXiaoguiRuntimeCompositionV1(
       application,
       inputStage: { stageAttemptInput: (input) => inputStore!.stage(input) },
       fileScopeResolver: attemptWorkspaces,
+      runtimeMonitor,
+      verificationCoordinator: taskVerificationCoordinator,
       now: options.now,
     })
     void taskExecution.recover().catch(() => undefined)
@@ -158,6 +175,8 @@ export function createXiaoguiRuntimeCompositionV1(
     )
   } catch (error) {
     closeQuietly(taskExecution)
+    closeQuietly(runtimeMonitor)
+    closeQuietly(taskVerificationCoordinator)
     closeQuietly(kimiAdapter)
     closeQuietly(application)
     closeQuietly(inputStore)

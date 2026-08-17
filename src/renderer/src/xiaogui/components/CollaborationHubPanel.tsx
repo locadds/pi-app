@@ -18,6 +18,7 @@ import type {
   TaskRunStatusM2BV1,
   TaskSpecProjectionV1,
 } from '@shared/xiaogui-collaboration-hub'
+import type { TaskVerificationFailureSourceV1, TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 import { useUIStore } from '@renderer/stores/ui-store'
 
@@ -70,6 +71,81 @@ const ATTEMPT_STATUS_TEXT: Record<AttemptStatusM2BV1, string> = {
   FAILED: '失败',
   INTERRUPTED: '已中断',
   CANCELLED: '已取消',
+}
+
+const VERIFICATION_STATUS_TEXT: Record<TaskVerificationSummaryV1['state'], string> = {
+  STARTED: '验证中',
+  SUCCEEDED: '已验证',
+  FAILED: '验证失败',
+  OUTCOME_UNKNOWN: '结果未知',
+}
+
+const VERIFICATION_FAILURE_TEXT: Record<TaskVerificationFailureSourceV1['source'], string> = {
+  QA_CHECKS_FAILED: '固定检查未通过',
+  VERIFICATION_LOGIC_FAILURE: '验证逻辑未通过',
+  VERIFICATION_POLICY_DENIED: '验证规则不允许',
+  VERIFICATION_TRANSIENT_INFRASTRUCTURE: '验证环境暂时不可用',
+  VERIFICATION_TRANSIENT_BUDGET_EXCEEDED: '验证环境多次不可用',
+  VERIFICATION_PERMANENT_INFRASTRUCTURE: '验证环境不可用',
+}
+
+function shortDigest(digest: string): string {
+  const value = digest.startsWith('sha256:') ? digest.slice('sha256:'.length) : digest
+  return `sha256:${value.slice(0, 12)}…`
+}
+
+function TaskVerificationSummaryCard({
+  attemptId,
+  summary,
+}: {
+  attemptId: string
+  summary: TaskVerificationSummaryV1
+}) {
+  const checks = summary.state === 'SUCCEEDED' || summary.state === 'FAILED' ? summary.checks : []
+  return (
+    <div
+      className="mt-1.5 rounded border border-border/30 bg-muted/20 px-2 py-1.5 text-[10px] text-muted-foreground"
+      data-testid={`hub-verification-summary-${attemptId}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium text-foreground-secondary">任务验证</span>
+        <span data-testid={`hub-verification-status-${attemptId}`}>{VERIFICATION_STATUS_TEXT[summary.state]}</span>
+      </div>
+      {checks.length > 0 && (
+        <ul className="mt-1 flex flex-col gap-0.5" aria-label="验证检查摘要">
+          {checks.map((check) => (
+            <li key={check.checkId} className="flex items-start justify-between gap-2">
+              <span className="min-w-0 break-words">{check.summary}</span>
+              <span className="shrink-0">{check.verdict === 'PASS' ? '通过' : '未通过'}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {summary.state === 'STARTED' && <div className="mt-1">正在按固定规则检查候选变更。</div>}
+      {summary.state === 'FAILED' && (
+        <div className="mt-1">
+          {VERIFICATION_FAILURE_TEXT[summary.failure.source]}，未形成任务变更集。
+        </div>
+      )}
+      {summary.state === 'OUTCOME_UNKNOWN' && (
+        <div className="mt-1">当前结果无法证明，尚未形成任务变更集。</div>
+      )}
+      {summary.state === 'SUCCEEDED' && (
+        <div className="mt-1 flex flex-col gap-0.5">
+          <div>
+            证据包 <span className="font-mono">{summary.evidenceBundleId}</span> · 证据 {summary.evidenceArtifacts.length} 项
+          </div>
+          <div>
+            任务变更集 <span className="font-mono">{summary.taskChangeSetId}</span>
+          </div>
+          <div>
+            变更摘要 <span className="font-mono">{shortDigest(summary.changeSetDigest)}</span>
+          </div>
+        </div>
+      )}
+      {summary.diagnosticArtifacts.length > 0 && <div className="mt-1">诊断记录 {summary.diagnosticArtifacts.length} 项</div>}
+    </div>
+  )
 }
 
 function ErrorBanner({ error, onDismiss }: { error: HubSafeErrorV1; onDismiss: () => void }) {
@@ -496,9 +572,14 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
                   </span>
                 </div>
                 {(attemptsByRun.get(run.taskRunId) ?? []).map((attempt) => (
-                  <div key={attempt.attemptId} className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                    <span className="min-w-0 truncate font-mono">尝试 {attempt.attemptId}</span>
-                    <span className="ml-2 shrink-0">{ATTEMPT_STATUS_TEXT[attempt.status]}</span>
+                  <div key={attempt.attemptId} className="mt-1 text-[10px] text-muted-foreground">
+                    <div className="flex items-center justify-between">
+                      <span className="min-w-0 truncate font-mono">尝试 {attempt.attemptId}</span>
+                      <span className="ml-2 shrink-0">{ATTEMPT_STATUS_TEXT[attempt.status]}</span>
+                    </div>
+                    {attempt.verificationSummary && (
+                      <TaskVerificationSummaryCard attemptId={attempt.attemptId} summary={attempt.verificationSummary} />
+                    )}
                   </div>
                 ))}
               </li>

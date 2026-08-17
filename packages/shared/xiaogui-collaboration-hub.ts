@@ -1,4 +1,11 @@
 import type { SessionAddressV1, SessionMode } from './xiaogui-session-scope'
+import type {
+  ChangeSetCandidateV1,
+  Sha256Digest,
+  TaskVerificationReceiptV1,
+  TaskVerificationSummaryV1,
+  VerificationAttemptId,
+} from './xiaogui-task-verification'
 
 export type HubAddressV1 = SessionAddressV1
 export type CollaborationHubContractVersionV1 = 'm2a.v1' | 'm2b.v1'
@@ -178,6 +185,7 @@ export interface AttemptProjectionM2BV1 {
   status: AttemptStatusM2BV1
   runtimeSessionId?: string
   workspaceReceiptId?: WorkspaceReceiptId
+  verificationSummary?: TaskVerificationSummaryV1
 }
 
 export type CollaborationHubActionM2BV1 =
@@ -323,6 +331,7 @@ export type AgentFailureSignalV1 = {
     | 'RUNTIME_ADAPTER_ERROR'
     | 'RUNTIME_SESSION_NOT_FOUND'
     | 'RUNTIME_OUTCOME_SESSION_MISMATCH'
+    | 'CANDIDATE_AUDIT_FAILED'
     | 'UNKNOWN_RUNTIME_FAILURE'
   receiptDigest: string
 }
@@ -361,6 +370,18 @@ export type SystemAgentOutcomeRecordIntentM2BV1 =
       taskRunId: TaskRunId
       attemptId: AttemptId
       runtimeSessionId: string
+      outcome: 'SUCCEEDED'
+      receiptDigest: string
+      runtimeCandidateDigest: Sha256Digest
+      candidate: ChangeSetCandidateV1
+      failure?: never
+    }
+  | {
+      type: 'system.agent.outcome.record'
+      flowId: FlowId
+      taskRunId: TaskRunId
+      attemptId: AttemptId
+      runtimeSessionId: string
       outcome: 'FAILED'
       receiptDigest: string
       failure: AgentFailureSignalV1
@@ -383,12 +404,34 @@ export interface SystemAgentReconcileIntentM2BV1 {
   expectedReceiptDigest?: string
 }
 
+export interface SystemVerificationCompleteIntentM2BV1 {
+  type: 'system.verification.complete'
+  flowId: FlowId
+  taskRunId: TaskRunId
+  attemptId: AttemptId
+  verificationAttemptId: VerificationAttemptId
+  receipt: TaskVerificationReceiptV1
+}
+
+export interface SystemVerificationReconcileIntentM2BV1 {
+  type: 'system.verification.reconcile'
+  flowId: FlowId
+  taskRunId: TaskRunId
+  attemptId: AttemptId
+  verificationAttemptId: VerificationAttemptId
+  verificationRequestId: string
+  requestDigest: Sha256Digest
+  expectedReceiptDigest?: Sha256Digest
+}
+
 export type M2BSystemIntentV1 =
   | SystemScheduleIntentM2BV1
   | SystemWorkspacePrepareResultRecordIntentM2BV1
   | SystemAgentReportRecordIntentM2BV1
   | SystemAgentOutcomeRecordIntentM2BV1
   | SystemAgentReconcileIntentM2BV1
+  | SystemVerificationCompleteIntentM2BV1
+  | SystemVerificationReconcileIntentM2BV1
 
 export interface HubSystemCommandRequestM2BV1 {
   contractVersion: 'm2b.v1'
