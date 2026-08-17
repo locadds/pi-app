@@ -3,10 +3,11 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  AttemptId,
   FlowId,
   HubAddressV1,
   PlanRevisionId,
-  SessionCollaborationProjectionV1,
+  SessionCollaborationProjectionM2BV1,
   TaskRunId,
   TaskSpecId,
 } from '@shared/xiaogui-collaboration-hub'
@@ -20,6 +21,7 @@ const performMock = vi.fn()
 let requestCounter = 0
 vi.mock('../lib/collaboration-hub-client', () => ({
   HUB_CONTRACT_VERSION: 'm2a.v1',
+  HUB_OBSERVE_CONTRACT_VERSION: 'm2b.v1',
   observeCollaborationHub: (address: HubAddressV1) => observeMock(address),
   performHubIntent: (address: HubAddressV1, request: unknown) => performMock(address, request),
   newHubRequestId: () => `test-req-${++requestCounter}`,
@@ -50,10 +52,13 @@ function sessionWith(id: string, scope?: CanonicalSessionAddressScopeV1): Sessio
   }
 }
 
-function baseProjection(address: HubAddressV1, patch: Partial<SessionCollaborationProjectionV1> = {}): SessionCollaborationProjectionV1 {
+function baseProjection(
+  address: HubAddressV1,
+  patch: Partial<SessionCollaborationProjectionM2BV1> = {},
+): SessionCollaborationProjectionM2BV1 {
   return {
     kind: 'SESSION_COLLABORATION_PROJECTION',
-    version: 'm2a.v1',
+    version: 'm2b.v1',
     address,
     sessionVersion: 0,
     sessionMode: 'WORK',
@@ -63,13 +68,14 @@ function baseProjection(address: HubAddressV1, patch: Partial<SessionCollaborati
     activeRevision: null,
     taskSpecs: [],
     taskRuns: [],
+    attempts: [],
     history: [],
     availableActions: ['flow.start.with_draft'],
     ...patch,
   }
 }
 
-function reservedProjection(address: HubAddressV1): SessionCollaborationProjectionV1 {
+function reservedProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
   return baseProjection(address, {
     sessionMode: 'DESIGN',
     authoritativeMode: 'DESIGN',
@@ -81,7 +87,7 @@ function reservedProjection(address: HubAddressV1): SessionCollaborationProjecti
   })
 }
 
-function awaitingProjection(address: HubAddressV1): SessionCollaborationProjectionV1 {
+function awaitingProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
   const flowId = 'xhbf_flow1' as FlowId
   const revisionId = 'xhbr_rev1' as PlanRevisionId
   return baseProjection(address, {
@@ -105,7 +111,7 @@ function awaitingProjection(address: HubAddressV1): SessionCollaborationProjecti
   })
 }
 
-function activeProjection(address: HubAddressV1): SessionCollaborationProjectionV1 {
+function activeProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
   const flowId = 'xhbf_flow1' as FlowId
   const revisionId = 'xhbr_rev1' as PlanRevisionId
   return baseProjection(address, {
@@ -124,15 +130,25 @@ function activeProjection(address: HubAddressV1): SessionCollaborationProjection
       digest: 'digest-1',
       draft: {
         objective: '目标X',
-        tasks: [{ taskKey: 't1', title: '投影任务' }],
+        tasks: [
+          { taskKey: 't1', title: '投影任务一' },
+          { taskKey: 't2', title: '投影任务二', dependsOn: ['t1'] },
+        ],
       },
     },
     taskSpecs: [
       {
         taskSpecId: 'xhbts_1' as TaskSpecId,
         taskKey: 't1',
-        title: '投影任务',
+        title: '投影任务一',
         dependsOn: [],
+        unavailableReason: 'AGENT_DISABLED_M2A',
+      },
+      {
+        taskSpecId: 'xhbts_2' as TaskSpecId,
+        taskKey: 't2',
+        title: '投影任务二',
+        dependsOn: ['t1'],
         unavailableReason: 'AGENT_DISABLED_M2A',
       },
     ],
@@ -141,9 +157,19 @@ function activeProjection(address: HubAddressV1): SessionCollaborationProjection
         taskRunId: 'xhbtr_1' as TaskRunId,
         taskSpecId: 'xhbts_1' as TaskSpecId,
         taskKey: 't1',
-        status: 'PENDING_DISABLED',
-        unavailableReason: 'AGENT_DISABLED_M2A',
+        status: 'RUNNING',
+        attemptId: 'xhba_1' as AttemptId,
       },
+      {
+        taskRunId: 'xhbtr_2' as TaskRunId,
+        taskSpecId: 'xhbts_2' as TaskSpecId,
+        taskKey: 't2',
+        status: 'BLOCKED',
+      },
+    ],
+    attempts: [
+      { attemptId: 'xhba_0' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'FAILED' },
+      { attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING', runtimeSessionId: 'rs-1' },
     ],
     availableActions: ['flow.cancel'],
   })
@@ -306,7 +332,7 @@ describe('CollaborationHubPanel', () => {
     expect(screen.getByRole('button', { name: '确认取消' })).toBeInTheDocument()
   })
 
-  it('PLAN_ACTIVE 只读展示 PENDING_DISABLED，不出现执行中措辞', async () => {
+  it('PLAN_ACTIVE 只读展示 m2b.v1 真实状态与 attempts，不渲染执行按钮', async () => {
     const address: HubAddressV1 = {
       projectId: scopeCoding.projectId,
       sessionKey: scopeCoding.sessionKey,
@@ -319,10 +345,18 @@ describe('CollaborationHubPanel', () => {
     render(<CollaborationHubPanel />)
 
     const view = await screen.findByTestId('hub-active-plan')
-    expect(view).toHaveTextContent('PENDING_DISABLED')
-    expect(view).toHaveTextContent('AGENT_DISABLED_M2A')
-    expect(view).toHaveTextContent('执行能力将在后续 CODING Adapter 接入')
-    expect(view.textContent).not.toMatch(/运行中|已完成|自动派发/)
+    // 旧契约遗留的 unavailableReason 徽标不得再出现（与真实运行状态矛盾）
+    expect(view.textContent).not.toContain('AGENT_DISABLED_M2A')
+    // TaskRun 真实状态（中文短文案）仍正常展示
+    expect(screen.getByTestId('hub-taskrun-status-t1')).toHaveTextContent('运行中')
+    expect(screen.getByTestId('hub-taskrun-status-t2')).toHaveTextContent('阻塞')
+    // attempts 归属到对应 taskRun 下
+    expect(view).toHaveTextContent('xhba_0')
+    expect(view).toHaveTextContent('失败')
+    expect(view).toHaveTextContent('xhba_1')
+    // 不出现任何执行/领取/交付类按钮
+    expect(screen.queryByRole('button', { name: '批准计划' })).toBeNull()
+    expect(performMock).not.toHaveBeenCalled()
   })
 
   it('切换会话后旧投影不串到新会话', async () => {

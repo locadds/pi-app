@@ -1,7 +1,9 @@
 /**
- * 协作计划 Hub 强类型薄客户端（M2A，contractVersion 固定 'm2a.v1'）。
+ * 协作计划 Hub 强类型薄客户端。
  *
  * 只封装 observe / perform 两个 IPC 通道：
+ * - observe 读取 m2b.v1 投影（M3B 只读切片：taskRuns/attempts 真实状态）；
+ * - perform 仍走 m2a.v1 用户意图（主进程 perform 仅接受 m2a.v1）。
  * - address 只接受当前会话 canonicalScope 的 projectId + sessionKey，
  *   不接收路径、mode、actor 或 SQLite key（actor 由主进程注入 trustedActor）。
  * - 返回值仅为共享契约 HubOutcomeV1；IPC 异常/非约定报文统一映射为安全
@@ -9,20 +11,24 @@
  */
 
 import type {
+  AttemptStatusM2BV1,
   CollaborationHubActionV1,
-  CollaborationHubContractVersionV1,
   HubAddressV1,
   HubErrorCodeV1,
   HubOutcomeV1,
   HubSafeErrorV1,
   PerformReceiptV1,
-  SessionCollaborationProjectionV1,
+  SessionCollaborationProjectionM2BV1,
+  TaskRunStatusM2BV1,
   UserIntentRequestV1,
 } from '@shared/xiaogui-collaboration-hub'
 
 import { ipcClient } from '@renderer/lib/ipc-client'
 
-export const HUB_CONTRACT_VERSION: CollaborationHubContractVersionV1 = 'm2a.v1'
+/** perform（用户意图）契约版本：主进程 perform 仅接受 m2a.v1。 */
+export const HUB_CONTRACT_VERSION = 'm2a.v1'
+/** observe（只读投影）契约版本：M3B 起读取 m2b.v1 投影。 */
+export const HUB_OBSERVE_CONTRACT_VERSION = 'm2b.v1'
 
 /** IPC 层失败（拒绝、非约定返回）的安全映射；traceId 为空表示主进程未给出。 */
 function ipcFailureError(): HubSafeErrorV1 {
@@ -114,8 +120,65 @@ function isFlow(value: unknown): boolean {
   )
 }
 
-function isProjection(value: unknown): value is SessionCollaborationProjectionV1 {
-  if (!isRecord(value) || value.kind !== 'SESSION_COLLABORATION_PROJECTION' || value.version !== 'm2a.v1') return false
+const TASK_RUN_STATUSES_M2B = new Set<TaskRunStatusM2BV1>([
+  'BLOCKED',
+  'DEPENDENCY_ELIGIBLE',
+  'READY',
+  'RUNNING',
+  'VERIFYING',
+  'FAILED',
+  'VERIFIED',
+  'DELIVERY_PENDING',
+  'APPLYING',
+  'CANCEL_REQUESTED',
+  'DONE',
+  'INTERRUPT_REQUESTED',
+  'OUTCOME_UNKNOWN',
+  'CANCELLED',
+  'INVALIDATED',
+  'SUPERSEDED',
+])
+
+const ATTEMPT_STATUSES_M2B = new Set<AttemptStatusM2BV1>([
+  'CREATED',
+  'WORKSPACE_PREPARING',
+  'READY',
+  'STARTING',
+  'RUNNING',
+  'VERIFYING',
+  'INTERRUPT_REQUESTED',
+  'OUTCOME_UNKNOWN',
+  'SUCCEEDED',
+  'FAILED',
+  'INTERRUPTED',
+  'CANCELLED',
+])
+
+function isTaskRunM2B(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.taskRunId === 'string' &&
+    typeof value.taskSpecId === 'string' &&
+    typeof value.taskKey === 'string' &&
+    TASK_RUN_STATUSES_M2B.has(value.status as TaskRunStatusM2BV1) &&
+    (value.unavailableReason === undefined || value.unavailableReason === 'AGENT_DISABLED_M2A') &&
+    (value.attemptId === undefined || typeof value.attemptId === 'string')
+  )
+}
+
+function isAttemptM2B(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.attemptId === 'string' &&
+    typeof value.taskRunId === 'string' &&
+    ATTEMPT_STATUSES_M2B.has(value.status as AttemptStatusM2BV1) &&
+    (value.runtimeSessionId === undefined || typeof value.runtimeSessionId === 'string') &&
+    (value.workspaceReceiptId === undefined || typeof value.workspaceReceiptId === 'string')
+  )
+}
+
+function isProjection(value: unknown): value is SessionCollaborationProjectionM2BV1 {
+  if (!isRecord(value) || value.kind !== 'SESSION_COLLABORATION_PROJECTION' || value.version !== 'm2b.v1') return false
   if (
     !isRecord(value.address) ||
     typeof value.address.projectId !== 'string' ||
@@ -161,19 +224,25 @@ function isProjection(value: unknown): value is SessionCollaborationProjectionV1
     )
   )
     return false
-  if (
-    !Array.isArray(value.taskRuns) ||
-    !value.taskRuns.every(
-      (item) =>
-        isRecord(item) &&
-        typeof item.taskRunId === 'string' &&
-        typeof item.taskSpecId === 'string' &&
-        typeof item.taskKey === 'string' &&
-        item.status === 'PENDING_DISABLED' &&
-        item.unavailableReason === 'AGENT_DISABLED_M2A',
-    )
-  )
-    return false
+  if (!Array.isArray(value.taskRuns) || !value.taskRuns.every(isTaskRunM2B)) return false
+  if (!Array.isArray(value.attempts) || !value.attempts.every(isAttemptM2B)) return false
+
+  // 关系校验：id 唯一且引用一致，避免 orphan/mismatched attempt 被静默隐藏
+  const taskRuns = value.taskRuns as SessionCollaborationProjectionM2BV1['taskRuns']
+  const attempts = value.attempts as SessionCollaborationProjectionM2BV1['attempts']
+  if (new Set(taskRuns.map((run) => run.taskRunId)).size !== taskRuns.length) return false
+  if (new Set(attempts.map((attempt) => attempt.attemptId)).size !== attempts.length) return false
+  const runIds = new Set(taskRuns.map((run) => run.taskRunId))
+  const attemptById = new Map(attempts.map((attempt) => [attempt.attemptId, attempt]))
+  for (const attempt of attempts) {
+    if (!runIds.has(attempt.taskRunId)) return false
+  }
+  for (const run of taskRuns) {
+    if (run.attemptId === undefined) continue
+    const attempt = attemptById.get(run.attemptId)
+    if (!attempt || attempt.taskRunId !== run.taskRunId) return false
+  }
+
   return (
     Array.isArray(value.availableActions) &&
     value.availableActions.every((action) => typeof action === 'string' && HUB_ACTIONS.has(action as CollaborationHubActionV1))
@@ -204,11 +273,11 @@ function sameAddress(a: HubAddressV1, b: HubAddressV1): boolean {
   return a.projectId === b.projectId && a.sessionKey === b.sessionKey
 }
 
-/** 快照读取当前会话的协作投影（非订阅流；动作后需重新 observe）。 */
-export async function observeCollaborationHub(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>> {
+/** 快照读取当前会话的协作投影（m2b.v1，非订阅流；动作后需重新 observe）。 */
+export async function observeCollaborationHub(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionM2BV1>> {
   try {
     const res: unknown = await ipcClient.invoke('xiaogui.hub.observe', {
-      contractVersion: HUB_CONTRACT_VERSION,
+      contractVersion: HUB_OBSERVE_CONTRACT_VERSION,
       address,
     })
     if (!isHubOutcome(res, isProjection) || (res.ok && !sameAddress(res.value.address, address))) {

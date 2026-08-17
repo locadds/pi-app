@@ -1,7 +1,7 @@
 /**
- * 协作计划面板（M2A，右栏「协作」Tab）。
+ * 协作计划面板（右栏「协作」Tab）。
  *
- * 只读呈现主进程 SESSION_COLLABORATION_PROJECTION，三个可用动作
+ * 只读呈现主进程 SESSION_COLLABORATION_PROJECTION（m2b.v1），三个可用动作
  * （flow.start.with_draft / plan.revision.submit / flow.cancel）是否可执行
  * 完全由 projection.availableActions 决定；Renderer 不自行推导。
  * DESIGN 模式只显示预留说明，不出现任何动作按钮。
@@ -11,9 +11,11 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import type {
+  AttemptStatusM2BV1,
   CollaborationFlowSummaryV1,
   HubSafeErrorV1,
-  SessionCollaborationProjectionV1,
+  SessionCollaborationProjectionM2BV1,
+  TaskRunStatusM2BV1,
   TaskSpecProjectionV1,
 } from '@shared/xiaogui-collaboration-hub'
 
@@ -24,6 +26,42 @@ import { DEFAULT_CANCEL_REASON, HUB_ERROR_TEXT, useCollaborationHubStore, type P
 const FLOW_STATUS_TEXT: Record<CollaborationFlowSummaryV1['status'], string> = {
   AWAITING_PLAN_APPROVAL: '待批准',
   PLAN_ACTIVE: '已激活',
+  CANCELLED: '已取消',
+}
+
+/** M2B TaskRun 真实状态 → 中文短文案（只读展示）。 */
+const TASK_RUN_STATUS_TEXT: Record<TaskRunStatusM2BV1, string> = {
+  BLOCKED: '阻塞',
+  DEPENDENCY_ELIGIBLE: '依赖就绪',
+  READY: '就绪',
+  RUNNING: '运行中',
+  VERIFYING: '验证中',
+  FAILED: '失败',
+  VERIFIED: '已验证',
+  DELIVERY_PENDING: '待交付',
+  APPLYING: '应用中',
+  CANCEL_REQUESTED: '取消中',
+  DONE: '已完成',
+  INTERRUPT_REQUESTED: '中断中',
+  OUTCOME_UNKNOWN: '结果未知',
+  CANCELLED: '已取消',
+  INVALIDATED: '已失效',
+  SUPERSEDED: '已被取代',
+}
+
+/** M2B Attempt 状态 → 中文短文案（只读展示）。 */
+const ATTEMPT_STATUS_TEXT: Record<AttemptStatusM2BV1, string> = {
+  CREATED: '已创建',
+  WORKSPACE_PREPARING: '准备工作区',
+  READY: '就绪',
+  STARTING: '启动中',
+  RUNNING: '运行中',
+  VERIFYING: '验证中',
+  INTERRUPT_REQUESTED: '中断中',
+  OUTCOME_UNKNOWN: '结果未知',
+  SUCCEEDED: '成功',
+  FAILED: '失败',
+  INTERRUPTED: '已中断',
   CANCELLED: '已取消',
 }
 
@@ -103,7 +141,7 @@ function TaskRowFields({
   )
 }
 
-function DraftCreateForm({ projection }: { projection: SessionCollaborationProjectionV1 }) {
+function DraftCreateForm({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
   const form = useCollaborationHubStore((s) => s.form)
   const formErrors = useCollaborationHubStore((s) => s.formErrors)
   const submitting = useCollaborationHubStore((s) => s.submitting)
@@ -176,14 +214,10 @@ function DraftCreateForm({ projection }: { projection: SessionCollaborationProje
 }
 
 function ReadonlyTaskSpec({ spec }: { spec: TaskSpecProjectionV1 }) {
+  // M2B 投影已携带真实 taskRun 状态，旧契约遗留的 unavailableReason 徽标不再展示
   return (
     <li className="rounded-lg border border-border/40 p-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[12px] font-medium text-foreground">{spec.title}</span>
-        <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-700 dark:text-amber-300">
-          {spec.unavailableReason}
-        </span>
-      </div>
+      <div className="text-[12px] font-medium text-foreground">{spec.title}</div>
       <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{spec.taskKey}</div>
       {spec.summary && <div className="mt-1 text-[12px] text-foreground-secondary">{spec.summary}</div>}
       {spec.dependsOn.length > 0 && <div className="mt-1 text-[11px] text-muted-foreground">依赖：{spec.dependsOn.join('、')}</div>}
@@ -244,7 +278,7 @@ function CancelFlowSection({ flowId }: { flowId: string }) {
   )
 }
 
-function AwaitingApprovalView({ projection }: { projection: SessionCollaborationProjectionV1 }) {
+function AwaitingApprovalView({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
   const submitting = useCollaborationHubStore((s) => s.submitting)
   const approveActiveRevision = useCollaborationHubStore((s) => s.approveActiveRevision)
   const flow = projection.activeFlow
@@ -286,15 +320,18 @@ function AwaitingApprovalView({ projection }: { projection: SessionCollaboration
   )
 }
 
-function ActivePlanView({ projection }: { projection: SessionCollaborationProjectionV1 }) {
+function ActivePlanView({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
   const flow = projection.activeFlow
   if (!flow) return null
+  const attemptsByRun = new Map<string, typeof projection.attempts>()
+  for (const attempt of projection.attempts) {
+    const list = attemptsByRun.get(attempt.taskRunId) ?? []
+    list.push(attempt)
+    attemptsByRun.set(attempt.taskRunId, list)
+  }
   return (
     <div data-testid="hub-active-plan">
       <div className="mb-1 text-[12px] font-medium text-foreground">{flow.objective}</div>
-      <div className="mb-2 rounded-md border border-dashed border-border/60 px-2 py-1.5 text-[11px] text-muted-foreground">
-        执行能力将在后续 CODING Adapter 接入；当前任务均为 PENDING_DISABLED。
-      </div>
       <ul className="flex flex-col gap-1.5">
         {projection.taskSpecs.map((spec) => (
           <ReadonlyTaskSpec key={spec.taskSpecId} spec={spec} />
@@ -302,15 +339,25 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
       </ul>
       {projection.taskRuns.length > 0 && (
         <div className="mt-2">
-          <div className="mb-1 text-[11px] font-medium text-muted-foreground">TaskRun（只读）</div>
+          <div className="mb-1 text-[11px] font-medium text-muted-foreground">任务运行（只读）</div>
           <ul className="flex flex-col gap-1">
             {projection.taskRuns.map((run) => (
-              <li
-                key={run.taskRunId}
-                className="flex items-center justify-between rounded-md border border-border/30 px-2 py-1 text-[11px]"
-              >
-                <span className="font-mono text-muted-foreground">{run.taskKey}</span>
-                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{run.status}</span>
+              <li key={run.taskRunId} className="rounded-md border border-border/30 px-2 py-1 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-muted-foreground">{run.taskKey}</span>
+                  <span
+                    className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
+                    data-testid={`hub-taskrun-status-${run.taskKey}`}
+                  >
+                    {TASK_RUN_STATUS_TEXT[run.status]}
+                  </span>
+                </div>
+                {(attemptsByRun.get(run.taskRunId) ?? []).map((attempt) => (
+                  <div key={attempt.attemptId} className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                    <span className="min-w-0 truncate font-mono">尝试 {attempt.attemptId}</span>
+                    <span className="ml-2 shrink-0">{ATTEMPT_STATUS_TEXT[attempt.status]}</span>
+                  </div>
+                ))}
               </li>
             ))}
           </ul>

@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { HubAddressV1, HubOutcomeV1, SessionCollaborationProjectionV1 } from '@shared/xiaogui-collaboration-hub'
+import type {
+  AttemptId,
+  FlowId,
+  HubAddressV1,
+  HubOutcomeV1,
+  SessionCollaborationProjectionM2BV1,
+  TaskRunId,
+  TaskSpecId,
+} from '@shared/xiaogui-collaboration-hub'
 
 const invokeMock = vi.fn()
 vi.mock('@renderer/lib/ipc-client', () => ({
@@ -9,7 +17,13 @@ vi.mock('@renderer/lib/ipc-client', () => ({
   },
 }))
 
-import { HUB_CONTRACT_VERSION, newHubRequestId, observeCollaborationHub, performHubIntent } from './collaboration-hub-client'
+import {
+  HUB_CONTRACT_VERSION,
+  HUB_OBSERVE_CONTRACT_VERSION,
+  newHubRequestId,
+  observeCollaborationHub,
+  performHubIntent,
+} from './collaboration-hub-client'
 
 const address: HubAddressV1 = {
   projectId: `xgp1_${'a'.repeat(64)}` as HubAddressV1['projectId'],
@@ -21,10 +35,10 @@ const otherAddress: HubAddressV1 = {
   sessionKey: `xgs1_${'c'.repeat(64)}` as HubAddressV1['sessionKey'],
 }
 
-function projectionFixture(): SessionCollaborationProjectionV1 {
+function projectionFixture(): SessionCollaborationProjectionM2BV1 {
   return {
     kind: 'SESSION_COLLABORATION_PROJECTION',
-    version: 'm2a.v1',
+    version: 'm2b.v1',
     address,
     sessionVersion: 0,
     sessionMode: 'WORK',
@@ -34,6 +48,7 @@ function projectionFixture(): SessionCollaborationProjectionV1 {
     activeRevision: null,
     taskSpecs: [],
     taskRuns: [],
+    attempts: [],
     history: [],
     availableActions: ['flow.start.with_draft'],
   }
@@ -42,8 +57,8 @@ function projectionFixture(): SessionCollaborationProjectionV1 {
 beforeEach(() => invokeMock.mockReset())
 
 describe('collaboration-hub-client', () => {
-  it('observe 走白名单通道且载荷只含 contractVersion + address', async () => {
-    const outcome: HubOutcomeV1<SessionCollaborationProjectionV1> = {
+  it('observe 走白名单通道且载荷只含 contractVersion(m2b.v1) + address', async () => {
+    const outcome: HubOutcomeV1<SessionCollaborationProjectionM2BV1> = {
       ok: true,
       value: projectionFixture(),
     }
@@ -53,9 +68,10 @@ describe('collaboration-hub-client', () => {
 
     expect(res).toEqual(outcome)
     expect(invokeMock).toHaveBeenCalledWith('xiaogui.hub.observe', {
-      contractVersion: HUB_CONTRACT_VERSION,
+      contractVersion: HUB_OBSERVE_CONTRACT_VERSION,
       address,
     })
+    expect(HUB_OBSERVE_CONTRACT_VERSION).toBe('m2b.v1')
     const payload = invokeMock.mock.calls[0]![1] as Record<string, unknown>
     expect(Object.keys(payload).sort()).toEqual(['address', 'contractVersion'])
     expect(payload.address).toEqual({
@@ -66,7 +82,99 @@ describe('collaboration-hub-client', () => {
     expect(JSON.stringify(payload)).not.toMatch(/path|mode|actor|sessionFile/i)
   })
 
-  it('perform 载荷只含 contractVersion + address + request', async () => {
+  it('observe 接受携带真实状态 taskRuns 与 attempts 的 m2b.v1 投影', async () => {
+    const valid: SessionCollaborationProjectionM2BV1 = {
+      ...projectionFixture(),
+      sessionMode: 'CODING',
+      authoritativeMode: 'CODING',
+      activeFlow: {
+        flowId: 'xhbf_flow1' as FlowId,
+        status: 'PLAN_ACTIVE',
+        activeRevisionId: null,
+        objective: '目标',
+      },
+      taskRuns: [
+        {
+          taskRunId: 'xhbtr_1' as TaskRunId,
+          taskSpecId: 'xhbts_1' as TaskSpecId,
+          taskKey: 't1',
+          status: 'RUNNING',
+          attemptId: 'xhba_1' as AttemptId,
+        },
+        { taskRunId: 'xhbtr_2' as TaskRunId, taskSpecId: 'xhbts_2' as TaskSpecId, taskKey: 't2', status: 'BLOCKED' },
+      ],
+      attempts: [
+        { attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING', runtimeSessionId: 'rs-1' },
+        { attemptId: 'xhba_0' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'FAILED' },
+      ],
+      availableActions: ['flow.cancel'],
+    }
+    invokeMock.mockResolvedValueOnce({ ok: true, value: valid })
+
+    const res = await observeCollaborationHub(address)
+
+    expect(res).toEqual({ ok: true, value: valid })
+  })
+
+  it.each([
+    ['未知 TaskRun 状态', { taskRuns: [{ taskRunId: 'r1', taskSpecId: 's1', taskKey: 't1', status: 'PENDING_DISABLED' }] }],
+    ['未知 Attempt 状态', { attempts: [{ attemptId: 'a1', taskRunId: 'r1', status: 'EXPLODED' }] }],
+    ['attempts 缺失', { attempts: undefined }],
+    ['attemptId 非字符串', { attempts: [{ attemptId: 1, taskRunId: 'r1', status: 'RUNNING' }] }],
+    [
+      '孤儿 attempt（taskRunId 不存在）',
+      {
+        taskRuns: [{ taskRunId: 'r1', taskSpecId: 's1', taskKey: 't1', status: 'RUNNING' }],
+        attempts: [{ attemptId: 'a1', taskRunId: 'ghost-run', status: 'RUNNING' }],
+      },
+    ],
+    [
+      'taskRun.attemptId 指向属于另一个 taskRun 的 attempt',
+      {
+        taskRuns: [
+          { taskRunId: 'r1', taskSpecId: 's1', taskKey: 't1', status: 'RUNNING', attemptId: 'a1' },
+          { taskRunId: 'r2', taskSpecId: 's2', taskKey: 't2', status: 'BLOCKED' },
+        ],
+        attempts: [{ attemptId: 'a1', taskRunId: 'r2', status: 'FAILED' }],
+      },
+    ],
+    [
+      'taskRun.attemptId 悬空（attempt 不存在）',
+      {
+        taskRuns: [{ taskRunId: 'r1', taskSpecId: 's1', taskKey: 't1', status: 'RUNNING', attemptId: 'ghost-attempt' }],
+      },
+    ],
+    [
+      'taskRunId 重复',
+      {
+        taskRuns: [
+          { taskRunId: 'r1', taskSpecId: 's1', taskKey: 't1', status: 'RUNNING' },
+          { taskRunId: 'r1', taskSpecId: 's2', taskKey: 't2', status: 'BLOCKED' },
+        ],
+      },
+    ],
+    [
+      'attemptId 重复',
+      {
+        taskRuns: [{ taskRunId: 'r1', taskSpecId: 's1', taskKey: 't1', status: 'RUNNING' }],
+        attempts: [
+          { attemptId: 'a1', taskRunId: 'r1', status: 'RUNNING' },
+          { attemptId: 'a1', taskRunId: 'r1', status: 'FAILED' },
+        ],
+      },
+    ],
+  ])('m2b.v1 投影结构非法时映射为安全 INTERNAL：%s', async (_label, patch) => {
+    invokeMock.mockResolvedValueOnce({ ok: true, value: { ...projectionFixture(), ...patch } })
+
+    const res = await observeCollaborationHub(address)
+
+    expect(res).toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+    })
+  })
+
+  it('perform 载荷只含 contractVersion(m2a.v1) + address + request', async () => {
     invokeMock.mockResolvedValueOnce({
       ok: true,
       value: { requestId: 'r1', intentType: 'flow.cancel', sessionVersion: 1 },
