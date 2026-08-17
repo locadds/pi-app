@@ -28,6 +28,8 @@ import type {
   WorkDocxDiscoverRequestV1,
   WorkDocxDiscoverResultV1,
   WorkDocxOutcomeV1,
+  WorkDocxOutputAccessRequestV1,
+  WorkDocxOutputAccessResultV1,
   WorkDocxPrepareRequestV1,
   WorkDocxPrepareResultV1,
   WorkDocxPublishedResultV1,
@@ -387,6 +389,10 @@ export interface IpcMethodMap {
   'xiaogui.work.docx.cancel': {
     request: WorkDocxCancelRequestV1
     response: WorkDocxOutcomeV1<WorkDocxCancelledResultV1>
+  }
+  'xiaogui.work.docx.output.access': {
+    request: WorkDocxOutputAccessRequestV1
+    response: WorkDocxOutcomeV1<WorkDocxOutputAccessResultV1>
   }
   'session.rename': { request: SessionRenameRequest; response: SessionRenameResponse }
   'session.compact': { request: SessionCompactRequest; response: SessionCompactResponse }

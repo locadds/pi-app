@@ -1,7 +1,7 @@
 /**
  * WORK DOCX 模板生成强类型薄客户端。
  *
- * 只封装 discover / prepare / confirm / cancel 四个 IPC 通道：
+ * 只封装 discover / prepare / confirm / cancel / output.access 五个 IPC 通道：
  * - 入参只携带当前会话的 canonical WORK 地址与不透明 operationId，
  *   前端不提交、也不接收任何真实路径、命令或临时目录。
  * - 返回值严格按共享契约（packages/shared/xiaogui-work-docx.ts）做闭集解析；
@@ -16,6 +16,9 @@ import type {
   WorkDocxDiscoverResultV1,
   WorkDocxErrorCodeV1,
   WorkDocxOperationIdV1,
+  WorkDocxOutputAccessActionV1,
+  WorkDocxOutputAccessRequestV1,
+  WorkDocxOutputAccessResultV1,
   WorkDocxPrepareResultV1,
   WorkDocxPublishedResultV1,
 } from '@shared/xiaogui-work-docx'
@@ -52,6 +55,7 @@ const ERROR_CODES = new Set<WorkDocxErrorCodeV1>([
   'SOURCE_CHANGED',
   'GENERATION_FAILED',
   'PUBLISH_FAILED',
+  'OUTPUT_ACCESS_FAILED',
 ])
 
 /** 错误闭集对应的大白话文案；只描述用户能理解和处理的事，不含技术细节。 */
@@ -69,6 +73,7 @@ const SAFE_MESSAGES: Record<WorkDocxClientErrorCodeV1, string> = {
   SOURCE_CHANGED: '模板或数据文件在准备之后被改动过，请重新选择。',
   GENERATION_FAILED: '生成文档失败，请检查模板和数据内容后再试。',
   PUBLISH_FAILED: '保存新文件失败，请换一个保存位置再试。',
+  OUTPUT_ACCESS_FAILED: '暂时无法打开或定位新文件，请重试。',
   IPC_FAILURE: '文档功能暂时不可用，请稍后再试。',
 }
 
@@ -253,6 +258,28 @@ export function confirmWorkDocx(
   const request: WorkDocxConfirmRequestV1 = { address, operationId }
   return invokeDocx('xiaogui.work.docx.confirm', request, isPublishedResult)
 }
+
+function isOutputAccessResult(value: unknown): value is WorkDocxOutputAccessResultV1 {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['kind', 'operationId', 'action']) &&
+    value.kind === 'ACCESSED' &&
+    isOperationId(value.operationId) &&
+    (value.action === 'OPEN' || value.action === 'REVEAL')
+  )
+}
+
+/** 生成成功后访问输出文件：打开或定位，由后端在用户机器上执行，前端不接触路径。 */
+export function accessWorkDocxOutput(
+  address: SessionAddressV1,
+  operationId: WorkDocxOperationIdV1,
+  action: WorkDocxOutputAccessActionV1,
+): Promise<WorkDocxClientOutcomeV1<WorkDocxOutputAccessResultV1>> {
+  const request: WorkDocxOutputAccessRequestV1 = { address, operationId, action }
+  return invokeDocx('xiaogui.work.docx.output.access', request, isOutputAccessResult)
+}
+
+export type { WorkDocxOutputAccessActionV1 }
 
 /** 放弃一次尚未确认的准备；后端会清理对应的临时内容。 */
 export async function cancelWorkDocx(

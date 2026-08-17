@@ -8,7 +8,11 @@ import JSZip from 'jszip'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
-import { WorkDocxServiceV1, type WorkDocxDialogPortV1 } from './work-docx-service'
+import {
+  WorkDocxServiceV1,
+  type WorkDocxDialogPortV1,
+  type WorkDocxOutputAccessPortV1,
+} from './work-docx-service'
 
 const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
@@ -81,10 +85,15 @@ describe('WorkDocxServiceV1', () => {
     const fixture = await createFixture()
     const templateBefore = await readFile(fixture.template)
     const payloadBefore = await readFile(fixture.payload)
+    const outputAccess: WorkDocxOutputAccessPortV1 = {
+      openPath: vi.fn().mockResolvedValueOnce('暂时失败').mockResolvedValue(''),
+      revealPath: vi.fn(async () => {}),
+    }
     const service = new WorkDocxServiceV1({
       lookup: lookup('WORK'),
       dialogs: dialogs(fixture.template, fixture.payload, fixture.target),
       tempRoot: join(fixture.root, 'staging'),
+      outputAccess,
     })
 
     const prepared = await service.prepare({ address: ADDRESS })
@@ -120,12 +129,45 @@ describe('WorkDocxServiceV1', () => {
       service.confirm({ address: ADDRESS, operationId: prepared.value.operationId }),
     ).resolves.toEqual(published)
 
+    await expect(
+      service.accessOutput({ address: ADDRESS, operationId: prepared.value.operationId, action: 'OPEN' }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: 'OUTPUT_ACCESS_FAILED',
+        messageKey: 'xiaogui.work.docx.output_access_failed',
+      },
+    })
+    await expect(
+      service.accessOutput({ address: ADDRESS, operationId: prepared.value.operationId, action: 'OPEN' }),
+    ).resolves.toEqual({
+      ok: true,
+      value: { kind: 'ACCESSED', operationId: prepared.value.operationId, action: 'OPEN' },
+    })
+    await expect(
+      service.accessOutput({ address: ADDRESS, operationId: prepared.value.operationId, action: 'REVEAL' }),
+    ).resolves.toEqual({
+      ok: true,
+      value: { kind: 'ACCESSED', operationId: prepared.value.operationId, action: 'REVEAL' },
+    })
+    expect(outputAccess.openPath).toHaveBeenCalledWith(fixture.target)
+    expect(outputAccess.revealPath).toHaveBeenCalledWith(fixture.target)
+
     const otherAddress = {
       projectId: ADDRESS.projectId,
       sessionKey: `xgs1_${'3'.repeat(64)}`,
     } as SessionAddressV1
     await expect(
       service.confirm({ address: otherAddress, operationId: prepared.value.operationId }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: 'OPERATION_SCOPE_MISMATCH',
+        messageKey: 'xiaogui.work.docx.operation_scope_mismatch',
+      },
+    })
+    await expect(
+      service.accessOutput({ address: otherAddress, operationId: prepared.value.operationId, action: 'OPEN' }),
     ).resolves.toEqual({
       ok: false,
       error: {

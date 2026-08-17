@@ -7,12 +7,14 @@ import { FileText, Loader2, X } from '@renderer/components/icons'
 import { useUIStore } from '@renderer/stores/ui-store'
 import { useXiaoguiStore } from '../stores/xiaogui-store'
 import {
+  accessWorkDocxOutput,
   cancelWorkDocx,
   confirmWorkDocx,
   discoverWorkDocx,
   prepareWorkDocx,
   shortWorkDocxDigest,
 } from '../lib/work-docx-client'
+import type { WorkDocxOutputAccessActionV1 } from '../lib/work-docx-client'
 
 type PreparedDocx = {
   address: SessionAddressV1
@@ -31,7 +33,17 @@ type PanelState =
   | { kind: 'prepared'; prepared: PreparedDocx; cancelError?: string }
   | { kind: 'cancelling'; prepared: PreparedDocx }
   | { kind: 'confirming'; prepared: PreparedDocx }
-  | { kind: 'success'; outputSha256: string; templateSha256: string; payloadSha256: string }
+  | {
+      kind: 'success'
+      address: SessionAddressV1
+      addressKey: string
+      operationId: WorkDocxOperationIdV1
+      outputSha256: string
+      templateSha256: string
+      payloadSha256: string
+      accessing?: WorkDocxOutputAccessActionV1
+      accessError?: string
+    }
   | { kind: 'error'; message: string }
 
 function addressKey(address: SessionAddressV1): string {
@@ -57,6 +69,7 @@ export function ComposerWorkDocxButton() {
   const [panel, setPanel] = useState<PanelState>({ kind: 'idle' })
   const requestSeq = useRef(0)
   const busyRef = useRef(false)
+  const accessBusyRef = useRef(false)
   const preparedRef = useRef<PreparedDocx | null>(null)
   const cancelled = useRef(new Set<WorkDocxOperationIdV1>())
 
@@ -80,6 +93,7 @@ export function ComposerWorkDocxButton() {
     previousActiveKey.current = activeKey
     requestSeq.current += 1
     busyRef.current = false
+    accessBusyRef.current = false
     const prepared = preparedRef.current
     preparedRef.current = null
     cancelPrepared(prepared)
@@ -195,9 +209,33 @@ export function ComposerWorkDocxButton() {
     busyRef.current = false
     setPanel({
       kind: 'success',
+      address: prepared.address,
+      addressKey: prepared.addressKey,
+      operationId: prepared.operationId,
       outputSha256: result.value.outputSha256,
       templateSha256: result.value.templateSha256,
       payloadSha256: result.value.payloadSha256,
+    })
+  }
+
+  const accessOutput = async (action: WorkDocxOutputAccessActionV1) => {
+    if (panel.kind !== 'success' || accessBusyRef.current) return
+    accessBusyRef.current = true
+    const seq = ++requestSeq.current
+    const { address: successAddress, addressKey: successKey, operationId } = panel
+    setPanel({ ...panel, accessing: action, accessError: undefined })
+    const result = await accessWorkDocxOutput(successAddress, operationId, action)
+    accessBusyRef.current = false
+    if (requestSeq.current !== seq || !sameAddress(currentWorkAddress(), successKey)) return
+    setPanel((current) => {
+      if (current.kind !== 'success' || current.operationId !== operationId) return current
+      if (result.ok) return { ...current, accessing: undefined, accessError: undefined }
+      return {
+        ...current,
+        accessing: undefined,
+        accessError:
+          action === 'OPEN' ? '暂时打不开文件，请重试。' : '暂时无法在文件夹中显示，请重试。',
+      }
     })
   }
 
@@ -277,9 +315,26 @@ export function ComposerWorkDocxButton() {
               <span>原模板和原数据未修改。</span>
               <span>输出摘要：{shortWorkDocxDigest(panel.outputSha256)}</span>
             </div>
-            <div className="mt-4 flex justify-end">
+            {panel.accessError && <p className="mt-3 text-xs text-destructive">{panel.accessError}</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={panel.accessing != null}
+                onClick={() => void accessOutput('OPEN')}
+                className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground disabled:opacity-50"
+              >
+                打开文件
+              </button>
+              <button
+                type="button"
+                disabled={panel.accessing != null}
+                onClick={() => void accessOutput('REVEAL')}
+                className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground disabled:opacity-50"
+              >
+                在文件夹中显示
+              </button>
               <button type="button" onClick={closePanel} className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground">
-                知道了
+                完成
               </button>
             </div>
           </div>

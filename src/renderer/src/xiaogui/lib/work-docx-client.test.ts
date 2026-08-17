@@ -10,6 +10,7 @@ vi.mock('@renderer/lib/ipc-client', () => ({
 }))
 
 import {
+  accessWorkDocxOutput,
   cancelWorkDocx,
   confirmWorkDocx,
   discoverWorkDocx,
@@ -116,6 +117,49 @@ describe('work-docx-client', () => {
     expect(invokeMock.mock.calls[0]![1]).toEqual({ address })
     expect(invokeMock.mock.calls[1]![1]).toEqual({ address, operationId })
     expect(invokeMock.mock.calls[2]![1]).toEqual({ address, operationId })
+    expect(failed).toEqual({
+      ok: false,
+      code: 'IPC_FAILURE',
+      message: '文档功能暂时不可用，请稍后再试。',
+    })
+    expect(JSON.stringify(failed)).not.toContain('C:\\')
+  })
+
+  it('access 使用窄载荷并安全映射失败', async () => {
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: { kind: 'ACCESSED', operationId, action: 'OPEN' },
+    })
+    await expect(accessWorkDocxOutput(address, operationId, 'OPEN')).resolves.toEqual({
+      ok: true,
+      value: { kind: 'ACCESSED', operationId, action: 'OPEN' },
+    })
+    expect(invokeMock).toHaveBeenCalledWith('xiaogui.work.docx.output.access', {
+      address,
+      operationId,
+      action: 'OPEN',
+    })
+
+    invokeMock.mockResolvedValueOnce({ ok: false, error: { code: 'OPERATION_NOT_FOUND', messageKey: 'workDocx.operationNotFound' } })
+    await expect(accessWorkDocxOutput(address, operationId, 'REVEAL')).resolves.toEqual({
+      ok: false,
+      code: 'OPERATION_NOT_FOUND',
+      message: '这次准备已经失效，请重新选择文件。',
+    })
+    expect(invokeMock).toHaveBeenLastCalledWith('xiaogui.work.docx.output.access', {
+      address,
+      operationId,
+      action: 'REVEAL',
+    })
+
+    invokeMock.mockResolvedValueOnce({ ok: false, error: { code: 'ACCESS_DENIED', messageKey: 'x' } })
+    await expect(accessWorkDocxOutput(address, operationId, 'OPEN')).resolves.toMatchObject({
+      ok: false,
+      code: 'IPC_FAILURE',
+    })
+
+    invokeMock.mockRejectedValueOnce(new Error('C:\\Users\\secret\\docx'))
+    const failed = await accessWorkDocxOutput(address, operationId, 'OPEN')
     expect(failed).toEqual({
       ok: false,
       code: 'IPC_FAILURE',

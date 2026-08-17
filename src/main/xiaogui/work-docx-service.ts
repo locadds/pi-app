@@ -27,6 +27,8 @@ import type {
   WorkDocxErrorCodeV1,
   WorkDocxOperationIdV1,
   WorkDocxOutcomeV1,
+  WorkDocxOutputAccessRequestV1,
+  WorkDocxOutputAccessResultV1,
   WorkDocxPrepareRequestV1,
   WorkDocxPrepareResultV1,
   WorkDocxPublishedResultV1,
@@ -49,10 +51,16 @@ type WorkDocxDialogPortV1 = {
   chooseNewTarget(): Promise<string | null>
 }
 
+type WorkDocxOutputAccessPortV1 = {
+  openPath(path: string): Promise<string>
+  revealPath(path: string): Promise<void>
+}
+
 type WorkDocxServiceOptionsV1 = {
   lookup: SessionScopeLookupV1
   dialogs: WorkDocxDialogPortV1
   tempRoot: string
+  outputAccess?: WorkDocxOutputAccessPortV1
 }
 
 type PreparedOperationV1 = {
@@ -218,7 +226,7 @@ export class WorkDocxServiceV1 {
   private readonly prepared = new Map<WorkDocxOperationIdV1, PreparedOperationV1>()
   private readonly completed = new Map<
     WorkDocxOperationIdV1,
-    { addressKey: string; receipt: WorkDocxPublishedResultV1 }
+    { addressKey: string; receipt: WorkDocxPublishedResultV1; target: string }
   >()
   private readonly active = new Set<WorkDocxOperationIdV1>()
 
@@ -380,7 +388,11 @@ export class WorkDocxServiceV1 {
         payloadSha256: operation.payloadSha256,
         originalInputsUnchanged: true,
       }
-      this.completed.set(operation.operationId, { addressKey: operation.addressKey, receipt })
+      this.completed.set(operation.operationId, {
+        addressKey: operation.addressKey,
+        receipt,
+        target: operation.target,
+      })
       this.prepared.delete(operation.operationId)
       await rm(operation.stageDir, { recursive: true, force: true }).catch(() => {})
       return { ok: true, value: receipt }
@@ -421,6 +433,40 @@ export class WorkDocxServiceV1 {
     this.prepared.delete(request.operationId)
     return { ok: true, value: { kind: 'CANCELLED', operationId: request.operationId } }
   }
+
+  async accessOutput(
+    request: WorkDocxOutputAccessRequestV1,
+  ): Promise<WorkDocxOutcomeV1<WorkDocxOutputAccessResultV1>> {
+    const admitted = await this.admit(request.address)
+    if (!admitted.ok) return admitted
+
+    const operation = this.completed.get(request.operationId)
+    if (!operation) return failure('OPERATION_NOT_FOUND')
+    if (operation.addressKey !== addressKey(request.address)) return failure('OPERATION_SCOPE_MISMATCH')
+    if (!this.options.outputAccess) return failure('OUTPUT_ACCESS_FAILED')
+
+    try {
+      if ((await sha256(operation.target)) !== operation.receipt.outputSha256) {
+        return failure('OUTPUT_ACCESS_FAILED')
+      }
+      if (request.action === 'OPEN') {
+        const errorMessage = await this.options.outputAccess.openPath(operation.target)
+        if (errorMessage) return failure('OUTPUT_ACCESS_FAILED')
+      } else {
+        await this.options.outputAccess.revealPath(operation.target)
+      }
+      return {
+        ok: true,
+        value: {
+          kind: 'ACCESSED',
+          operationId: request.operationId,
+          action: request.action,
+        },
+      }
+    } catch {
+      return failure('OUTPUT_ACCESS_FAILED')
+    }
+  }
 }
 
-export type { WorkDocxDialogPortV1, WorkDocxServiceOptionsV1 }
+export type { WorkDocxDialogPortV1, WorkDocxOutputAccessPortV1, WorkDocxServiceOptionsV1 }
