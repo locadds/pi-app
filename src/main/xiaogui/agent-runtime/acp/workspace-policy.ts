@@ -12,7 +12,7 @@ export interface PreparedKimiAcpWorkspacePolicyV1 {
   readonly allowedRelativePaths: readonly string[]
   readTextFile(requestedPath: string): { content: string; contentDigest: string }
   preflightWriteTextFile(requestedPath: string, content: string): { targetDigest: string; contentDigest: string }
-  writeTextFile(requestedPath: string, content: string): { contentDigest: string; candidateDigest: string }
+  writeTextFile(requestedPath: string, content: string, expected: { targetDigest: string; contentDigest: string }): { contentDigest: string; candidateDigest: string }
 }
 
 interface FileIdentity {
@@ -66,10 +66,12 @@ export function prepareKimiAcpWorkspacePolicy(
         contentDigest: digestBytes(Buffer.from(content, 'utf8')),
       }
     },
-    writeTextFile(requestedPath: string, content: string) {
+    writeTextFile(requestedPath: string, content: string, expected: { targetDigest: string; contentDigest: string }) {
       const before = verifyAllowed(policy, requestedPath)
       const next = Buffer.from(content, 'utf8')
       const nextDigest = digestBytes(next)
+      if (digestTarget(before) !== expected.targetDigest) throw new KimiAcpWorkspacePolicyError('WORKSPACE_WRITE_TARGET_DIGEST_CHANGED')
+      if (nextDigest !== expected.contentDigest) throw new KimiAcpWorkspacePolicyError('WORKSPACE_WRITE_CONTENT_DIGEST_CHANGED')
       const temporaryPath = join(dirname(before.realPath), `.xiaogui-acp-${process.pid}-${Date.now()}.tmp`)
       try {
         writeFileSync(temporaryPath, next, { flag: 'wx' })

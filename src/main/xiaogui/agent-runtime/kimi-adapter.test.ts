@@ -476,6 +476,61 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     await expect(adapter.inspect(created.runtimeSessionId)).resolves.toMatchObject({ state: 'SUCCEEDED' })
   })
 
+  it('binds concurrent write challenges to the original target identity and rejects stale approvals', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const writeTasks: Promise<unknown>[] = []
+    const factory = new FakeTransportFactory(async (transport) => {
+      writeTasks.push(transport.reverse('fs/write_text_file', { path: 'a.txt', content: 'after-one' }))
+      writeTasks.push(transport.reverse('fs/write_text_file', { path: 'a.txt', content: 'after-two' }))
+      await Promise.allSettled(writeTasks)
+    })
+    const adapter = new KimiAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver(),
+      workspaceResolver: resolver(root),
+      probe: new FakeProbe(),
+      transportFactory: factory,
+    })
+
+    const created = await adapter.createOrResume(request(root))
+    await tick()
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('before')
+    const permissions = (await collect(adapter.stream(created.runtimeSessionId, 0))).filter(
+      (event): event is Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> => event.type === 'PERMISSION_REQUESTED',
+    )
+    expect(permissions).toHaveLength(2)
+    expect(permissions[0].challengeDigest).not.toBe(permissions[1].challengeDigest)
+
+    await expect(adapter.permission({
+      type: 'ALLOW_ONCE',
+      permissionRequestId: permissions[0].permissionRequestId,
+      challengeDigest: permissions[0].challengeDigest,
+      decisionRequestId: 'allow-concurrent-write-1',
+      scope: request(root).scope,
+      runtimeSessionId: created.runtimeSessionId,
+      proofId: 'concurrent-proof-1',
+      proofDigest: 'sha256:concurrent-proof-1',
+    })).resolves.toEqual({ accepted: true })
+    await expect(writeTasks[0]).resolves.toMatchObject({ contentDigest: digestBytes(Buffer.from('after-one')) })
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('after-one')
+
+    await expect(adapter.permission({
+      type: 'ALLOW_ONCE',
+      permissionRequestId: permissions[1].permissionRequestId,
+      challengeDigest: permissions[1].challengeDigest,
+      decisionRequestId: 'allow-concurrent-write-2',
+      scope: request(root).scope,
+      runtimeSessionId: created.runtimeSessionId,
+      proofId: 'concurrent-proof-2',
+      proofDigest: 'sha256:concurrent-proof-2',
+    })).resolves.toEqual({ accepted: true })
+    await expect(writeTasks[1]).rejects.toThrow()
+    await tick()
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('after-one')
+    const events = await collect(adapter.stream(created.runtimeSessionId, 0))
+    expect(events.filter((event) => event.type === 'CANDIDATE_PRODUCED')).toHaveLength(1)
+    await expect(adapter.inspect(created.runtimeSessionId)).resolves.toMatchObject({ state: 'SUCCEEDED' })
+  })
+
   it('does not reuse write permission decisions for denial, proof replay, or another write target', async () => {
     const root = workspace({ 'a.txt': 'before', 'b.txt': 'other' })
     const writeTasks: Promise<unknown>[] = []
@@ -673,6 +728,51 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     })).resolves.toEqual({ accepted: false, reasonCode: 'RUNTIME_CANCEL_REQUESTED' })
     await expect(writeTasks[0]).rejects.toThrow()
     expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('before')
+  })
+
+  it('settles a produced candidate as succeeded when Kimi ends the turn after a best-effort cancel request', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const releasePrompt: Array<() => void> = []
+    const writeTasks: Promise<unknown>[] = []
+    const factory = new FakeTransportFactory(async (transport) => {
+      writeTasks.push(transport.reverse('fs/write_text_file', { path: 'a.txt', content: 'after' }))
+      await writeTasks[0]
+      await new Promise<void>((resolve) => releasePrompt.push(resolve))
+    })
+    const adapter = new KimiAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver(),
+      workspaceResolver: resolver(root),
+      probe: new FakeProbe(),
+      transportFactory: factory,
+    })
+
+    const created = await adapter.createOrResume(request(root))
+    await tick()
+    const permission = (await collect(adapter.stream(created.runtimeSessionId, 0))).find(
+      (event): event is Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> => event.type === 'PERMISSION_REQUESTED',
+    )
+    if (!permission) throw new Error('permission event missing')
+    await expect(adapter.permission({
+      type: 'ALLOW_ONCE',
+      permissionRequestId: permission.permissionRequestId,
+      challengeDigest: permission.challengeDigest,
+      decisionRequestId: 'allow-before-best-effort-cancel',
+      scope: request(root).scope,
+      runtimeSessionId: created.runtimeSessionId,
+      proofId: 'proof-before-best-effort-cancel',
+      proofDigest: 'sha256:proof-before-best-effort-cancel',
+    })).resolves.toEqual({ accepted: true })
+    await expect(writeTasks[0]).resolves.toMatchObject({ contentDigest: digestBytes(Buffer.from('after')) })
+
+    await expect(adapter.interrupt({ requestId: 'best-effort-cancel-after-candidate', runtimeSessionId: created.runtimeSessionId, reason: 'user_cancelled' })).resolves.toEqual({ requested: true })
+    await expect(adapter.inspect(created.runtimeSessionId)).resolves.toMatchObject({ state: 'OUTCOME_UNKNOWN', reasonCode: 'RUNTIME_STILL_RUNNING' })
+    releasePrompt.shift()?.()
+    await tick()
+
+    await expect(adapter.inspect(created.runtimeSessionId)).resolves.toMatchObject({ state: 'SUCCEEDED' })
+    const events = await collect(adapter.stream(created.runtimeSessionId, 0))
+    expect(events.filter((event) => event.type === 'RUNTIME_SETTLED')).toHaveLength(1)
+    expect(events.find((event) => event.type === 'RUNTIME_SETTLED')).toMatchObject({ outcome: 'SUCCEEDED' })
   })
 
   it('replays identical createOrResume requests and rejects same-key payload drift before starting another ACP session', async () => {

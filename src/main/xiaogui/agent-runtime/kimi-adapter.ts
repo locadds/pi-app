@@ -192,7 +192,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       const granted = await this.requestWritePermission(state, preflight)
       if (!granted) throw new KimiAcpWorkspacePolicyError('ACP_FS_WRITE_DENIED')
       if (state.disconnected || state.outcome || state.cancellationRequested) throw new KimiAcpWorkspacePolicyError('ACP_FS_WRITE_NOT_RUNNING')
-      const result = policy.writeTextFile(write.path, write.content)
+      const result = policy.writeTextFile(write.path, write.content, preflight)
       state.candidateDigest = result.candidateDigest
       pushEvent(state, { type: 'CANDIDATE_PRODUCED', runtimeSessionId: state.publicRuntimeSessionId, candidateDigest: result.candidateDigest })
       return { contentDigest: result.contentDigest }
