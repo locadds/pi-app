@@ -212,7 +212,11 @@ export class PrivateRuntimePayloadVaultV1 implements TrustedRuntimePayloadResolv
       .all(cleanAttemptId, mediaType) as unknown as PayloadRow[]
     if (rows.length === 0) throw new RuntimePayloadVaultError('PAYLOAD_REF_MISSING')
     if (rows.length > 1) throw new RuntimePayloadVaultError('PAYLOAD_REF_AMBIGUOUS')
-    return refFor(mediaType, rows[0]!.ref_id, rows[0]!.digest, cleanAttemptId)
+    const row = rows[0]!
+    if (digestBytes(Buffer.from(row.payload)) !== row.digest) {
+      throw new RuntimePayloadVaultError('PAYLOAD_DIGEST_MISMATCH')
+    }
+    return refFor(mediaType, row.ref_id, row.digest, cleanAttemptId)
   }
 
   private row(refId: string): PayloadRow | null {

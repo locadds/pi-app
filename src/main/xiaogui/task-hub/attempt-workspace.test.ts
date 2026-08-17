@@ -13,6 +13,7 @@ import {
   SqliteAttemptWorkspaceRegistryV1,
   digestBytes,
   type AttemptFileGrantV1,
+  type AttemptFileManifestV1,
   type AttemptWorkspacePrepareRequestV1,
 } from './attempt-workspace'
 
@@ -96,6 +97,41 @@ function prepareRequest(input: {
 }
 
 describe('GitAttemptWorkspaceServiceV1', () => {
+  it('allows only one manifest successor for a base version across SQLite connections', async () => {
+    const dbPath = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
+    const first = new SqliteAttemptWorkspaceRegistryV1({ dbPath })
+    const second = new SqliteAttemptWorkspaceRegistryV1({ dbPath })
+    const initial: AttemptFileManifestV1 = {
+      attemptId: 'xhba_manifest_cas',
+      version: 1,
+      grants: [],
+      manifestDigest: 'sha256:manifest-v1',
+    }
+    const successorA: AttemptFileManifestV1 = {
+      attemptId: initial.attemptId,
+      version: 2,
+      grants: [{ operation: 'CREATE', relativePath: 'src/a.txt' }],
+      manifestDigest: 'sha256:manifest-v2-a',
+    }
+    const successorB: AttemptFileManifestV1 = {
+      attemptId: initial.attemptId,
+      version: 2,
+      grants: [{ operation: 'CREATE', relativePath: 'src/b.txt' }],
+      manifestDigest: 'sha256:manifest-v2-b',
+    }
+    try {
+      first.commitManifestAndCreateBatch(initial)
+      first.commitManifestAndCreateBatch(successorA)
+      expect(() => second.commitManifestAndCreateBatch(successorB)).toThrowError(
+        expect.objectContaining({ reasonCode: 'MANIFEST_VERSION_CONFLICT' }),
+      )
+      expect(second.getManifest(initial.attemptId)).toEqual(successorA)
+    } finally {
+      second.close()
+      first.close()
+    }
+  })
+
   it('creates a detached attempt worktree from a real git repository without touching the source worktree', async () => {
     const projectRoot = await gitRepo()
     const beforeHead = git(projectRoot, ['rev-parse', 'HEAD'])
@@ -150,6 +186,16 @@ describe('GitAttemptWorkspaceServiceV1', () => {
         manifest: { ...request.manifest, grants: [{ operation: 'CREATE', relativePath: 'src/other.txt' }] },
       }),
     ).rejects.toMatchObject({ reasonCode: 'MANIFEST_CONFLICT' })
+    const displacedWorktree = `${first.handle.rootPath}-original`
+    await rename(first.handle.rootPath, displacedWorktree)
+    try {
+      git(managedRoot, ['clone', '--no-local', projectRoot, first.handle.rootPath])
+      await expect(workspace.runtimeBinding(first.handle.attemptId)).rejects.toMatchObject({ reasonCode: 'WORKTREE_DRIFT' })
+      await expect(workspace.auditChanges(first.handle.attemptId)).rejects.toMatchObject({ reasonCode: 'WORKTREE_DRIFT' })
+    } finally {
+      await rm(first.handle.rootPath, { recursive: true, force: true })
+      await rename(displacedWorktree, first.handle.rootPath)
+    }
     registry.close()
 
     writeFileSync(join(projectRoot, 'src', 'dirty.txt'), 'dirty')
@@ -211,13 +257,22 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     const projectRoot = await gitRepo()
     const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
     const managedRoot = await tempRoot('xiaogui-attempt-managed-')
-    for (const relativePath of ['../escape.txt', '.git/config', 'C:\\outside.txt', 'src/file.txt:ads']) {
+    const invalidRelativePaths = [
+      '../escape.txt',
+      '.git/config',
+      'C:\\outside.txt',
+      'src/file.txt:ads',
+      'src/../redirected.txt',
+      'src/./file.txt',
+      'src//file.txt',
+    ]
+    for (const [invalidPathIndex, relativePath] of invalidRelativePaths.entries()) {
       await expect(
         workspace.prepare(
           prepareRequest({
             projectRoot,
             managedRoot: await tempRoot('xiaogui-attempt-managed-invalid-'),
-            attemptId: `xhba_${relativePath.length}` as AttemptId,
+            attemptId: `xhba_invalid_${invalidPathIndex}` as AttemptId,
             grants: [{ operation: 'CREATE', relativePath }],
           }),
         ),
@@ -238,6 +293,72 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       actualRelativePaths: ['src/unapproved.txt'],
     })
     registry.close()
+  }, 30000)
+
+  it('rejects case-insensitive Git metadata segments', async () => {
+    const projectRoot = await gitRepo()
+    const gitMetadata = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const prepared = await gitMetadata.workspace.prepare(
+      prepareRequest({
+        projectRoot,
+        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+        attemptId: 'xhba_git_case_alias' as AttemptId,
+        grants: [{ operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') }],
+      }),
+    )
+    const request = gitMetadata.workspace.requestScopeExpansion({
+      requestId: 'scope-git-case-alias',
+      attemptId: prepared.handle.attemptId,
+      baseManifestVersion: 1,
+      requestedGrants: [
+        {
+          operation: 'MODIFY',
+          relativePath: '.GIT',
+          baselineDigest: digestBytes(readFileSync(join(prepared.handle.rootPath, '.git'))),
+        },
+      ],
+      reasonDigest: 'sha256:git-case-alias',
+    })
+    await expect(
+      gitMetadata.workspace.approveScopeExpansion({
+        requestId: request.requestId,
+        attemptId: prepared.handle.attemptId,
+        baseManifestVersion: request.baseManifestVersion,
+        requestDigest: request.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).rejects.toMatchObject({ reasonCode: 'PATH_FORBIDDEN' })
+    gitMetadata.registry.close()
+  }, 30000)
+
+  it.skipIf(process.platform !== 'win32')('rejects Windows case aliases across manifest versions', async () => {
+    const projectRoot = await gitRepo()
+    const pathAlias = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const prepared = await pathAlias.workspace.prepare(
+      prepareRequest({
+        projectRoot,
+        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+        attemptId: 'xhba_file_case_alias' as AttemptId,
+        grants: [{ operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') }],
+      }),
+    )
+    const request = pathAlias.workspace.requestScopeExpansion({
+      requestId: 'scope-file-case-alias',
+      attemptId: prepared.handle.attemptId,
+      baseManifestVersion: 1,
+      requestedGrants: [{ operation: 'MODIFY', relativePath: 'src/EXISTING.txt', baselineDigest: digestBytes('before') }],
+      reasonDigest: 'sha256:file-case-alias',
+    })
+    await expect(
+      pathAlias.workspace.approveScopeExpansion({
+        requestId: request.requestId,
+        attemptId: prepared.handle.attemptId,
+        baseManifestVersion: request.baseManifestVersion,
+        requestDigest: request.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).rejects.toMatchObject({ reasonCode: 'PATH_CONFLICT' })
+    pathAlias.registry.close()
   }, 30000)
 
   it('rejects deletion and rename instead of treating them as approved MODIFY or CREATE paths', async () => {
@@ -282,7 +403,8 @@ describe('GitAttemptWorkspaceServiceV1', () => {
 
   it('approves scoped CREATE expansion as a new manifest version and rejects DELETE expansion', async () => {
     const projectRoot = await gitRepo()
-    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const dbPath = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
+    const { workspace, registry } = service(dbPath)
     const prepared = await workspace.prepare(
       prepareRequest({
         projectRoot,
@@ -311,6 +433,11 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       grants: expect.arrayContaining([expect.objectContaining({ operation: 'CREATE', relativePath: 'src/extra.txt' })]),
     })
     expect(readFileSync(join(prepared.handle.rootPath, 'src', 'extra.txt'), 'utf8')).toBe('')
+    expect(registry.getPrepared(prepared.handle.attemptId)?.result).toMatchObject({
+      handle: { manifestVersion: 2 },
+      allowedRelativePaths: ['src/existing.txt', 'src/extra.txt'],
+    })
+    await expect(workspace.auditChanges(prepared.handle.attemptId)).resolves.toMatchObject({ ok: true })
     await expect(
       workspace.approveScopeExpansion({
         requestId: request.requestId,
@@ -349,6 +476,7 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       }),
     ).rejects.toBeInstanceOf(AttemptWorkspaceError)
     expect(existsSync(join(prepared.handle.rootPath, 'src', 'should-not-exist.txt'))).toBe(false)
+    expect(registry.getScopeRequest(mixed.requestId)?.state).toBe('REJECTED')
     const deleteRequest = workspace.requestScopeExpansion({
       requestId: 'scope-delete',
       attemptId: prepared.handle.attemptId,
@@ -367,7 +495,66 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     ).rejects.toMatchObject({
       reasonCode: 'DELETE_FORBIDDEN',
     })
+    expect(registry.getScopeRequest(deleteRequest.requestId)?.state).toBe('REJECTED')
+    await expect(
+      workspace.approveScopeExpansion({
+        requestId: deleteRequest.requestId,
+        attemptId: prepared.handle.attemptId,
+        baseManifestVersion: deleteRequest.baseManifestVersion,
+        requestDigest: deleteRequest.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).rejects.toMatchObject({ reasonCode: 'MANIFEST_CONFLICT' })
     registry.close()
+
+    const reopened = new SqliteAttemptWorkspaceRegistryV1({ dbPath })
+    expect(reopened.getScopeRequest(mixed.requestId)?.state).toBe('REJECTED')
+    expect(reopened.getScopeRequest(deleteRequest.requestId)?.state).toBe('REJECTED')
+    reopened.close()
+  })
+
+  it('persists approved scope expansion across a registry restart without creating another manifest version', async () => {
+    const projectRoot = await gitRepo()
+    const dbPath = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const first = service(dbPath, managedRoot)
+    const prepared = await first.workspace.prepare(
+      prepareRequest({
+        projectRoot,
+        managedRoot,
+        attemptId: 'xhba_scope_restart' as AttemptId,
+        grants: [{ operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') }],
+      }),
+    )
+    const request = first.workspace.requestScopeExpansion({
+      requestId: 'scope-restart',
+      attemptId: prepared.handle.attemptId,
+      baseManifestVersion: 1,
+      requestedGrants: [{ operation: 'CREATE', relativePath: 'src/restarted.txt' }],
+      reasonDigest: 'sha256:restart-reason',
+    })
+    await first.workspace.approveScopeExpansion({
+      requestId: request.requestId,
+      attemptId: prepared.handle.attemptId,
+      baseManifestVersion: request.baseManifestVersion,
+      requestDigest: request.requestDigest,
+      ownerId: 'codex-project-lead',
+    })
+    first.registry.close()
+
+    const reopened = service(dbPath, managedRoot)
+    expect(reopened.registry.getScopeRequest(request.requestId)?.state).toBe('APPROVED')
+    await expect(
+      reopened.workspace.approveScopeExpansion({
+        requestId: request.requestId,
+        attemptId: prepared.handle.attemptId,
+        baseManifestVersion: request.baseManifestVersion,
+        requestDigest: request.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).resolves.toMatchObject({ version: 2 })
+    expect(reopened.registry.getManifest(prepared.handle.attemptId)?.version).toBe(2)
+    reopened.registry.close()
   })
 
   it('rejects hardlink scope expansion and recovers owned CREATE batches across crash points', async () => {

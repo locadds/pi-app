@@ -127,6 +127,7 @@ export interface CreateBatchRecordV1 {
   readonly batchId: string
   readonly attemptId: string
   readonly ownerId: string
+  readonly requestDigest: string
   readonly manifestVersion: number
   readonly state: CreateBatchStateV1
   readonly targets: readonly CreateBatchTargetV1[]
@@ -156,7 +157,6 @@ export interface AttemptWorkspaceRegistryV1 {
   getLease(attemptId: string): AttemptWorkspaceLeaseV1 | undefined
   putLease(lease: AttemptWorkspaceLeaseV1): void
   getManifest(attemptId: string): AttemptFileManifestV1 | undefined
-  putManifest(manifest: AttemptFileManifestV1): void
   commitManifestAndCreateBatch(manifest: AttemptFileManifestV1, batch?: CreateBatchRecordV1): void
   putScopeRequest(request: AttemptScopeExpansionRequestV1): void
   getScopeRequest(requestId: string): AttemptScopeExpansionRequestV1 | undefined
@@ -196,13 +196,19 @@ export class InMemoryAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegis
     return this.manifests.get(attemptId)
   }
 
-  putManifest(manifest: AttemptFileManifestV1): void {
-    this.manifests.set(manifest.attemptId, manifest)
-  }
-
   commitManifestAndCreateBatch(manifest: AttemptFileManifestV1, batch?: CreateBatchRecordV1): void {
-    this.putManifest(manifest)
-    if (batch) this.updateCreateBatch(batch)
+    const current = this.manifests.get(manifest.attemptId)
+    const currentBatch = batch ? this.createBatches.get(batch.batchId) : undefined
+    if (currentBatch && batch && !sameCreateBatchIdentity(currentBatch, batch)) {
+      throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    }
+    if (current?.version === manifest.version && current.manifestDigest === manifest.manifestDigest) {
+      if (batch) this.createBatches.set(batch.batchId, batch)
+      return
+    }
+    if ((current?.version ?? 0) !== manifest.version - 1) throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
+    this.manifests.set(manifest.attemptId, manifest)
+    if (batch) this.createBatches.set(batch.batchId, batch)
   }
 
   putScopeRequest(request: AttemptScopeExpansionRequestV1): void {
@@ -217,11 +223,14 @@ export class InMemoryAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegis
 
   updateScopeRequest(requestId: string, state: ScopeExpansionStateV1): void {
     const current = this.scopeRequests.get(requestId)
-    if (current) this.scopeRequests.set(requestId, { ...current, state })
+    if (!current) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    if (current.state === state) return
+    if (current.state !== 'REQUESTED') throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    this.scopeRequests.set(requestId, { ...current, state })
   }
 
   putCreateBatch(batch: CreateBatchRecordV1): void {
-    this.createBatches.set(batch.batchId, batch)
+    this.updateCreateBatch(batch)
   }
 
   getCreateBatch(batchId: string): CreateBatchRecordV1 | undefined {
@@ -229,6 +238,8 @@ export class InMemoryAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegis
   }
 
   updateCreateBatch(batch: CreateBatchRecordV1): void {
+    const current = this.createBatches.get(batch.batchId)
+    if (current && !sameCreateBatchIdentity(current, batch)) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     this.createBatches.set(batch.batchId, batch)
   }
 
@@ -287,19 +298,31 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
     return row ? JSON.parse(row.manifest_json) : undefined
   }
 
-  putManifest(manifest: AttemptFileManifestV1): void {
-    this.db
-      .prepare('insert or replace into attempt_file_manifests (attempt_id, version, manifest_digest, manifest_json) values (?, ?, ?, ?)')
-      .run(manifest.attemptId, manifest.version, manifest.manifestDigest, JSON.stringify(manifest))
-  }
-
   commitManifestAndCreateBatch(manifest: AttemptFileManifestV1, batch?: CreateBatchRecordV1): void {
     this.db.exec('begin immediate')
     try {
-      this.db
-        .prepare('insert or replace into attempt_file_manifests (attempt_id, version, manifest_digest, manifest_json) values (?, ?, ?, ?)')
-        .run(manifest.attemptId, manifest.version, manifest.manifestDigest, JSON.stringify(manifest))
+      const current = this.db
+        .prepare('select version, manifest_digest from attempt_file_manifests where attempt_id = ?')
+        .get(manifest.attemptId) as { version: number; manifest_digest: string } | undefined
+      const isExactReplay = current?.version === manifest.version && current.manifest_digest === manifest.manifestDigest
+      if (!isExactReplay) {
+        if ((current?.version ?? 0) !== manifest.version - 1) throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
+        const result = current
+          ? this.db
+              .prepare(
+                'update attempt_file_manifests set version = ?, manifest_digest = ?, manifest_json = ? where attempt_id = ? and version = ?',
+              )
+              .run(manifest.version, manifest.manifestDigest, JSON.stringify(manifest), manifest.attemptId, current.version)
+          : this.db
+              .prepare('insert into attempt_file_manifests (attempt_id, version, manifest_digest, manifest_json) values (?, ?, ?, ?)')
+              .run(manifest.attemptId, manifest.version, manifest.manifestDigest, JSON.stringify(manifest))
+        if (result.changes !== 1) throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
+      }
       if (batch) {
+        const existingBatch = this.getCreateBatch(batch.batchId)
+        if (existingBatch && !sameCreateBatchIdentity(existingBatch, batch)) {
+          throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+        }
         this.db
           .prepare('insert or replace into create_batches (batch_id, attempt_id, owner_id, state, batch_json) values (?, ?, ?, ?, ?)')
           .run(batch.batchId, batch.attemptId, batch.ownerId, batch.state, JSON.stringify(batch))
@@ -328,8 +351,18 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
 
   updateScopeRequest(requestId: string, state: ScopeExpansionStateV1): void {
     const current = this.getScopeRequest(requestId)
-    if (!current) return
-    this.putScopeRequest({ ...current, state })
+    if (!current) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    if (current.state === state) return
+    if (current.state !== 'REQUESTED') throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    const next = { ...current, state }
+    const result = this.db
+      .prepare('update scope_expansion_requests set state = ?, request_json = ? where request_id = ? and state = ?')
+      .run(state, JSON.stringify(next), requestId, 'REQUESTED')
+    if (result.changes === 1) return
+    const replayed = this.getScopeRequest(requestId)
+    if (!replayed || replayed.requestDigest !== current.requestDigest || replayed.state !== state) {
+      throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    }
   }
 
   putCreateBatch(batch: CreateBatchRecordV1): void {
@@ -342,6 +375,8 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
   }
 
   updateCreateBatch(batch: CreateBatchRecordV1): void {
+    const current = this.getCreateBatch(batch.batchId)
+    if (current && !sameCreateBatchIdentity(current, batch)) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     this.db
       .prepare('insert or replace into create_batches (batch_id, attempt_id, owner_id, state, batch_json) values (?, ?, ?, ?, ?)')
       .run(batch.batchId, batch.attemptId, batch.ownerId, batch.state, JSON.stringify(batch))
@@ -390,7 +425,7 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
 
 export interface AttemptWorkspacePortV1 {
   prepare(request: AttemptWorkspacePrepareRequestV1): Promise<AttemptWorkspacePreparedV1>
-  runtimeBinding(attemptId: string): RuntimeWorkspaceBindingV1 | undefined
+  runtimeBinding(attemptId: string): Promise<RuntimeWorkspaceBindingV1 | undefined>
   manifest(attemptId: string): AttemptFileManifestV1 | undefined
   requestScopeExpansion(input: {
     requestId: string
@@ -432,7 +467,6 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
     const existing = this.registry.getPrepared(attemptId)
     if (existing) {
       if (prepareConflictDigest(existing.request) !== prepareConflictDigest(request)) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
-      return existing.result
     }
 
     assertCommitOid(request.baseRevision)
@@ -455,6 +489,13 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
       worktreeRoot,
       attemptWorktreeId,
     })
+    if (existing) {
+      const realWorktreeRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
+      await assertExistingWorktreeIdentity(realWorktreeRoot, lease)
+      const manifest = this.registry.getManifest(attemptId)
+      if (!manifest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+      return this.refreshPreparedForManifest(attemptId, manifest).result
+    }
     const replayedManifest = this.registry.getManifest(attemptId)
     if (existsSync(worktreeRoot)) {
       const realWorktreeRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
@@ -476,6 +517,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
         manifest: request.manifest,
         attemptId,
         ownerId: request.ownerId,
+        requestDigest: request.requestDigest,
         registry: this.registry,
         faultInjection: request.faultInjection,
       })
@@ -498,6 +540,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
       manifest: request.manifest,
       attemptId,
       ownerId: request.ownerId,
+      requestDigest: request.requestDigest,
       registry: this.registry,
       faultInjection: request.faultInjection,
     })
@@ -507,8 +550,10 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
     return result
   }
 
-  runtimeBinding(attemptId: string): RuntimeWorkspaceBindingV1 | undefined {
-    return this.registry.getPrepared(attemptId)?.result.workspace
+  async runtimeBinding(attemptId: string): Promise<RuntimeWorkspaceBindingV1 | undefined> {
+    const manifest = this.registry.getManifest(attemptId)
+    if (!manifest) return undefined
+    return (await this.validateCurrentWorkspace(attemptId, manifest)).result.workspace
   }
 
   manifest(attemptId: string): AttemptFileManifestV1 | undefined {
@@ -532,8 +577,9 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
   }
 
   async auditChanges(attemptId: string): Promise<AttemptWorkspaceInspectionV1> {
-    const prepared = this.registry.getPrepared(attemptId)
-    if (!prepared) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    const manifest = this.registry.getManifest(attemptId)
+    if (!manifest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    const prepared = await this.validateCurrentWorkspace(attemptId, manifest)
     return this.inspect(prepared.result.handle)
   }
 
@@ -575,34 +621,49 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
       throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     }
     const current = this.registry.getManifest(request.attemptId)
+    if (!current) throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
+    const prepared = await this.validateCurrentWorkspace(request.attemptId, current)
+    const realWorktreeRoot = prepared.result.handle.rootPath
     if (request.state === 'APPROVED') {
-      if (current && manifestIncludesGrants(current, request.requestedGrants)) return current
+      if (manifestIncludesGrants(current, request.requestedGrants)) {
+        this.refreshPreparedForManifest(request.attemptId, current)
+        return current
+      }
       throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     }
     if (request.state !== 'REQUESTED') throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
-    if (current && current.version === request.baseManifestVersion + 1 && manifestIncludesGrants(current, request.requestedGrants)) {
+    if (current.version === request.baseManifestVersion + 1 && manifestIncludesGrants(current, request.requestedGrants)) {
+      this.refreshPreparedForManifest(request.attemptId, current)
       this.registry.updateScopeRequest(input.requestId, 'APPROVED')
       return current
     }
-    if (!current || current.version !== request.baseManifestVersion) throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
-    const prepared = this.registry.getPrepared(request.attemptId)
-    if (!prepared) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
-    const newGrants = normalizeManifestGrants(prepared.result.handle.rootPath, request.requestedGrants)
-    assertNoManifestConflict(current.grants, newGrants)
-    const next = await materializeManifest({
-      rootPath: prepared.result.handle.rootPath,
-      manifest: {
+    try {
+      if (current.version !== request.baseManifestVersion) throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
+      const newGrants = normalizeManifestGrants(realWorktreeRoot, request.requestedGrants)
+      assertNoManifestConflict(current.grants, newGrants)
+      const next = await materializeManifest({
+        rootPath: realWorktreeRoot,
+        manifest: {
+          attemptId: request.attemptId,
+          version: current.version + 1,
+          grants: sortManifestGrants([...current.grants, ...newGrants]),
+        },
+        grantsToMaterialize: newGrants,
         attemptId: request.attemptId,
-        version: current.version + 1,
-        grants: sortManifestGrants([...current.grants, ...newGrants]),
-      },
-      grantsToMaterialize: newGrants,
-      attemptId: request.attemptId,
-      ownerId: input.ownerId,
-      registry: this.registry,
-    })
-    this.registry.updateScopeRequest(input.requestId, 'APPROVED')
-    return next
+        ownerId: input.ownerId,
+        requestDigest: request.requestDigest,
+        registry: this.registry,
+      })
+      this.refreshPreparedForManifest(request.attemptId, next)
+      this.registry.updateScopeRequest(input.requestId, 'APPROVED')
+      return next
+    } catch (error) {
+      const latest = this.registry.getScopeRequest(input.requestId)
+      if (latest?.requestDigest === request.requestDigest && latest.state === 'REQUESTED') {
+        this.registry.updateScopeRequest(input.requestId, 'REJECTED')
+      }
+      throw error
+    }
   }
 
   recoverPendingCreateBatches(): void {
@@ -617,6 +678,42 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
       }
       this.registry.updateCreateBatch({ ...batch, state: 'ROLLED_BACK' })
     }
+  }
+
+  private refreshPreparedForManifest(attemptId: string, manifest: AttemptFileManifestV1): PreparedRecord {
+    const prepared = this.registry.getPrepared(attemptId)
+    const lease = this.registry.getLease(attemptId)
+    if (!prepared || !lease || manifest.attemptId !== attemptId) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    if (
+      prepared.result.handle.manifestVersion === manifest.version &&
+      prepared.result.handle.manifestDigest === manifest.manifestDigest
+    ) {
+      return prepared
+    }
+    const result = buildPreparedResult(
+      prepared.request,
+      attemptId,
+      lease.projectRoot,
+      lease.worktreeRoot,
+      manifest,
+      lease.attemptWorktreeId,
+    )
+    const refreshed = { request: prepared.request, result }
+    this.registry.putPrepared(refreshed)
+    return refreshed
+  }
+
+  private async validateCurrentWorkspace(attemptId: string, manifest: AttemptFileManifestV1): Promise<PreparedRecord> {
+    const lease = this.registry.getLease(attemptId)
+    if (!lease || manifest.attemptId !== attemptId) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    const realWorktreeRoot = safeRealpath(lease.worktreeRoot, 'WORKTREE_DRIFT')
+    await assertExistingWorktreeIdentity(realWorktreeRoot, lease)
+    await assertBaseTree(lease.projectRoot, lease.baseRevision, lease.baselineTreeHash)
+    const prepared = this.refreshPreparedForManifest(attemptId, manifest)
+    if (pathKey(prepared.result.handle.rootPath) !== pathKey(realWorktreeRoot)) {
+      throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+    }
+    return prepared
   }
 
   private ensureLease(input: {
@@ -710,16 +807,17 @@ async function materializeManifest(input: {
   grantsToMaterialize?: readonly AttemptFileGrantV1[]
   attemptId: string
   ownerId: string
+  requestDigest: string
   registry: AttemptWorkspaceRegistryV1
   faultInjection?: AttemptWorkspacePrepareRequestV1['faultInjection']
 }): Promise<AttemptFileManifestV1> {
   if (input.faultInjection === 'BEFORE_CREATE') {
-    const batch = pendingCreateBatch(input.attemptId, input.manifest.version, input.ownerId, [])
+    const batch = pendingCreateBatch(input.attemptId, input.manifest.version, input.ownerId, input.requestDigest, [])
     input.registry.putCreateBatch(batch)
     throw new AttemptWorkspaceError('CREATE_BATCH_PENDING')
   }
 
-  const batchProbe = pendingCreateBatch(input.attemptId, input.manifest.version, input.ownerId, [])
+  const batchProbe = pendingCreateBatch(input.attemptId, input.manifest.version, input.ownerId, input.requestDigest, [])
   const pendingBatch = input.registry.getCreateBatch(batchProbe.batchId)
   const grants = input.grantsToMaterialize
     ? canonicalStoredGrants(input.manifest.grants)
@@ -729,7 +827,7 @@ async function materializeManifest(input: {
     normalizeManifestGrants(input.rootPath, input.manifest.grants, { existingCreatesAreAllowed: pendingBatch?.state === 'PENDING' })
   const createGrants = grantsToMaterialize.filter((grant) => grant.operation === 'CREATE')
   const createdTargets: CreateBatchTargetV1[] = pendingBatch?.state === 'PENDING' ? [...pendingBatch.targets] : []
-  const batch = pendingCreateBatch(input.attemptId, input.manifest.version, input.ownerId, createdTargets)
+  const batch = pendingCreateBatch(input.attemptId, input.manifest.version, input.ownerId, input.requestDigest, createdTargets)
   if (createGrants.length > 0) input.registry.putCreateBatch(batch)
 
   try {
@@ -791,10 +889,11 @@ function normalizeManifestGrants(
   const normalized = grants.map((grant) => {
     if (grant.operation === 'DELETE') throw new AttemptWorkspaceError('DELETE_FORBIDDEN')
     const relativePath = normalizeRelativePath(grant.relativePath)
-    const previous = seen.get(relativePath)
+    const manifestKey = pathKey(relativePath)
+    const previous = seen.get(manifestKey)
     if (previous && previous !== grant.operation) throw new AttemptWorkspaceError('PATH_CONFLICT')
     if (previous) throw new AttemptWorkspaceError('PATH_CONFLICT')
-    seen.set(relativePath, grant.operation)
+    seen.set(manifestKey, grant.operation)
     const target = resolveManifestPath(rootPath, relativePath)
     if (grant.operation === 'MODIFY') {
       const identity = readFileIdentity(target.realPath)
@@ -812,9 +911,10 @@ function canonicalStoredGrants(grants: readonly AttemptFileGrantV1[]): readonly 
   const normalized = grants.map((grant) => {
     if (grant.operation === 'DELETE') throw new AttemptWorkspaceError('DELETE_FORBIDDEN')
     const relativePath = normalizeRelativePath(grant.relativePath)
-    const previous = seen.get(relativePath)
+    const manifestKey = pathKey(relativePath)
+    const previous = seen.get(manifestKey)
     if (previous) throw new AttemptWorkspaceError('PATH_CONFLICT')
-    seen.set(relativePath, grant.operation)
+    seen.set(manifestKey, grant.operation)
     return grant.operation === 'MODIFY'
       ? { operation: grant.operation, relativePath, baselineDigest: grant.baselineDigest }
       : { operation: grant.operation, relativePath }
@@ -827,9 +927,9 @@ function sortManifestGrants(grants: readonly AttemptFileGrantV1[]): readonly Att
 }
 
 function assertNoManifestConflict(existing: readonly AttemptFileGrantV1[], next: readonly AttemptFileGrantV1[]): void {
-  const seen = new Set(existing.map((grant) => grant.relativePath))
+  const seen = new Set(existing.map((grant) => pathKey(grant.relativePath)))
   for (const grant of next) {
-    if (seen.has(grant.relativePath)) throw new AttemptWorkspaceError('PATH_CONFLICT')
+    if (seen.has(pathKey(grant.relativePath))) throw new AttemptWorkspaceError('PATH_CONFLICT')
   }
 }
 
@@ -878,9 +978,25 @@ function normalizeRelativePath(value: string): string {
     throw new AttemptWorkspaceError('PATH_FORBIDDEN')
   }
   const normalized = value.replace(/[\\]+/g, '/')
+  const rawParts = normalized.split('/')
+  if (
+    rawParts.includes('..') ||
+    rawParts.includes('.') ||
+    rawParts.includes('') ||
+    rawParts.some((part) => part.toLowerCase() === '.git')
+  ) {
+    throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+  }
   const parsed = posix.normalize(normalized)
   const parts = parsed.split('/')
-  if (parsed === '.' || parsed.startsWith('../') || parts.includes('..') || parts.includes('.') || parts.includes('') || parts.includes('.git')) {
+  if (
+    parsed === '.' ||
+    parsed.startsWith('../') ||
+    parts.includes('..') ||
+    parts.includes('.') ||
+    parts.includes('') ||
+    parts.some((part) => part.toLowerCase() === '.git')
+  ) {
     throw new AttemptWorkspaceError('PATH_FORBIDDEN')
   }
   return parsed
@@ -928,6 +1044,18 @@ async function assertExistingWorktreeIdentity(realWorktreeRoot: string, lease: A
   }
   const head = (await git(realWorktreeRoot, ['rev-parse', 'HEAD'])).stdout.trim()
   if (head !== lease.baseRevision) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+  const topLevel = safeRealpath((await git(realWorktreeRoot, ['rev-parse', '--show-toplevel'])).stdout.trim(), 'WORKTREE_DRIFT')
+  const worktreeCommonDir = safeRealpath(
+    (await git(realWorktreeRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).stdout.trim(),
+    'WORKTREE_DRIFT',
+  )
+  const projectCommonDir = safeRealpath(
+    (await git(lease.projectRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).stdout.trim(),
+    'WORKTREE_DRIFT',
+  )
+  if (pathKey(topLevel) !== pathKey(realWorktreeRoot) || pathKey(worktreeCommonDir) !== pathKey(projectCommonDir)) {
+    throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+  }
 }
 
 async function assertCleanRepository(repoRoot: string): Promise<void> {
@@ -1008,15 +1136,32 @@ function safeAttemptDirectoryName(attemptId: string): string {
   return `attempt-${hashHex(attemptId).slice(0, 24)}`
 }
 
-function pendingCreateBatch(attemptId: string, manifestVersion: number, ownerId: string, targets: readonly CreateBatchTargetV1[]): CreateBatchRecordV1 {
+function pendingCreateBatch(
+  attemptId: string,
+  manifestVersion: number,
+  ownerId: string,
+  requestDigest: string,
+  targets: readonly CreateBatchTargetV1[],
+): CreateBatchRecordV1 {
   return {
-    batchId: `xhbc_${hashHex(`${attemptId}:${manifestVersion}:${ownerId}`).slice(0, 32)}`,
+    batchId: `xhbc_${hashHex(`${attemptId}:${manifestVersion}:${ownerId}:${requestDigest}`).slice(0, 32)}`,
     attemptId,
     ownerId,
+    requestDigest,
     manifestVersion,
     state: 'PENDING',
     targets,
   }
+}
+
+function sameCreateBatchIdentity(left: CreateBatchRecordV1, right: CreateBatchRecordV1): boolean {
+  return (
+    left.batchId === right.batchId &&
+    left.attemptId === right.attemptId &&
+    left.ownerId === right.ownerId &&
+    left.requestDigest === right.requestDigest &&
+    left.manifestVersion === right.manifestVersion
+  )
 }
 
 function prepareConflictDigest(request: AttemptWorkspacePrepareRequestV1): string {

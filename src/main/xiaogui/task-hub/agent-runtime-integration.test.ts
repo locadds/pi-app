@@ -450,7 +450,7 @@ describe('M2B fake agent runtime integration', () => {
     expect(runtimeRequestText).not.toContain(projectRoot)
     expect(runtimeRequestText).not.toContain(managedRoot)
     const runtimeRequest = JSON.parse(runtimeRequestText) as RuntimeCreateOrResumeRequestV1
-    expect(runtimeRequest.workspace).toEqual(workspaceService.runtimeBinding(scheduled.value.attemptId))
+    expect(runtimeRequest.workspace).toEqual(await workspaceService.runtimeBinding(scheduled.value.attemptId))
     expect(runtimeRequest.promptEnvelopeRef).toEqual(promptVault.promptRefForAttempt(scheduled.value.attemptId))
     expect(store.tableCounts()).toMatchObject({ workspace_receipts: 1, agent_dispatch_outbox: 1, runtime_session_bindings: 1 })
     store.close()

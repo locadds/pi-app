@@ -117,7 +117,13 @@ function twoIndependentTasksDraft(): InitialPlanDraftInputV1 {
   }
 }
 
-function appFor(dbPath: string, mode: SessionMode = 'WORK', ids = ['xhbf_flow', 'xhbr_rev'], runtimeSessionId?: string) {
+function appFor(
+  dbPath: string,
+  mode: SessionMode = 'WORK',
+  ids = ['xhbf_flow', 'xhbr_rev'],
+  runtimeSessionId?: string,
+  workspaceBridge?: ExecutionWorkspaceBridgeV1,
+) {
   let index = 0
   const baseline = scriptedBaseline()
   return createCollaborationHubApplicationV1({
@@ -127,7 +133,7 @@ function appFor(dbPath: string, mode: SessionMode = 'WORK', ids = ['xhbf_flow', 
       ? {
           agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [approvedCapability], createRuntimeSessionId: runtimeSessionId })),
           baselineProvider: { capture: async () => baseline },
-          workspaceBridge: testWorkspaceBridge(baseline),
+          workspaceBridge: workspaceBridge ?? testWorkspaceBridge(baseline),
           runtimePromptVault: testPromptVault(),
         }
       : {}),
@@ -230,6 +236,50 @@ function executeSystem(app: ReturnType<typeof appFor>, request: Omit<HubSystemCo
     address: ADDRESS,
     trustedActor: { kind: 'main-process-system' },
   })
+}
+
+async function scheduleWorkspaceAttempt(app: ReturnType<typeof appFor>) {
+  await start(app)
+  const draftProjection = await app.observe(ADDRESS)
+  if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+  await execute(app, {
+    requestId: 'req-approve',
+    expectedSessionVersion: draftProjection.value.sessionVersion,
+    intent: {
+      type: 'plan.revision.submit',
+      flowId: draftProjection.value.activeFlow.flowId,
+      baseRevisionId: draftProjection.value.activeRevision.revisionId,
+      draft: draftProjection.value.activeRevision.draft,
+    },
+  })
+  const before = await app.observeM2B(ADDRESS)
+  await executeSystem(app, {
+    requestId: 'sys-schedule-1',
+    expectedSessionVersion: before.ok ? before.value.sessionVersion : 0,
+    intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+  })
+  const scheduled = await app.observeM2B(ADDRESS)
+  if (!scheduled.ok || !scheduled.value.attempts[0]) throw new Error('expected scheduled workspace attempt')
+  return {
+    flowId: draftProjection.value.activeFlow.flowId,
+    sessionVersion: scheduled.value.sessionVersion,
+    attempt: scheduled.value.attempts[0],
+  }
+}
+
+function claimWorkspacePreparation(dbPath: string, attemptId: AttemptId) {
+  const store = new CollaborationHubSqliteStoreV1(dbPath)
+  try {
+    const claim = store.claimWorkspacePrepareOutbox({
+      attemptId,
+      ownerId: 'test-main-process',
+      claimDigest: digestJson({ attemptId, role: 'test-workspace-claim' }),
+      now: '2026-08-16T00:00:00.000Z',
+    })
+    if (!claim) throw new Error('expected workspace prepare claim')
+  } finally {
+    store.close()
+  }
 }
 
 describe('M2A collaboration hub application', () => {
@@ -947,6 +997,7 @@ describe('M2A collaboration hub application', () => {
     })
     const scheduled = await app.observeM2B(ADDRESS)
     const binding = workspaceBinding(dbPath, 'xhba_attempt' as AttemptId)
+    claimWorkspacePreparation(dbPath, 'xhba_attempt' as AttemptId)
     await executeSystem(app, {
       requestId: 'sys-workspace-1',
       expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,
@@ -977,6 +1028,93 @@ describe('M2A collaboration hub application', () => {
     app.close()
   })
 
+  it('rejects an unclaimed workspace result when a workspace bridge is configured', async () => {
+    const dbPath = await tempDb()
+    const baseline = scriptedBaseline()
+    const app = appFor(
+      dbPath,
+      'CODING',
+      ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'],
+      'runtime-1',
+      testWorkspaceBridge(baseline),
+    )
+    const scheduled = await scheduleWorkspaceAttempt(app)
+    const binding = workspaceBinding(dbPath, scheduled.attempt.attemptId)
+
+    await expect(
+      executeSystem(app, {
+        requestId: 'sys-workspace-unclaimed',
+        expectedSessionVersion: scheduled.sessionVersion,
+        intent: {
+          type: 'system.workspace.prepare.result.record',
+          flowId: scheduled.flowId,
+          taskRunId: scheduled.attempt.taskRunId,
+          attemptId: scheduled.attempt.attemptId,
+          receipt: {
+            status: 'PREPARED',
+            workspaceReceiptId: 'xhbw_unclaimed' as WorkspaceReceiptId,
+            receiptDigest: 'sha256:unclaimed-workspace',
+            ...binding,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'ILLEGAL_TRANSITION' } })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { sessionVersion: scheduled.sessionVersion, attempts: [expect.objectContaining({ status: 'WORKSPACE_PREPARING' })] },
+    })
+    app.close()
+  })
+
+  it('coalesces concurrent workspace preparation for the same Attempt inside one process', async () => {
+    const dbPath = await tempDb()
+    let releasePrepare!: () => void
+    const prepareGate = new Promise<void>((resolve) => {
+      releasePrepare = resolve
+    })
+    const bridge: ExecutionWorkspaceBridgeV1 = {
+      prepare: vi.fn(async ({ attempt, composition }) => {
+        await prepareGate
+        return {
+          status: 'PREPARED' as const,
+          workspaceReceiptId: 'xhbw_coalesced' as WorkspaceReceiptId,
+          receiptDigest: 'sha256:coalesced-workspace',
+          compositionAttemptId: composition.compositionAttemptId,
+          attemptId: attempt.attempt_id,
+          requestDigest: composition.requestDigest,
+          baselineBindingDigest: composition.baselineBindingDigest,
+          compositionDigest: composition.compositionDigest,
+        }
+      }),
+      runtimeWorkspace: () => undefined,
+    }
+    const app = appFor(
+      dbPath,
+      'CODING',
+      ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'],
+      'runtime-1',
+      bridge,
+    )
+    const scheduled = await scheduleWorkspaceAttempt(app)
+    const request = {
+      requestId: 'sys-workspace-coalesced',
+      attemptId: scheduled.attempt.attemptId,
+      expectedSessionVersion: scheduled.sessionVersion,
+    }
+
+    const first = app.prepareNextWorkspace(ADDRESS, request)
+    const second = app.prepareNextWorkspace(ADDRESS, request)
+    await vi.waitFor(() => expect(bridge.prepare).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    releasePrepare()
+    const outcomes = await Promise.all([first, second])
+
+    expect(bridge.prepare).toHaveBeenCalledTimes(1)
+    expect(outcomes[0]).toMatchObject({ ok: true })
+    expect(outcomes[1]).toEqual(outcomes[0])
+    app.close()
+  })
+
   it('rejects workspace receipt drift for each persisted composition binding field', async () => {
     const fields = ['attemptId', 'compositionAttemptId', 'requestDigest', 'baselineBindingDigest', 'compositionDigest'] as const
     for (const field of fields) {
@@ -1003,6 +1141,7 @@ describe('M2A collaboration hub application', () => {
       })
       const scheduled = await app.observeM2B(ADDRESS)
       const binding = workspaceBinding(dbPath, 'xhba_attempt' as AttemptId)
+      claimWorkspacePreparation(dbPath, 'xhba_attempt' as AttemptId)
       const drifted = { ...binding, [field]: field === 'attemptId' ? ('xhba_drift' as AttemptId) : 'sha256:drift' }
       await expect(
         executeSystem(app, {
@@ -1046,6 +1185,7 @@ describe('M2A collaboration hub application', () => {
     })
     const scheduled = await app.observeM2B(ADDRESS)
     const binding = workspaceBinding(dbPath, 'xhba_attempt' as AttemptId)
+    claimWorkspacePreparation(dbPath, 'xhba_attempt' as AttemptId)
     await executeSystem(app, {
       requestId: 'sys-workspace-1',
       expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,
@@ -1116,6 +1256,7 @@ describe('M2A collaboration hub application', () => {
     })
     const scheduled = await app.observeM2B(ADDRESS)
     const binding = workspaceBinding(dbPath, 'xhba_attempt' as AttemptId)
+    claimWorkspacePreparation(dbPath, 'xhba_attempt' as AttemptId)
     await executeSystem(app, {
       requestId: 'sys-workspace-1',
       expectedSessionVersion: scheduled.ok ? scheduled.value.sessionVersion : 0,

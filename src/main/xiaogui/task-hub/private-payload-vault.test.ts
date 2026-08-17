@@ -123,6 +123,30 @@ describe('PrivateRuntimePayloadVaultV1', () => {
     vault.close()
   })
 
+  it('fails closed before returning prompt or message refs when stored payload bytes are tampered', async () => {
+    const dbPath = await vaultPath()
+    const vault = new PrivateRuntimePayloadVaultV1({ dbPath })
+    const promptRef = vault.putPrompt({ attemptId: 'xhba_tamper_prompt_ref', payloadBytes: 'prompt' })
+    const messageRef = vault.putMessage({ attemptId: 'xhba_tamper_message_ref', payloadBytes: 'message' })
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.prepare('update private_runtime_payloads set payload = ? where ref_id = ?').run(Buffer.from('tampered-prompt'), promptRef.refId)
+      db.prepare('update private_runtime_payloads set payload = ? where ref_id = ?').run(Buffer.from('tampered-message'), messageRef.refId)
+    } finally {
+      db.close()
+    }
+    try {
+      expect(() => vault.promptRefForAttempt('xhba_tamper_prompt_ref')).toThrow(
+        new RuntimePayloadVaultError('PAYLOAD_DIGEST_MISMATCH'),
+      )
+      expect(() => vault.messageRefForAttempt('xhba_tamper_message_ref')).toThrow(
+        new RuntimePayloadVaultError('PAYLOAD_DIGEST_MISMATCH'),
+      )
+    } finally {
+      vault.close()
+    }
+  })
+
   it('does not treat a same-ref put as idempotent after stored payload bytes are tampered', async () => {
     const dbPath = await vaultPath()
     const vault = new PrivateRuntimePayloadVaultV1({ dbPath })

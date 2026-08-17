@@ -73,7 +73,9 @@ export interface ExecutionWorkspaceBridgeV1 {
     composition: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['compositionAttempt']>>
     baseline: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['flowExecutionBaseline']>>
   }): Promise<import('@shared/xiaogui-collaboration-hub').WorkspacePreparedReceiptM2BV1>
-  runtimeWorkspace(attemptId: AttemptId): RuntimeWorkspaceBindingV1 | undefined
+  runtimeWorkspace(
+    attemptId: AttemptId,
+  ): RuntimeWorkspaceBindingV1 | undefined | Promise<RuntimeWorkspaceBindingV1 | undefined>
 }
 
 export interface RuntimePromptVaultV1 {
@@ -96,6 +98,10 @@ type ResolvedScope = HubOutcomeV1<{ mode: SessionMode }>
 
 export class SqliteCollaborationHubApplicationV1 implements CollaborationHubApplicationV1 {
   private store: CollaborationHubSqliteStoreV1 | null = null
+  private readonly workspacePreparationInFlight = new Map<
+    AttemptId,
+    { requestIdentity: string; outcome: Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> }
+  >()
 
   constructor(private readonly options: CollaborationHubApplicationOptionsV1) {}
 
@@ -218,6 +224,24 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
   }
 
   async prepareNextWorkspace(
+    address: HubAddressV1,
+    request: { requestId: string; attemptId: AttemptId; expectedSessionVersion?: number },
+  ): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
+    const requestIdentity = payloadDigest({ address, request })
+    const inFlight = this.workspacePreparationInFlight.get(request.attemptId)
+    if (inFlight) return inFlight.requestIdentity === requestIdentity ? inFlight.outcome : systemError('ILLEGAL_TRANSITION')
+    const preparation = this.prepareNextWorkspaceOnce(address, request)
+    this.workspacePreparationInFlight.set(request.attemptId, { requestIdentity, outcome: preparation })
+    try {
+      return await preparation
+    } finally {
+      if (this.workspacePreparationInFlight.get(request.attemptId)?.outcome === preparation) {
+        this.workspacePreparationInFlight.delete(request.attemptId)
+      }
+    }
+  }
+
+  private async prepareNextWorkspaceOnce(
     address: HubAddressV1,
     request: { requestId: string; attemptId: AttemptId; expectedSessionVersion?: number },
   ): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
@@ -480,7 +504,10 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     const attempt = store.attempt(request.intent.attemptId)
     if (!attempt || attempt.status !== 'WORKSPACE_PREPARING' || attempt.task_run_id !== request.intent.taskRunId) return systemError('ILLEGAL_TRANSITION')
     const workspaceOutboxStatus = store.workspacePrepareOutboxStatus(request.intent.attemptId)
-    if (!['READY', 'CLAIMED'].includes(workspaceOutboxStatus ?? '')) return systemError('ILLEGAL_TRANSITION')
+    const workspaceResultIsClaimed = this.options.workspaceBridge
+      ? workspaceOutboxStatus === 'CLAIMED'
+      : ['READY', 'CLAIMED'].includes(workspaceOutboxStatus ?? '')
+    if (!workspaceResultIsClaimed) return systemError('ILLEGAL_TRANSITION')
     const composition = store.compositionAttempt(request.intent.attemptId)
     if (!composition || !matchesWorkspaceBinding(request.intent.receipt, composition)) return systemError('WORKSPACE_RECEIPT_MISMATCH')
     const receipt = {
@@ -525,7 +552,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     if (!baseline) return systemError('BASELINE_UNAVAILABLE')
     let currentRuntimeRequest: RuntimeCreateOrResumeRequestV1
     try {
-      currentRuntimeRequest = this.runtimeRequest(address, agent.selection, request, attempt, workspaceReceipt.receipt_digest)
+      currentRuntimeRequest = await this.runtimeRequest(address, agent.selection, request, attempt, workspaceReceipt.receipt_digest)
     } catch {
       return systemError('AGENT_UNAVAILABLE', { reason: 'RUNTIME_PRIVATE_BINDING_MISSING' })
     }
@@ -698,13 +725,13 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     }
   }
 
-  private runtimeRequest(
+  private async runtimeRequest(
     address: HubAddressV1,
     selection: RuntimeAdapterSelectionV1,
     request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.report.record' }> },
     attempt: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['attempt']>>,
     workspaceReceiptDigest: string,
-  ): RuntimeCreateOrResumeRequestV1 {
+  ): Promise<RuntimeCreateOrResumeRequestV1> {
     const scope: RuntimeScopeBindingV1 = {
       projectId: address.projectId,
       sessionKey: address.sessionKey,
@@ -716,7 +743,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       workspaceReceiptId: attempt.workspace_receipt_id ?? '',
       workspaceReceiptDigest,
     }
-    const bridgedWorkspace = this.options.workspaceBridge?.runtimeWorkspace(request.intent.attemptId)
+    const bridgedWorkspace = await this.options.workspaceBridge?.runtimeWorkspace(request.intent.attemptId)
     const bridgedPromptRef = this.options.runtimePromptVault?.promptRefForAttempt(request.intent.attemptId)
     if (!bridgedWorkspace || !bridgedPromptRef) {
       throw new Error('RUNTIME_PRIVATE_BINDING_MISSING')
