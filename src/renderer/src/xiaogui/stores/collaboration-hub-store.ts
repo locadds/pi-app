@@ -1,5 +1,5 @@
 /**
- * 协作计划（M2A）Renderer 状态。
+ * 协作计划（M2B 投影）Renderer 状态。
  *
  * 领域事实只以主进程 projection 为准；本 store 只保存：
  * 当前 address、加载状态、主进程投影、临时新建表单、脱敏错误。
@@ -13,7 +13,7 @@ import type {
   HubAddressV1,
   HubSafeErrorV1,
   InitialPlanDraftInputV1,
-  SessionCollaborationProjectionV1,
+  SessionCollaborationProjectionM2BV1,
 } from '@shared/xiaogui-collaboration-hub'
 
 import { newHubRequestId, observeCollaborationHub, performHubIntent } from '../lib/collaboration-hub-client'
@@ -143,14 +143,14 @@ interface CollaborationHubState {
   address: HubAddressV1 | null
   loading: boolean
   submitting: boolean
-  projection: SessionCollaborationProjectionV1 | null
+  projection: SessionCollaborationProjectionM2BV1 | null
   error: HubSafeErrorV1 | null
   form: PlanDraftForm
   formErrors: string[]
 
   /** 切换 address 时清空旧投影与临时表单；相同 address 为 no-op。 */
   setAddress: (address: HubAddressV1 | null) => void
-  /** 快照刷新（M2A 非订阅流）。 */
+  /** 快照刷新（非订阅流）。 */
   refresh: () => Promise<void>
   setForm: (form: PlanDraftForm) => void
   startWithDraft: () => Promise<void>
@@ -170,7 +170,7 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
   let requestSeq = 0
 
   const runIntent = async (
-    build: (projection: SessionCollaborationProjectionV1 | null) => Parameters<typeof performHubIntent>[1] | null,
+    build: (projection: SessionCollaborationProjectionM2BV1 | null) => Parameters<typeof performHubIntent>[1] | null,
   ): Promise<boolean> => {
     if (get().submitting) return false
     const { address, projection } = get()

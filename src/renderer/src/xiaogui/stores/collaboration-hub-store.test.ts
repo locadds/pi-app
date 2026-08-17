@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { FlowId, HubAddressV1, PlanRevisionId, SessionCollaborationProjectionV1 } from '@shared/xiaogui-collaboration-hub'
+import type { FlowId, HubAddressV1, PlanRevisionId, SessionCollaborationProjectionM2BV1 } from '@shared/xiaogui-collaboration-hub'
 
 const observeMock = vi.fn()
 const performMock = vi.fn()
 let requestCounter = 0
 vi.mock('../lib/collaboration-hub-client', () => ({
   HUB_CONTRACT_VERSION: 'm2a.v1',
+  HUB_OBSERVE_CONTRACT_VERSION: 'm2b.v1',
   observeCollaborationHub: (address: HubAddressV1) => observeMock(address),
   performHubIntent: (address: HubAddressV1, request: unknown) => performMock(address, request),
   newHubRequestId: () => `test-req-${++requestCounter}`,
@@ -29,10 +30,10 @@ const addressB: HubAddressV1 = {
   sessionKey: `xgs1_${'2'.repeat(64)}` as HubAddressV1['sessionKey'],
 }
 
-function projectionFixture(patch: Partial<SessionCollaborationProjectionV1> = {}): SessionCollaborationProjectionV1 {
+function projectionFixture(patch: Partial<SessionCollaborationProjectionM2BV1> = {}): SessionCollaborationProjectionM2BV1 {
   return {
     kind: 'SESSION_COLLABORATION_PROJECTION',
-    version: 'm2a.v1',
+    version: 'm2b.v1',
     address: addressA,
     sessionVersion: 3,
     sessionMode: 'WORK',
@@ -42,13 +43,14 @@ function projectionFixture(patch: Partial<SessionCollaborationProjectionV1> = {}
     activeRevision: null,
     taskSpecs: [],
     taskRuns: [],
+    attempts: [],
     history: [],
     availableActions: ['flow.start.with_draft'],
     ...patch,
   }
 }
 
-function awaitingProjection(): SessionCollaborationProjectionV1 {
+function awaitingProjection(): SessionCollaborationProjectionM2BV1 {
   const flowId = 'xhbf_flow1' as FlowId
   const revisionId = 'xhbr_rev1' as PlanRevisionId
   return projectionFixture({

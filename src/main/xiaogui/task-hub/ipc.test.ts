@@ -158,6 +158,28 @@ describe('M2A collaboration hub IPC adapter', () => {
     ipcApp.close()
   })
 
+  it('exposes the M2B projection as read-only while keeping M2B writes closed', async () => {
+    const direct = await appFor(await tempDb('m2b-direct.sqlite'))
+    const ipcApp = await appFor(await tempDb('m2b-ipc.sqlite'))
+    registerCollaborationHubHandlers(ipcApp)
+
+    const observe = mocks.handlers.get('ipc:xiaogui.hub.observe')!
+    const perform = mocks.handlers.get('ipc:xiaogui.hub.perform')!
+    const directProjection = await direct.observeM2B(ADDRESS)
+    const ipcProjection = await observe({ contractVersion: 'm2b.v1', address: ADDRESS })
+    const writeOutcome = await perform({
+      contractVersion: 'm2b.v1',
+      address: ADDRESS,
+      request: { requestId: 'req-m2b-write-remains-closed', intent: { type: 'flow.start.with_draft', draft: draft() } },
+    })
+
+    direct.close()
+    ipcApp.close()
+
+    expect(ipcProjection).toEqual(directProjection)
+    expect(writeOutcome).toMatchObject({ ok: false, error: { code: 'IPC_VERSION_UNSUPPORTED' } })
+  })
+
   it('returns closed sanitized outcomes for version/schema rejection', async () => {
     const ipcApp = await appFor(await tempDb())
     registerCollaborationHubHandlers(ipcApp)

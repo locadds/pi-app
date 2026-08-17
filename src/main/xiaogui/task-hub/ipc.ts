@@ -129,9 +129,12 @@ export function registerCollaborationHubHandlers(application = getDefaultCollabo
   registerHandler('ipc:xiaogui.hub.observe', async (payload) => {
     const parsed = parseIpc(ObserveSchema, payload)
     if (!parsed.ok) return parsed
-    const version = rejectUnsupportedHubContractVersion(parsed.value.contractVersion)
+    const version = rejectUnsupportedHubContractVersion(parsed.value.contractVersion, ['m2a.v1', 'm2b.v1'])
     if (version) return version
-    return application.observe((parsed.value as HubObserveIpcRequestV1).address)
+    const typed = parsed.value as HubObserveIpcRequestV1
+    return typed.contractVersion === 'm2b.v1'
+      ? application.observeM2B(typed.address)
+      : application.observe(typed.address)
   })
   registerHandler('ipc:xiaogui.hub.perform', async (payload) => {
     const parsed = parseIpc(PerformSchema, payload)
@@ -164,8 +167,13 @@ export function registerCollaborationHubHandlers(application = getDefaultCollabo
   })
 }
 
-export function rejectUnsupportedHubContractVersion(contractVersion?: string) {
-  return contractVersion === 'm2a.v1' ? null : hubError('IPC_VERSION_UNSUPPORTED')
+export function rejectUnsupportedHubContractVersion(
+  contractVersion?: string,
+  supportedVersions: readonly string[] = ['m2a.v1'],
+) {
+  return contractVersion && supportedVersions.includes(contractVersion)
+    ? null
+    : hubError('IPC_VERSION_UNSUPPORTED')
 }
 
 function parseIpc<T>(schema: z.ZodSchema<T>, payload: unknown) {
