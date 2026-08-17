@@ -11,6 +11,7 @@ import type {
 } from '@shared/xiaogui-collaboration-hub'
 import { configStore } from '../../config-store'
 import { registerHandler } from '../../ipc/registry'
+import { KimiLoginCoordinatorV1 } from '../agent-runtime/kimi-login'
 import { sessionScopeResolverV1 } from '../scope-service'
 import type { CollaborationHubApplicationV1 } from './application'
 import { hubError } from './errors'
@@ -109,24 +110,34 @@ const ReadEventsSchema = z
   })
   .strict()
 
-let defaultRuntimeComposition: XiaoguiRuntimeCompositionV1 | null = null
+interface DefaultRuntimeLifecycleV1 {
+  readonly composition: XiaoguiRuntimeCompositionV1
+  readonly kimiLogin: KimiLoginCoordinatorV1
+}
+
+let defaultRuntimeLifecycle: DefaultRuntimeLifecycleV1 | null = null
 
 export function getDefaultCollaborationHubApplication(): CollaborationHubApplicationV1 {
-  defaultRuntimeComposition ??= createXiaoguiRuntimeCompositionV1({
-    userDataDir: app.getPath('userData'),
-    productionEnabled: configStore.get('xiaoguiKimiProductionEnabled') === true,
-    lookup: sessionScopeResolverV1,
-  })
-  return defaultRuntimeComposition.application
+  return getDefaultRuntimeLifecycle().composition.application
+}
+
+export function getDefaultKimiLoginCoordinator(): KimiLoginCoordinatorV1 {
+  return getDefaultRuntimeLifecycle().kimiLogin
 }
 
 export async function closeDefaultCollaborationHubRuntimeComposition(): Promise<void> {
-  const composition = defaultRuntimeComposition
-  defaultRuntimeComposition = null
-  await composition?.close()
+  const lifecycle = defaultRuntimeLifecycle
+  defaultRuntimeLifecycle = null
+  lifecycle?.kimiLogin.close()
+  await lifecycle?.composition.close()
 }
 
-export function registerCollaborationHubHandlers(application = getDefaultCollaborationHubApplication()): void {
+export function registerCollaborationHubHandlers(
+  application = getDefaultCollaborationHubApplication(),
+  kimiLogin?: KimiLoginCoordinatorV1,
+): void {
+  const resolveKimiLogin = () => kimiLogin ?? getDefaultKimiLoginCoordinator()
+
   registerHandler('ipc:xiaogui.hub.observe', async (payload) => {
     const parsed = parseIpc(ObserveSchema, payload)
     if (!parsed.ok) return parsed
@@ -166,6 +177,45 @@ export function registerCollaborationHubHandlers(application = getDefaultCollabo
     const typed = parsed.value as HubReadEventsIpcRequestV1
     return application.readEvents(typed.address, typed.request)
   })
+  registerHandler('ipc:xiaogui.kimi.status', async (payload) => {
+    assertEmptyKimiIpcPayload(payload)
+    return resolveKimiLogin().inspect()
+  })
+  registerHandler('ipc:xiaogui.kimi.login.start', async (payload) => {
+    assertEmptyKimiIpcPayload(payload)
+    return resolveKimiLogin().startLogin()
+  })
+}
+
+function getDefaultRuntimeLifecycle(): DefaultRuntimeLifecycleV1 {
+  if (defaultRuntimeLifecycle) return defaultRuntimeLifecycle
+
+  const userDataDir = app.getPath('userData')
+  const effectiveEnabled = configStore.get('xiaoguiKimiProductionEnabled') === true
+  const composition = createXiaoguiRuntimeCompositionV1({
+    userDataDir,
+    productionEnabled: effectiveEnabled,
+    lookup: sessionScopeResolverV1,
+  })
+  defaultRuntimeLifecycle = {
+    composition,
+    kimiLogin: new KimiLoginCoordinatorV1({
+      effectiveEnabled,
+      userDataDir,
+    }),
+  }
+  return defaultRuntimeLifecycle
+}
+
+function assertEmptyKimiIpcPayload(payload: unknown): asserts payload is Record<string, never> {
+  if (
+    typeof payload !== 'object' ||
+    payload === null ||
+    Array.isArray(payload) ||
+    Object.keys(payload).length !== 0
+  ) {
+    throw new Error('XIAOGUI_KIMI_IPC_PARAMETERS_NOT_ALLOWED')
+  }
 }
 
 export function rejectUnsupportedHubContractVersion(

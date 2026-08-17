@@ -128,7 +128,19 @@
     "xiaoguiKimiProductionEnabled": "启用 Kimi 任务执行",
     "xiaoguiKimiProductionEnabledDesc": "默认关闭。开启只允许装配 Kimi 任务执行，不会登录、不启动任务，也不会授予文件权限；每个任务仍需逐次确认可修改和可新建的文件范围。",
     "xiaoguiKimiEnableConfirmTitle": "确认启用 Kimi 任务执行",
-    "xiaoguiKimiEnableConfirmMessage": "保存后需重启小规才会生效。启用只允许装配执行能力，不会自动登录、启动任务或授予文件权限；每个任务仍需逐次确认文件范围。"
+    "xiaoguiKimiEnableConfirmMessage": "保存后需重启小规才会生效。启用只允许装配执行能力，不会自动登录、启动任务或授予文件权限；每个任务仍需逐次确认文件范围。",
+    "xiaoguiKimiRuntimeStatus": "Kimi 状态",
+    "xiaoguiKimiStatusDisabled": "当前未启用。保存启用设置并重启小规后生效。",
+    "xiaoguiKimiStatusCliNotFound": "未发现 Kimi 命令行工具。",
+    "xiaoguiKimiStatusVersionUnapproved": "Kimi 命令行工具版本不符合要求。",
+    "xiaoguiKimiStatusLoginRequired": "需要登录。",
+    "xiaoguiKimiStatusCredentialPresent": "已发现本地凭据（执行时验证）。",
+    "xiaoguiKimiStatusLoginInProgress": "正在登录。请在打开的终端中完成操作。",
+    "xiaoguiKimiStatusUnavailable": "状态暂不可用。",
+    "xiaoguiKimiStatusRefresh": "刷新状态",
+    "xiaoguiKimiLogin": "登录",
+    "xiaoguiKimiRelogin": "重新登录",
+    "xiaoguiKimiLoginInProgress": "正在登录"
   },
   "appearance": {
     "timeline": "时间线",
