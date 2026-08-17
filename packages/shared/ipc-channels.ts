@@ -148,6 +148,7 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.work.docx.confirm',
   'ipc:xiaogui.work.docx.cancel',
   'ipc:xiaogui.work.docx.discover',
+  'ipc:xiaogui.work.docx.output.access',
   'ipc:xiaogui.work.docx.prepare',
 ] as const
 

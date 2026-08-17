@@ -1,12 +1,21 @@
-import { app, BrowserWindow, dialog, type OpenDialogOptions, type SaveDialogOptions } from 'electron'
+import { app, BrowserWindow, dialog, shell, type OpenDialogOptions, type SaveDialogOptions } from 'electron'
 import { join } from 'node:path'
 import { z } from 'zod'
 
-import type { WorkDocxCancelRequestV1, WorkDocxConfirmRequestV1, WorkDocxPrepareRequestV1 } from '@shared/xiaogui-work-docx'
+import type {
+  WorkDocxCancelRequestV1,
+  WorkDocxConfirmRequestV1,
+  WorkDocxOutputAccessRequestV1,
+  WorkDocxPrepareRequestV1,
+} from '@shared/xiaogui-work-docx'
 import type { SessionAddressV1 } from '@shared/xiaogui-session-scope'
 import { registerHandlerWithSchema } from '../ipc/registry'
 import { sessionScopeResolverV1 } from './scope-service'
-import { WorkDocxServiceV1, type WorkDocxDialogPortV1 } from './work-docx-service'
+import {
+  WorkDocxServiceV1,
+  type WorkDocxDialogPortV1,
+  type WorkDocxOutputAccessPortV1,
+} from './work-docx-service'
 
 const AddressSchema = z.object({
   projectId: z.string().regex(/^xgp1_[0-9a-f]{64}$/),
@@ -21,6 +30,11 @@ const ConfirmSchema = z.object({
 const CancelSchema = z.object({
   address: AddressSchema,
   operationId: z.string().regex(/^xgw1_[0-9a-f-]{36}$/),
+}).strict()
+const OutputAccessSchema = z.object({
+  address: AddressSchema,
+  operationId: z.string().regex(/^xgw1_[0-9a-f-]{36}$/),
+  action: z.enum(['OPEN', 'REVEAL']),
 }).strict()
 
 function currentWindow(): BrowserWindow | undefined {
@@ -53,6 +67,13 @@ const nativeDialogs: WorkDocxDialogPortV1 = {
   },
 }
 
+const nativeOutputAccess: WorkDocxOutputAccessPortV1 = {
+  openPath: (path) => shell.openPath(path),
+  async revealPath(path) {
+    shell.showItemInFolder(path)
+  },
+}
+
 let defaultService: WorkDocxServiceV1 | null = null
 
 function service(): WorkDocxServiceV1 {
@@ -60,6 +81,7 @@ function service(): WorkDocxServiceV1 {
     lookup: sessionScopeResolverV1,
     dialogs: nativeDialogs,
     tempRoot: join(app.getPath('userData'), 'work-docx-v1'),
+    outputAccess: nativeOutputAccess,
   })
   return defaultService
 }
@@ -76,5 +98,8 @@ export function registerWorkDocxHandlers(): void {
   })
   registerHandlerWithSchema('ipc:xiaogui.work.docx.cancel', CancelSchema, async (request) => {
     return service().cancel(request as WorkDocxCancelRequestV1)
+  })
+  registerHandlerWithSchema('ipc:xiaogui.work.docx.output.access', OutputAccessSchema, async (request) => {
+    return service().accessOutput(request as WorkDocxOutputAccessRequestV1)
   })
 }

@@ -23,6 +23,7 @@ export type WorkDocxErrorCodeV1 =
   | 'SOURCE_CHANGED'
   | 'GENERATION_FAILED'
   | 'PUBLISH_FAILED'
+  | 'OUTPUT_ACCESS_FAILED'
 
 export type WorkDocxOutcomeV1<T> =
   | { ok: true; value: T }
@@ -62,6 +63,20 @@ export interface WorkDocxPublishedResultV1 {
   templateSha256: string
   payloadSha256: string
   originalInputsUnchanged: true
+}
+
+export type WorkDocxOutputAccessActionV1 = 'OPEN' | 'REVEAL'
+
+export interface WorkDocxOutputAccessRequestV1 {
+  address: SessionAddressV1
+  operationId: WorkDocxOperationIdV1
+  action: WorkDocxOutputAccessActionV1
+}
+
+export interface WorkDocxOutputAccessResultV1 {
+  kind: 'ACCESSED'
+  operationId: WorkDocxOperationIdV1
+  action: WorkDocxOutputAccessActionV1
 }
 
 export interface WorkDocxCancelRequestV1 {
