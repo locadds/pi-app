@@ -15,6 +15,12 @@ import type {
   InitialPlanDraftInputV1,
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
+import type {
+  DeliveryApplyAttemptId,
+  DeliveryBatchId,
+  DeliveryChangeSetId,
+  DeliverySelectionDraftId,
+} from '@shared/xiaogui-delivery'
 import {
   taskCandidateDigestV1,
   taskChangeSetDigestV1,
@@ -330,6 +336,113 @@ async function startedTaskVerification(dbPath: string, suffix: string) {
     candidate,
     verificationRequest,
     beginRecord,
+  }
+}
+
+async function unknownDeliveryApply(dbPath: string, suffix: string) {
+  const { app, flowId } = await activePlan(dbPath)
+  app.close()
+  const store = new CollaborationHubSqliteStoreV1(dbPath)
+  const taskRun = store.taskRuns(flowId as FlowId)[0]
+  store.close()
+  if (!taskRun) throw new Error('missing delivery task run')
+
+  const batchId = `xhbd_${suffix}` as DeliveryBatchId
+  const draftId = `xhbds_${suffix}` as DeliverySelectionDraftId
+  const deliveryChangeSetId = `xhbdcs_${suffix}` as DeliveryChangeSetId
+  const applyAttemptId = `xhbdap_${suffix}` as DeliveryApplyAttemptId
+  const selectionDigest = asDigest(`sha256:delivery-selection-${suffix}`)
+  const requestDigest = asDigest(`sha256:delivery-apply-request-${suffix}`)
+  const unknownReceiptDigest = asDigest(`sha256:delivery-apply-unknown-${suffix}`)
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.exec('pragma foreign_keys = on; begin immediate')
+    db.prepare(
+      'insert into delivery_batches (batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      batchId,
+      ADDRESS.projectId,
+      ADDRESS.sessionKey,
+      flowId,
+      draftId,
+      'OUTCOME_UNKNOWN',
+      selectionDigest,
+      `sha256:delivery-target-${suffix}`,
+      '2026-08-18T00:00:00.000Z',
+      '2026-08-18T00:00:01.000Z',
+    )
+    db.prepare(
+      'insert into delivery_selection_drafts (draft_id, batch_id, flow_id, selected_task_run_ids_json, resolved_task_change_set_ids_json, dependency_task_run_ids_json, selection_digest, draft_json, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      draftId,
+      batchId,
+      flowId,
+      JSON.stringify([taskRun.task_run_id]),
+      '[]',
+      '[]',
+      selectionDigest,
+      '{}',
+      '2026-08-18T00:00:00.000Z',
+    )
+    db.prepare(
+      'insert into delivery_change_sets (delivery_change_set_id, batch_id, flow_id, version, selection_digest, task_change_set_ids_json, evidence_artifact_ids_json, qa_config_version, digest, change_set_json, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      deliveryChangeSetId,
+      batchId,
+      flowId,
+      1,
+      selectionDigest,
+      '[]',
+      '[]',
+      'delivery-test-v1',
+      `sha256:delivery-change-set-${suffix}`,
+      '{}',
+      '2026-08-18T00:00:00.000Z',
+    )
+    db.prepare(
+      'insert into delivery_apply_attempts (apply_attempt_id, batch_id, delivery_change_set_id, request_digest, target_fingerprint_before, state, receipt_digest, target_fingerprint_after, started_at, finished_at) values (?, ?, ?, ?, ?, ?, ?, null, ?, ?)',
+    ).run(
+      applyAttemptId,
+      batchId,
+      deliveryChangeSetId,
+      requestDigest,
+      `sha256:delivery-target-${suffix}`,
+      'OUTCOME_UNKNOWN',
+      unknownReceiptDigest,
+      '2026-08-18T00:00:00.000Z',
+      '2026-08-18T00:00:01.000Z',
+    )
+    db.prepare(
+      'insert into delivery_apply_outbox (outbox_id, apply_attempt_id, request_digest, request_json, status, completed_at, created_at) values (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      `xhbdapo_${applyAttemptId}`,
+      applyAttemptId,
+      requestDigest,
+      '{}',
+      'OUTCOME_UNKNOWN',
+      '2026-08-18T00:00:01.000Z',
+      '2026-08-18T00:00:00.000Z',
+    )
+    db.prepare("update task_runs set status = 'APPLYING' where task_run_id = ?").run(taskRun.task_run_id)
+    db.exec('commit')
+  } catch (error) {
+    db.exec('rollback')
+    throw error
+  } finally {
+    db.close()
+  }
+  return { flowId: flowId as FlowId, taskRunId: taskRun.task_run_id, batchId, applyAttemptId }
+}
+
+function deliveryBatchState(dbPath: string, batchId: DeliveryBatchId): string | null {
+  const db = new DatabaseSync(dbPath)
+  try {
+    const row = db.prepare('select state from delivery_batches where batch_id = ?').get(batchId) as
+      | { state: string }
+      | undefined
+    return row?.state ?? null
+  } finally {
+    db.close()
   }
 }
 
@@ -1223,4 +1336,53 @@ describe('M4C task verification persistence', () => {
       fixture.store.close()
     },
   )
+})
+
+describe('M4D delivery apply recovery persistence', () => {
+  it.each([
+    { outcome: 'SUCCEEDED' as const, batchState: 'APPLIED', outboxState: 'DONE', taskState: 'DONE' },
+    { outcome: 'FAILED' as const, batchState: 'APPROVED', outboxState: 'FAILED', taskState: 'DELIVERY_PENDING' },
+  ])('atomically reconciles OUTCOME_UNKNOWN to $outcome and keeps the terminal result idempotent', async (expected) => {
+    const dbPath = await tempDb(`delivery-apply-reconcile-${expected.outcome.toLowerCase()}.sqlite`)
+    const fixture = await unknownDeliveryApply(dbPath, expected.outcome.toLowerCase())
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    const versionBefore = store.currentVersion(ADDRESS)
+    const receiptDigest = asDigest(`sha256:delivery-apply-${expected.outcome.toLowerCase()}`)
+    const record = {
+      applyAttemptId: fixture.applyAttemptId,
+      outcome: expected.outcome,
+      receiptDigest,
+      ...(expected.outcome === 'SUCCEEDED'
+        ? { targetFingerprintAfter: asDigest('sha256:delivery-target-after-success') }
+        : {}),
+      now: '2026-08-18T00:00:02.000Z',
+    }
+
+    expect(store.completeDeliveryApply(ADDRESS, record)).toEqual({
+      applyAttemptId: fixture.applyAttemptId,
+      outcome: expected.outcome,
+      replayed: false,
+    })
+    expect(store.readDeliveryApplyAttempt(fixture.applyAttemptId)).toMatchObject({
+      state: expected.outcome,
+      receiptDigest,
+    })
+    expect(store.readDeliveryApplyOutbox(fixture.applyAttemptId)?.status).toBe(expected.outboxState)
+    expect(store.taskRun(fixture.taskRunId)?.status).toBe(expected.taskState)
+    expect(deliveryBatchState(dbPath, fixture.batchId)).toBe(expected.batchState)
+    expect(store.currentVersion(ADDRESS)).toBe(versionBefore + 1)
+
+    const terminalVersion = store.currentVersion(ADDRESS)
+    expect(store.completeDeliveryApply(ADDRESS, record)).toMatchObject({ replayed: true })
+    expect(store.currentVersion(ADDRESS)).toBe(terminalVersion)
+    expect(() =>
+      store.completeDeliveryApply(ADDRESS, {
+        ...record,
+        outcome: expected.outcome === 'SUCCEEDED' ? 'FAILED' : 'SUCCEEDED',
+        receiptDigest: asDigest('sha256:delivery-apply-illegal-reverse'),
+      }),
+    ).toThrow('DELIVERY_APPLY_IDEMPOTENCY_CONFLICT')
+    expect(store.currentVersion(ADDRESS)).toBe(terminalVersion)
+    store.close()
+  })
 })
