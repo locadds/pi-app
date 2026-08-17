@@ -91,7 +91,8 @@ interface RuntimeSessionState {
   sequence: number
   outcome: RuntimeOutcomeV1 | null
   disconnected: boolean
-  released: boolean
+  releasePromise?: Promise<void>
+  release: () => Promise<void>
   promptInFlight: boolean
   promptQueue: string[]
   cancellationRequested: boolean
@@ -132,7 +133,7 @@ interface PermissionDecisionRecord {
 
 type RuntimeEventDraftV1 = RuntimeEventV1 extends infer Event ? (Event extends { sequence: number } ? Omit<Event, 'sequence'> : never) : never
 
-export function createKimiAcpRuntimeAdapterV1(options: KimiAcpRuntimeAdapterOptionsV1): AgentRuntimeAdapterV1 {
+export function createKimiAcpRuntimeAdapterV1(options: KimiAcpRuntimeAdapterOptionsV1): KimiAcpRuntimeAdapterV1 {
   return new KimiAcpRuntimeAdapterV1(options)
 }
 
@@ -143,6 +144,10 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   private readonly idempotency = new Map<string, IdempotencyRecord>()
   private readonly permissionDecisions = new Map<string, PermissionDecisionRecord>()
   private readonly consumedProofs = new Map<string, string>()
+  private readonly ownedTransports = new Set<AcpTransportV1>()
+  private readonly transportDisposals = new WeakMap<AcpTransportV1, Promise<void>>()
+  private closed = false
+  private closePromise?: Promise<void>
 
   constructor(private readonly options: KimiAcpRuntimeAdapterOptionsV1) {
     this.probe = options.probe ?? new KimiAcpCliProbeV1()
@@ -161,6 +166,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   async createOrResume(request: RuntimeCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1>
   async createOrResume(request: RuntimeContractTestCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1>
   async createOrResume(request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1): Promise<RuntimeCreateOrResumeOutcomeV1> {
+    if (this.closed) return failed('runtime-unbound', 'KIMI_ADAPTER_CLOSED')
     if (!isContractTestCreateRequestShape(request)) {
       const productionShape = validateRuntimeProductionCreateRequestShapeV1(request)
       if (!productionShape.ok) return failed('runtime-unbound', productionShape.reasonCode)
@@ -210,10 +216,12 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       const envelope = await this.options.payloadResolver.resolvePrompt(request.promptEnvelopeRef)
       if (digestBytes(envelope.payloadBytes) !== request.promptEnvelopeRef.digest) return failed('runtime-unbound', 'PROMPT_DIGEST_MISMATCH')
       prompt = Buffer.from(envelope.payloadBytes).toString('utf8')
+      if (this.closed) return failed('runtime-unbound', 'KIMI_ADAPTER_CLOSED')
       const transport = this.transportFactory.create(probe.command, ['acp'], workspace.rootPath, {
         env: toolPolicy.env,
         preSpawn: toolPolicy.revalidateBeforeSpawn,
       })
+      this.ownedTransports.add(transport)
       return this.startReadySession(request, workspace, policy, prompt, transport, idemKey, payloadDigest)
     } catch (error) {
       return failed('runtime-unbound', reasonFromError(error, 'RUNTIME_WORKSPACE_BINDING_FAILED'))
@@ -263,19 +271,35 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
         },
         requestHandlers,
         onSessionUpdate: (params) => {
-          if (state) handleSessionUpdate(state, params)
+          if (state && !this.closed) handleSessionUpdate(state, params)
         },
-        onPermissionRequest: (params) => (state ? this.handlePermissionRequest(state, params) : Promise.resolve({ outcome: { outcome: 'cancelled' } })),
+        onPermissionRequest: (params) => (
+          state && !this.closed && !state.cancellationRequested
+            ? this.handlePermissionRequest(state, params)
+            : Promise.resolve({ outcome: { outcome: 'cancelled' } })
+        ),
         onDisconnect: (reasonCode) => {
           if (state) markDisconnected(state, reasonCode)
         },
       })
+      if (this.closed) {
+        await this.disposeTransport(transport)
+        return failed('runtime-unbound', 'KIMI_ADAPTER_CLOSED')
+      }
       const vendorSessionId = workspace.resumeSessionId ?? (await transport.newSession(workspace.rootPath)).sessionId
+      if (this.closed) {
+        await this.disposeTransport(transport)
+        return failed('runtime-unbound', 'KIMI_ADAPTER_CLOSED')
+      }
       if (!isSafeAcpOpaqueId(vendorSessionId)) {
-        await safeDisposeTransport(transport)
+        await this.disposeTransport(transport)
         return failed('runtime-unbound', 'ACP_SESSION_ID_UNSAFE')
       }
       if (workspace.resumeSessionId) await transport.loadSession(vendorSessionId, workspace.rootPath)
+      if (this.closed) {
+        await this.disposeTransport(transport)
+        return failed('runtime-unbound', 'KIMI_ADAPTER_CLOSED')
+      }
 
       const publicRuntimeSessionId = localRuntimeSurrogate(vendorSessionId, digestJson({ scope: request.scope, workspace: request.workspace }))
       state = {
@@ -288,7 +312,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
         sequence: 0,
         outcome: null,
         disconnected: false,
-        released: false,
+        release: () => this.disposeTransport(transport),
         promptInFlight: false,
         promptQueue: [],
         cancellationRequested: false,
@@ -303,9 +327,11 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       this.idempotency.set(idemKey, { payloadDigest, outcome })
       return outcome
     } catch (error) {
-      await safeDisposeTransport(transport)
-      const outcome = failed('runtime-unbound', reasonFromError(error, 'ACP_SESSION_START_FAILED'))
-      this.idempotency.set(idemKey, { payloadDigest, outcome })
+      await this.disposeTransport(transport)
+      const outcome = this.closed
+        ? failed('runtime-unbound', 'KIMI_ADAPTER_CLOSED')
+        : failed('runtime-unbound', reasonFromError(error, 'ACP_SESSION_START_FAILED'))
+      if (!this.closed) this.idempotency.set(idemKey, { payloadDigest, outcome })
       return outcome
     }
   }
@@ -422,7 +448,32 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     return outcome
   }
 
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise
+    this.closed = true
+
+    const states = [...this.sessions.values()]
+    this.sessions.clear()
+    this.idempotency.clear()
+    this.permissionDecisions.clear()
+    this.consumedProofs.clear()
+    const stateReleases = states.map((state) => {
+      state.cancellationRequested = true
+      state.promptQueue = []
+      clearPendingPermissions(state)
+      return releaseTransport(state)
+    })
+
+    const transports = [...this.ownedTransports]
+    this.closePromise = Promise.all([
+      ...stateReleases,
+      ...transports.map((transport) => this.disposeTransport(transport)),
+    ]).then(() => undefined)
+    return this.closePromise
+  }
+
   private async capability(): Promise<RuntimeCapabilityV1> {
+    if (this.closed) return this.unavailableCapability('KIMI_ADAPTER_CLOSED')
     const productionGate = this.options.productionGate
     const approvedProductionDigest = kimiAcpCapabilityDigestForVersionV1(KIMI_ACP_APPROVED_VERSION_V1)
     if (productionGate?.enabled && !isExactKimiProductionSelection(productionGate.selection, approvedProductionDigest)) {
@@ -506,6 +557,22 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     return new Promise((resolve) => {
       state.pendingPermissions.set(permissionRequestId, { kind: 'write', challengeDigest, resolve, consumed: false })
     })
+  }
+
+  private disposeTransport(transport: AcpTransportV1): Promise<void> {
+    const existing = this.transportDisposals.get(transport)
+    if (existing) return existing
+
+    const disposal = Promise.resolve()
+      .then(() => transport.dispose())
+      .catch(() => {
+        // Transport shutdown failures stay behind the adapter boundary.
+      })
+      .finally(() => {
+        this.ownedTransports.delete(transport)
+      })
+    this.transportDisposals.set(transport, disposal)
+    return disposal
   }
 }
 
@@ -683,18 +750,10 @@ function clearPendingPermissions(state: RuntimeSessionState): void {
   state.pendingPermissions.clear()
 }
 
-function releaseTransport(state: RuntimeSessionState): void {
-  if (state.released) return
-  state.released = true
-  void safeDisposeTransport(state.transport)
-}
-
-async function safeDisposeTransport(transport: AcpTransportV1): Promise<void> {
-  try {
-    await transport.dispose()
-  } catch {
-    // dispose failures stay behind the adapter boundary
-  }
+function releaseTransport(state: RuntimeSessionState): Promise<void> {
+  if (state.releasePromise) return state.releasePromise
+  state.releasePromise = state.release()
+  return state.releasePromise
 }
 
 function pushEvent(state: RuntimeSessionState, event: RuntimeEventDraftV1): void {

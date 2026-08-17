@@ -1078,6 +1078,38 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     expect(factory.transports).toHaveLength(1)
   })
 
+  it('closes active transports exactly once and rejects new sessions after shutdown', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const factory = new FakeTransportFactory(async () => {
+      await new Promise<void>(() => {})
+    })
+    const adapter = new KimiAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver(),
+      workspaceResolver: resolver(root),
+      probe: new FakeProbe(),
+      transportFactory: factory,
+    })
+
+    await expect(adapter.createOrResume(request(root))).resolves.toMatchObject({ state: 'READY' })
+    expect(factory.transports).toHaveLength(1)
+    expect(factory.transports[0].disposeCalls).toBe(0)
+
+    const firstClose = adapter.close()
+    const secondClose = adapter.close()
+    expect(secondClose).toBe(firstClose)
+    await firstClose
+
+    expect(factory.transports[0].disposeCalls).toBe(1)
+    await expect(adapter.discover()).resolves.toMatchObject([
+      { health: 'UNAVAILABLE', canCreateSession: false, reasonCode: 'KIMI_ADAPTER_CLOSED' },
+    ])
+    await expect(adapter.createOrResume(request(root, 'after close', { requestId: 'req-after-close' }))).resolves.toMatchObject({
+      state: 'FAILED',
+      reasonCode: 'KIMI_ADAPTER_CLOSED',
+    })
+    expect(factory.transports).toHaveLength(1)
+  })
+
   it('fails closed for traversal, absolute paths, aliases, hardlinks, and digest drift before writing', async () => {
     const root = workspace({ 'a.txt': 'before', 'b.txt': 'other' })
     const factory = new FakeTransportFactory(async (transport) => {
