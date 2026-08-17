@@ -19,6 +19,8 @@ import { PatchType, TextRun, patchDetector, patchDocument } from 'docx'
 import JSZip, { type JSZipObject } from 'jszip'
 
 import type {
+  WorkDocxCancelRequestV1,
+  WorkDocxCancelledResultV1,
   WorkDocxCapabilityV1,
   WorkDocxConfirmRequestV1,
   WorkDocxDiscoverResultV1,
@@ -37,7 +39,9 @@ const MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 const MAX_ZIP_ENTRIES = 1_000
 const MAX_PLACEHOLDERS = 200
 const MAX_VALUE_CHARS = 20_000
+const MAX_DISPLAY_NAME_CHARS = 160
 const PLACEHOLDER_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/
+const UNSAFE_DISPLAY_NAME = /[\/\\\u0000-\u001f\u007f-\u009f]/
 
 type WorkDocxDialogPortV1 = {
   chooseTemplate(): Promise<string | null>
@@ -76,7 +80,7 @@ const CAPABILITY: WorkDocxCapabilityV1 = {
   id: 'docx-template-patch',
   version: '9.7.1',
   status: 'AVAILABLE',
-  intents: ['PREPARE', 'CONFIRM'],
+  intents: ['PREPARE', 'CONFIRM', 'CANCEL'],
 }
 
 function failure<T>(code: WorkDocxErrorCodeV1): WorkDocxOutcomeV1<T> {
@@ -85,6 +89,14 @@ function failure<T>(code: WorkDocxErrorCodeV1): WorkDocxOutcomeV1<T> {
 
 function addressKey(address: SessionAddressV1): string {
   return `${address.projectId}\0${address.sessionKey}`
+}
+
+function safeDisplayName(path: string): string {
+  const name = basename(path)
+  if (name.length === 0 || name.length > MAX_DISPLAY_NAME_CHARS || UNSAFE_DISPLAY_NAME.test(name)) {
+    throw new WorkDocxError('INPUT_INVALID')
+  }
+  return name
 }
 
 async function sha256(path: string): Promise<string> {
@@ -208,6 +220,7 @@ export class WorkDocxServiceV1 {
     WorkDocxOperationIdV1,
     { addressKey: string; receipt: WorkDocxPublishedResultV1 }
   >()
+  private readonly active = new Set<WorkDocxOperationIdV1>()
 
   constructor(private readonly options: WorkDocxServiceOptionsV1) {}
 
@@ -241,6 +254,8 @@ export class WorkDocxServiceV1 {
       if (extname(sourceTemplate).toLowerCase() !== '.docx' || extname(sourcePayload).toLowerCase() !== '.json') {
         throw new WorkDocxError('INPUT_INVALID')
       }
+      const templateDisplayName = safeDisplayName(sourceTemplate)
+      const payloadDisplayName = safeDisplayName(sourcePayload)
       await assertNewTarget(target)
       await mkdir(this.options.tempRoot, { recursive: true })
       stageDir = await mkdtemp(join(this.options.tempRoot, 'operation-'))
@@ -282,7 +297,15 @@ export class WorkDocxServiceV1 {
       stageDir = null
       return {
         ok: true,
-        value: { kind: 'PREPARED', operationId, placeholders, templateSha256, payloadSha256 },
+        value: {
+          kind: 'PREPARED',
+          operationId,
+          templateDisplayName,
+          payloadDisplayName,
+          placeholders,
+          templateSha256,
+          payloadSha256,
+        },
       }
     } catch (error) {
       if (error instanceof WorkDocxError) return failure(error.code)
@@ -306,6 +329,8 @@ export class WorkDocxServiceV1 {
     const operation = this.prepared.get(request.operationId)
     if (!operation) return failure('OPERATION_NOT_FOUND')
     if (operation.addressKey !== requestAddressKey) return failure('OPERATION_SCOPE_MISMATCH')
+    if (this.active.has(request.operationId)) return failure('OPERATION_NOT_FOUND')
+    this.active.add(request.operationId)
 
     try {
       if (
@@ -364,7 +389,37 @@ export class WorkDocxServiceV1 {
       await rm(operation.stageDir, { recursive: true, force: true }).catch(() => {})
       if (error instanceof WorkDocxError) return failure(error.code)
       return failure('GENERATION_FAILED')
+    } finally {
+      this.active.delete(request.operationId)
     }
+  }
+
+  async cancel(request: WorkDocxCancelRequestV1): Promise<WorkDocxOutcomeV1<WorkDocxCancelledResultV1>> {
+    const admitted = await this.admit(request.address)
+    if (!admitted.ok) return admitted
+    const requestAddressKey = addressKey(request.address)
+
+    if (this.completed.has(request.operationId)) {
+      const entry = this.completed.get(request.operationId)!
+      if (entry.addressKey !== requestAddressKey) return failure('OPERATION_SCOPE_MISMATCH')
+      return failure('OPERATION_NOT_FOUND')
+    }
+
+    const operation = this.prepared.get(request.operationId)
+    if (!operation) return failure('OPERATION_NOT_FOUND')
+    if (operation.addressKey !== requestAddressKey) return failure('OPERATION_SCOPE_MISMATCH')
+    if (this.active.has(request.operationId)) return failure('OPERATION_NOT_FOUND')
+    this.active.add(request.operationId)
+
+    try {
+      await rm(operation.stageDir, { recursive: true, force: true })
+    } catch {
+      return failure('PUBLISH_FAILED')
+    } finally {
+      this.active.delete(request.operationId)
+    }
+    this.prepared.delete(request.operationId)
+    return { ok: true, value: { kind: 'CANCELLED', operationId: request.operationId } }
   }
 }
 

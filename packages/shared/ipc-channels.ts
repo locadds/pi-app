@@ -146,6 +146,7 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.sidecar.status',
   'ipc:xiaogui.tool.invoke',
   'ipc:xiaogui.work.docx.confirm',
+  'ipc:xiaogui.work.docx.cancel',
   'ipc:xiaogui.work.docx.discover',
   'ipc:xiaogui.work.docx.prepare',
 ] as const
