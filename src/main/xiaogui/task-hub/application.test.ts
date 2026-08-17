@@ -23,7 +23,7 @@ import type {
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
-import { createCollaborationHubApplicationV1 } from './application'
+import { createCollaborationHubApplicationV1, type ExecutionWorkspaceBridgeV1, type RuntimePromptVaultV1 } from './application'
 import { digestJson } from './digest'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 
@@ -127,6 +127,8 @@ function appFor(dbPath: string, mode: SessionMode = 'WORK', ids = ['xhbf_flow', 
       ? {
           agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities: [approvedCapability], createRuntimeSessionId: runtimeSessionId })),
           baselineProvider: { capture: async () => baseline },
+          workspaceBridge: testWorkspaceBridge(baseline),
+          runtimePromptVault: testPromptVault(),
         }
       : {}),
     now: () => '2026-08-16T00:00:00.000Z',
@@ -156,6 +158,31 @@ function scriptedBaseline(suffix = '1') {
     initialTargetFingerprint: `sha256:initial-target-${suffix}`,
   }
   return { ...base, baselineDigest: digestJson(base) }
+}
+
+function testWorkspaceBridge(baseline: ReturnType<typeof scriptedBaseline>): ExecutionWorkspaceBridgeV1 {
+  return {
+    prepare: async () => {
+      throw new Error('test bridge prepare is not used by manual workspace receipt tests')
+    },
+    runtimeWorkspace: (attemptId) => ({
+      attemptWorktreeId: `xhbwt_test_${attemptId}`,
+      worktreeRootDigest: digestJson({ attemptId, role: 'test-worktree-root' }),
+      baseRevisionDigest: baseline.baselineTreeHash,
+      targetProjectRootDigest: baseline.initialTargetFingerprint,
+      writePolicy: 'ATTEMPT_WORKTREE_ONLY',
+    }),
+  }
+}
+
+function testPromptVault(): RuntimePromptVaultV1 {
+  return {
+    promptRefForAttempt: (attemptId) => ({
+      refId: `xhbprompt_test_${attemptId}`,
+      digest: digestJson({ attemptId, role: 'test-runtime-prompt' }),
+      mediaType: 'application/vnd.xiaogui.runtime-prompt+json',
+    }),
+  }
 }
 
 function flowBaselineRow(dbPath: string, flowId: FlowId) {
@@ -294,6 +321,11 @@ describe('M2A collaboration hub application', () => {
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
       workspace_receipts: 0,
+      attempt_workspace_prepared: 0,
+      attempt_file_manifests: 0,
+      scope_expansion_requests: 0,
+      create_batches: 0,
+      private_runtime_payloads: 0,
       agent_dispatch_outbox: 0,
       runtime_session_bindings: 0,
       agent_failures: 0,
@@ -567,7 +599,7 @@ describe('M2A collaboration hub application', () => {
     const migration = unchangedDb.prepare('select max(version) as version from schema_migrations').get() as { version: number }
     unchangedDb.close()
     expect(JSON.parse(stored.projection_json).activeRevision).not.toHaveProperty('draft')
-    expect(migration.version).toBe(2)
+    expect(migration.version).toBe(3)
   })
 
   it('keeps public projection actions user-only and persisted event payload sanitized', async () => {
@@ -1030,7 +1062,7 @@ describe('M2A collaboration hub application', () => {
       },
     })
     const ready = await app.observeM2B(ADDRESS)
-    await executeSystem(app, {
+    await expect(executeSystem(app, {
       requestId: 'sys-agent-report-1',
       expectedSessionVersion: ready.ok ? ready.value.sessionVersion : 0,
       intent: {
@@ -1039,7 +1071,7 @@ describe('M2A collaboration hub application', () => {
         taskRunId: 'xhbtr_projection' as TaskRunId,
         attemptId: 'xhba_attempt' as AttemptId,
       },
-    })
+    })).resolves.toMatchObject({ ok: true })
 
     await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
       ok: true,
@@ -1100,7 +1132,7 @@ describe('M2A collaboration hub application', () => {
       },
     })
     const ready = await app.observeM2B(ADDRESS)
-    await executeSystem(app, {
+    await expect(executeSystem(app, {
       requestId: 'sys-agent-report-1',
       expectedSessionVersion: ready.ok ? ready.value.sessionVersion : 0,
       intent: {
@@ -1109,7 +1141,7 @@ describe('M2A collaboration hub application', () => {
         taskRunId: 'xhbtr_projection' as TaskRunId,
         attemptId: 'xhba_attempt' as AttemptId,
       },
-    })
+    })).resolves.toMatchObject({ ok: true })
     const running = await app.observeM2B(ADDRESS)
     await expect(
       executeSystem(app, {

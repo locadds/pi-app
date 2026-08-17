@@ -141,26 +141,48 @@ export class PrivateRuntimePayloadVaultV1 implements TrustedRuntimePayloadResolv
     attemptId: string,
     mediaType: PrivateRuntimePayloadMediaTypeV1,
     payloadBytes: Uint8Array | Buffer | string,
-    refId = runtimePayloadRefId(mediaType, attemptId, payloadBytes),
+    refId?: string,
   ): AttemptBoundPromptEnvelopeRefV1 | AttemptBoundMessageEnvelopeRefV1 {
     const cleanAttemptId = cleanNonEmpty(attemptId)
-    const cleanRefId = cleanNonEmpty(refId)
-    if (!cleanAttemptId || !cleanRefId) throw new RuntimePayloadVaultError('PAYLOAD_REF_INVALID')
+    if (!cleanAttemptId) throw new RuntimePayloadVaultError('PAYLOAD_REF_INVALID')
     const bytes = Buffer.isBuffer(payloadBytes) ? payloadBytes : Buffer.from(payloadBytes)
     if (bytes.length === 0) throw new RuntimePayloadVaultError('PAYLOAD_EMPTY')
     if (bytes.length > PRIVATE_RUNTIME_PAYLOAD_MAX_BYTES) throw new RuntimePayloadVaultError('PAYLOAD_TOO_LARGE')
+    const cleanRefId = cleanRuntimeRefId(refId ?? runtimePayloadRefId(mediaType, cleanAttemptId, bytes))
+    if (!cleanRefId) throw new RuntimePayloadVaultError('PAYLOAD_REF_INVALID')
     const digest = digestBytes(bytes)
-    const existing = this.row(cleanRefId)
-    if (existing) {
-      if (existing.attempt_id !== cleanAttemptId || existing.media_type !== mediaType || existing.digest !== digest) {
+    try {
+      this.db.exec('begin immediate')
+      const existing = this.row(cleanRefId)
+      if (existing) {
+        if (
+          existing.attempt_id !== cleanAttemptId ||
+          existing.media_type !== mediaType ||
+          existing.digest !== digest ||
+          digestBytes(Buffer.from(existing.payload)) !== digest
+        ) {
+          throw new RuntimePayloadVaultError('PAYLOAD_REF_CONFLICT')
+        }
+        this.db.exec('commit')
+        return refFor(mediaType, cleanRefId, digest, cleanAttemptId)
+      }
+      this.db
+        .prepare('insert into private_runtime_payloads (ref_id, attempt_id, media_type, digest, payload, created_at) values (?, ?, ?, ?, ?, ?)')
+        .run(cleanRefId, cleanAttemptId, mediaType, digest, bytes, this.now())
+      this.db.exec('commit')
+      return refFor(mediaType, cleanRefId, digest, cleanAttemptId)
+    } catch (error) {
+      rollbackQuietly(this.db)
+      if (error instanceof RuntimePayloadVaultError) throw error
+      if (isSqliteConstraintError(error)) {
+        const existing = this.row(cleanRefId)
+        if (existing?.attempt_id === cleanAttemptId && existing.media_type === mediaType && existing.digest === digest) {
+          return refFor(mediaType, cleanRefId, digest, cleanAttemptId)
+        }
         throw new RuntimePayloadVaultError('PAYLOAD_REF_CONFLICT')
       }
-      return refFor(mediaType, cleanRefId, digest, cleanAttemptId)
+      throw error
     }
-    this.db
-      .prepare('insert into private_runtime_payloads (ref_id, attempt_id, media_type, digest, payload, created_at) values (?, ?, ?, ?, ?, ?)')
-      .run(cleanRefId, cleanAttemptId, mediaType, digest, bytes, this.now())
-    return refFor(mediaType, cleanRefId, digest, cleanAttemptId)
   }
 
   private resolve(
@@ -205,7 +227,7 @@ export class PrivateRuntimePayloadVaultV1 implements TrustedRuntimePayloadResolv
       create table if not exists private_runtime_payloads (
         ref_id text primary key,
         attempt_id text not null,
-        media_type text not null,
+        media_type text not null check (media_type in ('application/vnd.xiaogui.runtime-prompt+json', 'application/vnd.xiaogui.runtime-message+json')),
         digest text not null,
         payload blob not null,
         created_at text not null
@@ -235,9 +257,6 @@ function refFor(
   digest: string,
   attemptId: string,
 ): AttemptBoundPromptEnvelopeRefV1 | AttemptBoundMessageEnvelopeRefV1 {
-  if (mediaType === RUNTIME_PROMPT_MEDIA_TYPE) {
-    return { refId, digest, mediaType, attemptId }
-  }
   return { refId, digest, mediaType, attemptId }
 }
 
@@ -261,4 +280,22 @@ function assertAttemptBoundMessageRef(ref: RuntimeMessageEnvelopeRefV1): Attempt
 
 function cleanNonEmpty(value: unknown): string {
   return typeof value === 'string' && value.length > 0 && value === value.trim() ? value : ''
+}
+
+function cleanRuntimeRefId(value: unknown): string {
+  if (!cleanNonEmpty(value)) return ''
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value as string) ? (value as string) : ''
+}
+
+function rollbackQuietly(db: DatabaseSync): void {
+  try {
+    db.exec('rollback')
+  } catch {
+    // No active transaction or rollback failed; callers receive a stable vault error.
+  }
+}
+
+function isSqliteConstraintError(error: unknown): boolean {
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')
 }

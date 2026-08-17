@@ -87,10 +87,21 @@ interface AgentDispatchOutboxRecord {
 interface FlowExecutionBaselineRecord {
   flow_id: FlowId
   baseline_id: string
+  base_revision: string | null
   baseline_tree_hash: string
   initial_target_fingerprint: string
   baseline_digest: string
   baseline_binding_digest: string
+}
+
+export interface WorkspacePrepareOutboxClaimRecordM2B2V1 {
+  outboxId: string
+  attemptId: AttemptId
+  requestDigest: string
+  status: 'CLAIMED'
+  claimOwnerId: string
+  claimDigest: string
+  claimedAt: string
 }
 
 type ReadableProjectionV1 = Omit<SessionCollaborationProjectionV1, 'activeRevision'> & {
@@ -137,6 +148,7 @@ export interface ScheduleRecordM2BV1 {
   compositionDigest: string
   baselineBindingDigest: string
   baselineId: string
+  baseRevision?: string
   baselineTreeHash: string
   initialTargetFingerprint: string
   baselineDigest: string
@@ -337,7 +349,7 @@ export class CollaborationHubSqliteStoreV1 {
 
   flowExecutionBaseline(flowId: FlowId): FlowExecutionBaselineRecord | null {
     const row = this.db
-      .prepare('select flow_id, baseline_id, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest from flow_execution_baselines where flow_id = ?')
+      .prepare('select flow_id, baseline_id, base_revision, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest from flow_execution_baselines where flow_id = ?')
       .get(flowId) as FlowExecutionBaselineRecord | undefined
     return row ?? null
   }
@@ -354,6 +366,54 @@ export class CollaborationHubSqliteStoreV1 {
       .prepare('select status from workspace_prepare_outbox where attempt_id = ?')
       .get(attemptId) as { status: string } | undefined
     return row?.status ?? null
+  }
+
+  claimWorkspacePrepareOutbox(input: {
+    attemptId: AttemptId
+    ownerId: string
+    claimDigest: string
+    now: string
+  }): WorkspacePrepareOutboxClaimRecordM2B2V1 | null {
+    return this.transaction(() => {
+      this.db
+        .prepare(
+          "update workspace_prepare_outbox set status = 'CLAIMED', claim_owner_id = ?, claim_digest = ?, claimed_at = ? where attempt_id = ? and status = 'READY'",
+        )
+        .run(input.ownerId, input.claimDigest, input.now, input.attemptId)
+      const row = this.db
+        .prepare(
+          'select outbox_id, attempt_id, request_digest, status, claim_owner_id, claim_digest, claimed_at from workspace_prepare_outbox where attempt_id = ?',
+        )
+        .get(input.attemptId) as
+        | {
+            outbox_id: string
+            attempt_id: AttemptId
+            request_digest: string
+            status: string
+            claim_owner_id: string | null
+            claim_digest: string | null
+            claimed_at: string | null
+          }
+        | undefined
+      if (
+        !row ||
+        row.status !== 'CLAIMED' ||
+        row.claim_owner_id !== input.ownerId ||
+        row.claim_digest !== input.claimDigest ||
+        !row.claimed_at
+      ) {
+        return null
+      }
+      return {
+        outboxId: row.outbox_id,
+        attemptId: row.attempt_id,
+        requestDigest: row.request_digest,
+        status: 'CLAIMED',
+        claimOwnerId: row.claim_owner_id,
+        claimDigest: row.claim_digest,
+        claimedAt: row.claimed_at,
+      }
+    })
   }
 
   hasActiveExternalAttempt(): boolean {
@@ -457,11 +517,12 @@ export class CollaborationHubSqliteStoreV1 {
       const projection = { ...record.projection, sessionVersion: version }
       const receipt = { ...record.receipt, sessionVersion: version }
       const insertBaseline = this.db.prepare(
-        'insert or ignore into flow_execution_baselines (flow_id, baseline_id, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at) values (?, ?, ?, ?, ?, ?, ?)',
+        'insert or ignore into flow_execution_baselines (flow_id, baseline_id, base_revision, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
       )
       insertBaseline.run(
         record.flowId,
         record.baselineId,
+        record.baseRevision ?? null,
         record.baselineTreeHash,
         record.initialTargetFingerprint,
         record.baselineDigest,
@@ -519,9 +580,9 @@ export class CollaborationHubSqliteStoreV1 {
         )
       this.db
         .prepare(
-          'insert into workspace_prepare_outbox (outbox_id, attempt_id, request_digest, status, created_at, completed_at) values (?, ?, ?, ?, ?, ?)',
+          'insert into workspace_prepare_outbox (outbox_id, attempt_id, request_digest, status, created_at, completed_at, claim_owner_id, claim_digest, claimed_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         )
-        .run(`xhbwpo_${record.attemptId}`, record.attemptId, record.workspacePrepareRequestDigest, 'READY', record.now, null)
+        .run(`xhbwpo_${record.attemptId}`, record.attemptId, record.workspacePrepareRequestDigest, 'READY', record.now, null, null, null, null)
       this.writeEvent(address, version, 'system.schedule', {
         phase: 'attempt.created',
         flowId: record.flowId,
@@ -769,6 +830,11 @@ export class CollaborationHubSqliteStoreV1 {
       'composition_attempts',
       'workspace_prepare_outbox',
       'workspace_receipts',
+      'attempt_workspace_prepared',
+      'attempt_file_manifests',
+      'scope_expansion_requests',
+      'create_batches',
+      'private_runtime_payloads',
       'agent_dispatch_outbox',
       'runtime_session_bindings',
       'agent_failures',
@@ -965,6 +1031,62 @@ export class CollaborationHubSqliteStoreV1 {
     this.addColumnIfMissing('agent_dispatch_outbox', 'runtime_request_digest', 'text')
     this.addColumnIfMissing('agent_dispatch_outbox', 'runtime_request_json', 'text')
     this.addColumnIfMissing('agent_dispatch_outbox', 'selection_digest', 'text')
+    this.transaction(() => {
+      this.db.exec(`
+        create table if not exists attempt_workspace_prepared (
+          attempt_id text primary key,
+          request_json text not null,
+          result_json text not null
+        );
+        create table if not exists attempt_file_manifests (
+          attempt_id text primary key,
+          version integer not null,
+          manifest_digest text not null,
+          manifest_json text not null
+        );
+        create table if not exists scope_expansion_requests (
+          request_id text primary key,
+          attempt_id text not null,
+          state text not null,
+          request_json text not null
+        );
+        create table if not exists create_batches (
+          batch_id text primary key,
+          attempt_id text not null,
+          owner_id text not null,
+          state text not null,
+          batch_json text not null
+        );
+        create table if not exists private_runtime_payloads (
+          ref_id text primary key,
+          attempt_id text not null,
+          media_type text not null check (media_type in ('application/vnd.xiaogui.runtime-prompt+json', 'application/vnd.xiaogui.runtime-message+json')),
+          digest text not null,
+          payload blob not null,
+          created_at text not null
+        );
+      `)
+      this.addColumnIfMissing('flow_execution_baselines', 'base_revision', 'text')
+      this.addColumnIfMissing('workspace_prepare_outbox', 'claim_owner_id', 'text')
+      this.addColumnIfMissing('workspace_prepare_outbox', 'claim_digest', 'text')
+      this.addColumnIfMissing('workspace_prepare_outbox', 'claimed_at', 'text')
+      this.db.exec(`
+        create index if not exists attempt_file_manifests_attempt_version
+          on attempt_file_manifests(attempt_id, version);
+        create index if not exists scope_expansion_requests_attempt_state
+          on scope_expansion_requests(attempt_id, state);
+        create index if not exists create_batches_state_attempt
+          on create_batches(state, attempt_id);
+        create index if not exists private_runtime_payloads_attempt_media
+          on private_runtime_payloads(attempt_id, media_type);
+        create index if not exists workspace_prepare_outbox_status_attempt
+          on workspace_prepare_outbox(status, attempt_id);
+        create index if not exists workspace_prepare_outbox_claim
+          on workspace_prepare_outbox(claim_owner_id, claim_digest)
+          where status = 'CLAIMED';
+        insert or ignore into schema_migrations (version, applied_at) values (3, datetime('now'));
+      `)
+    })
   }
 
   private taskRunsForFlow(flowId: FlowId | null): TaskRunRecord[] {
@@ -1057,6 +1179,7 @@ function flowBaselineMatchesScheduleRecord(baseline: FlowExecutionBaselineRecord
   return (
     baseline.flow_id === record.flowId &&
     baseline.baseline_id === record.baselineId &&
+    (baseline.base_revision ?? null) === (record.baseRevision ?? null) &&
     baseline.baseline_tree_hash === record.baselineTreeHash &&
     baseline.initial_target_fingerprint === record.initialTargetFingerprint &&
     baseline.baseline_digest === record.baselineDigest &&

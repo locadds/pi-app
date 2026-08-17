@@ -56,6 +56,7 @@ export interface CollaborationHubApplicationOptionsV1 {
 
 export interface ExecutionBaselineV1 {
   baselineId: string
+  baseRevision?: string
   baselineTreeHash: string
   initialTargetFingerprint: string
   baselineDigest: string
@@ -230,7 +231,13 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       if (this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
       const attempt = store.attempt(request.attemptId)
       if (!attempt || attempt.status !== 'WORKSPACE_PREPARING') return systemError('ILLEGAL_TRANSITION')
-      if (store.workspacePrepareOutboxStatus(request.attemptId) !== 'READY') return systemError('ILLEGAL_TRANSITION')
+      const claim = store.claimWorkspacePrepareOutbox({
+        attemptId: request.attemptId,
+        ownerId: 'xiaogui-main-process',
+        claimDigest: payloadDigest({ attemptId: request.attemptId, requestId: request.requestId, purpose: 'workspace.prepare.claim' }),
+        now: this.now(),
+      })
+      if (!claim) return systemError('ILLEGAL_TRANSITION')
       const composition = store.compositionAttempt(request.attemptId)
       if (!composition) return systemError('ILLEGAL_TRANSITION')
       const baseline = store.flowExecutionBaseline(attempt.flow_id)
@@ -414,6 +421,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     const effectiveBaseline = persistedBaseline
       ? {
           baselineId: persistedBaseline.baseline_id,
+          ...(persistedBaseline.base_revision ? { baseRevision: persistedBaseline.base_revision } : {}),
           baselineTreeHash: persistedBaseline.baseline_tree_hash,
           initialTargetFingerprint: persistedBaseline.initial_target_fingerprint,
           baselineDigest: persistedBaseline.baseline_digest,
@@ -438,6 +446,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
         compositionDigest,
         baselineBindingDigest,
         baselineId: effectiveBaseline.baselineId,
+        baseRevision: effectiveBaseline.baseRevision,
         baselineTreeHash: effectiveBaseline.baselineTreeHash,
         initialTargetFingerprint: effectiveBaseline.initialTargetFingerprint,
         baselineDigest: effectiveBaseline.baselineDigest,
@@ -463,7 +472,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     if (this.hasStaleExpectedVersion(store, address, request)) return systemError('STALE_SESSION_VERSION')
     const attempt = store.attempt(request.intent.attemptId)
     if (!attempt || attempt.status !== 'WORKSPACE_PREPARING' || attempt.task_run_id !== request.intent.taskRunId) return systemError('ILLEGAL_TRANSITION')
-    if (store.workspacePrepareOutboxStatus(request.intent.attemptId) !== 'READY') return systemError('ILLEGAL_TRANSITION')
+    if (!['READY', 'CLAIMED'].includes(store.workspacePrepareOutboxStatus(request.intent.attemptId) ?? '')) return systemError('ILLEGAL_TRANSITION')
     const composition = store.compositionAttempt(request.intent.attemptId)
     if (!composition || !matchesWorkspaceBinding(request.intent.receipt, composition)) return systemError('WORKSPACE_RECEIPT_MISMATCH')
     const receipt = {
@@ -657,6 +666,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       const baseline = await provider.capture({ address, flowId, planRevisionId })
       const expected = payloadDigest({
         baselineId: baseline.baselineId,
+        ...(baseline.baseRevision ? { baseRevision: baseline.baseRevision } : {}),
         baselineTreeHash: baseline.baselineTreeHash,
         initialTargetFingerprint: baseline.initialTargetFingerprint,
       })
@@ -687,26 +697,16 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     }
     const bridgedWorkspace = this.options.workspaceBridge?.runtimeWorkspace(request.intent.attemptId)
     const bridgedPromptRef = this.options.runtimePromptVault?.promptRefForAttempt(request.intent.attemptId)
-    if ((this.options.workspaceBridge && !bridgedWorkspace) || (this.options.runtimePromptVault && !bridgedPromptRef)) {
+    if (!bridgedWorkspace || !bridgedPromptRef) {
       throw new Error('RUNTIME_PRIVATE_BINDING_MISSING')
     }
     return {
       requestId: request.requestId,
       scope,
-      workspace: bridgedWorkspace ?? {
-        attemptWorktreeId: `xhbwt_${baseline.baseline_id}`,
-        worktreeRootDigest: payloadDigest({ baselineDigest: baseline.baseline_digest, workspaceReceiptDigest, role: 'worktree-root' }),
-        baseRevisionDigest: baseline.baseline_tree_hash,
-        targetProjectRootDigest: baseline.initial_target_fingerprint,
-        writePolicy: 'ATTEMPT_WORKTREE_ONLY',
-      },
+      workspace: bridgedWorkspace,
       selection,
       productionPolicy: { allowedSelections: [selection], rejectDiagnosticOnly: true },
-      promptEnvelopeRef: bridgedPromptRef ?? {
-        refId: `xhbprompt_${request.intent.attemptId}`,
-        digest: payloadDigest({ flowId: request.intent.flowId, taskRunId: request.intent.taskRunId, attemptId: request.intent.attemptId, role: 'runtime-prompt' }),
-        mediaType: 'application/vnd.xiaogui.runtime-prompt+json',
-      },
+      promptEnvelopeRef: bridgedPromptRef,
     }
   }
 
@@ -833,6 +833,7 @@ function matchesCapturedFlowBaseline(
 ): boolean {
   return (
     persisted.baseline_id === captured.baselineId &&
+    (persisted.base_revision ?? undefined) === captured.baseRevision &&
     persisted.baseline_tree_hash === captured.baselineTreeHash &&
     persisted.initial_target_fingerprint === captured.initialTargetFingerprint &&
     persisted.baseline_digest === captured.baselineDigest &&

@@ -16,7 +16,7 @@ import type {
 } from '@shared/xiaogui-collaboration-hub'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { createCollaborationHubApplicationV1 } from './application'
-import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import { CollaborationHubSqliteStoreV1, type ScheduleRecordM2BV1 } from './sqlite-store'
 
 const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
@@ -92,21 +92,61 @@ async function activePlan(dbPath: string) {
 
 function baselineRecord(suffix: string) {
   const baselineId = `baseline-${suffix}`
+  const baseRevision = `${suffix.repeat(40).slice(0, 40)}`
   const baselineTreeHash = `sha256:baseline-tree-${suffix}`
   const initialTargetFingerprint = `sha256:initial-target-${suffix}`
   const baselineDigest = `sha256:baseline-digest-${suffix}`
   const baselineBindingDigest = `sha256:baseline-binding-${suffix}`
-  return { baselineId, baselineTreeHash, initialTargetFingerprint, baselineDigest, baselineBindingDigest }
+  return { baselineId, baseRevision, baselineTreeHash, initialTargetFingerprint, baselineDigest, baselineBindingDigest }
 }
 
 function flowBaselineRow(dbPath: string, flowId: FlowId) {
   const db = new DatabaseSync(dbPath)
   try {
     return db
-      .prepare('select flow_id, baseline_id, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at from flow_execution_baselines where flow_id = ?')
+      .prepare('select flow_id, baseline_id, base_revision, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at from flow_execution_baselines where flow_id = ?')
       .get(flowId) as Record<string, unknown> | undefined
   } finally {
     db.close()
+  }
+}
+
+function privateM2B2Tables() {
+  return [
+    'attempt_workspace_prepared',
+    'attempt_file_manifests',
+    'scope_expansion_requests',
+    'create_batches',
+    'private_runtime_payloads',
+  ]
+}
+
+function scheduleRecord(input: {
+  flowId: FlowId
+  taskRunId: TaskRunId
+  attemptId: AttemptId
+  suffix: string
+  projection: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['readProjection']>>
+}): ScheduleRecordM2BV1 {
+  const baseline = baselineRecord(input.suffix)
+  return {
+    flowId: input.flowId,
+    taskRunId: input.taskRunId,
+    attemptId: input.attemptId,
+    attemptDigest: `sha256:${input.suffix}-attempt`,
+    compositionDigest: `sha256:${input.suffix}-composition`,
+    ...baseline,
+    workspacePrepareRequestDigest: `sha256:${input.suffix}-workspace-prepare`,
+    projection: input.projection,
+    receipt: {
+      requestId: `sys-schedule-${input.suffix}`,
+      intentType: 'system.schedule' as const,
+      sessionVersion: 0,
+      flowId: input.flowId,
+      taskRunId: input.taskRunId,
+      attemptId: input.attemptId,
+    },
+    now: '2026-08-17T00:00:00.000Z',
   }
 }
 
@@ -132,6 +172,11 @@ describe('M2B sqlite store migration', () => {
       agent_failures: 0,
       agent_succeeded_audits: 0,
       agent_reconcile_results: 0,
+      attempt_workspace_prepared: 0,
+      attempt_file_manifests: 0,
+      scope_expansion_requests: 0,
+      create_batches: 0,
+      private_runtime_payloads: 0,
     })
     store.close()
 
@@ -139,16 +184,21 @@ describe('M2B sqlite store migration', () => {
     reopened.close()
 
     const db = new DatabaseSync(dbPath)
-    expect(db.prepare('select version from schema_migrations order by version').all()).toEqual([{ version: 1 }, { version: 2 }])
-    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results') order by name").all()).toEqual([
+    expect(db.prepare('select version from schema_migrations order by version').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }])
+    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads') order by name").all()).toEqual([
       { name: 'agent_dispatch_outbox' },
       { name: 'agent_failures' },
       { name: 'agent_reconcile_results' },
       { name: 'agent_succeeded_audits' },
+      { name: 'attempt_file_manifests' },
+      { name: 'attempt_workspace_prepared' },
       { name: 'attempts' },
       { name: 'composition_attempts' },
+      { name: 'create_batches' },
       { name: 'flow_execution_baselines' },
+      { name: 'private_runtime_payloads' },
       { name: 'runtime_session_bindings' },
+      { name: 'scope_expansion_requests' },
       { name: 'workspace_prepare_outbox' },
       { name: 'workspace_receipts' },
     ])
@@ -184,6 +234,11 @@ describe('M2B sqlite store migration', () => {
       agent_failures: 0,
       agent_succeeded_audits: 0,
       agent_reconcile_results: 0,
+      attempt_workspace_prepared: 0,
+      attempt_file_manifests: 0,
+      scope_expansion_requests: 0,
+      create_batches: 0,
+      private_runtime_payloads: 0,
     })
     store.close()
     app.close()
@@ -285,5 +340,185 @@ describe('M2B sqlite store migration', () => {
     expect(store.tableCounts()).toEqual(beforeCounts)
     store.close()
     expect(flowBaselineRow(dbPath, flowId as FlowId)).toEqual(oldRow)
+  })
+
+  it('upgrades legacy v2 tables to schema v3 with private M2B2 tables and claim columns', async () => {
+    const dbPath = await tempDb()
+    const db = new DatabaseSync(dbPath)
+    db.exec(`
+      create table schema_migrations (version integer primary key, applied_at text not null);
+      insert into schema_migrations (version, applied_at) values (1, 'legacy'), (2, 'legacy');
+      create table flow_execution_baselines (
+        flow_id text primary key,
+        baseline_id text not null,
+        baseline_tree_hash text not null,
+        initial_target_fingerprint text not null,
+        baseline_digest text not null,
+        baseline_binding_digest text not null,
+        created_at text not null
+      );
+      create table workspace_prepare_outbox (
+        outbox_id text primary key,
+        attempt_id text not null,
+        request_digest text not null,
+        status text not null,
+        created_at text not null,
+        completed_at text,
+        unique(attempt_id)
+      );
+    `)
+    db.close()
+
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    store.close()
+
+    const migrated = new DatabaseSync(dbPath)
+    try {
+      expect(migrated.prepare('select version from schema_migrations order by version').all()).toEqual([
+        { version: 1 },
+        { version: 2 },
+        { version: 3 },
+      ])
+      expect(migrated.prepare('pragma table_info(flow_execution_baselines)').all()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'base_revision' })]),
+      )
+      expect(migrated.prepare('pragma table_info(workspace_prepare_outbox)').all()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'claim_owner_id' }),
+          expect.objectContaining({ name: 'claim_digest' }),
+          expect.objectContaining({ name: 'claimed_at' }),
+        ]),
+      )
+      expect(
+        migrated
+          .prepare(`select name from sqlite_master where type = 'table' and name in (${privateM2B2Tables().map(() => '?').join(',')}) order by name`)
+          .all(...privateM2B2Tables()),
+      ).toEqual([
+        { name: 'attempt_file_manifests' },
+        { name: 'attempt_workspace_prepared' },
+        { name: 'create_batches' },
+        { name: 'private_runtime_payloads' },
+        { name: 'scope_expansion_requests' },
+      ])
+    } finally {
+      migrated.close()
+    }
+  })
+
+  it('roundtrips baseRevision and claims workspace prepare outbox by SQLite CAS', async () => {
+    const dbPath = await tempDb()
+    const { app, flowId } = await activePlan(dbPath)
+    app.close()
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    const projection = store.readProjection(ADDRESS)
+    const taskRun = store.taskRuns(flowId as FlowId)[0]
+    if (!projection || !taskRun) throw new Error('missing active plan')
+
+    const record = scheduleRecord({
+      flowId: flowId as FlowId,
+      taskRunId: taskRun.task_run_id,
+      attemptId: 'xhba_claim' as AttemptId,
+      suffix: 'a',
+      projection,
+    })
+    store.writeSchedule(
+      ADDRESS,
+      { requestId: 'sys-schedule-claim', commandType: 'system.schedule', payloadHash: 'sha256:claim-payload' },
+      record,
+    )
+    expect(store.flowExecutionBaseline(flowId as FlowId)).toMatchObject({
+      base_revision: record.baseRevision,
+      baseline_tree_hash: record.baselineTreeHash,
+    })
+
+    const firstClaim = store.claimWorkspacePrepareOutbox({
+      attemptId: 'xhba_claim' as AttemptId,
+      ownerId: 'owner-a',
+      claimDigest: 'sha256:claim-a',
+      now: '2026-08-17T00:00:01.000Z',
+    })
+    expect(firstClaim).toMatchObject({
+      attemptId: 'xhba_claim',
+      status: 'CLAIMED',
+      claimOwnerId: 'owner-a',
+      claimDigest: 'sha256:claim-a',
+      claimedAt: '2026-08-17T00:00:01.000Z',
+    })
+    expect(
+      store.claimWorkspacePrepareOutbox({
+        attemptId: 'xhba_claim' as AttemptId,
+        ownerId: 'owner-a',
+        claimDigest: 'sha256:claim-a',
+        now: '2026-08-17T00:00:02.000Z',
+      }),
+    ).toEqual(firstClaim)
+    expect(
+      store.claimWorkspacePrepareOutbox({
+        attemptId: 'xhba_claim' as AttemptId,
+        ownerId: 'owner-b',
+        claimDigest: 'sha256:claim-b',
+        now: '2026-08-17T00:00:03.000Z',
+      }),
+    ).toBeNull()
+    store.close()
+  })
+
+  it('does not claim DONE or FAILED workspace prepare rows', async () => {
+    const dbPath = await tempDb()
+    const { app, flowId } = await activePlan(dbPath)
+    app.close()
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    const projection = store.readProjection(ADDRESS)
+    const taskRun = store.taskRuns(flowId as FlowId)[0]
+    if (!projection || !taskRun) throw new Error('missing active plan')
+    store.writeSchedule(
+      ADDRESS,
+      { requestId: 'sys-schedule-done', commandType: 'system.schedule', payloadHash: 'sha256:done-payload' },
+      scheduleRecord({
+        flowId: flowId as FlowId,
+        taskRunId: taskRun.task_run_id,
+        attemptId: 'xhba_done' as AttemptId,
+        suffix: 'd',
+        projection,
+      }),
+    )
+    store.writeWorkspacePrepared(
+      ADDRESS,
+      { requestId: 'sys-workspace-done', commandType: 'system.workspace.prepare.result.record', payloadHash: 'sha256:done-receipt' },
+      {
+        flowId: flowId as FlowId,
+        taskRunId: taskRun.task_run_id,
+        attemptId: 'xhba_done' as AttemptId,
+        receipt: {
+          requestId: 'sys-workspace-done',
+          intentType: 'system.workspace.prepare.result.record',
+          sessionVersion: 0,
+          flowId: flowId as FlowId,
+          taskRunId: taskRun.task_run_id,
+          attemptId: 'xhba_done' as AttemptId,
+        },
+        workspaceReceipt: {
+          status: 'PREPARED',
+          workspaceReceiptId: 'xhbw_done' as never,
+          receiptDigest: 'sha256:done-workspace-receipt',
+          compositionAttemptId: 'xhbc_xhba_done',
+          attemptId: 'xhba_done' as AttemptId,
+          requestDigest: 'sha256:d-workspace-prepare',
+          baselineBindingDigest: 'sha256:baseline-binding-d',
+          compositionDigest: 'sha256:d-composition',
+        },
+        now: '2026-08-17T00:00:01.000Z',
+      },
+    )
+    expect(store.workspacePrepareOutboxStatus('xhba_done' as AttemptId)).toBe('DONE')
+    expect(
+      store.claimWorkspacePrepareOutbox({
+        attemptId: 'xhba_done' as AttemptId,
+        ownerId: 'owner-late',
+        claimDigest: 'sha256:late',
+        now: '2026-08-17T00:00:02.000Z',
+      }),
+    ).toBeNull()
+    store.close()
   })
 })

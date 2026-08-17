@@ -23,7 +23,7 @@ import type {
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
-import { createCollaborationHubApplicationV1 } from './application'
+import { createCollaborationHubApplicationV1, type ExecutionWorkspaceBridgeV1, type RuntimePromptVaultV1 } from './application'
 import { GitAttemptWorkspaceServiceV1, SqliteAttemptWorkspaceRegistryV1, digestBytes } from './attempt-workspace'
 import { digestJson } from './digest'
 import { PrivateRuntimePayloadVaultV1 } from './private-payload-vault'
@@ -108,6 +108,8 @@ async function readyAttempt(
     storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
     agentRuntime: createAgentRuntimeHostV1(new ScriptedAgentRuntimeAdapterV1({ capabilities, createRuntimeSessionId: 'runtime-1', createOutcome: options.createOutcome })),
     baselineProvider: { capture: async () => scriptedBaseline() },
+    workspaceBridge: testWorkspaceBridge(scriptedBaseline()),
+    runtimePromptVault: testPromptVault(),
     afterAgentDispatchStart: options.afterAgentDispatchStart,
     now: () => '2026-08-17T00:00:00.000Z',
     idFactory: (prefix) => `${prefix}_${++id}`,
@@ -181,6 +183,31 @@ function scriptedBaseline() {
   return { ...base, baselineDigest: digestJson(base) }
 }
 
+function testWorkspaceBridge(baseline: ReturnType<typeof scriptedBaseline>): ExecutionWorkspaceBridgeV1 {
+  return {
+    prepare: async () => {
+      throw new Error('test bridge prepare is not used by manual workspace receipt tests')
+    },
+    runtimeWorkspace: (attemptId) => ({
+      attemptWorktreeId: `xhbwt_test_${attemptId}`,
+      worktreeRootDigest: digestJson({ attemptId, role: 'test-worktree-root' }),
+      baseRevisionDigest: baseline.baselineTreeHash,
+      targetProjectRootDigest: baseline.initialTargetFingerprint,
+      writePolicy: 'ATTEMPT_WORKTREE_ONLY',
+    }),
+  }
+}
+
+function testPromptVault(): RuntimePromptVaultV1 {
+  return {
+    promptRefForAttempt: (attemptId) => ({
+      refId: `xhbprompt_test_${attemptId}`,
+      digest: digestJson({ attemptId, role: 'test-runtime-prompt' }),
+      mediaType: 'application/vnd.xiaogui.runtime-prompt+json',
+    }),
+  }
+}
+
 async function gitRepo() {
   const root = await mkdtemp(join(tmpdir(), 'xiaogui-hub-real-git-'))
   roots.push(root)
@@ -199,8 +226,10 @@ function git(cwd: string, args: string[]) {
 }
 
 function gitBaseline(projectRoot: string) {
+  const baseRevision = git(projectRoot, ['rev-parse', 'HEAD'])
   const base = {
-    baselineId: git(projectRoot, ['rev-parse', 'HEAD']),
+    baselineId: 'baseline-real-git',
+    baseRevision,
     baselineTreeHash: git(projectRoot, ['rev-parse', 'HEAD^{tree}']),
     initialTargetFingerprint: digestJson({ projectRoot: 'redacted-test-root' }),
   }
@@ -326,7 +355,7 @@ describe('M2B fake agent runtime integration', () => {
               compositionDigest: composition.compositionDigest,
               targetProjectRoot: projectRoot,
               managedRoot,
-              baseRevision: baseline.baseline_id,
+              baseRevision: baseline.base_revision ?? baseline.baseline_id,
               baselineTreeHash: baseline.baseline_tree_hash,
               manifest: {
                 attemptId: attempt.attempt_id,
@@ -404,6 +433,11 @@ describe('M2B fake agent runtime integration', () => {
     ).resolves.toMatchObject({ ok: true })
 
     const store = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(store.flowExecutionBaseline(start.value.flowId as FlowId)).toMatchObject({
+      baseline_id: 'baseline-real-git',
+      base_revision: git(projectRoot, ['rev-parse', 'HEAD']),
+      baseline_tree_hash: git(projectRoot, ['rev-parse', 'HEAD^{tree}']),
+    })
     const outbox = store.agentDispatchOutbox(scheduled.value.attemptId)
     if (!outbox?.runtime_request_json) throw new Error('missing runtime request')
     const runtimeRequestText = outbox.runtime_request_json

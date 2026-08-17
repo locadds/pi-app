@@ -17,6 +17,8 @@ import {
 } from './attempt-workspace'
 
 const roots: string[] = []
+const PROJECT_ID = 'xgp1_test_project'
+const projectRoots = new Map<string, string>()
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })))
@@ -44,15 +46,29 @@ function git(cwd: string, args: string[]) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }).trim()
 }
 
-function service(dbPath: string) {
+function service(dbPath: string, managedRoot = join(dbPath, '..', 'managed-worktrees')) {
   const registry = new SqliteAttemptWorkspaceRegistryV1({ dbPath })
-  return { registry, workspace: new GitAttemptWorkspaceServiceV1(registry) }
+  return {
+    registry,
+    workspace: new GitAttemptWorkspaceServiceV1(
+      registry,
+      {
+        resolveProjectRoot(projectId) {
+          const projectRoot = projectRoots.get(projectId)
+          if (!projectRoot) throw new Error('PROJECT_NOT_REGISTERED')
+          return projectRoot
+        },
+      },
+      { managedRoot },
+    ),
+  }
 }
 
 function prepareRequest(input: {
   projectRoot: string
-  managedRoot: string
+  managedRoot?: string
   grants: AttemptFileGrantV1[]
+  projectId?: string
   attemptId?: AttemptId
   baseRevision?: string
   baselineTreeHash?: string
@@ -61,6 +77,8 @@ function prepareRequest(input: {
   faultInjection?: AttemptWorkspacePrepareRequestV1['faultInjection']
 }): AttemptWorkspacePrepareRequestV1 {
   const attemptId = input.attemptId ?? ('xhba_attempt' as AttemptId)
+  const projectId = input.projectId ?? PROJECT_ID
+  projectRoots.set(projectId, input.projectRoot)
   const baseRevision = input.baseRevision ?? git(input.projectRoot, ['rev-parse', 'HEAD'])
   return {
     attemptId,
@@ -68,8 +86,7 @@ function prepareRequest(input: {
     requestDigest: 'sha256:workspace-request',
     baselineBindingDigest: 'sha256:baseline-binding',
     compositionDigest: 'sha256:composition',
-    targetProjectRoot: input.projectRoot,
-    managedRoot: input.managedRoot,
+    projectId,
     baseRevision,
     baselineTreeHash: input.baselineTreeHash ?? git(input.projectRoot, ['rev-parse', `${baseRevision}^{tree}`]),
     manifest: { attemptId: input.manifestAttemptId ?? attemptId, version: input.manifestVersion ?? 1, grants: input.grants },

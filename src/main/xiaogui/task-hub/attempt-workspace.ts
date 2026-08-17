@@ -49,8 +49,7 @@ export interface AttemptWorkspacePrepareRequestV1 {
   readonly requestDigest: string
   readonly baselineBindingDigest: string
   readonly compositionDigest: string
-  readonly targetProjectRoot: string
-  readonly managedRoot: string
+  readonly projectId: string
   readonly baseRevision: string
   readonly baselineTreeHash: string
   readonly manifest: Omit<AttemptFileManifestV1, 'manifestDigest'>
@@ -138,11 +137,27 @@ export interface PreparedRecord {
   readonly result: AttemptWorkspacePreparedV1
 }
 
+export interface AttemptWorkspaceLeaseV1 {
+  readonly attemptId: string
+  readonly requestConflictDigest: string
+  readonly projectId: string
+  readonly projectRoot: string
+  readonly managedRoot: string
+  readonly worktreeRoot: string
+  readonly baseRevision: string
+  readonly baselineTreeHash: string
+  readonly ownerId: string
+  readonly attemptWorktreeId: string
+}
+
 export interface AttemptWorkspaceRegistryV1 {
   getPrepared(attemptId: string): PreparedRecord | undefined
   putPrepared(record: PreparedRecord): void
+  getLease(attemptId: string): AttemptWorkspaceLeaseV1 | undefined
+  putLease(lease: AttemptWorkspaceLeaseV1): void
   getManifest(attemptId: string): AttemptFileManifestV1 | undefined
   putManifest(manifest: AttemptFileManifestV1): void
+  commitManifestAndCreateBatch(manifest: AttemptFileManifestV1, batch?: CreateBatchRecordV1): void
   putScopeRequest(request: AttemptScopeExpansionRequestV1): void
   getScopeRequest(requestId: string): AttemptScopeExpansionRequestV1 | undefined
   updateScopeRequest(requestId: string, state: ScopeExpansionStateV1): void
@@ -154,6 +169,7 @@ export interface AttemptWorkspaceRegistryV1 {
 
 export class InMemoryAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistryV1 {
   private readonly prepared = new Map<string, PreparedRecord>()
+  private readonly leases = new Map<string, AttemptWorkspaceLeaseV1>()
   private readonly manifests = new Map<string, AttemptFileManifestV1>()
   private readonly scopeRequests = new Map<string, AttemptScopeExpansionRequestV1>()
   private readonly createBatches = new Map<string, CreateBatchRecordV1>()
@@ -166,12 +182,25 @@ export class InMemoryAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegis
     this.prepared.set(record.request.attemptId, record)
   }
 
+  getLease(attemptId: string): AttemptWorkspaceLeaseV1 | undefined {
+    return this.leases.get(attemptId)
+  }
+
+  putLease(lease: AttemptWorkspaceLeaseV1): void {
+    this.leases.set(lease.attemptId, lease)
+  }
+
   getManifest(attemptId: string): AttemptFileManifestV1 | undefined {
     return this.manifests.get(attemptId)
   }
 
   putManifest(manifest: AttemptFileManifestV1): void {
     this.manifests.set(manifest.attemptId, manifest)
+  }
+
+  commitManifestAndCreateBatch(manifest: AttemptFileManifestV1, batch?: CreateBatchRecordV1): void {
+    this.putManifest(manifest)
+    if (batch) this.updateCreateBatch(batch)
   }
 
   putScopeRequest(request: AttemptScopeExpansionRequestV1): void {
@@ -232,6 +261,19 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
       .run(record.request.attemptId, JSON.stringify(record.request), JSON.stringify(record.result))
   }
 
+  getLease(attemptId: string): AttemptWorkspaceLeaseV1 | undefined {
+    const row = this.db.prepare('select lease_json from attempt_workspace_leases where attempt_id = ?').get(attemptId) as
+      | { lease_json: string }
+      | undefined
+    return row ? JSON.parse(row.lease_json) : undefined
+  }
+
+  putLease(lease: AttemptWorkspaceLeaseV1): void {
+    this.db
+      .prepare('insert or replace into attempt_workspace_leases (attempt_id, request_conflict_digest, lease_json) values (?, ?, ?)')
+      .run(lease.attemptId, lease.requestConflictDigest, JSON.stringify(lease))
+  }
+
   getManifest(attemptId: string): AttemptFileManifestV1 | undefined {
     const row = this.db.prepare('select manifest_json from attempt_file_manifests where attempt_id = ?').get(attemptId) as
       | { manifest_json: string }
@@ -243,6 +285,24 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
     this.db
       .prepare('insert or replace into attempt_file_manifests (attempt_id, version, manifest_digest, manifest_json) values (?, ?, ?, ?)')
       .run(manifest.attemptId, manifest.version, manifest.manifestDigest, JSON.stringify(manifest))
+  }
+
+  commitManifestAndCreateBatch(manifest: AttemptFileManifestV1, batch?: CreateBatchRecordV1): void {
+    this.db.exec('begin immediate')
+    try {
+      this.db
+        .prepare('insert or replace into attempt_file_manifests (attempt_id, version, manifest_digest, manifest_json) values (?, ?, ?, ?)')
+        .run(manifest.attemptId, manifest.version, manifest.manifestDigest, JSON.stringify(manifest))
+      if (batch) {
+        this.db
+          .prepare('insert or replace into create_batches (batch_id, attempt_id, owner_id, state, batch_json) values (?, ?, ?, ?, ?)')
+          .run(batch.batchId, batch.attemptId, batch.ownerId, batch.state, JSON.stringify(batch))
+      }
+      this.db.exec('commit')
+    } catch (error) {
+      this.db.exec('rollback')
+      throw error
+    }
   }
 
   putScopeRequest(request: AttemptScopeExpansionRequestV1): void {
@@ -291,6 +351,11 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
         request_json text not null,
         result_json text not null
       );
+      create table if not exists attempt_workspace_leases (
+        attempt_id text primary key,
+        request_conflict_digest text not null,
+        lease_json text not null
+      );
       create table if not exists attempt_file_manifests (
         attempt_id text primary key,
         version integer not null,
@@ -328,17 +393,32 @@ export interface AttemptWorkspacePortV1 {
   }): AttemptScopeExpansionRequestV1
   approveScopeExpansion(input: {
     requestId: string
-    handle: AttemptWorktreeHandleV1
+    attemptId: string
+    baseManifestVersion: number
+    requestDigest: string
     ownerId: string
   }): Promise<AttemptFileManifestV1>
   auditChanges(attemptId: string): Promise<AttemptWorkspaceInspectionV1>
 }
 
+export interface ProjectWorkspaceResolverV1 {
+  resolveProjectRoot(projectId: string): string | Promise<string>
+}
+
 export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
-  constructor(private readonly registry: AttemptWorkspaceRegistryV1) {}
+  private readonly managedRoot: string
+
+  constructor(
+    private readonly registry: AttemptWorkspaceRegistryV1,
+    private readonly resolver: ProjectWorkspaceResolverV1,
+    options: { managedRoot: string },
+  ) {
+    this.managedRoot = ensureManagedRoot(options.managedRoot)
+  }
 
   async prepare(request: AttemptWorkspacePrepareRequestV1): Promise<AttemptWorkspacePreparedV1> {
     const attemptId = cleanId(request.attemptId)
+    const projectId = cleanId(request.projectId)
     if (request.manifest.attemptId !== attemptId) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     if (request.manifest.version !== 1) throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
     const existing = this.registry.getPrepared(attemptId)
@@ -348,34 +428,61 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
     }
 
     assertCommitOid(request.baseRevision)
-    const repoRoot = safeRealpath(resolve(request.targetProjectRoot), 'REPO_NOT_GIT')
+    const repoRoot = safeRealpath(resolve(await this.resolver.resolveProjectRoot(projectId)), 'REPO_NOT_GIT')
     assertGitRepository(repoRoot)
     await assertCleanRepository(repoRoot)
     await assertBaseTree(repoRoot, request.baseRevision, request.baselineTreeHash)
 
-    const managedRoot = ensureManagedRoot(request.managedRoot)
+    const managedRoot = this.managedRoot
     const worktreeRoot = resolve(managedRoot, safeAttemptDirectoryName(attemptId))
+    const attemptWorktreeId = `xhbwt_${hashHex(attemptId).slice(0, 32)}`
     if (!isInside(managedRoot, worktreeRoot)) throw new AttemptWorkspaceError('PATH_OUTSIDE_ROOT')
+    const lease = this.ensureLease({
+      attemptId,
+      request: { ...request, attemptId, projectId },
+      projectId,
+      repoRoot,
+      managedRoot,
+      worktreeRoot,
+      attemptWorktreeId,
+    })
     const replayedManifest = this.registry.getManifest(attemptId)
     if (existsSync(worktreeRoot)) {
       const realWorktreeRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
+      await assertExistingWorktreeIdentity(realWorktreeRoot, lease)
       const expectedManifestDigest = digestJson({
         attemptId,
         version: request.manifest.version,
-        grants: normalizeManifestGrants(realWorktreeRoot, request.manifest.grants, { existingCreatesAreAllowed: true }),
+        grants: normalizeManifestGrants(realWorktreeRoot, request.manifest.grants, { existingCreatesAreAllowed: Boolean(replayedManifest) }),
       })
-      if (!replayedManifest || replayedManifest.manifestDigest !== expectedManifestDigest) {
-        throw new AttemptWorkspaceError('WORKTREE_ALREADY_EXISTS')
+      if (replayedManifest?.manifestDigest === expectedManifestDigest) {
+        const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, replayedManifest, attemptWorktreeId)
+        this.registry.putPrepared({ request: { ...request, attemptId, projectId }, result })
+        return result
       }
-      const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, replayedManifest)
-      this.registry.putPrepared({ request: { ...request, attemptId }, result })
+      const manifest = await materializeManifest({
+        rootPath: realWorktreeRoot,
+        manifest: request.manifest,
+        attemptId,
+        ownerId: request.ownerId,
+        registry: this.registry,
+        faultInjection: request.faultInjection,
+      })
+      const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, manifest, attemptWorktreeId)
+      this.registry.putPrepared({ request: { ...request, attemptId, projectId }, result })
       return result
     }
 
+    if (request.faultInjection === 'BEFORE_CREATE') {
+      throw new AttemptWorkspaceError('CREATE_BATCH_PENDING')
+    }
     await git(repoRoot, ['worktree', 'add', '--detach', worktreeRoot, request.baseRevision])
     const realWorktreeRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
     if (pathKey(realWorktreeRoot) !== pathKey(worktreeRoot) || !isInside(managedRoot, realWorktreeRoot)) {
       throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+    }
+    if (request.faultInjection === 'AFTER_CREATE_BEFORE_MANIFEST_COMMIT') {
+      throw new AttemptWorkspaceError('CREATE_BATCH_PENDING')
     }
 
     const manifest = await materializeManifest({
@@ -387,8 +494,8 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
       faultInjection: request.faultInjection,
     })
 
-    const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, manifest)
-    this.registry.putPrepared({ request: { ...request, attemptId }, result })
+    const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, manifest, attemptWorktreeId)
+    this.registry.putPrepared({ request: { ...request, attemptId, projectId }, result })
     return result
   }
 
@@ -445,17 +552,33 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
 
   async approveScopeExpansion(input: {
     requestId: string
-    handle: AttemptWorktreeHandleV1
+    attemptId: string
+    baseManifestVersion: number
+    requestDigest: string
     ownerId: string
   }): Promise<AttemptFileManifestV1> {
     const request = this.registry.getScopeRequest(input.requestId)
-    if (!request || request.state !== 'REQUESTED') throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    if (
+      !request ||
+      request.attemptId !== input.attemptId ||
+      request.baseManifestVersion !== input.baseManifestVersion ||
+      request.requestDigest !== input.requestDigest
+    ) {
+      throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    }
     const current = this.registry.getManifest(request.attemptId)
+    if (request.state === 'APPROVED') {
+      if (current && manifestIncludesGrants(current, request.requestedGrants)) return current
+      throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    }
+    if (request.state !== 'REQUESTED') throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     if (!current || current.version !== request.baseManifestVersion) throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
-    const newGrants = normalizeManifestGrants(input.handle.rootPath, request.requestedGrants)
+    const prepared = this.registry.getPrepared(request.attemptId)
+    if (!prepared) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    const newGrants = normalizeManifestGrants(prepared.result.handle.rootPath, request.requestedGrants)
     assertNoManifestConflict(current.grants, newGrants)
     const next = await materializeManifest({
-      rootPath: input.handle.rootPath,
+      rootPath: prepared.result.handle.rootPath,
       manifest: {
         attemptId: request.attemptId,
         version: current.version + 1,
@@ -472,11 +595,55 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
 
   recoverPendingCreateBatches(): void {
     for (const batch of this.registry.pendingCreateBatches()) {
+      const manifest = this.registry.getManifest(batch.attemptId)
+      if (manifest && manifest.version >= batch.manifestVersion) {
+        this.registry.updateCreateBatch({ ...batch, state: 'COMMITTED' })
+        continue
+      }
       for (const target of batch.targets) {
         rollbackCreatedTarget(target)
       }
       this.registry.updateCreateBatch({ ...batch, state: 'ROLLED_BACK' })
     }
+  }
+
+  private ensureLease(input: {
+    attemptId: string
+    request: AttemptWorkspacePrepareRequestV1
+    projectId: string
+    repoRoot: string
+    managedRoot: string
+    worktreeRoot: string
+    attemptWorktreeId: string
+  }): AttemptWorkspaceLeaseV1 {
+    const requestConflictDigest = prepareConflictDigest(input.request)
+    const existing = this.registry.getLease(input.attemptId)
+    if (existing) {
+      if (
+        existing.requestConflictDigest !== requestConflictDigest ||
+        pathKey(existing.projectRoot) !== pathKey(input.repoRoot) ||
+        pathKey(existing.managedRoot) !== pathKey(input.managedRoot) ||
+        pathKey(existing.worktreeRoot) !== pathKey(input.worktreeRoot) ||
+        existing.attemptWorktreeId !== input.attemptWorktreeId
+      ) {
+        throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+      }
+      return existing
+    }
+    const lease: AttemptWorkspaceLeaseV1 = {
+      attemptId: input.attemptId,
+      requestConflictDigest,
+      projectId: input.projectId,
+      projectRoot: input.repoRoot,
+      managedRoot: input.managedRoot,
+      worktreeRoot: input.worktreeRoot,
+      baseRevision: input.request.baseRevision,
+      baselineTreeHash: input.request.baselineTreeHash,
+      ownerId: input.request.ownerId,
+      attemptWorktreeId: input.attemptWorktreeId,
+    }
+    this.registry.putLease(lease)
+    return lease
   }
 }
 
@@ -486,6 +653,7 @@ function buildPreparedResult(
   repoRoot: string,
   realWorktreeRoot: string,
   manifest: AttemptFileManifestV1,
+  attemptWorktreeId: string,
 ): AttemptWorkspacePreparedV1 {
   const receiptBinding = {
       compositionAttemptId: request.compositionAttemptId,
@@ -495,7 +663,7 @@ function buildPreparedResult(
       compositionDigest: request.compositionDigest,
     }
     const workspace: RuntimeWorkspaceBindingV1 = {
-      attemptWorktreeId: `xhbwt_${hashHex(attemptId).slice(0, 32)}`,
+      attemptWorktreeId,
       worktreeRootDigest: digestString(realWorktreeRoot),
       baseRevisionDigest: digestString(request.baseRevision),
       targetProjectRootDigest: digestString(repoRoot),
@@ -539,16 +707,27 @@ async function materializeManifest(input: {
     throw new AttemptWorkspaceError('CREATE_BATCH_PENDING')
   }
 
-  const grants = normalizeManifestGrants(input.rootPath, input.manifest.grants, { existingCreatesAreAllowed: Boolean(input.grantsToMaterialize) })
-  const grantsToMaterialize = input.grantsToMaterialize ?? normalizeManifestGrants(input.rootPath, input.manifest.grants)
+  const batchProbe = pendingCreateBatch(input.attemptId, input.manifest.version, input.ownerId, [])
+  const pendingBatch = input.registry.getCreateBatch(batchProbe.batchId)
+  const grants = normalizeManifestGrants(input.rootPath, input.manifest.grants, {
+    existingCreatesAreAllowed: Boolean(input.grantsToMaterialize) || pendingBatch?.state === 'PENDING',
+  })
+  const grantsToMaterialize =
+    input.grantsToMaterialize ??
+    normalizeManifestGrants(input.rootPath, input.manifest.grants, { existingCreatesAreAllowed: pendingBatch?.state === 'PENDING' })
   const createGrants = grantsToMaterialize.filter((grant) => grant.operation === 'CREATE')
-  const createdTargets: CreateBatchTargetV1[] = []
+  const createdTargets: CreateBatchTargetV1[] = pendingBatch?.state === 'PENDING' ? [...pendingBatch.targets] : []
   const batch = pendingCreateBatch(input.attemptId, input.manifest.version, input.ownerId, createdTargets)
   if (createGrants.length > 0) input.registry.putCreateBatch(batch)
 
   try {
     for (const grant of createGrants) {
       const target = resolveManifestPath(input.rootPath, grant.relativePath)
+      const owned = createdTargets.find((candidate) => candidate.relativePath === grant.relativePath && pathKey(candidate.realPath) === pathKey(target.realPath))
+      if (owned) {
+        assertOwnedEmptyCreateTarget(owned)
+        continue
+      }
       const descriptor = openSync(target.realPath, 'wx')
       closeSync(descriptor)
       const created = { relativePath: grant.relativePath, realPath: target.realPath, identityDigest: readFileIdentity(target.realPath).identityDigest }
@@ -564,8 +743,10 @@ async function materializeManifest(input: {
       grants,
       manifestDigest: digestJson({ attemptId: input.attemptId, version: input.manifest.version, grants }),
     }
-    input.registry.putManifest(manifest)
-    if (createGrants.length > 0) input.registry.updateCreateBatch({ ...batch, state: 'COMMITTED', targets: [...createdTargets] })
+    input.registry.commitManifestAndCreateBatch(
+      manifest,
+      createGrants.length > 0 ? { ...batch, state: 'COMMITTED', targets: [...createdTargets] } : undefined,
+    )
     if (input.faultInjection === 'AFTER_MANIFEST_COMMIT') {
       throw new AttemptWorkspaceError('CREATE_BATCH_PENDING')
     }
@@ -581,6 +762,12 @@ async function materializeManifest(input: {
     }
     throw error
   }
+}
+
+function assertOwnedEmptyCreateTarget(target: CreateBatchTargetV1): void {
+  const identity = readFileIdentity(target.realPath)
+  if (target.identityDigest && identity.identityDigest !== target.identityDigest) throw new AttemptWorkspaceError('PATH_CONFLICT')
+  if (readFileSync(target.realPath).length !== 0) throw new AttemptWorkspaceError('TARGET_NOT_EMPTY')
 }
 
 function normalizeManifestGrants(
@@ -704,6 +891,14 @@ async function assertBaseTree(repoRoot: string, baseRevision: string, expectedTr
   if (tree !== expectedTreeHash) throw new AttemptWorkspaceError('BASELINE_TREE_MISMATCH')
 }
 
+async function assertExistingWorktreeIdentity(realWorktreeRoot: string, lease: AttemptWorkspaceLeaseV1): Promise<void> {
+  if (pathKey(realWorktreeRoot) !== pathKey(lease.worktreeRoot) || !isInside(lease.managedRoot, realWorktreeRoot)) {
+    throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+  }
+  const head = (await git(realWorktreeRoot, ['rev-parse', 'HEAD'])).stdout.trim()
+  if (head !== lease.baseRevision) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+}
+
 async function assertCleanRepository(repoRoot: string): Promise<void> {
   const status = await git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])
   if (status.stdout.trim().length > 0) throw new AttemptWorkspaceError('REPO_NOT_CLEAN_FOR_BASELINE')
@@ -800,13 +995,23 @@ function prepareConflictDigest(request: AttemptWorkspacePrepareRequestV1): strin
     requestDigest: request.requestDigest,
     baselineBindingDigest: request.baselineBindingDigest,
     compositionDigest: request.compositionDigest,
-    targetProjectRoot: request.targetProjectRoot,
-    managedRoot: request.managedRoot,
+    projectId: request.projectId,
     baseRevision: request.baseRevision,
     baselineTreeHash: request.baselineTreeHash,
     manifest: request.manifest,
     ownerId: request.ownerId,
   })
+}
+
+function manifestIncludesGrants(manifest: AttemptFileManifestV1, grants: readonly AttemptFileGrantV1[]): boolean {
+  return grants.every((grant) =>
+    manifest.grants.some(
+      (candidate) =>
+        candidate.operation === grant.operation &&
+        candidate.relativePath === normalizeRelativePath(grant.relativePath) &&
+        candidate.baselineDigest === grant.baselineDigest,
+    ),
+  )
 }
 
 function pathKey(value: string): string {
