@@ -472,10 +472,15 @@ export function kimiAcpCapabilityDigestForVersionV1(version: string | undefined)
 function selectionMatchesCandidate(request: RuntimeContractTestCreateOrResumeRequestV1, expectedCapabilityDigest: string): boolean {
   const candidate = request.selection
   return (
-    request.selection.adapterId === ADAPTER_ID &&
-    request.selection.protocol === 'ACP' &&
-    request.selection.capabilityDigest === expectedCapabilityDigest &&
-    candidate.approvalStatus === 'APPROVED_FOR_TEST'
+    candidate.adapterId === ADAPTER_ID &&
+    candidate.runtimeKind === 'KIMI' &&
+    candidate.protocol === 'ACP' &&
+    candidate.capabilityDigest === expectedCapabilityDigest &&
+    candidate.approvalStatus === 'APPROVED_FOR_TEST' &&
+    candidate.diagnosticOnly === false &&
+    candidate.stream === 'POLL' &&
+    candidate.interrupt === 'BEST_EFFORT' &&
+    candidate.inspect === 'RECONCILE'
   )
 }
 

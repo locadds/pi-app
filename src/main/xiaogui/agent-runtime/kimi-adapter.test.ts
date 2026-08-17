@@ -378,6 +378,40 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     expect(factory.transports).toHaveLength(0)
   })
 
+  it('fails closed before transport creation when fixed Kimi test selection fields drift', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const driftCases: Array<{
+      name: string
+      selection: RuntimeContractTestCreateOrResumeRequestV1['selection']
+      expectedReasonCode?: string
+    }> = [
+      { name: 'runtimeKind', selection: { ...testSelection, runtimeKind: 'QODER' }, expectedReasonCode: 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST' },
+      { name: 'diagnosticOnly', selection: { ...testSelection, diagnosticOnly: true as false } },
+      { name: 'stream', selection: { ...testSelection, stream: 'PUSH' }, expectedReasonCode: 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST' },
+      { name: 'interrupt', selection: { ...testSelection, interrupt: 'ACKED' }, expectedReasonCode: 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST' },
+      { name: 'inspect', selection: { ...testSelection, inspect: 'SNAPSHOT' }, expectedReasonCode: 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST' },
+    ]
+
+    for (const driftCase of driftCases) {
+      const factory = new FakeTransportFactory()
+      const adapter = new KimiAcpRuntimeAdapterV1({
+        payloadResolver: payloadResolver(),
+        workspaceResolver: resolver(root),
+        probe: new FakeProbe(),
+        transportFactory: factory,
+      })
+
+      const outcome = await adapter.createOrResume(request(root, `edit safely ${driftCase.name}`, {
+        requestId: `req-${driftCase.name}`,
+        selection: driftCase.selection,
+        contractTestPolicy: { ...contractTestPolicy, allowedSelections: [driftCase.selection] },
+      }))
+      expect(outcome).toMatchObject({ state: 'FAILED' })
+      if (driftCase.expectedReasonCode) expect(outcome).toMatchObject({ reasonCode: driftCase.expectedReasonCode })
+      expect(factory.transports).toHaveLength(0)
+    }
+  })
+
   it('declares mediated fs and terminal, reads/writes only allowlisted files, and emits candidate digest without public paths', async () => {
     const root = workspace({ 'a.txt': 'before' })
     const factory = new FakeTransportFactory(async (transport) => {
