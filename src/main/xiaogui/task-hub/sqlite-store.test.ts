@@ -114,6 +114,7 @@ function flowBaselineRow(dbPath: string, flowId: FlowId) {
 function privateM2B2Tables() {
   return [
     'attempt_workspace_prepared',
+    'attempt_workspace_leases',
     'attempt_file_manifests',
     'scope_expansion_requests',
     'create_batches',
@@ -173,6 +174,7 @@ describe('M2B sqlite store migration', () => {
       agent_succeeded_audits: 0,
       agent_reconcile_results: 0,
       attempt_workspace_prepared: 0,
+      attempt_workspace_leases: 0,
       attempt_file_manifests: 0,
       scope_expansion_requests: 0,
       create_batches: 0,
@@ -185,12 +187,13 @@ describe('M2B sqlite store migration', () => {
 
     const db = new DatabaseSync(dbPath)
     expect(db.prepare('select version from schema_migrations order by version').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }])
-    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads') order by name").all()).toEqual([
+    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads') order by name").all()).toEqual([
       { name: 'agent_dispatch_outbox' },
       { name: 'agent_failures' },
       { name: 'agent_reconcile_results' },
       { name: 'agent_succeeded_audits' },
       { name: 'attempt_file_manifests' },
+      { name: 'attempt_workspace_leases' },
       { name: 'attempt_workspace_prepared' },
       { name: 'attempts' },
       { name: 'composition_attempts' },
@@ -235,6 +238,7 @@ describe('M2B sqlite store migration', () => {
       agent_succeeded_audits: 0,
       agent_reconcile_results: 0,
       attempt_workspace_prepared: 0,
+      attempt_workspace_leases: 0,
       attempt_file_manifests: 0,
       scope_expansion_requests: 0,
       create_batches: 0,
@@ -395,6 +399,7 @@ describe('M2B sqlite store migration', () => {
           .all(...privateM2B2Tables()),
       ).toEqual([
         { name: 'attempt_file_manifests' },
+        { name: 'attempt_workspace_leases' },
         { name: 'attempt_workspace_prepared' },
         { name: 'create_batches' },
         { name: 'private_runtime_payloads' },

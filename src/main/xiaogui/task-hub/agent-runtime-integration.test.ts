@@ -337,7 +337,11 @@ describe('M2B fake agent runtime integration', () => {
     const payloadDbRoot = await mkdtemp(join(tmpdir(), 'xiaogui-hub-payload-db-'))
     roots.push(workspaceDbRoot, payloadDbRoot)
     const workspaceRegistry = new SqliteAttemptWorkspaceRegistryV1({ dbPath: join(workspaceDbRoot, 'workspace.sqlite') })
-    const workspaceService = new GitAttemptWorkspaceServiceV1(workspaceRegistry)
+    const workspaceService = new GitAttemptWorkspaceServiceV1(
+      workspaceRegistry,
+      { resolveProjectRoot: (projectId) => (projectId === ADDRESS.projectId ? projectRoot : '') },
+      { managedRoot },
+    )
     const promptVault = new PrivateRuntimePayloadVaultV1({ dbPath: join(payloadDbRoot, 'payload.sqlite') })
     const app = createCollaborationHubApplicationV1({
       lookup: lookup('CODING'),
@@ -353,8 +357,7 @@ describe('M2B fake agent runtime integration', () => {
               requestDigest: composition.requestDigest,
               baselineBindingDigest: composition.baselineBindingDigest,
               compositionDigest: composition.compositionDigest,
-              targetProjectRoot: projectRoot,
-              managedRoot,
+              projectId: ADDRESS.projectId,
               baseRevision: baseline.base_revision ?? baseline.baseline_id,
               baselineTreeHash: baseline.baseline_tree_hash,
               manifest: {

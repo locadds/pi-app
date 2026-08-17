@@ -101,16 +101,17 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     const beforeHead = git(projectRoot, ['rev-parse', 'HEAD'])
     const beforeStatus = git(projectRoot, ['status', '--porcelain'])
     const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
-    const result = await workspace.prepare(
-      prepareRequest({
-        projectRoot,
-        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
-        grants: [
-          { operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') },
-          { operation: 'CREATE', relativePath: 'src/new-file.txt' },
-        ],
-      }),
-    )
+    const request = prepareRequest({
+      projectRoot,
+      managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+      grants: [
+        { operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') },
+        { operation: 'CREATE', relativePath: 'src/new-file.txt' },
+      ],
+    })
+    expect(request).not.toHaveProperty('targetProjectRoot')
+    expect(request).not.toHaveProperty('managedRoot')
+    const result = await workspace.prepare(request)
 
     expect(result.receipt.status).toBe('PREPARED')
     expect(git(projectRoot, ['rev-parse', 'HEAD'])).toBe(beforeHead)
@@ -139,7 +140,8 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     })
     const first = await workspace.prepare(request)
     await expect(workspace.prepare(request)).resolves.toMatchObject({ handle: { rootPath: first.handle.rootPath } })
-    await expect(workspace.prepare({ ...request, managedRoot: await tempRoot('xiaogui-attempt-managed-drift-') })).rejects.toMatchObject({
+    projectRoots.set('xgp1_drift_project', projectRoot)
+    await expect(workspace.prepare({ ...request, projectId: 'xgp1_drift_project' })).rejects.toMatchObject({
       reasonCode: 'MANIFEST_CONFLICT',
     })
     await expect(
@@ -295,7 +297,15 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       requestedGrants: [{ operation: 'CREATE', relativePath: 'src/extra.txt' }],
       reasonDigest: 'sha256:reason',
     })
-    await expect(workspace.approveScopeExpansion({ requestId: request.requestId, handle: prepared.handle, ownerId: 'codex-project-lead' })).resolves.toMatchObject({
+    await expect(
+      workspace.approveScopeExpansion({
+        requestId: request.requestId,
+        attemptId: prepared.handle.attemptId,
+        baseManifestVersion: request.baseManifestVersion,
+        requestDigest: request.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).resolves.toMatchObject({
       version: 2,
       grants: expect.arrayContaining([expect.objectContaining({ operation: 'CREATE', relativePath: 'src/extra.txt' })]),
     })
@@ -307,7 +317,15 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       requestedGrants: [{ operation: 'DELETE', relativePath: 'src/existing.txt' }],
       reasonDigest: 'sha256:reason',
     })
-    await expect(workspace.approveScopeExpansion({ requestId: deleteRequest.requestId, handle: { ...prepared.handle, manifestVersion: 2 }, ownerId: 'codex-project-lead' })).rejects.toMatchObject({
+    await expect(
+      workspace.approveScopeExpansion({
+        requestId: deleteRequest.requestId,
+        attemptId: prepared.handle.attemptId,
+        baseManifestVersion: deleteRequest.baseManifestVersion,
+        requestDigest: deleteRequest.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).rejects.toMatchObject({
       reasonCode: 'DELETE_FORBIDDEN',
     })
     registry.close()
@@ -331,7 +349,22 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       requestedGrants: [{ operation: 'MODIFY', relativePath: 'src/hard.txt', baselineDigest: digestBytes('before') }],
       reasonDigest: 'sha256:reason',
     })
-    await expect(workspace.approveScopeExpansion({ requestId: 'scope-hardlink', handle: prepared.handle, ownerId: 'codex-project-lead' })).rejects.toMatchObject({
+    const hardlinkRequest = workspace.requestScopeExpansion({
+      requestId: 'scope-hardlink-repeat',
+      attemptId: prepared.handle.attemptId,
+      baseManifestVersion: 1,
+      requestedGrants: [{ operation: 'MODIFY', relativePath: 'src/hard.txt', baselineDigest: digestBytes('before') }],
+      reasonDigest: 'sha256:reason',
+    })
+    await expect(
+      workspace.approveScopeExpansion({
+        requestId: hardlinkRequest.requestId,
+        attemptId: prepared.handle.attemptId,
+        baseManifestVersion: hardlinkRequest.baseManifestVersion,
+        requestDigest: hardlinkRequest.requestDigest,
+        ownerId: 'codex-project-lead',
+      }),
+    ).rejects.toMatchObject({
       reasonCode: 'TARGET_HARDLINK',
     })
     registry.close()
@@ -381,7 +414,7 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     const afterCommitRoot = await gitRepo()
     const afterCommitDb = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
     const afterCommitManaged = await tempRoot('xiaogui-attempt-managed-')
-    const afterCommit = service(afterCommitDb)
+    const afterCommit = service(afterCommitDb, afterCommitManaged)
     const afterCommitRequest = prepareRequest({
       projectRoot: afterCommitRoot,
       managedRoot: afterCommitManaged,
@@ -391,7 +424,7 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     })
     await expect(afterCommit.workspace.prepare(afterCommitRequest)).rejects.toMatchObject({ reasonCode: 'CREATE_BATCH_PENDING' })
     afterCommit.registry.close()
-    const replayed = service(afterCommitDb)
+    const replayed = service(afterCommitDb, afterCommitManaged)
     const replayedResult = await replayed.workspace.prepare({ ...afterCommitRequest, faultInjection: undefined })
     expect(replayedResult).toMatchObject({
       receipt: { status: 'PREPARED' },

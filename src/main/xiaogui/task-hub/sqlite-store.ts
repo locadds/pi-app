@@ -831,6 +831,7 @@ export class CollaborationHubSqliteStoreV1 {
       'workspace_prepare_outbox',
       'workspace_receipts',
       'attempt_workspace_prepared',
+      'attempt_workspace_leases',
       'attempt_file_manifests',
       'scope_expansion_requests',
       'create_batches',
@@ -1037,6 +1038,11 @@ export class CollaborationHubSqliteStoreV1 {
           attempt_id text primary key,
           request_json text not null,
           result_json text not null
+        );
+        create table if not exists attempt_workspace_leases (
+          attempt_id text primary key,
+          request_conflict_digest text not null,
+          lease_json text not null
         );
         create table if not exists attempt_file_manifests (
           attempt_id text primary key,

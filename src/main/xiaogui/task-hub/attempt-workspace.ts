@@ -187,6 +187,8 @@ export class InMemoryAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegis
   }
 
   putLease(lease: AttemptWorkspaceLeaseV1): void {
+    const existing = this.leases.get(lease.attemptId)
+    if (existing && existing.requestConflictDigest !== lease.requestConflictDigest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     this.leases.set(lease.attemptId, lease)
   }
 
@@ -204,6 +206,8 @@ export class InMemoryAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegis
   }
 
   putScopeRequest(request: AttemptScopeExpansionRequestV1): void {
+    const existing = this.scopeRequests.get(request.requestId)
+    if (existing && existing.requestDigest !== request.requestDigest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     this.scopeRequests.set(request.requestId, request)
   }
 
@@ -270,8 +274,10 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
 
   putLease(lease: AttemptWorkspaceLeaseV1): void {
     this.db
-      .prepare('insert or replace into attempt_workspace_leases (attempt_id, request_conflict_digest, lease_json) values (?, ?, ?)')
+      .prepare('insert or ignore into attempt_workspace_leases (attempt_id, request_conflict_digest, lease_json) values (?, ?, ?)')
       .run(lease.attemptId, lease.requestConflictDigest, JSON.stringify(lease))
+    const existing = this.getLease(lease.attemptId)
+    if (!existing || existing.requestConflictDigest !== lease.requestConflictDigest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
   }
 
   getManifest(attemptId: string): AttemptFileManifestV1 | undefined {
@@ -307,8 +313,10 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
 
   putScopeRequest(request: AttemptScopeExpansionRequestV1): void {
     this.db
-      .prepare('insert or replace into scope_expansion_requests (request_id, attempt_id, state, request_json) values (?, ?, ?, ?)')
+      .prepare('insert or ignore into scope_expansion_requests (request_id, attempt_id, state, request_json) values (?, ?, ?, ?)')
       .run(request.requestId, request.attemptId, request.state, JSON.stringify(request))
+    const existing = this.getScopeRequest(request.requestId)
+    if (!existing || existing.requestDigest !== request.requestDigest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
   }
 
   getScopeRequest(requestId: string): AttemptScopeExpansionRequestV1 | undefined {
@@ -430,7 +438,8 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
     assertCommitOid(request.baseRevision)
     const repoRoot = safeRealpath(resolve(await this.resolver.resolveProjectRoot(projectId)), 'REPO_NOT_GIT')
     assertGitRepository(repoRoot)
-    await assertCleanRepository(repoRoot)
+    const existingLease = this.registry.getLease(attemptId)
+    if (!existingLease) await assertCleanRepository(repoRoot)
     await assertBaseTree(repoRoot, request.baseRevision, request.baselineTreeHash)
 
     const managedRoot = this.managedRoot
@@ -450,15 +459,17 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
     if (existsSync(worktreeRoot)) {
       const realWorktreeRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
       await assertExistingWorktreeIdentity(realWorktreeRoot, lease)
-      const expectedManifestDigest = digestJson({
-        attemptId,
-        version: request.manifest.version,
-        grants: normalizeManifestGrants(realWorktreeRoot, request.manifest.grants, { existingCreatesAreAllowed: Boolean(replayedManifest) }),
-      })
-      if (replayedManifest?.manifestDigest === expectedManifestDigest) {
-        const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, replayedManifest, attemptWorktreeId)
-        this.registry.putPrepared({ request: { ...request, attemptId, projectId }, result })
-        return result
+      if (replayedManifest) {
+        const expectedManifestDigest = digestJson({
+          attemptId,
+          version: request.manifest.version,
+          grants: normalizeManifestGrants(realWorktreeRoot, request.manifest.grants, { existingCreatesAreAllowed: true }),
+        })
+        if (replayedManifest.manifestDigest === expectedManifestDigest) {
+          const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, replayedManifest, attemptWorktreeId)
+          this.registry.putPrepared({ request: { ...request, attemptId, projectId }, result })
+          return result
+        }
       }
       const manifest = await materializeManifest({
         rootPath: realWorktreeRoot,
@@ -480,9 +491,6 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
     const realWorktreeRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
     if (pathKey(realWorktreeRoot) !== pathKey(worktreeRoot) || !isInside(managedRoot, realWorktreeRoot)) {
       throw new AttemptWorkspaceError('WORKTREE_DRIFT')
-    }
-    if (request.faultInjection === 'AFTER_CREATE_BEFORE_MANIFEST_COMMIT') {
-      throw new AttemptWorkspaceError('CREATE_BATCH_PENDING')
     }
 
     const manifest = await materializeManifest({
@@ -572,6 +580,10 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
       throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     }
     if (request.state !== 'REQUESTED') throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    if (current && current.version === request.baseManifestVersion + 1 && manifestIncludesGrants(current, request.requestedGrants)) {
+      this.registry.updateScopeRequest(input.requestId, 'APPROVED')
+      return current
+    }
     if (!current || current.version !== request.baseManifestVersion) throw new AttemptWorkspaceError('MANIFEST_VERSION_CONFLICT')
     const prepared = this.registry.getPrepared(request.attemptId)
     if (!prepared) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
@@ -582,7 +594,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
       manifest: {
         attemptId: request.attemptId,
         version: current.version + 1,
-        grants: [...current.grants, ...newGrants],
+        grants: sortManifestGrants([...current.grants, ...newGrants]),
       },
       grantsToMaterialize: newGrants,
       attemptId: request.attemptId,
@@ -596,7 +608,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1 {
   recoverPendingCreateBatches(): void {
     for (const batch of this.registry.pendingCreateBatches()) {
       const manifest = this.registry.getManifest(batch.attemptId)
-      if (manifest && manifest.version >= batch.manifestVersion) {
+      if (manifest && manifest.version >= batch.manifestVersion && batch.targets.every((target) => manifestHasCreateTarget(manifest, target))) {
         this.registry.updateCreateBatch({ ...batch, state: 'COMMITTED' })
         continue
       }
@@ -709,11 +721,11 @@ async function materializeManifest(input: {
 
   const batchProbe = pendingCreateBatch(input.attemptId, input.manifest.version, input.ownerId, [])
   const pendingBatch = input.registry.getCreateBatch(batchProbe.batchId)
-  const grants = normalizeManifestGrants(input.rootPath, input.manifest.grants, {
-    existingCreatesAreAllowed: Boolean(input.grantsToMaterialize) || pendingBatch?.state === 'PENDING',
-  })
+  const grants = input.grantsToMaterialize
+    ? canonicalStoredGrants(input.manifest.grants)
+    : normalizeManifestGrants(input.rootPath, input.manifest.grants, { existingCreatesAreAllowed: pendingBatch?.state === 'PENDING' })
   const grantsToMaterialize =
-    input.grantsToMaterialize ??
+    (input.grantsToMaterialize ? normalizeManifestGrants(input.rootPath, input.grantsToMaterialize) : undefined) ??
     normalizeManifestGrants(input.rootPath, input.manifest.grants, { existingCreatesAreAllowed: pendingBatch?.state === 'PENDING' })
   const createGrants = grantsToMaterialize.filter((grant) => grant.operation === 'CREATE')
   const createdTargets: CreateBatchTargetV1[] = pendingBatch?.state === 'PENDING' ? [...pendingBatch.targets] : []
@@ -793,6 +805,25 @@ function normalizeManifestGrants(
     return { operation: grant.operation, relativePath }
   })
   return [...normalized].sort((a, b) => a.relativePath.localeCompare(b.relativePath) || a.operation.localeCompare(b.operation))
+}
+
+function canonicalStoredGrants(grants: readonly AttemptFileGrantV1[]): readonly AttemptFileGrantV1[] {
+  const seen = new Map<string, AttemptFileOperationV1>()
+  const normalized = grants.map((grant) => {
+    if (grant.operation === 'DELETE') throw new AttemptWorkspaceError('DELETE_FORBIDDEN')
+    const relativePath = normalizeRelativePath(grant.relativePath)
+    const previous = seen.get(relativePath)
+    if (previous) throw new AttemptWorkspaceError('PATH_CONFLICT')
+    seen.set(relativePath, grant.operation)
+    return grant.operation === 'MODIFY'
+      ? { operation: grant.operation, relativePath, baselineDigest: grant.baselineDigest }
+      : { operation: grant.operation, relativePath }
+  })
+  return sortManifestGrants(normalized)
+}
+
+function sortManifestGrants(grants: readonly AttemptFileGrantV1[]): readonly AttemptFileGrantV1[] {
+  return [...grants].sort((a, b) => a.relativePath.localeCompare(b.relativePath) || a.operation.localeCompare(b.operation))
 }
 
 function assertNoManifestConflict(existing: readonly AttemptFileGrantV1[], next: readonly AttemptFileGrantV1[]): void {
@@ -922,7 +953,7 @@ function ensureManagedRoot(managedRoot: string): string {
 
 async function git(cwd: string, args: readonly string[]): Promise<{ stdout: string }> {
   return new Promise((resolvePromise, reject) => {
-    execFile('git', [...args], { cwd, encoding: 'utf8', windowsHide: true, timeout: 15000 }, (error, stdout, stderr) => {
+    execFile('git', [...args], { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000 }, (error, stdout, stderr) => {
       if (error) {
         reject(new AttemptWorkspaceError(stderr.includes('not a git repository') ? 'REPO_NOT_GIT' : 'GIT_COMMAND_FAILED'))
         return
@@ -1012,6 +1043,10 @@ function manifestIncludesGrants(manifest: AttemptFileManifestV1, grants: readonl
         candidate.baselineDigest === grant.baselineDigest,
     ),
   )
+}
+
+function manifestHasCreateTarget(manifest: AttemptFileManifestV1, target: CreateBatchTargetV1): boolean {
+  return manifest.grants.some((grant) => grant.operation === 'CREATE' && grant.relativePath === normalizeRelativePath(target.relativePath))
 }
 
 function pathKey(value: string): string {
