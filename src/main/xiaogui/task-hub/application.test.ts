@@ -382,6 +382,14 @@ describe('M2A collaboration hub application', () => {
       agent_failures: 0,
       agent_succeeded_audits: 0,
       agent_reconcile_results: 0,
+      artifacts: 0,
+      change_set_candidates: 0,
+      verification_attempts: 0,
+      verification_outbox: 0,
+      verification_receipts: 0,
+      task_evidence_bundles: 0,
+      task_qa_results: 0,
+      task_change_sets: 0,
     })
     store.close()
   })
@@ -650,7 +658,7 @@ describe('M2A collaboration hub application', () => {
     const migration = unchangedDb.prepare('select max(version) as version from schema_migrations').get() as { version: number }
     unchangedDb.close()
     expect(JSON.parse(stored.projection_json).activeRevision).not.toHaveProperty('draft')
-    expect(migration.version).toBe(3)
+    expect(migration.version).toBe(4)
   })
 
   it('keeps public projection actions user-only and persisted event payload sanitized', async () => {

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 
 import type {
+  AgentFailureSignalV1,
   AttemptId,
   FlowId,
   HubAddressV1,
@@ -24,6 +25,9 @@ import type {
   AttemptFileScopeResolverV1,
 } from './attempt-workspace'
 import { PRIVATE_RUNTIME_PAYLOAD_MAX_BYTES } from './private-payload-vault'
+import type { RuntimeOutcomeMonitorV1 } from './runtime-outcome-monitor'
+import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
+import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
 
 type ExecutionSagaPhaseV1 =
   | 'ACCEPTED'
@@ -67,6 +71,8 @@ export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly application: CollaborationHubApplicationV1
   readonly inputStage: TaskExecutionInputStageV1
   readonly fileScopeResolver: AttemptFileScopeResolverV1
+  readonly runtimeMonitor?: RuntimeOutcomeMonitorV1
+  readonly verificationCoordinator?: TaskVerificationCoordinatorV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
 }
@@ -86,6 +92,9 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
   private closed = false
 
   constructor(private readonly options: XiaoguiTaskExecutionOrchestratorOptionsV1) {
+    if ((options.runtimeMonitor === undefined) !== (options.verificationCoordinator === undefined)) {
+      throw new Error('XIAOGUI_TASK_EXECUTION_RUNTIME_VERIFICATION_PAIR_REQUIRED')
+    }
     this.saga = new SqliteTaskExecutionSagaStoreV1(options.dbPath, () => this.now())
   }
 
@@ -125,6 +134,8 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       ...(this.recovery ? [this.recovery] : []),
       ...[...this.inFlight.values()].map(({ outcome }) => outcome),
     ])
+    await this.options.runtimeMonitor?.close()
+    await this.options.verificationCoordinator?.close()
     this.saga.close()
   }
 
@@ -223,7 +234,15 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
         this.saga.advance(operation.operation_id, 'SETTLED')
         return { ok: true, value: authority.result }
       }
+      if (status === 'VERIFYING') {
+        this.saga.advance(operation.operation_id, 'RUNTIME_ACTIVE')
+        return { ok: true, value: authority.result }
+      }
       if (status === 'STARTING' || status === 'RUNNING') {
+        if (this.registerRuntimeWatcher(operation, authority.result)) {
+          this.saga.advance(operation.operation_id, 'RUNTIME_ACTIVE')
+          return { ok: true, value: authority.result }
+        }
         if (recovering || operation.phase === 'DISPATCHING') {
           return this.markOutcomeUnknown(operation, authority.result)
         }
@@ -331,6 +350,10 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     if (!authority.ok) return authority.outcome
     switch (authority.result.attempt.status) {
       case 'RUNNING':
+        this.registerRuntimeWatcher(operation, authority.result)
+        this.saga.advance(operation.operation_id, 'RUNTIME_ACTIVE')
+        return { ok: true, value: authority.result }
+      case 'VERIFYING':
         this.saga.advance(operation.operation_id, 'RUNTIME_ACTIVE')
         return { ok: true, value: authority.result }
       case 'SUCCEEDED':
@@ -404,6 +427,11 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
   }
 
   private async recoverOnce(): Promise<void> {
+    try {
+      await this.options.verificationCoordinator?.recoverPending()
+    } catch {
+      // Saga recovery remains fail-closed if verification recovery itself fails.
+    }
     for (const operation of this.saga.activeOperations()) {
       if (this.closed || !operation.attempt_id) continue
       try {
@@ -420,6 +448,137 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
 
   private id(prefix: string): string {
     return this.options.idFactory?.(prefix) ?? `${prefix}_${randomUUID()}`
+  }
+
+  private registerRuntimeWatcher(
+    operation: ExecutionSagaRowV1,
+    current: XiaoguiTaskExecutionStartResultV1,
+  ): boolean {
+    const runtimeSessionId = current.attempt.runtimeSessionId
+    if (!runtimeSessionId || !this.options.runtimeMonitor) return false
+    const address = addressOf(operation)
+    const flowId = operation.flow_id
+    const taskRunId = current.taskRun.taskRunId
+    const attemptId = current.attempt.attemptId
+    this.options.runtimeMonitor.watch(runtimeSessionId, async (outcome) => {
+      if (this.closed) return
+      if (outcome.state === 'SUCCEEDED') {
+        const coordinator = this.options.verificationCoordinator
+        if (!coordinator) return
+        const verified = await coordinator.handleSucceeded({
+          address,
+          flowId,
+          taskRunId,
+          attemptId,
+          outcome,
+          createdAt: this.now(),
+        })
+        if (!verified.ok) {
+          await this.recordVerificationStartFailure(address, flowId, taskRunId, attemptId, outcome, verified.reasonCode)
+        }
+      } else {
+        await this.recordRuntimeTerminal(address, flowId, taskRunId, attemptId, outcome)
+      }
+      await this.settleOperationFromAuthority(operation.operation_id)
+    })
+    return true
+  }
+
+  private async recordRuntimeTerminal(
+    address: HubAddressV1,
+    flowId: FlowId,
+    taskRunId: TaskRunId,
+    attemptId: AttemptId,
+    outcome: Exclude<RuntimeOutcomeV1, { state: 'SUCCEEDED' }>,
+  ): Promise<void> {
+    const mapped = mapRuntimeTerminalOutcome(outcome)
+    const base = {
+      type: 'system.agent.outcome.record' as const,
+      flowId,
+      taskRunId,
+      attemptId,
+      runtimeSessionId: outcome.runtimeSessionId,
+      receiptDigest: mapped.receiptDigest,
+    }
+    await this.options.application.executeSystem({
+      contractVersion: 'm2b.v1',
+      address,
+      trustedActor: { kind: 'main-process-system' },
+      requestId: stageRequestId(`${attemptId}:${mapped.receiptDigest}`, 'runtime-terminal'),
+      intent: mapped.outcome === 'FAILED'
+        ? { ...base, outcome: 'FAILED', failure: mapped.failure! }
+        : { ...base, outcome: mapped.outcome },
+    })
+  }
+
+  private async recordVerificationStartFailure(
+    address: HubAddressV1,
+    flowId: FlowId,
+    taskRunId: TaskRunId,
+    attemptId: AttemptId,
+    outcome: Extract<RuntimeOutcomeV1, { state: 'SUCCEEDED' }>,
+    reasonCode: string,
+  ): Promise<void> {
+    const current = await this.options.application.observeM2B(address)
+    if (!current.ok) return
+    const attempt = current.value.attempts.find((candidate) => candidate.attemptId === attemptId)
+    if (!attempt || attempt.status !== 'RUNNING') return
+
+    const receiptDigest = reasonCode === 'TASK_VERIFICATION_CAPTURE_FAILED'
+      ? outcome.receiptDigest
+      : digestJson({
+          runtimeSessionId: outcome.runtimeSessionId,
+          runtimeReceiptDigest: outcome.receiptDigest,
+          reasonCode,
+          purpose: 'task-verification-start-failed.v1',
+        })
+    const intent = reasonCode === 'TASK_VERIFICATION_CAPTURE_FAILED'
+      ? {
+          type: 'system.agent.outcome.record' as const,
+          flowId,
+          taskRunId,
+          attemptId,
+          runtimeSessionId: outcome.runtimeSessionId,
+          outcome: 'FAILED' as const,
+          receiptDigest,
+          failure: {
+            kind: 'AGENT_FAILURE' as const,
+            failureClass: 'PROTOCOL' as const,
+            safeCode: 'CANDIDATE_AUDIT_FAILED' as const,
+            receiptDigest,
+          },
+        }
+      : {
+          type: 'system.agent.outcome.record' as const,
+          flowId,
+          taskRunId,
+          attemptId,
+          runtimeSessionId: outcome.runtimeSessionId,
+          outcome: 'OUTCOME_UNKNOWN' as const,
+          receiptDigest,
+        }
+    await this.options.application.executeSystem({
+      contractVersion: 'm2b.v1',
+      address,
+      trustedActor: { kind: 'main-process-system' },
+      requestId: stageRequestId(`${attemptId}:${receiptDigest}`, 'verification-start-failed'),
+      intent,
+    })
+  }
+
+  private async settleOperationFromAuthority(operationId: string): Promise<void> {
+    const operation = this.saga.byId(operationId)
+    if (!operation || !operation.attempt_id || !operation.task_run_id || this.closed) return
+    const authority = await this.authority(operation)
+    if (!authority.ok) return
+    const status = authority.result.attempt.status
+    if (status === 'SUCCEEDED') {
+      this.saga.advance(operation.operation_id, 'SETTLED')
+    } else if (status === 'FAILED' || status === 'INTERRUPTED' || status === 'CANCELLED') {
+      this.saga.advance(operation.operation_id, 'FAILED', { lastSafeCode: status })
+    } else if (status === 'OUTCOME_UNKNOWN') {
+      this.saga.advance(operation.operation_id, 'OUTCOME_UNKNOWN', { lastSafeCode: 'OUTCOME_UNKNOWN' })
+    }
   }
 }
 
@@ -693,6 +852,33 @@ function executionError(code: XiaoguiTaskExecutionErrorCodeV1): XiaoguiTaskExecu
       traceId: `xhbet_${randomUUID()}`,
     },
   }
+}
+
+function mapRuntimeTerminalOutcome(outcome: Exclude<RuntimeOutcomeV1, { state: 'SUCCEEDED' }>): {
+  outcome: 'FAILED' | 'INTERRUPTED' | 'OUTCOME_UNKNOWN'
+  receiptDigest: string
+  failure?: AgentFailureSignalV1
+} {
+  if (outcome.state === 'FAILED') {
+    const safeCode = outcome.reasonCode === 'RUNTIME_ADAPTER_ERROR'
+      ? 'RUNTIME_ADAPTER_ERROR'
+      : outcome.reasonCode === 'RUNTIME_SESSION_NOT_FOUND'
+        ? 'RUNTIME_SESSION_NOT_FOUND'
+        : outcome.reasonCode === 'RUNTIME_OUTCOME_SESSION_MISMATCH'
+          ? 'RUNTIME_OUTCOME_SESSION_MISMATCH'
+          : outcome.reasonCode.startsWith('RUNTIME_')
+            ? 'RUNTIME_FAILED'
+            : 'UNKNOWN_RUNTIME_FAILURE'
+    return {
+      outcome: 'FAILED',
+      receiptDigest: outcome.receiptDigest,
+      failure: { kind: 'AGENT_FAILURE', failureClass: safeCode === 'UNKNOWN_RUNTIME_FAILURE' ? 'UNKNOWN' : 'RUNTIME', safeCode, receiptDigest: outcome.receiptDigest },
+    }
+  }
+  if (outcome.state === 'INTERRUPTED') {
+    return { outcome: 'INTERRUPTED', receiptDigest: outcome.receiptDigest }
+  }
+  return { outcome: 'OUTCOME_UNKNOWN', receiptDigest: outcome.inspectHandleDigest }
 }
 
 function stageRequestId(operationId: string, stage: string): string {

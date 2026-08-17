@@ -92,6 +92,45 @@ export interface AttemptWorkspaceInspectionV1 {
   readonly inspectionDigest: string
 }
 
+export interface TaskPatchFileSnapshotV1 {
+  readonly operation: 'MODIFY' | 'CREATE'
+  readonly relativePath: string
+  readonly baselineDigest: string | null
+  readonly contentDigest: string
+  readonly contentBase64: string
+}
+
+export interface TaskPatchArtifactV1 {
+  readonly kind: 'TASK_PATCH_V1'
+  readonly version: 1
+  readonly files: readonly TaskPatchFileSnapshotV1[]
+}
+
+/**
+ * Main-process-only capture. `privateVerificationContext.worktreeRoot` must
+ * never be copied into a shared projection or renderer DTO.
+ */
+export interface AttemptTaskPatchCaptureV1 {
+  readonly inputTreeHash: string
+  readonly resultTreeHash: string
+  readonly patchArtifactId: string
+  readonly patchArtifactDigest: string
+  readonly patchArtifactBytes: Uint8Array
+  readonly changedFiles: readonly TaskPatchFileSnapshotV1[]
+  readonly privateVerificationContext: {
+    readonly attemptWorktreeId: string
+    readonly worktreeRoot: string
+    readonly baseRevision: string
+    readonly baselineGitTreeOid: string
+    readonly manifestDigest: string
+    readonly manifestVersion: number
+  }
+}
+
+export interface AttemptTaskPatchCapturePortV1 {
+  captureTaskPatch(attemptId: string): Promise<AttemptTaskPatchCaptureV1>
+}
+
 export interface AttemptRuntimeAllowedFileV1 {
   readonly relativePath: string
   readonly contentDigest: string
@@ -118,6 +157,7 @@ export type AttemptWorkspaceReasonCodeV1 =
   | 'MANAGED_ROOT_INVALID'
   | 'MANIFEST_CONFLICT'
   | 'MANIFEST_VERSION_CONFLICT'
+  | 'NO_APPROVED_CHANGES'
   | 'PATH_ALIAS'
   | 'PATH_CONFLICT'
   | 'PATH_FORBIDDEN'
@@ -466,6 +506,7 @@ export interface AttemptWorkspacePortV1 {
     ownerId: string
   }): Promise<AttemptFileManifestV1>
   auditChanges(attemptId: string): Promise<AttemptWorkspaceInspectionV1>
+  captureTaskPatch(attemptId: string): Promise<AttemptTaskPatchCaptureV1>
 }
 
 export interface ProjectWorkspaceResolverV1 {
@@ -631,6 +672,107 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     if (!manifest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     const prepared = await this.validateCurrentWorkspace(attemptId, manifest)
     return this.inspect(prepared.result.handle)
+  }
+
+  async captureTaskPatch(attemptId: string): Promise<AttemptTaskPatchCaptureV1> {
+    const audit = await this.auditChanges(attemptId)
+    if (!audit.ok) throw new AttemptWorkspaceError(audit.rejectedReasonCode ?? 'PATH_FORBIDDEN')
+    if (audit.actualRelativePaths.length === 0) throw new AttemptWorkspaceError('NO_APPROVED_CHANGES')
+
+    const manifest = this.registry.getManifest(attemptId)
+    const lease = this.registry.getLease(attemptId)
+    if (!manifest || !lease) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    const prepared = await this.validateCurrentWorkspace(attemptId, manifest)
+    const rootPath = prepared.result.handle.rootPath
+    const beforeStatus = parsePorcelainStatus(
+      (await git(rootPath, ['status', '--porcelain=v1', '--untracked-files=all'])).stdout,
+    )
+    if (
+      beforeStatus.length === 0 ||
+      beforeStatus.some((change) => !isManifestSubsetChange(change, manifest)) ||
+      !sameStringList(
+        beforeStatus.map((change) => change.relativePath),
+        audit.actualRelativePaths,
+      )
+    ) {
+      throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+    }
+
+    const changedFiles: TaskPatchFileSnapshotV1[] = []
+    for (const change of beforeStatus) {
+      const grant = manifest.grants.find((candidate) => candidate.relativePath === change.relativePath)
+      if (!grant || grant.operation === 'DELETE') throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+      if (grant.operation === 'MODIFY') {
+        const baselineBytes = await gitBytes(lease.projectRoot, [
+          'cat-file',
+          'blob',
+          `${lease.baseRevision}:${grant.relativePath}`,
+        ])
+        if (!grant.baselineDigest || digestBytes(baselineBytes) !== grant.baselineDigest) {
+          throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
+        }
+      }
+      const target = resolveManifestPath(rootPath, grant.relativePath)
+      const current = readStableTaskFile(target.realPath)
+      if (grant.operation === 'MODIFY' && current.contentDigest === grant.baselineDigest) {
+        // A mode-only or index-only Git change cannot be represented by the
+        // content-only TASK_PATCH_V1 format, so it must not become a candidate.
+        throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+      }
+      changedFiles.push({
+        operation: grant.operation,
+        relativePath: grant.relativePath,
+        baselineDigest: grant.operation === 'MODIFY' ? grant.baselineDigest ?? null : null,
+        contentDigest: current.contentDigest,
+        contentBase64: current.bytes.toString('base64'),
+      })
+    }
+
+    const canonicalFiles = sortTaskPatchFiles(changedFiles)
+    const inputTreeHash = digestJson({
+      kind: 'GIT_TREE_INPUT_V1',
+      gitTreeOid: lease.baselineTreeHash,
+    })
+    const resultTreeHash = digestJson({
+      kind: 'TASK_RESULT_TREE_V1',
+      inputTreeHash,
+      files: canonicalFiles,
+    })
+    const patchArtifact: TaskPatchArtifactV1 = {
+      kind: 'TASK_PATCH_V1',
+      version: 1,
+      files: canonicalFiles,
+    }
+    const patchArtifactBytes = Buffer.from(JSON.stringify(patchArtifact), 'utf8')
+    const patchArtifactDigest = digestBytes(patchArtifactBytes)
+    const patchArtifactId = `xhart_${patchArtifactDigest.slice('sha256:'.length, 'sha256:'.length + 32)}`
+
+    const afterStatus = parsePorcelainStatus(
+      (await git(rootPath, ['status', '--porcelain=v1', '--untracked-files=all'])).stdout,
+    )
+    if (!samePorcelainChanges(beforeStatus, afterStatus)) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+    for (const snapshot of canonicalFiles) {
+      const current = readStableTaskFile(resolveManifestPath(rootPath, snapshot.relativePath).realPath)
+      if (current.contentDigest !== snapshot.contentDigest) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+    }
+    await this.validateCurrentWorkspace(attemptId, manifest)
+
+    return {
+      inputTreeHash,
+      resultTreeHash,
+      patchArtifactId,
+      patchArtifactDigest,
+      patchArtifactBytes,
+      changedFiles: canonicalFiles,
+      privateVerificationContext: {
+        attemptWorktreeId: lease.attemptWorktreeId,
+        worktreeRoot: rootPath,
+        baseRevision: lease.baseRevision,
+        baselineGitTreeOid: lease.baselineTreeHash,
+        manifestDigest: manifest.manifestDigest,
+        manifestVersion: manifest.version,
+      },
+    }
   }
 
   requestScopeExpansion(input: {
@@ -1097,6 +1239,21 @@ function readFileIdentity(realPath: string): { contentDigest: string; identityDi
   }
 }
 
+function readStableTaskFile(realPath: string): { bytes: Buffer; contentDigest: string } {
+  const before = readFileIdentity(realPath)
+  const bytes = readFileSync(realPath)
+  const contentDigest = digestBytes(bytes)
+  const after = readFileIdentity(realPath)
+  if (
+    before.identityDigest !== after.identityDigest ||
+    before.contentDigest !== contentDigest ||
+    after.contentDigest !== contentDigest
+  ) {
+    throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+  }
+  return { bytes, contentDigest }
+}
+
 function rollbackCreatedTarget(target: CreateBatchTargetV1): void {
   try {
     const identity = readFileIdentity(target.realPath)
@@ -1168,6 +1325,24 @@ async function git(cwd: string, args: readonly string[]): Promise<{ stdout: stri
   })
 }
 
+async function gitBytes(cwd: string, args: readonly string[]): Promise<Buffer> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(
+      'git',
+      [...args],
+      { cwd, encoding: 'buffer', windowsHide: true, timeout: 30000, maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          const diagnostic = Buffer.isBuffer(stderr) ? stderr.toString('utf8') : String(stderr ?? '')
+          reject(new AttemptWorkspaceError(diagnostic.includes('not a git repository') ? 'REPO_NOT_GIT' : 'GIT_COMMAND_FAILED'))
+          return
+        }
+        resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? ''))
+      },
+    )
+  })
+}
+
 function parsePorcelainStatus(stdout: string): readonly PorcelainChangeV1[] {
   return stdout
     .split(/\r?\n/)
@@ -1189,6 +1364,31 @@ function isManifestSubsetChange(change: PorcelainChangeV1, manifest: AttemptFile
   if (grant.operation === 'MODIFY') return change.status.includes('M')
   if (grant.operation === 'CREATE') return change.status === '??' || change.status.includes('A')
   return false
+}
+
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function samePorcelainChanges(left: readonly PorcelainChangeV1[], right: readonly PorcelainChangeV1[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (change, index) => change.status === right[index]?.status && change.relativePath === right[index]?.relativePath,
+    )
+  )
+}
+
+function sortTaskPatchFiles(files: readonly TaskPatchFileSnapshotV1[]): readonly TaskPatchFileSnapshotV1[] {
+  return [...files].sort(
+    (left, right) =>
+      compareCanonicalString(left.relativePath, right.relativePath) ||
+      compareCanonicalString(left.operation, right.operation),
+  )
+}
+
+function compareCanonicalString(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 function safeRealpath(path: string, reasonCode: AttemptWorkspaceReasonCodeV1): string {

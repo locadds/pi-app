@@ -12,6 +12,7 @@ import type {
   TaskSpecId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { CanonicalSessionAddressScopeV1 } from '@shared/xiaogui-session-scope'
+import type { TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 import { useUIStore } from '@renderer/stores/ui-store'
 import type { SessionItem } from '@renderer/stores/ui-store-types'
@@ -183,6 +184,106 @@ function executableProjection(address: HubAddressV1): SessionCollaborationProjec
     taskRuns: [],
     attempts: [],
     availableActions: ['flow.cancel', 'execution.next.confirm'],
+  }
+}
+
+function verificationSummaryFixture(state: TaskVerificationSummaryV1['state']): TaskVerificationSummaryV1 {
+  const base = {
+    scope: 'TASK' as const,
+    verificationAttemptId: 'xhbva_1' as TaskVerificationSummaryV1['verificationAttemptId'],
+    candidateId: 'xhbcandidate_1' as TaskVerificationSummaryV1['candidateId'],
+    changeSetDigest: `sha256:${'a'.repeat(64)}` as TaskVerificationSummaryV1['changeSetDigest'],
+    qaConfigVersion: 'task-fixed-typecheck.v1',
+    diagnosticArtifacts: [
+      {
+        artifactId: 'xhbartifact_diag_1' as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['artifactId'],
+        digest: `sha256:${'b'.repeat(64)}` as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['digest'],
+        kind: 'QA_DIAGNOSTIC' as const,
+      },
+    ],
+  }
+  if (state === 'STARTED') return { ...base, state }
+  if (state === 'OUTCOME_UNKNOWN') return { ...base, state, verdict: 'OUTCOME_UNKNOWN' }
+  const checks = [
+    { checkId: 'typescript.web', verdict: 'PASS' as const, summary: '界面类型检查通过' },
+    { checkId: 'typescript.node', verdict: state === 'FAILED' ? ('FAIL' as const) : ('PASS' as const), summary: '主进程类型检查完成' },
+  ]
+  if (state === 'FAILED') {
+    return {
+      ...base,
+      state,
+      verdict: 'FAIL',
+      checks,
+      failure: {
+        source: 'QA_CHECKS_FAILED',
+        failureClass: 'TEST_FAILURE',
+        disposition: 'REQUIRE_HUMAN_GATE',
+        retryOrdinal: 0,
+        safeCode: 'QA_CHECK_FAILED',
+      },
+    }
+  }
+  return {
+    ...base,
+    state,
+    verdict: 'PASS',
+    checks,
+    evidenceBundleId: 'xhbevidence_1' as Extract<TaskVerificationSummaryV1, { state: 'SUCCEEDED' }>['evidenceBundleId'],
+    qaResultId: 'xhbqa_1' as Extract<TaskVerificationSummaryV1, { state: 'SUCCEEDED' }>['qaResultId'],
+    taskChangeSetId: 'xhbtcs_1' as Extract<TaskVerificationSummaryV1, { state: 'SUCCEEDED' }>['taskChangeSetId'],
+    evidenceArtifacts: [
+      {
+        artifactId: 'xhbartifact_evidence_1' as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['artifactId'],
+        digest: `sha256:${'c'.repeat(64)}` as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['digest'],
+        kind: 'QA_EVIDENCE',
+      },
+      {
+        artifactId: 'xhbartifact_evidence_2' as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['artifactId'],
+        digest: `sha256:${'d'.repeat(64)}` as TaskVerificationSummaryV1['diagnosticArtifacts'][number]['digest'],
+        kind: 'QA_EVIDENCE',
+      },
+    ],
+  }
+}
+
+function projectionWithVerification(
+  address: HubAddressV1,
+  summary: TaskVerificationSummaryV1,
+): SessionCollaborationProjectionM2BV1 {
+  return {
+    ...activeProjection(address),
+    taskRuns: [
+      {
+        taskRunId: 'xhbtr_verified' as TaskRunId,
+        taskSpecId: 'xhbts_1' as TaskSpecId,
+        taskKey: 't1',
+        status:
+          summary.state === 'SUCCEEDED'
+            ? 'VERIFIED'
+            : summary.state === 'STARTED'
+              ? 'VERIFYING'
+              : summary.state === 'FAILED'
+                ? 'FAILED'
+                : 'OUTCOME_UNKNOWN',
+        attemptId: 'xhba_verified' as AttemptId,
+      },
+    ],
+    attempts: [
+      {
+        attemptId: 'xhba_verified' as AttemptId,
+        taskRunId: 'xhbtr_verified' as TaskRunId,
+        status:
+          summary.state === 'SUCCEEDED'
+            ? 'SUCCEEDED'
+            : summary.state === 'STARTED'
+              ? 'VERIFYING'
+              : summary.state === 'FAILED'
+                ? 'FAILED'
+                : 'OUTCOME_UNKNOWN',
+        verificationSummary: summary,
+      },
+    ],
+    availableActions: ['flow.cancel'],
   }
 }
 
@@ -369,6 +470,52 @@ describe('CollaborationHubPanel', () => {
     // 不出现任何执行/领取/交付类按钮
     expect(screen.queryByRole('button', { name: '批准计划' })).toBeNull()
     expect(performMock).not.toHaveBeenCalled()
+  })
+
+  it('已验证任务只读展示安全检查、证据数量和任务变更集短摘要', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: projectionWithVerification(address, verificationSummaryFixture('SUCCEEDED')),
+    })
+    showSession(sessionWith('s-verified', scopeCoding))
+    render(<CollaborationHubPanel />)
+
+    const summary = await screen.findByTestId('hub-verification-summary-xhba_verified')
+    expect(summary).toHaveTextContent('已验证')
+    expect(summary).toHaveTextContent('界面类型检查通过')
+    expect(summary).toHaveTextContent('主进程类型检查完成')
+    expect(summary).toHaveTextContent('证据 2 项')
+    expect(summary).toHaveTextContent('任务变更集 xhbtcs_1')
+    expect(summary).toHaveTextContent('sha256:aaaaaaaaaaaa…')
+    expect(summary).not.toHaveTextContent(`sha256:${'a'.repeat(64)}`)
+    expect(summary).not.toHaveTextContent('xhbartifact_evidence_1')
+    expect(screen.queryByRole('button', { name: '应用变更' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '生成交付' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '标记完成' })).toBeNull()
+  })
+
+  it.each([
+    ['STARTED', '验证中'],
+    ['FAILED', '验证失败'],
+    ['OUTCOME_UNKNOWN', '结果未知'],
+  ] as const)('验证摘要状态 %s 使用中文且保持只读', async (state, expectedText) => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: projectionWithVerification(address, verificationSummaryFixture(state)),
+    })
+    showSession(sessionWith(`s-verification-${state}`, scopeCoding))
+    render(<CollaborationHubPanel />)
+
+    expect(await screen.findByTestId('hub-verification-status-xhba_verified')).toHaveTextContent(expectedText)
+    expect(screen.queryByRole('button', { name: /验证|任务变更集/ })).toBeNull()
   })
 
   it('执行入口先本地核对零 IPC，最终确认只提交一次窄请求', async () => {

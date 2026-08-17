@@ -32,6 +32,7 @@ import type {
   XiaoguiTaskExecutionStartRequestV1,
   XiaoguiTaskExecutionStartResultV1,
 } from '@shared/xiaogui-task-execution'
+import type { TaskArtifactRefV1, TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 import { ipcClient } from '@renderer/lib/ipc-client'
 
@@ -68,6 +69,7 @@ const HUB_ACTIONS = new Set<CollaborationHubActionV1>(['flow.start.with_draft', 
 const HUB_M2B_ACTIONS = new Set<CollaborationHubActionM2BV1>([...HUB_ACTIONS, 'execution.next.confirm'])
 const HUB_TRACE_ID = /^xhbt_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const TASK_EXECUTION_TRACE_ID = /^xhbet_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/
 
 const TASK_EXECUTION_ERROR_CODES = new Set<XiaoguiTaskExecutionErrorCodeV1>([
   'SESSION_SCOPE_MISMATCH',
@@ -106,6 +108,151 @@ const INTENT_TYPES = new Set([
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys)
+  return Object.keys(value).every((key) => allowed.has(key)) && keys.every((key) => key in value)
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function isTaskArtifactRef(value: unknown): value is TaskArtifactRefV1 {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['artifactId', 'digest', 'kind']) &&
+    isNonEmptyString(value.artifactId) &&
+    typeof value.digest === 'string' &&
+    SHA256_DIGEST.test(value.digest) &&
+    ['PATCH', 'QA_EVIDENCE', 'QA_DIAGNOSTIC'].includes(String(value.kind))
+  )
+}
+
+function isVerificationCheckSummary(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['checkId', 'summary', 'verdict']) &&
+    isNonEmptyString(value.checkId) &&
+    isNonEmptyString(value.summary) &&
+    ['PASS', 'FAIL'].includes(String(value.verdict))
+  )
+}
+
+function isVerificationFailure(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['source', 'failureClass', 'disposition', 'retryOrdinal', 'safeCode']) ||
+    !Number.isSafeInteger(value.retryOrdinal)
+  )
+    return false
+
+  if (value.source === 'QA_CHECKS_FAILED') {
+    return (
+      value.failureClass === 'TEST_FAILURE' &&
+      value.disposition === 'REQUIRE_HUMAN_GATE' &&
+      value.retryOrdinal === 0 &&
+      value.safeCode === 'QA_CHECK_FAILED'
+    )
+  }
+  if (value.source === 'VERIFICATION_LOGIC_FAILURE') {
+    return (
+      value.failureClass === 'LOGIC_FAILURE' &&
+      value.disposition === 'REQUIRE_HUMAN_GATE' &&
+      value.retryOrdinal === 0 &&
+      ['INVALID_AGENT_RESULT', 'UNSATISFIED_ACCEPTANCE_CRITERIA', 'EXECUTION_LOGIC_ERROR'].includes(String(value.safeCode))
+    )
+  }
+  if (value.source === 'VERIFICATION_POLICY_DENIED') {
+    return (
+      value.failureClass === 'POLICY_DENIED' &&
+      value.disposition === 'REQUIRE_HUMAN_GATE' &&
+      value.retryOrdinal === 0 &&
+      ['POLICY_DENIED', 'EXECUTOR_NOT_ALLOWED'].includes(String(value.safeCode))
+    )
+  }
+  if (value.source === 'VERIFICATION_TRANSIENT_INFRASTRUCTURE') {
+    return (
+      value.failureClass === 'TRANSIENT_INFRASTRUCTURE' &&
+      value.disposition === 'AUTO_RETRY' &&
+      (value.retryOrdinal === 1 || value.retryOrdinal === 2) &&
+      value.safeCode === 'VERIFICATION_TEMPORARILY_UNAVAILABLE'
+    )
+  }
+  if (value.source === 'VERIFICATION_TRANSIENT_BUDGET_EXCEEDED') {
+    return (
+      value.failureClass === 'TRANSIENT_INFRASTRUCTURE' &&
+      value.disposition === 'REQUIRE_HUMAN_GATE' &&
+      (value.retryOrdinal as number) >= 3 &&
+      value.safeCode === 'VERIFICATION_TEMPORARILY_UNAVAILABLE'
+    )
+  }
+  return (
+    value.source === 'VERIFICATION_PERMANENT_INFRASTRUCTURE' &&
+    value.failureClass === 'PERMANENT_INFRASTRUCTURE' &&
+    value.disposition === 'REQUIRE_HUMAN_GATE' &&
+    value.retryOrdinal === 0 &&
+    value.safeCode === 'WORKSPACE_INTERNAL_ERROR'
+  )
+}
+
+function isTaskVerificationSummary(value: unknown): value is TaskVerificationSummaryV1 {
+  if (!isRecord(value)) return false
+  const baseKeys = [
+    'scope',
+    'verificationAttemptId',
+    'candidateId',
+    'changeSetDigest',
+    'qaConfigVersion',
+    'diagnosticArtifacts',
+    'state',
+  ] as const
+  if (
+    value.scope !== 'TASK' ||
+    !isNonEmptyString(value.verificationAttemptId) ||
+    !isNonEmptyString(value.candidateId) ||
+    typeof value.changeSetDigest !== 'string' ||
+    !SHA256_DIGEST.test(value.changeSetDigest) ||
+    !isNonEmptyString(value.qaConfigVersion) ||
+    !Array.isArray(value.diagnosticArtifacts) ||
+    !value.diagnosticArtifacts.every(isTaskArtifactRef)
+  )
+    return false
+
+  if (value.state === 'STARTED') return hasExactKeys(value, baseKeys)
+  if (value.state === 'FAILED') {
+    return (
+      hasExactKeys(value, [...baseKeys, 'verdict', 'checks', 'failure']) &&
+      value.verdict === 'FAIL' &&
+      Array.isArray(value.checks) &&
+      value.checks.every(isVerificationCheckSummary) &&
+      isVerificationFailure(value.failure)
+    )
+  }
+  if (value.state === 'OUTCOME_UNKNOWN') {
+    return hasExactKeys(value, [...baseKeys, 'verdict']) && value.verdict === 'OUTCOME_UNKNOWN'
+  }
+  return (
+    value.state === 'SUCCEEDED' &&
+    hasExactKeys(value, [
+      ...baseKeys,
+      'verdict',
+      'checks',
+      'evidenceBundleId',
+      'qaResultId',
+      'taskChangeSetId',
+      'evidenceArtifacts',
+    ]) &&
+    value.verdict === 'PASS' &&
+    Array.isArray(value.checks) &&
+    value.checks.every(isVerificationCheckSummary) &&
+    isNonEmptyString(value.evidenceBundleId) &&
+    isNonEmptyString(value.qaResultId) &&
+    isNonEmptyString(value.taskChangeSetId) &&
+    Array.isArray(value.evidenceArtifacts) &&
+    value.evidenceArtifacts.every(isTaskArtifactRef)
+  )
 }
 
 function isSafeError(value: unknown): value is HubSafeErrorV1 {
@@ -206,11 +353,15 @@ function isTaskRunM2B(value: unknown): value is TaskRunProjectionM2BV1 {
 function isAttemptM2B(value: unknown): value is AttemptProjectionM2BV1 {
   return (
     isRecord(value) &&
+    Object.keys(value).every((key) =>
+      ['attemptId', 'taskRunId', 'status', 'runtimeSessionId', 'workspaceReceiptId', 'verificationSummary'].includes(key),
+    ) &&
     typeof value.attemptId === 'string' &&
     typeof value.taskRunId === 'string' &&
     ATTEMPT_STATUSES_M2B.has(value.status as AttemptStatusM2BV1) &&
     (value.runtimeSessionId === undefined || typeof value.runtimeSessionId === 'string') &&
-    (value.workspaceReceiptId === undefined || typeof value.workspaceReceiptId === 'string')
+    (value.workspaceReceiptId === undefined || typeof value.workspaceReceiptId === 'string') &&
+    (value.verificationSummary === undefined || isTaskVerificationSummary(value.verificationSummary))
   )
 }
 

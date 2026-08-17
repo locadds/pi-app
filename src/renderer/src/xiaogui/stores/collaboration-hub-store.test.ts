@@ -9,6 +9,7 @@ import type {
   TaskRunId,
   TaskSpecId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 const observeMock = vi.fn()
 const performMock = vi.fn()
@@ -240,6 +241,47 @@ describe('collaboration-hub-store', () => {
     await useCollaborationHubStore.getState().refresh()
     expect(useCollaborationHubStore.getState().projection?.sessionVersion).toBe(3)
     expect(observeMock).toHaveBeenCalledWith(addressA)
+  })
+
+  it('验证摘要只随权威投影保存，切换会话时一并清空', async () => {
+    const verificationSummary: TaskVerificationSummaryV1 = {
+      scope: 'TASK',
+      verificationAttemptId: 'xhbva_store' as TaskVerificationSummaryV1['verificationAttemptId'],
+      candidateId: 'xhbcandidate_store' as TaskVerificationSummaryV1['candidateId'],
+      changeSetDigest: `sha256:${'e'.repeat(64)}` as TaskVerificationSummaryV1['changeSetDigest'],
+      qaConfigVersion: 'task-fixed-typecheck.v1',
+      diagnosticArtifacts: [],
+      state: 'STARTED',
+    }
+    observeMock.mockResolvedValueOnce({
+      ok: true,
+      value: projectionFixture({
+        taskRuns: [
+          {
+            taskRunId: 'xhbtr_store' as TaskRunId,
+            taskSpecId: 'xhbts_store' as TaskSpecId,
+            taskKey: 'store',
+            status: 'VERIFYING',
+            attemptId: 'xhba_store' as AttemptId,
+          },
+        ],
+        attempts: [
+          {
+            attemptId: 'xhba_store' as AttemptId,
+            taskRunId: 'xhbtr_store' as TaskRunId,
+            status: 'VERIFYING',
+            verificationSummary,
+          },
+        ],
+      }),
+    })
+
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    expect(useCollaborationHubStore.getState().projection?.attempts[0]?.verificationSummary).toEqual(verificationSummary)
+
+    useCollaborationHubStore.getState().setAddress(addressB)
+    expect(useCollaborationHubStore.getState().projection).toBeNull()
   })
 
   it('切换 address 清空旧投影与表单，并丢弃晚到的旧结果', async () => {

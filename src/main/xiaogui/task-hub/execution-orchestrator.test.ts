@@ -13,6 +13,7 @@ import type {
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { XiaoguiTaskExecutionStartRequestV1 } from '@shared/xiaogui-task-execution'
+import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
 
 import type { CollaborationHubApplicationV1 } from './application'
 import {
@@ -23,6 +24,12 @@ import type {
   AttemptFileScopeResolverV1,
   UserApprovedFileSelectionV1,
 } from './attempt-workspace'
+import type { RuntimeOutcomeCallbackV1, RuntimeOutcomeMonitorV1 } from './runtime-outcome-monitor'
+import type {
+  TaskVerificationCoordinatorResultV1,
+  TaskVerificationCoordinatorV1,
+  TaskVerificationSucceededInputV1,
+} from './task-verification-coordinator'
 
 const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
@@ -117,6 +124,75 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     await restarted.close()
   })
 
+  it('registers runtime monitoring for RUNNING Attempts and routes SUCCEEDED to task verification', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    const monitor = fakeRuntimeMonitor()
+    const coordinator = fakeVerificationCoordinator()
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
+      runtimeMonitor: monitor,
+      verificationCoordinator: coordinator,
+    })
+
+    await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true })
+    expect(monitor.watched()).toEqual(['runtime-1'])
+
+    await monitor.emit('runtime-1', {
+      state: 'SUCCEEDED',
+      runtimeSessionId: 'runtime-1',
+      receiptDigest: 'sha256:runtime-success',
+      candidateDigest: 'sha256:runtime-candidate',
+    })
+
+    expect(coordinator.inputs()).toMatchObject([{
+      flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID,
+      outcome: { state: 'SUCCEEDED', runtimeSessionId: 'runtime-1' },
+    }])
+    expect(hub.systemCommands().filter((command) => command.intent.type === 'system.agent.outcome.record')).toHaveLength(0)
+    await orchestrator.close()
+  })
+
+  it('writes CANDIDATE_AUDIT_FAILED when verification cannot capture the task candidate', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    const monitor = fakeRuntimeMonitor()
+    const coordinator = fakeVerificationCoordinator({ ok: false, reasonCode: 'TASK_VERIFICATION_CAPTURE_FAILED' })
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
+      runtimeMonitor: monitor,
+      verificationCoordinator: coordinator,
+    })
+
+    await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true })
+    await monitor.emit('runtime-1', {
+      state: 'SUCCEEDED',
+      runtimeSessionId: 'runtime-1',
+      receiptDigest: 'sha256:runtime-success',
+      candidateDigest: 'sha256:runtime-candidate',
+    })
+
+    const outcome = hub.systemCommands().find((command) => command.intent.type === 'system.agent.outcome.record')
+    expect(outcome?.intent).toMatchObject({
+      outcome: 'FAILED',
+      failure: {
+        failureClass: 'PROTOCOL',
+        safeCode: 'CANDIDATE_AUDIT_FAILED',
+        receiptDigest: 'sha256:runtime-success',
+      },
+    })
+    await orchestrator.close()
+  })
+
+  it('requires runtime monitor and verification coordinator to be configured together', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+
+    await expect(createOrchestrator(hub.application, events, undefined, undefined, {
+      runtimeMonitor: fakeRuntimeMonitor(),
+    })).rejects.toThrow('XIAOGUI_TASK_EXECUTION_RUNTIME_VERIFICATION_PAIR_REQUIRED')
+  })
+
   it('settles a stale active Saga from authoritative terminal state before accepting different input without redispatching the old task', async () => {
     const events: string[] = []
     const hub = terminalThenNextHub(events)
@@ -143,6 +219,10 @@ async function createOrchestrator(
   events: string[],
   resolver?: AttemptFileScopeResolverV1,
   existingDbPath?: string,
+  runtime?: {
+    runtimeMonitor?: RuntimeOutcomeMonitorV1
+    verificationCoordinator?: TaskVerificationCoordinatorV1
+  },
 ): Promise<XiaoguiTaskExecutionOrchestratorV1> {
   const fileScopeResolver = resolver ?? {
     resolveApprovedFiles: vi.fn(async (
@@ -167,9 +247,51 @@ async function createOrchestrator(
     application,
     inputStage,
     fileScopeResolver,
+    ...runtime,
     now: () => '2026-08-17T00:00:00.000Z',
     idFactory: () => `xhbe_operation_${++operationSequence}`,
   })
+}
+
+function fakeRuntimeMonitor(): RuntimeOutcomeMonitorV1 & {
+  emit(runtimeSessionId: string, outcome: RuntimeOutcomeV1): Promise<void>
+  watched(): string[]
+} {
+  const callbacks = new Map<string, RuntimeOutcomeCallbackV1>()
+  const watched: string[] = []
+  return {
+    watch(runtimeSessionId, callback) {
+      if (callbacks.has(runtimeSessionId)) return
+      watched.push(runtimeSessionId)
+      callbacks.set(runtimeSessionId, callback)
+    },
+    async emit(runtimeSessionId, outcome) {
+      const callback = callbacks.get(runtimeSessionId)
+      if (!callback) throw new Error('runtime session was not watched')
+      await callback(outcome)
+    },
+    watched: () => [...watched],
+    close: vi.fn(async () => undefined),
+  }
+}
+
+function fakeVerificationCoordinator(
+  result: TaskVerificationCoordinatorResultV1 = {
+    ok: true,
+    verificationAttemptId: 'xhbva_test' as never,
+    verdict: 'PASS',
+  },
+): TaskVerificationCoordinatorV1 & { inputs(): TaskVerificationSucceededInputV1[] } {
+  const inputs: TaskVerificationSucceededInputV1[] = []
+  return {
+    handleSucceeded: vi.fn(async (input) => {
+      inputs.push(input)
+      return result
+    }),
+    recoverPending: vi.fn(async () => []),
+    close: vi.fn(async () => undefined),
+    inputs: () => [...inputs],
+  }
 }
 
 function terminalThenNextHub(events: string[]) {
@@ -278,7 +400,7 @@ function terminalThenNextHub(events: string[]) {
 }
 
 function fakeHub(events: string[]) {
-  let attemptStatus: 'WORKSPACE_PREPARING' | 'READY' | 'RUNNING' | 'OUTCOME_UNKNOWN' | undefined
+  let attemptStatus: 'WORKSPACE_PREPARING' | 'READY' | 'RUNNING' | 'FAILED' | 'OUTCOME_UNKNOWN' | undefined
   let runtimeSession: string | undefined
   let schedules = 0
 
@@ -303,7 +425,11 @@ function fakeHub(events: string[]) {
       taskRunId: TASK_RUN_ID,
       taskSpecId: 'xhbts_task' as never,
       taskKey: 'task',
-      status: attemptStatus ? (attemptStatus === 'OUTCOME_UNKNOWN' ? 'OUTCOME_UNKNOWN' : 'RUNNING') : 'BLOCKED',
+      status: attemptStatus
+        ? attemptStatus === 'OUTCOME_UNKNOWN' || attemptStatus === 'FAILED'
+          ? attemptStatus
+          : 'RUNNING'
+        : 'BLOCKED',
       ...(attemptStatus ? { attemptId: ATTEMPT_ID } : {}),
     }],
     attempts: attemptStatus ? [{
@@ -344,7 +470,7 @@ function fakeHub(events: string[]) {
         } }
       case 'system.agent.outcome.record':
         events.push('outcome-unknown')
-        attemptStatus = 'OUTCOME_UNKNOWN'
+        attemptStatus = command.intent.outcome === 'FAILED' ? 'FAILED' : 'OUTCOME_UNKNOWN'
         runtimeSession = command.intent.runtimeSessionId
         return { ok: true as const, value: {
           requestId: command.requestId,
@@ -379,6 +505,7 @@ function fakeHub(events: string[]) {
     application,
     scheduleCount: () => schedules,
     runtimeSessionId: () => runtimeSession,
+    systemCommands: () => executeSystem.mock.calls.map(([command]) => command),
   }
 }
 

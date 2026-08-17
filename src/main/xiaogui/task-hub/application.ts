@@ -41,6 +41,7 @@ import type { SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-
 import { canonicalizePlanDraft, payloadDigest, type CanonicalPlanDraftV1 } from './digest'
 import { hubError } from './errors'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import type { AgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 
 export interface CollaborationHubApplicationOptionsV1 {
@@ -51,6 +52,7 @@ export interface CollaborationHubApplicationOptionsV1 {
   baselineProvider?: ExecutionBaselineProviderV1
   workspaceBridge?: ExecutionWorkspaceBridgeV1
   runtimePromptVault?: RuntimePromptVaultV1
+  taskVerificationCoordinator?: TaskVerificationCoordinatorV1
   afterAgentDispatchStart?: (requestId: string) => void
   now?: () => string
   idFactory?: (prefix: string) => string
@@ -605,6 +607,33 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     const outcome = await agent.runtime.createOrResume(runtimeRequest)
     const startingAttempt = store.attempt(request.intent.attemptId)
     if (!startingAttempt || startingAttempt.status !== 'STARTING') return systemError('ILLEGAL_TRANSITION')
+    if (outcome.state === 'SUCCEEDED') {
+      const coordinator = this.options.taskVerificationCoordinator
+      if (!coordinator) return systemError('INTERNAL', { reason: 'TASK_VERIFICATION_COORDINATOR_MISSING' })
+      store.writeAgentReport(address, this.idempotency(request), {
+        attemptId: request.intent.attemptId,
+        taskRunId: request.intent.taskRunId,
+        requestId: request.requestId,
+        payloadDigest: dispatchDigest,
+        runtimeRequestDigest: dispatchDigest,
+        runtimeRequestJson: JSON.stringify(runtimeRequest),
+        selectionDigest: payloadDigest(runtimeRequest.selection),
+        runtimeSessionId: outcome.runtimeSessionId,
+        reportDigest: payloadDigest({ state: outcome.state, runtimeSessionId: outcome.runtimeSessionId, requestId: request.requestId }),
+        receipt,
+        now: this.now(),
+      })
+      const verified = await coordinator.handleSucceeded({
+        address,
+        flowId: request.intent.flowId,
+        taskRunId: request.intent.taskRunId,
+        attemptId: request.intent.attemptId,
+        outcome,
+        createdAt: this.now(),
+      })
+      if (!verified.ok) return systemError('INTERNAL', { reason: verified.reasonCode })
+      return { ok: true, value: { ...receipt, sessionVersion: store.currentVersion(address) } }
+    }
     if (outcome.state !== 'READY') {
       store.writeAgentOutcome(address, this.idempotency(request), this.agentOutcomeRecord(request, outcome, receipt))
       return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
@@ -625,10 +654,10 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
   }
 
-  private recordAgentOutcome(
+  private async recordAgentOutcome(
     address: HubAddressV1,
     request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.outcome.record' }> },
-  ): HubSystemOutcomeM2BV1<PerformReceiptV1> {
+  ): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
     const store = this.getStore()
     const replay = this.checkSystemIdempotency(store, address, request)
     if (replay) return replay
@@ -652,6 +681,31 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       flowId: request.intent.flowId,
       taskRunId: request.intent.taskRunId,
       attemptId: request.intent.attemptId,
+    }
+    if (request.intent.outcome === 'SUCCEEDED') {
+      const coordinator = this.options.taskVerificationCoordinator
+      if (!coordinator) return systemError('INTERNAL', { reason: 'TASK_VERIFICATION_COORDINATOR_MISSING' })
+      if (!attempt.runtime_session_id || attempt.runtime_session_id !== request.intent.runtimeSessionId) {
+        return systemError('ILLEGAL_TRANSITION')
+      }
+      const verified = await coordinator.handleSucceeded({
+        address,
+        flowId: request.intent.flowId,
+        taskRunId: request.intent.taskRunId,
+        attemptId: request.intent.attemptId,
+        outcome: {
+          state: 'SUCCEEDED',
+          runtimeSessionId: request.intent.runtimeSessionId,
+          receiptDigest: request.intent.receiptDigest,
+          candidateDigest: request.intent.runtimeCandidateDigest,
+        },
+        createdAt: this.now(),
+      })
+      if (!verified.ok) return systemError('INTERNAL', { reason: verified.reasonCode })
+      return {
+        ok: true,
+        value: { ...receipt, sessionVersion: store.currentVersion(address) },
+      }
     }
     store.writeAgentOutcome(address, this.idempotency(request), {
       attemptId: request.intent.attemptId,
@@ -998,8 +1052,10 @@ function isValidAgentOutcomeIntent(intent: Extract<HubSystemCommandRequestM2BV1[
 
 function isClosedFailureSignal(value: AgentFailureSignalV1 | undefined, receiptDigest: string): value is AgentFailureSignalV1 {
   if (!value || value.kind !== 'AGENT_FAILURE' || value.receiptDigest !== receiptDigest) return false
-  if (!['RUNTIME', 'PROTOCOL', 'UNKNOWN'].includes(value.failureClass)) return false
-  return ['RUNTIME_FAILED', 'RUNTIME_ADAPTER_ERROR', 'RUNTIME_SESSION_NOT_FOUND', 'RUNTIME_OUTCOME_SESSION_MISMATCH', 'UNKNOWN_RUNTIME_FAILURE'].includes(value.safeCode)
+  if (value.safeCode === 'CANDIDATE_AUDIT_FAILED') return value.failureClass === 'PROTOCOL'
+  if (value.safeCode === 'UNKNOWN_RUNTIME_FAILURE') return value.failureClass === 'UNKNOWN'
+  return value.failureClass === 'RUNTIME' &&
+    ['RUNTIME_FAILED', 'RUNTIME_ADAPTER_ERROR', 'RUNTIME_SESSION_NOT_FOUND', 'RUNTIME_OUTCOME_SESSION_MISMATCH'].includes(value.safeCode)
 }
 
 function toRuntimeSelection(value: RuntimeCapabilityV1 | RuntimeAdapterSelectionV1): RuntimeAdapterSelectionV1 {
@@ -1078,7 +1134,11 @@ function classifyRuntimeFailure(reasonCode: string): AgentFailureSignalV1['safeC
 }
 
 function failureSignal(safeCode: AgentFailureSignalV1['safeCode'], receiptDigest: string): AgentFailureSignalV1 {
-  const failureClass = safeCode === 'UNKNOWN_RUNTIME_FAILURE' ? 'UNKNOWN' : 'RUNTIME'
+  const failureClass = safeCode === 'UNKNOWN_RUNTIME_FAILURE'
+    ? 'UNKNOWN'
+    : safeCode === 'CANDIDATE_AUDIT_FAILED'
+      ? 'PROTOCOL'
+      : 'RUNTIME'
   return { kind: 'AGENT_FAILURE', failureClass, safeCode, receiptDigest }
 }
 
