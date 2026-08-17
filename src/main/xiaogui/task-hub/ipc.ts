@@ -1,5 +1,4 @@
 import { app } from 'electron'
-import { join } from 'node:path'
 import { z } from 'zod'
 
 import type {
@@ -12,9 +11,12 @@ import type {
 } from '@shared/xiaogui-collaboration-hub'
 import { registerHandler } from '../../ipc/registry'
 import { sessionScopeResolverV1 } from '../scope-service'
-import { createCollaborationHubApplicationV1, type CollaborationHubApplicationV1 } from './application'
+import type { CollaborationHubApplicationV1 } from './application'
 import { hubError } from './errors'
-import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import {
+  createXiaoguiRuntimeCompositionV1,
+  type XiaoguiRuntimeCompositionV1,
+} from './runtime-composition'
 
 const AddressSchema = z
   .object({
@@ -106,14 +108,21 @@ const ReadEventsSchema = z
   })
   .strict()
 
-let defaultApp: CollaborationHubApplicationV1 | null = null
+let defaultRuntimeComposition: XiaoguiRuntimeCompositionV1 | null = null
 
 export function getDefaultCollaborationHubApplication(): CollaborationHubApplicationV1 {
-  defaultApp ??= createCollaborationHubApplicationV1({
+  defaultRuntimeComposition ??= createXiaoguiRuntimeCompositionV1({
+    userDataDir: app.getPath('userData'),
+    productionEnabled: false,
     lookup: sessionScopeResolverV1,
-    storeFactory: () => new CollaborationHubSqliteStoreV1(join(app.getPath('userData'), 'xiaogui-task-hub-m2a.sqlite')),
   })
-  return defaultApp
+  return defaultRuntimeComposition.application
+}
+
+export async function closeDefaultCollaborationHubRuntimeComposition(): Promise<void> {
+  const composition = defaultRuntimeComposition
+  defaultRuntimeComposition = null
+  await composition?.close()
 }
 
 export function registerCollaborationHubHandlers(application = getDefaultCollaborationHubApplication()): void {
