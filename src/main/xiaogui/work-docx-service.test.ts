@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -90,7 +90,12 @@ describe('WorkDocxServiceV1', () => {
     const prepared = await service.prepare({ address: ADDRESS })
     expect(prepared).toMatchObject({
       ok: true,
-      value: { kind: 'PREPARED', placeholders: ['owner', 'project'] },
+      value: {
+        kind: 'PREPARED',
+        templateDisplayName: 'template.docx',
+        payloadDisplayName: 'payload.json',
+        placeholders: ['owner', 'project'],
+      },
     })
     if (!prepared.ok || prepared.value.kind !== 'PREPARED') throw new Error('expected prepared')
 
@@ -269,5 +274,134 @@ describe('WorkDocxServiceV1', () => {
       error: { code: 'SOURCE_CHANGED', messageKey: 'xiaogui.work.docx.source_changed' },
     })
     await expect(readFile(fixture.target)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('cancel removes the prepared record and stage directory', async () => {
+    const fixture = await createFixture()
+    const service = new WorkDocxServiceV1({
+      lookup: lookup('WORK'),
+      dialogs: dialogs(fixture.template, fixture.payload, fixture.target),
+      tempRoot: join(fixture.root, 'staging'),
+    })
+    const prepared = await service.prepare({ address: ADDRESS })
+    if (!prepared.ok || prepared.value.kind !== 'PREPARED') throw new Error('expected prepared')
+    const { operationId } = prepared.value
+
+    const cancelled = await service.cancel({ address: ADDRESS, operationId })
+    expect(cancelled).toEqual({ ok: true, value: { kind: 'CANCELLED', operationId } })
+
+    await expect(
+      service.confirm({ address: ADDRESS, operationId }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'OPERATION_NOT_FOUND', messageKey: 'xiaogui.work.docx.operation_not_found' },
+    })
+    await expect(readFile(fixture.target)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readdir(join(fixture.root, 'staging'))).resolves.toEqual([])
+  })
+
+  it('cancel rejects a cross-session operation', async () => {
+    const fixture = await createFixture()
+    const service = new WorkDocxServiceV1({
+      lookup: lookup('WORK'),
+      dialogs: dialogs(fixture.template, fixture.payload, fixture.target),
+      tempRoot: join(fixture.root, 'staging'),
+    })
+    const prepared = await service.prepare({ address: ADDRESS })
+    if (!prepared.ok || prepared.value.kind !== 'PREPARED') throw new Error('expected prepared')
+    const { operationId } = prepared.value
+
+    const otherAddress = {
+      projectId: ADDRESS.projectId,
+      sessionKey: `xgs1_${'4'.repeat(64)}`,
+    } as SessionAddressV1
+
+    await expect(service.cancel({ address: otherAddress, operationId })).resolves.toEqual({
+      ok: false,
+      error: { code: 'OPERATION_SCOPE_MISMATCH', messageKey: 'xiaogui.work.docx.operation_scope_mismatch' },
+    })
+    await expect(service.cancel({ address: ADDRESS, operationId })).resolves.toEqual({
+      ok: true,
+      value: { kind: 'CANCELLED', operationId },
+    })
+  })
+
+  it('cancel rejects an unknown operation id', async () => {
+    const fixture = await createFixture()
+    const service = new WorkDocxServiceV1({
+      lookup: lookup('WORK'),
+      dialogs: dialogs(fixture.template, fixture.payload, fixture.target),
+      tempRoot: join(fixture.root, 'staging'),
+    })
+    const fakeId = `xgw1_${'a'.repeat(8)}-${'b'.repeat(4)}-${'c'.repeat(4)}-${'d'.repeat(4)}-${'e'.repeat(12)}`
+
+    await expect(
+      service.cancel({ address: ADDRESS, operationId: fakeId as import('@shared/xiaogui-work-docx').WorkDocxOperationIdV1 }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'OPERATION_NOT_FOUND', messageKey: 'xiaogui.work.docx.operation_not_found' },
+    })
+  })
+
+  it('cancel rejects an already-completed operation', async () => {
+    const fixture = await createFixture()
+    const service = new WorkDocxServiceV1({
+      lookup: lookup('WORK'),
+      dialogs: dialogs(fixture.template, fixture.payload, fixture.target),
+      tempRoot: join(fixture.root, 'staging'),
+    })
+    const prepared = await service.prepare({ address: ADDRESS })
+    if (!prepared.ok || prepared.value.kind !== 'PREPARED') throw new Error('expected prepared')
+    const { operationId } = prepared.value
+
+    await service.confirm({ address: ADDRESS, operationId })
+
+    await expect(service.cancel({ address: ADDRESS, operationId })).resolves.toEqual({
+      ok: false,
+      error: { code: 'OPERATION_NOT_FOUND', messageKey: 'xiaogui.work.docx.operation_not_found' },
+    })
+  })
+
+  it('cancel removes only the selected operation', async () => {
+    const fixture = await createFixture()
+    const service = new WorkDocxServiceV1({
+      lookup: lookup('WORK'),
+      dialogs: dialogs(fixture.template, fixture.payload, fixture.target),
+      tempRoot: join(fixture.root, 'staging'),
+    })
+    const first = await service.prepare({ address: ADDRESS })
+    const second = await service.prepare({ address: ADDRESS })
+    if (!first.ok || first.value.kind !== 'PREPARED') throw new Error('expected first prepared')
+    if (!second.ok || second.value.kind !== 'PREPARED') throw new Error('expected second prepared')
+
+    await expect(service.cancel({ address: ADDRESS, operationId: first.value.operationId })).resolves.toEqual({
+      ok: true,
+      value: { kind: 'CANCELLED', operationId: first.value.operationId },
+    })
+    await expect(service.confirm({ address: ADDRESS, operationId: second.value.operationId })).resolves.toMatchObject({
+      ok: true,
+      value: { kind: 'PUBLISHED', operationId: second.value.operationId },
+    })
+  })
+
+  it('does not report cancellation after confirmation has claimed the operation', async () => {
+    const fixture = await createFixture()
+    const service = new WorkDocxServiceV1({
+      lookup: lookup('WORK'),
+      dialogs: dialogs(fixture.template, fixture.payload, fixture.target),
+      tempRoot: join(fixture.root, 'staging'),
+    })
+    const prepared = await service.prepare({ address: ADDRESS })
+    if (!prepared.ok || prepared.value.kind !== 'PREPARED') throw new Error('expected prepared')
+
+    const confirming = service.confirm({ address: ADDRESS, operationId: prepared.value.operationId })
+    await expect(service.cancel({ address: ADDRESS, operationId: prepared.value.operationId })).resolves.toEqual({
+      ok: false,
+      error: { code: 'OPERATION_NOT_FOUND', messageKey: 'xiaogui.work.docx.operation_not_found' },
+    })
+    await expect(confirming).resolves.toMatchObject({
+      ok: true,
+      value: { kind: 'PUBLISHED', operationId: prepared.value.operationId },
+    })
   })
 })

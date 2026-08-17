@@ -2,8 +2,8 @@
  * WORK 模式首屏视图（小规 Agent · WORK 模式专用）。
  *
  * 定位：轻量引导面板——说明 WORK 模式用途，引导用户直接使用常驻对话框
- * 让小规帮忙读写/整理文件、撰写文本报告。不引入任何额外依赖，
- * 不宣称未安装的第三方能力（AGENTS.md §5：WORK 保持轻量）。
+ * 让小规帮忙整理文件、撰写文本报告，并通过工具栏触发已接入的具体工具。
+ * 不引入额外依赖，不宣称未安装的第三方能力。
  *
  * 仅在 WORK 模式下呈现；其他模式渲染占位提示（与 ProjectInspectView 一致）。
  */
@@ -13,7 +13,7 @@ import { useXiaoguiStore } from '../stores/xiaogui-store'
 /** 朱砂红——与 ModeSelector / ProjectInspectView 保持同一强调色。 */
 const ACCENT = '#c0392b'
 
-/** 示例提示词：全部基于 Pi 原生已具备的对话 + 文件读写能力。 */
+/** 示例提示词：全部基于 Pi 原生对话能力和已接入的小规工具。 */
 const EXAMPLE_PROMPTS: { title: string; prompt: string }[] = [
   {
     title: '整理文件',
@@ -59,13 +59,12 @@ export function WorkHomeView() {
           <span className="font-semibold" style={{ color: ACCENT }}>
             小规
           </span>
-          可以陪你处理日常工作：
-          <span className="font-medium">直接在下方对话框里说话即可</span>
-          。它能读取与写入你指定路径下的文件、帮你整理目录、汇总文本资料、
-          起草报告与纪要——无需额外配置，对话即指令。
+          可以陪你处理日常工作。整理资料、起草报告等轻量任务，
+          <span className="font-medium">直接在下方对话框里说明需求即可</span>。
         </p>
         <p className="mt-2 text-[11px] text-muted-foreground/80">
-          常驻对话框位于页面底部；涉及文件的操作会先经你确认路径与范围。
+          需要从 DOCX 模板生成新文档时，请先进入或新建 WORK 会话，再点击页面底部输入框旁的文档按钮；
+          小规会让你选择文件并在生成前再次确认。
         </p>
       </section>
 
@@ -97,7 +96,7 @@ export function WorkHomeView() {
 
       {/* ---- 尾注 ---- */}
       <footer className="mt-6 border-t border-dashed border-border/70 pt-2 font-mono text-[10px] text-muted-foreground">
-        以上能力均为 Pi 原生对话与文件读写能力，无需安装额外组件。
+        以上能力优先复用 Pi 原生对话能力和已接入的小规工具。
       </footer>
     </div>
   )

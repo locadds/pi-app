@@ -22,6 +22,8 @@ import type {
   SessionCollaborationProjectionV1,
 } from './xiaogui-collaboration-hub'
 import type {
+  WorkDocxCancelRequestV1,
+  WorkDocxCancelledResultV1,
   WorkDocxConfirmRequestV1,
   WorkDocxDiscoverRequestV1,
   WorkDocxDiscoverResultV1,
@@ -381,6 +383,10 @@ export interface IpcMethodMap {
   'xiaogui.work.docx.confirm': {
     request: WorkDocxConfirmRequestV1
     response: WorkDocxOutcomeV1<WorkDocxPublishedResultV1>
+  }
+  'xiaogui.work.docx.cancel': {
+    request: WorkDocxCancelRequestV1
+    response: WorkDocxOutcomeV1<WorkDocxCancelledResultV1>
   }
   'session.rename': { request: SessionRenameRequest; response: SessionRenameResponse }
   'session.compact': { request: SessionCompactRequest; response: SessionCompactResponse }

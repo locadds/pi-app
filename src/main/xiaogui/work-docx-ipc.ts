@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, type OpenDialogOptions, type SaveDialogOpti
 import { join } from 'node:path'
 import { z } from 'zod'
 
-import type { WorkDocxConfirmRequestV1, WorkDocxPrepareRequestV1 } from '@shared/xiaogui-work-docx'
+import type { WorkDocxCancelRequestV1, WorkDocxConfirmRequestV1, WorkDocxPrepareRequestV1 } from '@shared/xiaogui-work-docx'
 import type { SessionAddressV1 } from '@shared/xiaogui-session-scope'
 import { registerHandlerWithSchema } from '../ipc/registry'
 import { sessionScopeResolverV1 } from './scope-service'
@@ -15,6 +15,10 @@ const AddressSchema = z.object({
 
 const PrepareSchema = z.object({ address: AddressSchema }).strict()
 const ConfirmSchema = z.object({
+  address: AddressSchema,
+  operationId: z.string().regex(/^xgw1_[0-9a-f-]{36}$/),
+}).strict()
+const CancelSchema = z.object({
   address: AddressSchema,
   operationId: z.string().regex(/^xgw1_[0-9a-f-]{36}$/),
 }).strict()
@@ -69,5 +73,8 @@ export function registerWorkDocxHandlers(): void {
   })
   registerHandlerWithSchema('ipc:xiaogui.work.docx.confirm', ConfirmSchema, async (request) => {
     return service().confirm(request as WorkDocxConfirmRequestV1)
+  })
+  registerHandlerWithSchema('ipc:xiaogui.work.docx.cancel', CancelSchema, async (request) => {
+    return service().cancel(request as WorkDocxCancelRequestV1)
   })
 }

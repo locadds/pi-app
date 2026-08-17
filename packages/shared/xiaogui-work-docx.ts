@@ -6,7 +6,7 @@ export interface WorkDocxCapabilityV1 {
   id: 'docx-template-patch'
   version: '9.7.1'
   status: 'AVAILABLE'
-  intents: readonly ['PREPARE', 'CONFIRM']
+  intents: readonly ['PREPARE', 'CONFIRM', 'CANCEL']
 }
 
 export type WorkDocxErrorCodeV1 =
@@ -43,6 +43,8 @@ export type WorkDocxPrepareResultV1 =
   | {
       kind: 'PREPARED'
       operationId: WorkDocxOperationIdV1
+      templateDisplayName: string
+      payloadDisplayName: string
       placeholders: readonly string[]
       templateSha256: string
       payloadSha256: string
@@ -60,4 +62,14 @@ export interface WorkDocxPublishedResultV1 {
   templateSha256: string
   payloadSha256: string
   originalInputsUnchanged: true
+}
+
+export interface WorkDocxCancelRequestV1 {
+  address: SessionAddressV1
+  operationId: WorkDocxOperationIdV1
+}
+
+export interface WorkDocxCancelledResultV1 {
+  kind: 'CANCELLED'
+  operationId: WorkDocxOperationIdV1
 }
