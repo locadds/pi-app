@@ -6,6 +6,7 @@ import type {
   AcpRequestPermissionParamsV1,
   AcpRequestPermissionResultV1,
   AcpSessionUpdateParamsV1,
+  AcpTransportCreateOptionsV1,
   AcpTransportFactoryV1,
   AcpTransportStartOptionsV1,
   AcpTransportV1,
@@ -22,11 +23,14 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
   private onSessionUpdate: (params: AcpSessionUpdateParamsV1) => void = () => {}
   private onPermissionRequest: (params: AcpRequestPermissionParamsV1) => Promise<AcpRequestPermissionResultV1> = async () => ({ outcome: { outcome: 'cancelled' } })
   private onDisconnect: (reasonCode: string) => void = () => {}
+  private closed = false
+  private closedReason: string | null = null
 
   constructor(
     private readonly command: string,
     private readonly args: readonly string[],
     private readonly cwd: string,
+    private readonly createOptions: AcpTransportCreateOptionsV1 = {},
   ) {}
 
   async start(options: AcpTransportStartOptionsV1): Promise<AcpInitializeResultV1> {
@@ -34,15 +38,24 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
     this.onSessionUpdate = options.onSessionUpdate
     this.onPermissionRequest = options.onPermissionRequest
     this.onDisconnect = options.onDisconnect
+    try {
+      this.createOptions.preSpawn?.()
+    } catch (error) {
+      const reasonCode = reasonCodeFromError(error, 'PROCESS_PRESPAWN_FAILED')
+      this.close(reasonCode)
+      throw error instanceof Error ? error : new Error(reasonCode)
+    }
+    if (this.closed) throw new Error(this.closedReason ?? 'PROCESS_DISCONNECTED')
     const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.command)
     const command = useShell ? `"${this.command}" ${this.args.join(' ')}` : this.command
     this.child = spawn(command, useShell ? [] : [...this.args], {
       cwd: this.cwd,
       shell: useShell,
-      env: { ...process.env },
+      env: { ...process.env, ...this.createOptions.env },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.child.stdout?.on('data', (chunk: Buffer | string) => this.readStdout(chunk))
+    this.child.stdin?.on('error', () => this.close('PROCESS_STDIN_CLOSED'))
     this.child.on('error', () => this.close('PROCESS_ERROR'))
     this.child.on('close', () => this.close('PROCESS_DISCONNECTED'))
     return this.call<AcpInitializeResultV1>('initialize', options.initialize, 30000)
@@ -77,6 +90,7 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
   }
 
   private call<T>(method: string, params: unknown, timeoutMs: number): Promise<T> {
+    if (this.closed) return Promise.reject(new Error(this.closedReason ?? 'PROCESS_DISCONNECTED'))
     const id = this.nextId++
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -90,7 +104,19 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
   }
 
   private write(message: unknown): void {
-    this.child?.stdin?.write(`${JSON.stringify(message)}\n`)
+    if (this.closed) return
+    const stdin = this.child?.stdin
+    if (!stdin || stdin.destroyed || stdin.writableEnded || !stdin.writable) {
+      this.close('PROCESS_STDIN_CLOSED')
+      return
+    }
+    try {
+      stdin.write(`${JSON.stringify(message)}\n`, (error?: Error | null) => {
+        if (error) this.close('PROCESS_STDIN_CLOSED')
+      })
+    } catch {
+      this.close('PROCESS_STDIN_CLOSED')
+    }
   }
 
   private readStdout(chunk: Buffer | string): void {
@@ -158,6 +184,9 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
   }
 
   private close(reasonCode: string): void {
+    if (this.closed) return
+    this.closed = true
+    this.closedReason = reasonCode
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer)
       pending.reject(new Error(reasonCode))
@@ -168,7 +197,14 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
 }
 
 export class KimiAcpProcessTransportFactoryV1 implements AcpTransportFactoryV1 {
-  create(command: string, args: readonly string[], cwd: string): AcpTransportV1 {
-    return new NdjsonAcpProcessTransportV1(command, args, cwd)
+  create(command: string, args: readonly string[], cwd: string, options?: AcpTransportCreateOptionsV1): AcpTransportV1 {
+    return new NdjsonAcpProcessTransportV1(command, args, cwd, options)
   }
+}
+
+function reasonCodeFromError(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error !== null && typeof (error as { reasonCode?: unknown }).reasonCode === 'string') {
+    return (error as { reasonCode: string }).reasonCode
+  }
+  return fallback
 }

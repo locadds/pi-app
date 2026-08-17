@@ -26,6 +26,15 @@ import type {
 } from '@shared/xiaogui-agent-runtime'
 
 import { KimiAcpProcessTransportFactoryV1 } from './acp/process-transport'
+import {
+  KIMI_ACP_APPROVED_VERSION_V1,
+  KIMI_ACP_ENGINE_V1,
+  KIMI_ACP_LEGACY_AGENT_PROFILE_DIGEST_V1,
+  KIMI_ACP_TOOL_ALLOWLIST_V1,
+  KIMI_ACP_TOOL_POLICY_DIGEST_V1,
+  KimiAcpToolPolicyError,
+  prepareKimiAcpToolPolicyV1,
+} from './acp/kimi-tool-policy'
 import { digestSafeText, isSafeAcpOpaqueId, localRuntimeSurrogate } from './acp/redaction'
 import type {
   AcpRequestPermissionParamsV1,
@@ -46,6 +55,7 @@ const CLIENT_INFO = { name: 'xiaogui-kimi-acp-adapter', version: '0.1.0' }
 
 export interface KimiAcpWorkspaceResolutionV1 {
   rootPath: string
+  kimiCodeHome?: string
   allowedFiles: readonly KimiAcpAllowedFileV1[]
   resumeSessionId?: string
 }
@@ -153,6 +163,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     if (!shape.ok) return failed('runtime-unbound', shape.reasonCode)
     const probe = await this.probe.findExecutable()
     if (!probe.available) return failed('runtime-unbound', probe.reasonCode)
+    if (!isApprovedKimiVersion(probe.version)) return failed('runtime-unbound', 'KIMI_VERSION_UNAPPROVED')
     const selection = isRuntimeContractTestSelectionAllowed(request.selection, request.contractTestPolicy)
     if (!selection.ok) return failed('runtime-unbound', selection.reasonCode)
     if (!selectionMatchesCandidate(request, kimiAcpCapabilityDigestForVersionV1(probe.version))) return failed('runtime-unbound', 'RUNTIME_SELECTION_NOT_KIMI_ACP_TEST')
@@ -171,14 +182,29 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     try {
       workspace = await this.options.workspaceResolver.resolve(request)
       policy = prepareKimiAcpWorkspacePolicy(workspace.rootPath, workspace.allowedFiles)
+      const toolPolicy = prepareKimiAcpToolPolicyV1(workspace.kimiCodeHome, workspace.rootPath)
       const envelope = await this.options.payloadResolver.resolvePrompt(request.promptEnvelopeRef)
       if (digestBytes(envelope.payloadBytes) !== request.promptEnvelopeRef.digest) return failed('runtime-unbound', 'PROMPT_DIGEST_MISMATCH')
       prompt = Buffer.from(envelope.payloadBytes).toString('utf8')
+      const transport = this.transportFactory.create(probe.command, ['acp'], workspace.rootPath, {
+        env: toolPolicy.env,
+        preSpawn: toolPolicy.revalidateBeforeSpawn,
+      })
+      return this.startReadySession(request, workspace, policy, prompt, transport, idemKey, payloadDigest)
     } catch (error) {
       return failed('runtime-unbound', reasonFromError(error, 'RUNTIME_WORKSPACE_BINDING_FAILED'))
     }
+  }
 
-    const transport = this.transportFactory.create(probe.command, ['acp'], workspace.rootPath)
+  private async startReadySession(
+    request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1,
+    workspace: KimiAcpWorkspaceResolutionV1,
+    policy: PreparedKimiAcpWorkspacePolicyV1,
+    prompt: string,
+    transport: AcpTransportV1,
+    idemKey: string,
+    payloadDigest: string,
+  ): Promise<RuntimeCreateOrResumeOutcomeV1> {
     let state: RuntimeSessionState | null = null
     const requestHandlers = new Map<string, (params: unknown) => Promise<unknown> | unknown>()
     requestHandlers.set('fs/read_text_file', (params) => {
@@ -208,7 +234,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
         cwd: workspace.rootPath,
         initialize: {
           protocolVersion: 1,
-          clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
+          clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },
           clientInfo: CLIENT_INFO,
         },
         requestHandlers,
@@ -375,6 +401,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   private async capability(): Promise<RuntimeCapabilityV1> {
     const probe = await this.probe.findExecutable()
     if (!probe.available) return unavailable(probe.reasonCode)
+    if (!isApprovedKimiVersion(probe.version)) return unavailable('KIMI_VERSION_UNAPPROVED')
     return {
       adapterId: ADAPTER_ID,
       runtimeKind: 'KIMI',
@@ -460,11 +487,16 @@ export function kimiAcpCapabilityDigestForVersionV1(version: string | undefined)
   return digestJson({
     adapterId: ADAPTER_ID,
     protocol: 'ACP',
-    version: version ?? 'unknown',
+    engine: KIMI_ACP_ENGINE_V1,
+    approvedVersion: KIMI_ACP_APPROVED_VERSION_V1,
+    version: version === KIMI_ACP_APPROVED_VERSION_V1 ? version : 'unapproved',
     fs: 'host-mediated',
     writePermission: 'adapter-owned-allow-once-per-write',
     terminal: 'host-deny',
     promptTurns: 'strict-fifo',
+    kimiLocalToolPolicyDigest: KIMI_ACP_TOOL_POLICY_DIGEST_V1,
+    kimiLocalToolAllowlist: KIMI_ACP_TOOL_ALLOWLIST_V1,
+    kimiLegacyAgentProfileDigest: KIMI_ACP_LEGACY_AGENT_PROFILE_DIGEST_V1,
     sourceBaseline: 'task-hub@4c9f81c05310b7771d6cf320293ad3af46a256b7',
   })
 }
@@ -656,8 +688,13 @@ function unavailable(reasonCode: string): RuntimeCapabilityV1 {
   }
 }
 
+function isApprovedKimiVersion(version: string | undefined): boolean {
+  return version === KIMI_ACP_APPROVED_VERSION_V1
+}
+
 function reasonFromError(error: unknown, fallback: string): string {
   if (error instanceof KimiAcpWorkspacePolicyError) return error.reasonCode
+  if (error instanceof KimiAcpToolPolicyError) return error.reasonCode
   return fallback
 }
 

@@ -2,7 +2,7 @@ export interface AcpInitializeParamsV1 {
   protocolVersion: number
   clientCapabilities: {
     fs: { readTextFile: true; writeTextFile: true }
-    terminal: true
+    terminal: boolean
   }
   clientInfo: { name: string; version: string }
 }
@@ -76,5 +76,10 @@ export interface AcpTransportV1 {
 }
 
 export interface AcpTransportFactoryV1 {
-  create(command: string, args: readonly string[], cwd: string): AcpTransportV1
+  create(command: string, args: readonly string[], cwd: string, options?: AcpTransportCreateOptionsV1): AcpTransportV1
+}
+
+export interface AcpTransportCreateOptionsV1 {
+  env?: Readonly<Record<string, string>>
+  preSpawn?: () => void
 }

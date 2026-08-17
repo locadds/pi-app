@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { linkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -20,11 +20,13 @@ import { createAgentRuntimeContractTestHostV1, createAgentRuntimeHostV1 } from '
 import type {
   AcpRequestPermissionParamsV1,
   AcpRequestPermissionResultV1,
+  AcpTransportCreateOptionsV1,
   AcpTransportFactoryV1,
   AcpTransportStartOptionsV1,
   AcpTransportV1,
 } from './acp/types'
 import { NdjsonAcpProcessTransportV1 } from './acp/process-transport'
+import { KIMI_ACP_LEGACY_AGENT_PROFILE_CONTENT_V1 } from './acp/kimi-tool-policy'
 import { digestBytes } from './acp/workspace-policy'
 import {
   createKimiAcpRuntimeAdapterV1,
@@ -77,6 +79,24 @@ function workspace(files: Record<string, string>) {
   for (const [relativePath, content] of Object.entries(files)) {
     writeFileSync(join(root, relativePath), content)
   }
+  return root
+}
+
+function isolatedKimiCodeHome() {
+  const root = mkdtempSync(join(tmpdir(), 'xiaogui-kimi-home-'))
+  roots.push(root)
+  writeFileSync(join(root, 'config.toml'), '[tools]\nenabled = ["Read", "Write", "Edit", "TodoList"]\n')
+  mkdirSync(join(root, 'agents'))
+  writeFileSync(join(root, 'agents', 'agent.md'), KIMI_ACP_LEGACY_AGENT_PROFILE_CONTENT_V1)
+  return root
+}
+
+function configuredKimiCodeHome(config: string | null) {
+  const root = mkdtempSync(join(tmpdir(), 'xiaogui-kimi-home-'))
+  roots.push(root)
+  if (config !== null) writeFileSync(join(root, 'config.toml'), `[tools]\n${config}`)
+  mkdirSync(join(root, 'agents'))
+  writeFileSync(join(root, 'agents', 'agent.md'), KIMI_ACP_LEGACY_AGENT_PROFILE_CONTENT_V1)
   return root
 }
 
@@ -133,11 +153,12 @@ function messageRef(text = 'guidance text'): RuntimeMessageEnvelopeRefV1 {
   }
 }
 
-function resolver(rootPath: string, allowed = ['a.txt'], resumeSessionId?: string): KimiAcpWorkspaceResolverV1 {
+function resolver(rootPath: string, allowed = ['a.txt'], resumeSessionId?: string, kimiCodeHome = isolatedKimiCodeHome()): KimiAcpWorkspaceResolverV1 {
   return {
     async resolve() {
       return {
         rootPath,
+        kimiCodeHome,
         allowedFiles: allowed.map((relativePath) => ({
           relativePath,
           contentDigest: digestBytes(Buffer.from(readFileSync(join(rootPath, relativePath)))),
@@ -181,10 +202,11 @@ function payloadResolver(text = 'edit safely'): TrustedRuntimePayloadResolverV1 
 }
 
 class FakeProbe {
-  constructor(private readonly available = true) {}
+  constructor(private readonly available = true, private readonly version: string | null = '0.34.0') {}
 
   async findExecutable() {
-    return this.available ? ({ available: true as const, command: 'kimi', version: '0.34.0' }) : ({ available: false as const, reasonCode: 'EXECUTABLE_NOT_FOUND' })
+    if (!this.available) return { available: false as const, reasonCode: 'EXECUTABLE_NOT_FOUND' }
+    return this.version === null ? { available: true as const, command: 'kimi' } : { available: true as const, command: 'kimi', version: this.version }
   }
 }
 
@@ -200,9 +222,13 @@ class FakeAcpTransport implements AcpTransportV1 {
   disposeCalls = 0
   permissionPromise?: Promise<AcpRequestPermissionResultV1>
 
-  constructor(private readonly script?: (transport: FakeAcpTransport, sessionId: string) => Promise<void> | void) {}
+  constructor(
+    private readonly script?: (transport: FakeAcpTransport, sessionId: string) => Promise<void> | void,
+    private readonly createOptions?: AcpTransportCreateOptionsV1,
+  ) {}
 
   async start(options: AcpTransportStartOptionsV1) {
+    this.createOptions?.preSpawn?.()
     this.startOptions = options
     return { protocolVersion: 1, agentInfo: { name: 'Kimi', version: '0.34.0' }, agentCapabilities: { loadSession: true } }
   }
@@ -257,11 +283,17 @@ class FakeAcpTransport implements AcpTransportV1 {
 
 class FakeTransportFactory implements AcpTransportFactoryV1 {
   readonly transports: FakeAcpTransport[] = []
+  readonly createCalls: Array<{ command: string; args: readonly string[]; cwd: string; env?: Readonly<Record<string, string>> }> = []
 
-  constructor(private readonly script?: (transport: FakeAcpTransport, sessionId: string) => Promise<void> | void) {}
+  constructor(
+    private readonly script?: (transport: FakeAcpTransport, sessionId: string) => Promise<void> | void,
+    private readonly onCreate?: () => void,
+  ) {}
 
-  create(): AcpTransportV1 {
-    const transport = new FakeAcpTransport(this.script)
+  create(command: string, args: readonly string[], cwd: string, options?: AcpTransportCreateOptionsV1): AcpTransportV1 {
+    this.createCalls.push({ command, args, cwd, env: options?.env })
+    this.onCreate?.()
+    const transport = new FakeAcpTransport(this.script, options)
     this.transports.push(transport)
     return transport
   }
@@ -325,6 +357,36 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       reasonCode: 'RUNTIME_CONTRACT_TEST_REQUEST_NOT_ALLOWED',
     })
     expect(factory.transports).toHaveLength(0)
+  })
+
+  it('fails closed for unknown or non-0.34.0 Kimi versions before transport creation', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const cases = [
+      { name: 'unknown', version: null },
+      { name: 'older', version: '0.33.9' },
+      { name: 'newer', version: '0.34.1' },
+    ]
+
+    for (const item of cases) {
+      const factory = new FakeTransportFactory()
+      const adapter = new KimiAcpRuntimeAdapterV1({
+        payloadResolver: payloadResolver(),
+        workspaceResolver: resolver(root),
+        probe: new FakeProbe(true, item.version),
+        transportFactory: factory,
+      })
+
+      await expect(adapter.discover()).resolves.toMatchObject([{
+        health: 'UNAVAILABLE',
+        canCreateSession: false,
+        reasonCode: 'KIMI_VERSION_UNAPPROVED',
+      }])
+      await expect(adapter.createOrResume(request(root, 'edit safely', { requestId: `req-version-${item.name}` }))).resolves.toMatchObject({
+        state: 'FAILED',
+        reasonCode: 'KIMI_VERSION_UNAPPROVED',
+      })
+      expect(factory.transports).toHaveLength(0)
+    }
   })
 
   it('runs through the contract test Host and fails closed for invalid test policies', async () => {
@@ -412,8 +474,104 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     }
   })
 
+  it('fails closed before transport creation when the trusted KIMI_CODE_HOME policy is missing', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const factory = new FakeTransportFactory()
+    const adapter = new KimiAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver(),
+      workspaceResolver: {
+        async resolve() {
+          return {
+            rootPath: root,
+            allowedFiles: [{
+              relativePath: 'a.txt',
+              contentDigest: digestBytes(Buffer.from(readFileSync(join(root, 'a.txt')))),
+            }],
+          }
+        },
+      },
+      probe: new FakeProbe(),
+      transportFactory: factory,
+    })
+
+    await expect(adapter.createOrResume(request(root))).resolves.toMatchObject({
+      state: 'FAILED',
+      reasonCode: 'KIMI_TOOL_POLICY_HOME_MISSING',
+    })
+    expect(factory.transports).toHaveLength(0)
+  })
+
+  it('fails closed before transport creation when the trusted KIMI_CODE_HOME policy drifts', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const cases = [
+      { name: 'relative', kimiCodeHome: 'relative-home', reasonCode: 'KIMI_TOOL_POLICY_HOME_NOT_ABSOLUTE' },
+      { name: 'missing-config', kimiCodeHome: configuredKimiCodeHome(null), reasonCode: 'KIMI_TOOL_POLICY_CONFIG_MISSING' },
+      { name: 'extra-bash', kimiCodeHome: configuredKimiCodeHome('enabled = ["Read", "Write", "Edit", "TodoList", "Bash"]\n'), reasonCode: 'KIMI_TOOL_POLICY_TOOL_FORBIDDEN' },
+      { name: 'unknown-tool', kimiCodeHome: configuredKimiCodeHome('enabled = ["Read", "Write", "Edit", "TodoList", "FutureTool"]\n'), reasonCode: 'KIMI_TOOL_POLICY_TOOL_FORBIDDEN' },
+      { name: 'incomplete', kimiCodeHome: configuredKimiCodeHome('enabled = ["Read", "Write", "Edit"]\n'), reasonCode: 'KIMI_TOOL_POLICY_ALLOWLIST_INCOMPLETE' },
+      { name: 'order-drift', kimiCodeHome: configuredKimiCodeHome('enabled = ["TodoList", "Edit", "Write", "Read"]\n'), reasonCode: 'KIMI_TOOL_POLICY_ALLOWLIST_DRIFT' },
+    ]
+
+    for (const item of cases) {
+      const factory = new FakeTransportFactory()
+      const adapter = new KimiAcpRuntimeAdapterV1({
+        payloadResolver: payloadResolver(),
+        workspaceResolver: resolver(root, ['a.txt'], undefined, item.kimiCodeHome),
+        probe: new FakeProbe(),
+        transportFactory: factory,
+      })
+
+      await expect(adapter.createOrResume(request(root, `edit safely ${item.name}`, { requestId: `req-kimi-home-${item.name}` }))).resolves.toMatchObject({
+        state: 'FAILED',
+        reasonCode: item.reasonCode,
+      })
+      expect(factory.transports).toHaveLength(0)
+    }
+  })
+
+  it('fails closed before ACP start when the trusted KIMI_CODE_HOME config changes after policy preparation', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    const cases = [
+      {
+        name: 'content',
+        reasonCode: 'KIMI_TOOL_POLICY_CONFIG_CONTENT_CHANGED',
+        mutate(home: string) {
+          writeFileSync(join(home, 'config.toml'), '[tools]\nenabled = ["Read", "Write", "Edit", "TodoList", "Bash"]\n')
+        },
+      },
+      {
+        name: 'identity',
+        reasonCode: 'KIMI_TOOL_POLICY_CONFIG_IDENTITY_CHANGED',
+        mutate(home: string) {
+          unlinkSync(join(home, 'config.toml'))
+          writeFileSync(join(home, 'config.toml'), '[tools]\nenabled = ["Read", "Write", "Edit", "TodoList"]\n')
+        },
+      },
+    ]
+
+    for (const item of cases) {
+      const kimiCodeHome = isolatedKimiCodeHome()
+      const factory = new FakeTransportFactory(undefined, () => item.mutate(kimiCodeHome))
+      const adapter = new KimiAcpRuntimeAdapterV1({
+        payloadResolver: payloadResolver(`edit safely ${item.name}`),
+        workspaceResolver: resolver(root, ['a.txt'], undefined, kimiCodeHome),
+        probe: new FakeProbe(),
+        transportFactory: factory,
+      })
+
+      await expect(adapter.createOrResume(request(root, `edit safely ${item.name}`, { requestId: `req-pre-spawn-${item.name}` }))).resolves.toMatchObject({
+        state: 'FAILED',
+        reasonCode: item.reasonCode,
+      })
+      expect(factory.transports).toHaveLength(1)
+      expect(factory.transports[0].startOptions).toBeUndefined()
+      expect(factory.transports[0].newSessionCalls).toBe(0)
+    }
+  })
+
   it('declares mediated fs and terminal, reads/writes only allowlisted files, and emits candidate digest without public paths', async () => {
     const root = workspace({ 'a.txt': 'before' })
+    const kimiCodeHome = isolatedKimiCodeHome()
     const factory = new FakeTransportFactory(async (transport) => {
       expect(await transport.reverse('fs/read_text_file', { path: 'a.txt' })).toEqual({ content: 'before' })
       expect(await transport.reverse('fs/read_text_file', { path: join(root, 'a.txt') })).toEqual({ content: 'before' })
@@ -424,47 +582,81 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     })
     const adapter = new KimiAcpRuntimeAdapterV1({
       payloadResolver: payloadResolver(),
-      workspaceResolver: resolver(root),
+      workspaceResolver: resolver(root, ['a.txt'], undefined, kimiCodeHome),
       probe: new FakeProbe(),
       transportFactory: factory,
     })
+    const previousKimiCodeHome = process.env.KIMI_CODE_HOME
+    const previousKimiLegacyFlag = process.env.KIMI_CODE_LEGACY_FLAG
+    const previousHome = process.env.HOME
+    const previousUserProfile = process.env.USERPROFILE
+    process.env.KIMI_CODE_HOME = join(tmpdir(), 'xiaogui-inherited-kimi-home')
+    process.env.KIMI_CODE_LEGACY_FLAG = '0'
+    process.env.HOME = join(tmpdir(), 'xiaogui-inherited-home')
+    process.env.USERPROFILE = join(tmpdir(), 'xiaogui-inherited-userprofile')
 
-    const created = await adapter.createOrResume(request(root))
-    expect(created).toMatchObject({ state: 'READY' })
-    const transport = factory.transports[0]
-    expect(transport.startOptions?.initialize.clientCapabilities).toEqual({
-      fs: { readTextFile: true, writeTextFile: true },
-      terminal: true,
-    })
+    try {
+      const created = await adapter.createOrResume(request(root))
+      expect(created).toMatchObject({ state: 'READY' })
+      expect(factory.createCalls[0]).toMatchObject({
+        args: ['acp'],
+        cwd: root,
+        env: {
+          KIMI_CODE_HOME: kimiCodeHome,
+          KIMI_CODE_LEGACY_FLAG: '1',
+          HOME: kimiCodeHome,
+          USERPROFILE: kimiCodeHome,
+        },
+      })
+      expect(factory.createCalls[0].env).not.toMatchObject({ KIMI_CODE_HOME: process.env.KIMI_CODE_HOME })
+      expect(factory.createCalls[0].env).not.toMatchObject({ KIMI_CODE_LEGACY_FLAG: process.env.KIMI_CODE_LEGACY_FLAG })
+      expect(factory.createCalls[0].env).not.toMatchObject({ HOME: process.env.HOME })
+      expect(factory.createCalls[0].env).not.toMatchObject({ USERPROFILE: process.env.USERPROFILE })
+      const transport = factory.transports[0]
+      expect(transport.startOptions?.initialize.clientCapabilities).toEqual({
+        fs: { readTextFile: true, writeTextFile: true },
+        terminal: false,
+      })
 
-    await tick()
-    let events = await collect(adapter.stream(created.runtimeSessionId, 0))
-    const permission = events.find((event): event is Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> => event.type === 'PERMISSION_REQUESTED')
-    if (!permission) throw new Error('write permission missing')
-    await expect(adapter.permission({
-      type: 'ALLOW_ONCE',
-      permissionRequestId: permission.permissionRequestId,
-      challengeDigest: permission.challengeDigest,
-      decisionRequestId: 'decision-write-direct',
-      scope: request(root).scope,
-      runtimeSessionId: created.runtimeSessionId,
-      proofId: 'proof-write-direct',
-      proofDigest: 'sha256:proof-write-direct',
-    })).resolves.toEqual({ accepted: true })
-    await tick()
-    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('after')
-    const runtimeSessionId = created.runtimeSessionId
-    events = await collect(adapter.stream(runtimeSessionId, 0))
-    expect(events.map((event) => event.type)).toEqual(['SESSION_READY', 'PERMISSION_REQUESTED', 'CANDIDATE_PRODUCED', 'RUNTIME_SETTLED'])
-    expect(JSON.stringify(events)).not.toContain(root)
-    await expect(adapter.inspect(runtimeSessionId)).resolves.toMatchObject({ state: 'SUCCEEDED' })
-    await expect(adapter.send({
-      requestId: 'send-after-success',
-      runtimeSessionId,
-      messageKind: 'GUIDANCE',
-      messageEnvelopeRef: messageRef(),
-    })).resolves.toEqual({ accepted: false, reasonCode: 'RUNTIME_ALREADY_SETTLED' })
-    expect(transport.disposeCalls).toBe(1)
+      await tick()
+      let events = await collect(adapter.stream(created.runtimeSessionId, 0))
+      const permission = events.find((event): event is Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> => event.type === 'PERMISSION_REQUESTED')
+      if (!permission) throw new Error('write permission missing')
+      await expect(adapter.permission({
+        type: 'ALLOW_ONCE',
+        permissionRequestId: permission.permissionRequestId,
+        challengeDigest: permission.challengeDigest,
+        decisionRequestId: 'decision-write-direct',
+        scope: request(root).scope,
+        runtimeSessionId: created.runtimeSessionId,
+        proofId: 'proof-write-direct',
+        proofDigest: 'sha256:proof-write-direct',
+      })).resolves.toEqual({ accepted: true })
+      await tick()
+      expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('after')
+      const runtimeSessionId = created.runtimeSessionId
+      events = await collect(adapter.stream(runtimeSessionId, 0))
+      expect(events.map((event) => event.type)).toEqual(['SESSION_READY', 'PERMISSION_REQUESTED', 'CANDIDATE_PRODUCED', 'RUNTIME_SETTLED'])
+      expect(JSON.stringify(events)).not.toContain(root)
+      expect(JSON.stringify(events)).not.toContain(kimiCodeHome)
+      await expect(adapter.inspect(runtimeSessionId)).resolves.toMatchObject({ state: 'SUCCEEDED' })
+      await expect(adapter.send({
+        requestId: 'send-after-success',
+        runtimeSessionId,
+        messageKind: 'GUIDANCE',
+        messageEnvelopeRef: messageRef(),
+      })).resolves.toEqual({ accepted: false, reasonCode: 'RUNTIME_ALREADY_SETTLED' })
+      expect(transport.disposeCalls).toBe(1)
+    } finally {
+      if (previousKimiCodeHome === undefined) delete process.env.KIMI_CODE_HOME
+      else process.env.KIMI_CODE_HOME = previousKimiCodeHome
+      if (previousKimiLegacyFlag === undefined) delete process.env.KIMI_CODE_LEGACY_FLAG
+      else process.env.KIMI_CODE_LEGACY_FLAG = previousKimiLegacyFlag
+      if (previousHome === undefined) delete process.env.HOME
+      else process.env.HOME = previousHome
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE
+      else process.env.USERPROFILE = previousUserProfile
+    }
   })
 
   it('requires an adapter-owned ALLOW_ONCE write challenge before a no-vendor-challenge fs write is committed', async () => {
@@ -1024,7 +1216,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       initialize: {
         protocolVersion: 1,
         clientInfo: { name: 'xiaogui-test', version: '0.0.0' },
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
+        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },
       },
       requestHandlers: new Map(),
       onSessionUpdate() {},
