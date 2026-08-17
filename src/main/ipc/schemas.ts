@@ -211,6 +211,7 @@ const settingsValueSchemas: Record<string, z.ZodTypeAny> = {
       distro: z.string().nullable(),
     })
     .strict(),
+  xiaoguiKimiProductionEnabled: z.boolean(),
 }
 
 export const settingsSetSchema = z

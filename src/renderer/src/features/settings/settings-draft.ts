@@ -61,6 +61,7 @@ export type SettingsDraft = {
   rightPanelOrder: string[]
   asrConfig: AsrConfig
   agentRuntime: AgentRuntimeChoice
+  xiaoguiKimiProductionEnabled: boolean
 }
 
 function normalizeLanguage(raw: unknown, fallback: LanguageChoice): LanguageChoice {
@@ -131,6 +132,7 @@ export function draftSignature(d: SettingsDraft): string {
     rightPanelOrder: d.rightPanelOrder,
     asrConfig: normalizeAsrForSignature(d.asrConfig),
     agentRuntime: d.agentRuntime,
+    xiaoguiKimiProductionEnabled: d.xiaoguiKimiProductionEnabled,
   })
 }
 
@@ -172,6 +174,7 @@ export async function loadSettingsDraftFromDisk(i18nLanguage: string): Promise<S
     rightPanelOrder: order,
     asrConfig: asrConfigFromSettingsResponse((s.asrConfig || {}) as AsrConfig),
     agentRuntime: normalizeAgentRuntime(s.agentRuntime),
+    xiaoguiKimiProductionEnabled: s.xiaoguiKimiProductionEnabled === true,
   }
 }
 
@@ -319,6 +322,10 @@ export async function commitSettingsDraft(draft: SettingsDraft, i18n: I18n): Pro
   draft.asrConfig = savedAsr
 
   await ipcClient.invoke('settings.set', { key: 'agentRuntime', value: draft.agentRuntime })
+  await ipcClient.invoke('settings.set', {
+    key: 'xiaoguiKimiProductionEnabled',
+    value: draft.xiaoguiKimiProductionEnabled,
+  })
 
   useUIStore.getState().setTheme(draft.theme)
   applyIconTheme(draft.iconTheme)

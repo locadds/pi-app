@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@renderer/lib/utils'
 import { ipcClient } from '@renderer/lib/ipc-client'
-import { SettingRow, SettingsSection } from './settings-page-shared'
+import { ConfirmDialog } from './confirm-dialog'
+import { SettingRow, SettingsSection, Toggle } from './settings-page-shared'
 import { selectCls, btnOutline } from './settings-controls'
 import { useSettingsDraft } from './settings-draft-context'
 
@@ -21,11 +22,12 @@ type WslProbeResult = {
 
 export function RuntimeSettingsPanel() {
   const { t } = useTranslation()
-  const { draft, setAgentRuntime } = useSettingsDraft()
+  const { draft, setAgentRuntime, setXiaoguiKimiProductionEnabled } = useSettingsDraft()
   const isWindows = useMemo(() => (window.piDesktop?.platform ?? '') === 'win32', [])
   const [distros, setDistros] = useState<WslDistroInfo[]>([])
   const [probe, setProbe] = useState<WslProbeResult | null>(null)
   const [probeState, setProbeState] = useState<'idle' | 'checking'>('idle')
+  const [confirmingKimiEnablement, setConfirmingKimiEnablement] = useState(false)
 
   const runtime = draft.agentRuntime
 
@@ -61,79 +63,113 @@ export function RuntimeSettingsPanel() {
   const selectedExists = distros.some((d) => d.name === runtime.distro)
 
   return (
-    <SettingsSection title={t('settings:runtime.sectionAgentRuntime')} description={t('settings:runtime.sectionAgentRuntimeDesc')}>
-      <SettingRow label={t('settings:runtime.mode')} description={t('settings:runtime.modeDesc')}>
-        <select
-          className={cn(selectCls, 'min-w-[min(220px,60vw)]')}
-          value={runtime.mode}
-          onChange={(e) => {
-            const mode = e.target.value as 'host' | 'wsl'
-            setAgentRuntime({
-              mode,
-              distro: mode === 'wsl' && runtime.distro ? runtime.distro : null,
-            })
-          }}
-        >
-          <option value="host">{t('settings:runtime.modeHost')}</option>
-          <option value="wsl" disabled={!isWindows}>
-            {t('settings:runtime.modeWsl')}
-          </option>
-        </select>
-      </SettingRow>
-
-      {!isWindows && (
-        <SettingRow label={t('settings:runtime.platformUnavailable')} description={t('settings:runtime.platformUnavailableDesc')}>
-          <span className="text-xs text-muted-foreground/70">{window.piDesktop?.platform ?? 'unknown'}</span>
+    <div className="space-y-6">
+      <SettingsSection title={t('settings:runtime.sectionAgentRuntime')} description={t('settings:runtime.sectionAgentRuntimeDesc')}>
+        <SettingRow label={t('settings:runtime.mode')} description={t('settings:runtime.modeDesc')}>
+          <select
+            className={cn(selectCls, 'min-w-[min(220px,60vw)]')}
+            value={runtime.mode}
+            onChange={(e) => {
+              const mode = e.target.value as 'host' | 'wsl'
+              setAgentRuntime({
+                mode,
+                distro: mode === 'wsl' && runtime.distro ? runtime.distro : null,
+              })
+            }}
+          >
+            <option value="host">{t('settings:runtime.modeHost')}</option>
+            <option value="wsl" disabled={!isWindows}>
+              {t('settings:runtime.modeWsl')}
+            </option>
+          </select>
         </SettingRow>
-      )}
 
-      {runtime.mode === 'wsl' && isWindows && (
-        <>
-          <SettingRow label={t('settings:runtime.distro')} description={t('settings:runtime.distroDesc')}>
-            <select
-              className={cn(selectCls, 'min-w-[min(220px,60vw)]')}
-              value={runtime.distro ?? ''}
-              onChange={(e) => setAgentRuntime({ mode: 'wsl', distro: e.target.value || null })}
-            >
-              <option value="">{t('settings:runtime.distroNone')}</option>
-              {distros.map((d) => (
-                <option key={d.name} value={d.name}>
-                  {d.name}
-                  {d.isDefault ? ` (${t('settings:runtime.distroDefault')})` : ''}
-                  {typeof d.version === 'number' ? ` (WSL${d.version})` : ''}
-                </option>
-              ))}
-            </select>
+        {!isWindows && (
+          <SettingRow label={t('settings:runtime.platformUnavailable')} description={t('settings:runtime.platformUnavailableDesc')}>
+            <span className="text-xs text-muted-foreground/70">{window.piDesktop?.platform ?? 'unknown'}</span>
           </SettingRow>
+        )}
 
-          {runtime.distro && !selectedExists && (
-            <SettingRow label={t('settings:runtime.distroMissing')} description={t('settings:runtime.distroMissingDesc', { distro: runtime.distro })}>
-              <span className="text-xs text-destructive/80">{t('settings:runtime.distroMissingLabel')}</span>
-            </SettingRow>
-          )}
-
-          {runtime.distro && (
-            <SettingRow label={t('settings:runtime.probe')} description={probeStatusText(probe, probeState, t)}>
-              <button
-                type="button"
-                className={cn(btnOutline, 'text-xs')}
-                disabled={probeState === 'checking'}
-                onClick={() => {
-                  setProbeState('checking')
-                  void ipcClient
-                    .invoke('wsl.probeDistro', { distro: runtime.distro })
-                    .then((res) => setProbe((res?.result as WslProbeResult | undefined) ?? null))
-                    .catch(() => setProbe(null))
-                    .finally(() => setProbeState('idle'))
-                }}
+        {runtime.mode === 'wsl' && isWindows && (
+          <>
+            <SettingRow label={t('settings:runtime.distro')} description={t('settings:runtime.distroDesc')}>
+              <select
+                className={cn(selectCls, 'min-w-[min(220px,60vw)]')}
+                value={runtime.distro ?? ''}
+                onChange={(e) => setAgentRuntime({ mode: 'wsl', distro: e.target.value || null })}
               >
-                {t('settings:runtime.probeButton')}
-              </button>
+                <option value="">{t('settings:runtime.distroNone')}</option>
+                {distros.map((d) => (
+                  <option key={d.name} value={d.name}>
+                    {d.name}
+                    {d.isDefault ? ` (${t('settings:runtime.distroDefault')})` : ''}
+                    {typeof d.version === 'number' ? ` (WSL${d.version})` : ''}
+                  </option>
+                ))}
+              </select>
             </SettingRow>
-          )}
-        </>
-      )}
-    </SettingsSection>
+
+            {runtime.distro && !selectedExists && (
+              <SettingRow label={t('settings:runtime.distroMissing')} description={t('settings:runtime.distroMissingDesc', { distro: runtime.distro })}>
+                <span className="text-xs text-destructive/80">{t('settings:runtime.distroMissingLabel')}</span>
+              </SettingRow>
+            )}
+
+            {runtime.distro && (
+              <SettingRow label={t('settings:runtime.probe')} description={probeStatusText(probe, probeState, t)}>
+                <button
+                  type="button"
+                  className={cn(btnOutline, 'text-xs')}
+                  disabled={probeState === 'checking'}
+                  onClick={() => {
+                    setProbeState('checking')
+                    void ipcClient
+                      .invoke('wsl.probeDistro', { distro: runtime.distro })
+                      .then((res) => setProbe((res?.result as WslProbeResult | undefined) ?? null))
+                      .catch(() => setProbe(null))
+                      .finally(() => setProbeState('idle'))
+                  }}
+                >
+                  {t('settings:runtime.probeButton')}
+                </button>
+              </SettingRow>
+            )}
+          </>
+        )}
+      </SettingsSection>
+
+      <SettingsSection
+        title={t('settings:runtime.sectionXiaoguiTaskExecution')}
+        description={t('settings:runtime.sectionXiaoguiTaskExecutionDesc')}
+      >
+        <SettingRow
+          label={t('settings:runtime.xiaoguiKimiProductionEnabled')}
+          description={t('settings:runtime.xiaoguiKimiProductionEnabledDesc')}
+        >
+          <Toggle
+            on={draft.xiaoguiKimiProductionEnabled}
+            onChange={(enabled) => {
+              if (enabled) {
+                setConfirmingKimiEnablement(true)
+                return
+              }
+              setXiaoguiKimiProductionEnabled(false)
+            }}
+          />
+        </SettingRow>
+      </SettingsSection>
+
+      <ConfirmDialog
+        open={confirmingKimiEnablement}
+        title={t('settings:runtime.xiaoguiKimiEnableConfirmTitle')}
+        message={t('settings:runtime.xiaoguiKimiEnableConfirmMessage')}
+        onConfirm={() => {
+          setConfirmingKimiEnablement(false)
+          setXiaoguiKimiProductionEnabled(true)
+        }}
+        onCancel={() => setConfirmingKimiEnablement(false)}
+      />
+    </div>
   )
 }
 

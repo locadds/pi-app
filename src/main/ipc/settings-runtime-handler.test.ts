@@ -138,3 +138,27 @@ describe('agent runtime settings transaction', () => {
     expect(mocks.configSet).toHaveBeenCalledWith('agentRuntime', { mode: 'host', distro: null })
   })
 })
+
+describe('xiaogui Kimi production runtime setting', () => {
+  it('should_persist_an_explicit_boolean_value', async () => {
+    await expect(
+      mocks.handlers.get('ipc:settings.set')!({
+        key: 'xiaoguiKimiProductionEnabled',
+        value: true,
+      }),
+    ).resolves.toEqual({ key: 'xiaoguiKimiProductionEnabled', value: true })
+
+    expect(mocks.configSet).toHaveBeenCalledWith('xiaoguiKimiProductionEnabled', true)
+  })
+
+  it('should_reject_a_non_boolean_value_without_persisting_it', async () => {
+    await expect(
+      mocks.handlers.get('ipc:settings.set')!({
+        key: 'xiaoguiKimiProductionEnabled',
+        value: 'true',
+      }),
+    ).rejects.toThrow('XIAOGUI_KIMI_PRODUCTION_ENABLED_INVALID')
+
+    expect(mocks.configSet).not.toHaveBeenCalled()
+  })
+})

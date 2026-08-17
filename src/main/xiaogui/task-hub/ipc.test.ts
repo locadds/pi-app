@@ -18,6 +18,7 @@ import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (payload: unknown) => Promise<unknown>>(),
   getElectronPath: vi.fn(() => 'D:/fake-xiaogui-user-data'),
+  kimiProductionEnabled: false,
   scopeLookup: { lookup: vi.fn() },
   runtimeCompositions: [] as Array<{
     application: { generation: number }
@@ -47,6 +48,14 @@ vi.mock('../../ipc/registry', () => ({
   }),
 }))
 
+vi.mock('../../config-store', () => ({
+  configStore: {
+    get: vi.fn((key: string) =>
+      key === 'xiaoguiKimiProductionEnabled' ? mocks.kimiProductionEnabled : undefined,
+    ),
+  },
+}))
+
 vi.mock('../scope-service', () => ({
   sessionScopeResolverV1: mocks.scopeLookup,
 }))
@@ -66,6 +75,7 @@ afterEach(async () => {
   await closeDefaultCollaborationHubRuntimeComposition()
   mocks.handlers.clear()
   mocks.runtimeCompositions.splice(0)
+  mocks.kimiProductionEnabled = false
   vi.clearAllMocks()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
@@ -106,7 +116,7 @@ async function appFor(dbPath: string) {
 }
 
 describe('M2A collaboration hub IPC adapter', () => {
-  it('lazily owns one disabled runtime composition and rebuilds it only after close', async () => {
+  it('snapshots the trusted enablement setting when lazily creating each runtime composition', async () => {
     expect(mocks.getElectronPath).not.toHaveBeenCalled()
     expect(mocks.createRuntimeComposition).not.toHaveBeenCalled()
 
@@ -124,12 +134,21 @@ describe('M2A collaboration hub IPC adapter', () => {
     expect(getDefaultCollaborationHubApplication()).toBe(firstApplication)
     expect(mocks.createRuntimeComposition).toHaveBeenCalledOnce()
 
+    mocks.kimiProductionEnabled = true
+    expect(getDefaultCollaborationHubApplication()).toBe(firstApplication)
+    expect(mocks.createRuntimeComposition).toHaveBeenCalledOnce()
+
     await closeDefaultCollaborationHubRuntimeComposition()
     await closeDefaultCollaborationHubRuntimeComposition()
     expect(firstComposition.close).toHaveBeenCalledOnce()
 
     expect(getDefaultCollaborationHubApplication()).not.toBe(firstApplication)
     expect(mocks.createRuntimeComposition).toHaveBeenCalledTimes(2)
+    expect(mocks.createRuntimeComposition).toHaveBeenLastCalledWith({
+      userDataDir: 'D:/fake-xiaogui-user-data',
+      productionEnabled: true,
+      lookup: mocks.scopeLookup,
+    })
   })
 
   it('matches Direct outputs for the same observe/perform/readEvents fixture', async () => {
