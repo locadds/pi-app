@@ -117,6 +117,36 @@ describe('XiaoguiDeliveryWorkflowV1', () => {
     expect(store.trace).toContain('complete-apply:OUTCOME_UNKNOWN')
   })
 
+  it('resumes a claimed apply during reconcile when the started registry record is missing', async () => {
+    const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
+    store.installAppliedChangeSet()
+    store.projection = {
+      ...store.projection,
+      state: 'APPLYING',
+      applyAttempt: {
+        applyAttemptId: 'apply-1' as DeliveryApplyAttemptId,
+        batchId: store.batchId,
+        deliveryChangeSetId: store.deliveryChangeSetId,
+        requestDigest: 'sha256:req' as Sha256Digest,
+        targetFingerprintBefore: 'sha256:target' as Sha256Digest,
+        state: 'STARTED',
+        startedAt: '2026-08-18T00:00:00.000Z' as never,
+      },
+    }
+    const applyPort = recordingApplyPort({ inspectErrorCode: 'APPLY_ATTEMPT_NOT_FOUND' })
+    const workflow = workflowFor(store, 'repo', 'managed', applyPort)
+
+    const outcome = await workflow.reconcileApply(ADDRESS, {
+      requestId: 'reconcile-resume',
+      batchId: store.batchId,
+      applyAttemptId: 'apply-1' as DeliveryApplyAttemptId,
+    })
+
+    expect(outcome.ok).toBe(true)
+    expect(applyPort.applies).toHaveLength(1)
+    expect(store.trace).toContain('complete-apply:SUCCEEDED')
+  })
+
   it('recovers READY and CLAIMED delivery verification outboxes to terminal UNKNOWN when the port throws', async () => {
     const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
     store.installPendingVerificationOutboxes()
@@ -134,6 +164,18 @@ describe('XiaoguiDeliveryWorkflowV1', () => {
 
     expect(store.trace).toContain('claim-verification')
     expect(store.trace.filter((item) => item === 'complete-verification:OUTCOME_UNKNOWN')).toHaveLength(2)
+  })
+
+  it('resumes claimed apply recovery when the started registry record is missing', async () => {
+    const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
+    store.installPendingApplyOutbox('CLAIMED')
+    const applyPort = recordingApplyPort({ inspectErrorCode: 'APPLY_ATTEMPT_NOT_FOUND' })
+    const workflow = workflowFor(store, 'repo', 'managed', applyPort)
+
+    await workflow.recover()
+
+    expect(applyPort.applies).toHaveLength(1)
+    expect(store.trace).toContain('complete-apply:SUCCEEDED')
   })
 
   it('waits for in-flight work before closing the store and rejects new calls while closing', async () => {
@@ -180,6 +222,33 @@ describe('XiaoguiDeliveryWorkflowV1', () => {
 
     await rm(root, { recursive: true, force: true })
   })
+
+  it('waits for startup recovery before closing the store', async () => {
+    const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
+    store.installPendingVerificationOutboxes()
+    const verification = deferredPassVerificationPort()
+    const workflow = workflowFor(
+      store,
+      'repo',
+      'managed',
+      recordingApplyPort(),
+      undefined,
+      undefined,
+      verification.port,
+    )
+
+    const recovery = workflow.recover()
+    await waitForTrace(store, 'claim-verification')
+    const close = workflow.close()
+    expect(store.trace).not.toContain('close')
+
+    verification.resolve()
+    await recovery
+    await close
+
+    expect(store.trace).toContain('complete-verification:PASS')
+    expect(store.trace.at(-1)).toBe('close')
+  })
 })
 
 class FakeDeliveryStore {
@@ -203,6 +272,15 @@ class FakeDeliveryStore {
     address: HubAddressV1
     outbox: {
       verificationAttemptId: string
+      requestDigest: Sha256Digest
+      requestJson: string
+      status: 'READY' | 'CLAIMED'
+    }
+  }> = []
+  pendingApplyOutboxes: Array<{
+    address: HubAddressV1
+    outbox: {
+      applyAttemptId: DeliveryApplyAttemptId
       requestDigest: Sha256Digest
       requestJson: string
       status: 'READY' | 'CLAIMED'
@@ -362,7 +440,7 @@ class FakeDeliveryStore {
   }
 
   pendingDeliveryApplyOutboxes() {
-    return []
+    return this.pendingApplyOutboxes
   }
 
   close(): void {
@@ -404,6 +482,19 @@ class FakeDeliveryStore {
         },
       },
     ]
+  }
+
+  installPendingApplyOutbox(status: 'READY' | 'CLAIMED'): void {
+    this.installAppliedChangeSet()
+    this.pendingApplyOutboxes = [{
+      address: ADDRESS,
+      outbox: {
+        applyAttemptId: 'apply-1' as DeliveryApplyAttemptId,
+        requestDigest: 'sha256:req' as Sha256Digest,
+        requestJson: '{}',
+        status,
+      },
+    }]
   }
 
   private deliveryChangeSet() {
@@ -527,7 +618,7 @@ function passVerificationResult(
   return { receipt: { ...withoutDigest, receiptDigest: verificationReceiptDigestV1(withoutDigest) }, artifacts: [evidence] }
 }
 
-function recordingApplyPort(options: { inspectThrows?: boolean } = {}): DeliveryApplyPortV1 & { applies: unknown[] } {
+function recordingApplyPort(options: { inspectThrows?: boolean; inspectErrorCode?: string } = {}): DeliveryApplyPortV1 & { applies: unknown[] } {
   const applies: unknown[] = []
   return {
     applies,
@@ -543,6 +634,9 @@ function recordingApplyPort(options: { inspectThrows?: boolean } = {}): Delivery
       return { ...withoutDigest, receiptDigest: `sha256:${'c'.repeat(64)}` as Sha256Digest } satisfies DeliveryApplyReceiptV1
     },
     inspect: async (applyAttemptId) => {
+      if (options.inspectErrorCode) {
+        throw Object.assign(new Error(options.inspectErrorCode), { reasonCode: options.inspectErrorCode })
+      }
       if (options.inspectThrows) throw new Error('missing')
       return {
         applyAttemptId,

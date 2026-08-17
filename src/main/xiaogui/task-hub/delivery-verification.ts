@@ -2,14 +2,10 @@ import { createHash } from 'node:crypto'
 
 import type { AttemptId, TaskRunId } from '@shared/xiaogui-collaboration-hub'
 import {
-  deliveryTargetFingerprintV1,
-  deliveryVerificationRequestDigestV1,
   deliveryVerificationReceiptDigestV1,
   type DeliveryBatchId,
   type DeliveryChangeSetV1,
-  type DeliveryTargetV1,
   type DeliveryVerificationAttemptId,
-  type DeliveryVerificationRequestV1,
   type DeliveryVerificationReceiptV1,
 } from '@shared/xiaogui-delivery'
 import {
@@ -27,6 +23,7 @@ import type {
 
 export interface DeliveryVerificationInputV1 {
   readonly verificationAttemptId: DeliveryVerificationAttemptId
+  readonly verificationRequestDigest: Sha256Digest
   readonly deliveryChangeSet: DeliveryChangeSetV1
   readonly worktreeRoot: string
   readonly trustedToolchainRoot: string
@@ -52,7 +49,7 @@ export class DeliveryVerificationServiceV1 {
         inspectionArtifactId: ids.inspectionArtifactId,
       })
       return {
-        receipt: mapReceipt(input, request, result.receipt, result.artifacts),
+        receipt: mapReceipt(input, result.receipt, result.artifacts),
         artifacts: result.receipt.verdict === 'OUTCOME_UNKNOWN' ? result.artifacts : [scopeArtifact, ...result.artifacts],
       }
     } catch {
@@ -65,7 +62,7 @@ export class DeliveryVerificationServiceV1 {
         selectionDigest: deliverySelectionDigest(input.deliveryChangeSet),
         deliveryChangeSetId: input.deliveryChangeSet.deliveryChangeSetId,
         deliveryChangeSetDigest: input.deliveryChangeSet.digest,
-        requestDigest: request.requestDigest,
+        requestDigest: input.verificationRequestDigest,
         qaConfigVersion: deliveryQaConfigVersion(input.deliveryChangeSet),
         verdict: 'OUTCOME_UNKNOWN' as const,
         checks: [] as const,
@@ -85,21 +82,6 @@ function taskVerificationRequest(
   input: DeliveryVerificationInputV1,
   ids: ReturnType<typeof deliveryVerificationIds>,
 ): TaskVerificationRequestV1 {
-  const deliveryRequestWithoutDigest = {
-    scope: 'DELIVERY' as const,
-    verificationAttemptId: input.verificationAttemptId,
-    verificationRequestId: ids.verificationRequestId,
-    batchId: deliveryBatchId(input.deliveryChangeSet),
-    flowId: input.deliveryChangeSet.flowId,
-    selectionDigest: deliverySelectionDigest(input.deliveryChangeSet),
-    targetFingerprint: deliveryTargetFingerprintV1(deliveryTarget(input.deliveryChangeSet)),
-    deliveryChangeSetDigest: input.deliveryChangeSet.digest,
-    qaConfigVersion: deliveryQaConfigVersion(input.deliveryChangeSet),
-  } satisfies Omit<DeliveryVerificationRequestV1, 'requestDigest'>
-  const deliveryRequest: DeliveryVerificationRequestV1 = {
-    ...deliveryRequestWithoutDigest,
-    requestDigest: deliveryVerificationRequestDigestV1(deliveryRequestWithoutDigest),
-  }
   const requestWithoutDigest = {
     scope: 'TASK' as const,
     verificationAttemptId: input.verificationAttemptId as unknown as TaskVerificationRequestV1['verificationAttemptId'],
@@ -111,7 +93,7 @@ function taskVerificationRequest(
     changeSetDigest: input.deliveryChangeSet.digest,
     preparedTreeHash: deliveryIntegrationTreeHash(input.deliveryChangeSet),
     qaConfigVersion: deliveryQaConfigVersion(input.deliveryChangeSet),
-    acceptanceCriteria: ['delivery.scope', 'typescript.web', 'typescript.node', deliveryRequest.requestDigest],
+    acceptanceCriteria: ['delivery.scope', 'typescript.web', 'typescript.node', input.verificationRequestDigest],
   }
   return {
     ...requestWithoutDigest,
@@ -121,7 +103,6 @@ function taskVerificationRequest(
 
 function mapReceipt(
   input: DeliveryVerificationInputV1,
-  request: TaskVerificationRequestV1,
   taskReceipt: Awaited<ReturnType<TaskVerificationExecutionPortV1['verify']>>['receipt'],
   artifacts: readonly TaskArtifactWriteV1[],
 ): DeliveryVerificationReceiptV1 {
@@ -133,7 +114,7 @@ function mapReceipt(
     selectionDigest: deliverySelectionDigest(input.deliveryChangeSet),
     deliveryChangeSetId: input.deliveryChangeSet.deliveryChangeSetId,
     deliveryChangeSetDigest: input.deliveryChangeSet.digest,
-    requestDigest: request.requestDigest,
+    requestDigest: input.verificationRequestDigest,
     qaConfigVersion: deliveryQaConfigVersion(input.deliveryChangeSet),
     diagnosticArtifactIds: taskReceipt.diagnosticArtifactIds,
   }
@@ -219,11 +200,6 @@ function deliveryBatchId(changeSet: DeliveryChangeSetV1): DeliveryBatchId {
 function deliverySelectionDigest(changeSet: DeliveryChangeSetV1): Sha256Digest {
   if (!changeSet.selectionDigest) throw new Error('DELIVERY_SELECTION_DIGEST_REQUIRED')
   return changeSet.selectionDigest
-}
-
-function deliveryTarget(changeSet: DeliveryChangeSetV1): DeliveryTargetV1 {
-  if (!changeSet.target) throw new Error('DELIVERY_TARGET_REQUIRED')
-  return changeSet.target
 }
 
 function deliveryIntegrationTreeHash(changeSet: DeliveryChangeSetV1): Sha256Digest {

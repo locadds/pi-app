@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { AttemptId, FlowId, PlanRevisionId, TaskRunId } from '@shared/xiaogui-collaboration-hub'
 import {
   deliveryChangeSetDigestV1,
+  deliveryVerificationRequestDigestV1,
   type DeliveryBatchId,
   type DeliveryChangeSetId,
   type DeliverySelectionDraftId,
@@ -42,9 +43,11 @@ const TOOLCHAIN_ROOT = process.platform === 'win32' ? 'D:\\private\\toolchain' :
 describe('DeliveryVerificationServiceV1', () => {
   it('maps a fixed TypeScript verification PASS to a delivery receipt with scope evidence', async () => {
     const service = new DeliveryVerificationServiceV1(new ScriptedTaskVerificationPortV1(passScript))
+    const verificationRequestDigest = deliveryRequestDigest(deliveryChangeSet())
 
     const result = await service.verify({
       verificationAttemptId: VERIFICATION_ATTEMPT_ID,
+      verificationRequestDigest,
       deliveryChangeSet: deliveryChangeSet(),
       worktreeRoot: WORKTREE_ROOT,
       trustedToolchainRoot: TOOLCHAIN_ROOT,
@@ -56,9 +59,32 @@ describe('DeliveryVerificationServiceV1', () => {
       deliveryChangeSetId: CHANGESET_ID,
       verdict: 'PASS',
     })
+    expect(result.receipt.requestDigest).toBe(verificationRequestDigest)
     expect(result.receipt.checks!.map((check) => check.checkId)).toEqual(['delivery.scope', 'typescript.web'])
     expect(result.artifacts.some((artifact) => artifact.mediaType === 'application/vnd.xiaogui.delivery-scope-evidence+json')).toBe(true)
     expect(JSON.stringify(result.receipt)).not.toContain(WORKTREE_ROOT)
+  })
+
+  it('keeps the public receipt bound to the persisted delivery request digest, not the inner task digest', async () => {
+    let innerTaskRequestDigest: Sha256Digest | undefined
+    const service = new DeliveryVerificationServiceV1(new ScriptedTaskVerificationPortV1((request, context) => {
+      innerTaskRequestDigest = request.requestDigest
+      return passScript(request, context)
+    }))
+    const changeSet = deliveryChangeSet()
+    const persistedDeliveryRequestDigest = deliveryRequestDigest(changeSet)
+
+    const result = await service.verify({
+      verificationAttemptId: VERIFICATION_ATTEMPT_ID,
+      verificationRequestDigest: persistedDeliveryRequestDigest,
+      deliveryChangeSet: changeSet,
+      worktreeRoot: WORKTREE_ROOT,
+      trustedToolchainRoot: TOOLCHAIN_ROOT,
+    })
+
+    expect(innerTaskRequestDigest).toBeDefined()
+    expect(innerTaskRequestDigest).not.toBe(persistedDeliveryRequestDigest)
+    expect(result.receipt.requestDigest).toBe(persistedDeliveryRequestDigest)
   })
 
   it('maps fixed verification FAIL without opening an apply path', async () => {
@@ -66,6 +92,7 @@ describe('DeliveryVerificationServiceV1', () => {
 
     const result = await service.verify({
       verificationAttemptId: VERIFICATION_ATTEMPT_ID,
+      verificationRequestDigest: deliveryRequestDigest(deliveryChangeSet()),
       deliveryChangeSet: deliveryChangeSet(),
       worktreeRoot: WORKTREE_ROOT,
       trustedToolchainRoot: TOOLCHAIN_ROOT,
@@ -85,6 +112,7 @@ describe('DeliveryVerificationServiceV1', () => {
 
     const result = await service.verify({
       verificationAttemptId: VERIFICATION_ATTEMPT_ID,
+      verificationRequestDigest: deliveryRequestDigest(deliveryChangeSet()),
       deliveryChangeSet: deliveryChangeSet(),
       worktreeRoot: WORKTREE_ROOT,
       trustedToolchainRoot: TOOLCHAIN_ROOT,
@@ -203,6 +231,20 @@ function deliveryChangeSet() {
     ...withoutDigest,
     digest: deliveryChangeSetDigestV1(withoutDigest),
   }
+}
+
+function deliveryRequestDigest(changeSet: ReturnType<typeof deliveryChangeSet>) {
+  return deliveryVerificationRequestDigestV1({
+    scope: 'DELIVERY',
+    verificationAttemptId: VERIFICATION_ATTEMPT_ID,
+    verificationRequestId: 'xhbdvr_persisted_request',
+    batchId: changeSet.batchId,
+    flowId: changeSet.flowId,
+    selectionDigest: changeSet.selectionDigest,
+    targetFingerprint: changeSet.target.initialTargetFingerprint,
+    deliveryChangeSetDigest: changeSet.digest,
+    qaConfigVersion: changeSet.qaConfigVersion,
+  })
 }
 
 function artifact(artifactId: ArtifactId, kind: 'VERIFICATION_EVIDENCE' | 'VERIFICATION_DIAGNOSTIC') {

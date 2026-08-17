@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { constants, createReadStream } from 'node:fs'
 import { access, lstat, readFile, realpath, unlink, writeFile } from 'node:fs/promises'
+import { DatabaseSync } from 'node:sqlite'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 
 import type {
@@ -82,6 +83,7 @@ export interface DeliveryApplyAttemptRegistryV1 {
   get(applyAttemptId: DeliveryApplyAttemptIdV1): PrivateApplyAttemptV1 | undefined
   put(attempt: PrivateApplyAttemptV1): void
   update(attempt: PrivateApplyAttemptV1): void
+  close?(): void
 }
 
 export class InMemoryDeliveryApplyAttemptRegistryV1 implements DeliveryApplyAttemptRegistryV1 {
@@ -105,6 +107,81 @@ export class InMemoryDeliveryApplyAttemptRegistryV1 implements DeliveryApplyAtte
       throw new ChangeApplyErrorV1('APPLY_ATTEMPT_CONFLICT')
     }
     this.attempts.set(attempt.applyAttemptId, attempt)
+  }
+}
+
+interface DeliveryApplyAttemptRowV1 {
+  apply_attempt_id: string
+  request_digest: string
+  project_root: string
+  change_set_json: string
+  planned_files_json: string
+  written_relative_paths_json: string
+  status: string
+  receipt_json: string | null
+}
+
+export interface SqliteDeliveryApplyAttemptRegistryOptionsV1 {
+  readonly dbPath: string
+}
+
+export class SqliteDeliveryApplyAttemptRegistryV1 implements DeliveryApplyAttemptRegistryV1 {
+  private readonly db: DatabaseSync
+
+  constructor(options: SqliteDeliveryApplyAttemptRegistryOptionsV1) {
+    this.db = new DatabaseSync(options.dbPath)
+    this.db.exec('pragma foreign_keys = on')
+    this.db.exec('pragma journal_mode = WAL')
+    this.db.exec('pragma busy_timeout = 5000')
+    this.db.exec(`
+      create table if not exists delivery_apply_attempts (
+        apply_attempt_id text primary key,
+        request_digest text not null,
+        project_root text not null,
+        change_set_json text not null,
+        planned_files_json text not null,
+        written_relative_paths_json text not null,
+        status text not null,
+        receipt_json text,
+        updated_at text not null
+      )
+    `)
+  }
+
+  close(): void {
+    this.db.close()
+  }
+
+  get(applyAttemptId: DeliveryApplyAttemptIdV1): PrivateApplyAttemptV1 | undefined {
+    const row = this.db
+      .prepare('select apply_attempt_id, request_digest, project_root, change_set_json, planned_files_json, written_relative_paths_json, status, receipt_json from delivery_apply_attempts where apply_attempt_id = ?')
+      .get(applyAttemptId) as DeliveryApplyAttemptRowV1 | undefined
+    return row ? rowToAttempt(row) : undefined
+  }
+
+  put(attempt: PrivateApplyAttemptV1): void {
+    const existing = this.get(attempt.applyAttemptId)
+    if (existing) {
+      if (existing.requestDigest !== attempt.requestDigest) throw new ChangeApplyErrorV1('APPLY_ATTEMPT_CONFLICT')
+      return
+    }
+    this.db
+      .prepare(
+        'insert into delivery_apply_attempts (apply_attempt_id, request_digest, project_root, change_set_json, planned_files_json, written_relative_paths_json, status, receipt_json, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(...attemptSqlValues(attempt), new Date().toISOString())
+  }
+
+  update(attempt: PrivateApplyAttemptV1): void {
+    const existing = this.get(attempt.applyAttemptId)
+    if (!existing || existing.requestDigest !== attempt.requestDigest) {
+      throw new ChangeApplyErrorV1('APPLY_ATTEMPT_CONFLICT')
+    }
+    this.db
+      .prepare(
+        'update delivery_apply_attempts set request_digest = ?, project_root = ?, change_set_json = ?, planned_files_json = ?, written_relative_paths_json = ?, status = ?, receipt_json = ?, updated_at = ? where apply_attempt_id = ?',
+      )
+      .run(...attemptSqlValues(attempt).slice(1), new Date().toISOString(), attempt.applyAttemptId)
   }
 }
 
@@ -207,13 +284,22 @@ export class MainProcessChangeApplyPortV1 implements DeliveryApplyPortV1 {
   async inspect(applyAttemptId: DeliveryApplyAttemptIdV1): Promise<DeliveryApplyReceiptV1> {
     const attempt = this.registry.get(applyAttemptId)
     if (!attempt) throw new ChangeApplyErrorV1('APPLY_ATTEMPT_NOT_FOUND')
-    if (attempt.receipt) return attempt.receipt
-    if (await allDesiredFilesPresent(attempt.projectRoot, deliveryFiles(attempt.changeSet))) {
+    if (attempt.receipt && attempt.receipt.verdict !== 'OUTCOME_UNKNOWN') return attempt.receipt
+    const inspection = await inspectApplyFileState(attempt)
+    if (inspection.kind === 'ALL_DESIRED') {
       const receipt = succeededReceipt(attempt, currentTargetFingerprint(deliveryTarget(attempt.changeSet)))
       this.registry.update({ ...attempt, status: 'SUCCEEDED', receipt })
       return receipt
     }
-    return this.rollbackAsReceipt(attempt, 'TARGET_WRITE_FAILED')
+    if (inspection.kind === 'HAS_UNKNOWN') {
+      const receipt = failedReceipt(attempt, 'OUTCOME_UNKNOWN', 'ROLLBACK_INCOMPLETE')
+      this.registry.update({ ...attempt, status: 'OUTCOME_UNKNOWN', receipt })
+      return receipt
+    }
+    return this.rollbackAsReceipt({
+      ...attempt,
+      writtenRelativePaths: mergeRelativePaths(attempt.writtenRelativePaths, inspection.desiredRelativePaths),
+    }, 'TARGET_WRITE_FAILED')
   }
 
   private assertApproved(request: DeliveryApplyRequestV1): void {
@@ -367,8 +453,18 @@ async function rollback(attempt: PrivateApplyAttemptV1, faultInjection?: Deliver
     if (!written.has(pathKey(file.relativePath))) continue
     try {
       if (file.operation === 'CREATE') {
+        if (!(await fileMatchesDesired(attempt, file))) {
+          ok = false
+          continue
+        }
         await unlink(file.realPath)
       } else {
+        const state = await plannedFileState(attempt, file)
+        if (state === 'BEFORE') continue
+        if (state !== 'DESIRED') {
+          ok = false
+          continue
+        }
         await writeFile(file.realPath, Buffer.from(file.beforeBytesBase64 ?? '', 'base64'))
       }
       if (faultInjection?.corruptRollbackForRelativePath === file.relativePath) {
@@ -407,6 +503,60 @@ async function allDesiredFilesPresent(projectRoot: string, files: readonly Deliv
     }
   }
   return true
+}
+
+interface ApplyFileInspectionV1 {
+  readonly kind: 'ALL_DESIRED' | 'SAFE_MIXED' | 'HAS_UNKNOWN'
+  readonly desiredRelativePaths: readonly string[]
+}
+
+async function inspectApplyFileState(attempt: PrivateApplyAttemptV1): Promise<ApplyFileInspectionV1> {
+  let allDesired = true
+  const desiredRelativePaths: string[] = []
+  for (const file of attempt.plannedFiles) {
+    const state = await plannedFileState(attempt, file)
+    if (state === 'UNKNOWN') return { kind: 'HAS_UNKNOWN', desiredRelativePaths: [] }
+    if (state === 'DESIRED') desiredRelativePaths.push(file.relativePath)
+    if (state !== 'DESIRED') allDesired = false
+  }
+  return { kind: allDesired ? 'ALL_DESIRED' : 'SAFE_MIXED', desiredRelativePaths }
+}
+
+async function plannedFileState(
+  attempt: PrivateApplyAttemptV1,
+  file: PrivateRollbackFileV1,
+): Promise<'BEFORE' | 'DESIRED' | 'UNKNOWN'> {
+  try {
+    const current = await readStableFile(file.realPath)
+    if (current.contentDigest === desiredDigestFor(attempt, file.relativePath)) return 'DESIRED'
+    if (file.operation === 'MODIFY' && current.bytes.toString('base64') === file.beforeBytesBase64) return 'BEFORE'
+    return 'UNKNOWN'
+  } catch (error) {
+    if (
+      file.operation === 'CREATE' &&
+      typeof error === 'object' &&
+      error !== null &&
+      (error as { code?: unknown }).code === 'ENOENT'
+    ) {
+      return 'BEFORE'
+    }
+    return 'UNKNOWN'
+  }
+}
+
+async function fileMatchesDesired(attempt: PrivateApplyAttemptV1, file: PrivateRollbackFileV1): Promise<boolean> {
+  try {
+    const current = await readStableFile(file.realPath)
+    return current.contentDigest === desiredDigestFor(attempt, file.relativePath)
+  } catch {
+    return false
+  }
+}
+
+function desiredDigestFor(attempt: PrivateApplyAttemptV1, relativePath: string): Sha256Digest {
+  const file = deliveryFiles(attempt.changeSet).find((candidate) => pathKey(normalizeRelativePath(candidate.relativePath)) === pathKey(relativePath))
+  if (!file) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+  return file.contentDigest
 }
 
 async function resolveDeliveryPath(projectRoot: string, relativePath: string): Promise<{ realPath: string }> {
@@ -544,12 +694,53 @@ function pathKey(value: string): string {
   return process.platform === 'win32' ? value.toLowerCase() : value
 }
 
+function mergeRelativePaths(left: readonly string[], right: readonly string[]): readonly string[] {
+  const merged = new Map<string, string>()
+  for (const value of [...left, ...right]) merged.set(pathKey(value), value)
+  return [...merged.values()]
+}
+
 function digestBytes(bytes: Uint8Array): Sha256Digest {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}` as Sha256Digest
 }
 
 function digestJson(value: unknown): Sha256Digest {
   return digestBytes(Buffer.from(JSON.stringify(value), 'utf8'))
+}
+
+function rowToAttempt(row: DeliveryApplyAttemptRowV1): PrivateApplyAttemptV1 {
+  return {
+    applyAttemptId: row.apply_attempt_id as DeliveryApplyAttemptIdV1,
+    requestDigest: row.request_digest as Sha256Digest,
+    projectRoot: row.project_root,
+    changeSet: JSON.parse(row.change_set_json) as DeliveryChangeSetV1,
+    plannedFiles: JSON.parse(row.planned_files_json) as PrivateRollbackFileV1[],
+    writtenRelativePaths: JSON.parse(row.written_relative_paths_json) as string[],
+    status: row.status as PrivateApplyStatusV1,
+    ...(row.receipt_json ? { receipt: JSON.parse(row.receipt_json) as DeliveryApplyReceiptV1 } : {}),
+  }
+}
+
+function attemptSqlValues(attempt: PrivateApplyAttemptV1): [
+  DeliveryApplyAttemptIdV1,
+  Sha256Digest,
+  string,
+  string,
+  string,
+  string,
+  PrivateApplyStatusV1,
+  string | null,
+] {
+  return [
+    attempt.applyAttemptId,
+    attempt.requestDigest,
+    attempt.projectRoot,
+    JSON.stringify(attempt.changeSet),
+    JSON.stringify(attempt.plannedFiles),
+    JSON.stringify(attempt.writtenRelativePaths),
+    attempt.status,
+    attempt.receipt ? JSON.stringify(attempt.receipt) : null,
+  ]
 }
 
 async function digestFile(realPath: string): Promise<Sha256Digest> {

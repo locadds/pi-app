@@ -19,6 +19,8 @@ import {
   ChangeApplyErrorV1,
   InMemoryDeliveryApplyAttemptRegistryV1,
   MainProcessChangeApplyPortV1,
+  SqliteDeliveryApplyAttemptRegistryV1,
+  type DeliveryApplyAttemptRegistryV1,
   type DeliveryGitSnapshotReaderV1,
 } from './change-apply'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
@@ -159,6 +161,74 @@ describe('MainProcessChangeApplyPortV1', () => {
     }))
       .rejects.toBeInstanceOf(ChangeApplyErrorV1)
   })
+
+  it('persists STARTED attempts and marks restarted inspect as SUCCEEDED when desired files landed', async () => {
+    const root = await tempRoot()
+    await writeFile(join(root, 'a.txt'), 'new')
+    const changeSet = deliveryChangeSet([fileChange('MODIFY', 'a.txt', 'old', 'new')])
+    const applyAttemptId = 'xhba_restart_success' as DeliveryApplyAttemptIdV1
+    const dbPath = join(root, 'apply-attempts.sqlite')
+    const firstRegistry = new SqliteDeliveryApplyAttemptRegistryV1({ dbPath })
+    firstRegistry.put(startedAttempt(applyAttemptId, root, changeSet, ['a.txt']))
+    firstRegistry.close()
+
+    const restartedRegistry = new SqliteDeliveryApplyAttemptRegistryV1({ dbPath })
+    const receipt = await portFor(root, undefined, restartedRegistry).inspect(applyAttemptId)
+    restartedRegistry.close()
+
+    expect(receipt.verdict).toBe('SUCCEEDED')
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('new')
+  })
+
+  it('rolls back a restarted before/desired mixed attempt even when the written list was not flushed', async () => {
+    const root = await tempRoot()
+    await writeFile(join(root, 'a.txt'), 'new')
+    await writeFile(join(root, 'b.txt'), 'old-b')
+    const changeSet = deliveryChangeSet([
+      fileChange('MODIFY', 'a.txt', 'old-a', 'new'),
+      fileChange('MODIFY', 'b.txt', 'old-b', 'new-b'),
+    ])
+    const applyAttemptId = 'xhba_restart_mixed' as DeliveryApplyAttemptIdV1
+    const dbPath = join(root, 'apply-attempts.sqlite')
+    const firstRegistry = new SqliteDeliveryApplyAttemptRegistryV1({ dbPath })
+    firstRegistry.put(startedAttempt(applyAttemptId, root, changeSet, []))
+    firstRegistry.close()
+
+    const restartedRegistry = new SqliteDeliveryApplyAttemptRegistryV1({ dbPath })
+    const receipt = await portFor(root, undefined, restartedRegistry).inspect(applyAttemptId)
+    restartedRegistry.close()
+
+    expect(receipt.verdict).toBe('FAILED_ROLLED_BACK')
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('old-a')
+    expect(await readFile(join(root, 'b.txt'), 'utf8')).toBe('old-b')
+  })
+
+  it('keeps restarted inspect OUTCOME_UNKNOWN and leaves third-party content untouched', async () => {
+    const root = await tempRoot()
+    await writeFile(join(root, 'a.txt'), 'third-party')
+    const changeSet = deliveryChangeSet([fileChange('MODIFY', 'a.txt', 'old', 'new')])
+    const applyAttemptId = 'xhba_restart_unknown' as DeliveryApplyAttemptIdV1
+    const dbPath = join(root, 'apply-attempts.sqlite')
+    const firstRegistry = new SqliteDeliveryApplyAttemptRegistryV1({ dbPath })
+    firstRegistry.put(startedAttempt(applyAttemptId, root, changeSet, ['a.txt']))
+    firstRegistry.close()
+
+    const restartedRegistry = new SqliteDeliveryApplyAttemptRegistryV1({ dbPath })
+    const receipt = await portFor(root, undefined, restartedRegistry).inspect(applyAttemptId)
+    restartedRegistry.close()
+
+    expect(receipt.verdict).toBe('OUTCOME_UNKNOWN')
+    expect(receipt.safeCode).toBe('ROLLBACK_INCOMPLETE')
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('third-party')
+
+    await writeFile(join(root, 'a.txt'), 'old')
+    const reconciledRegistry = new SqliteDeliveryApplyAttemptRegistryV1({ dbPath })
+    const reconciled = await portFor(root, undefined, reconciledRegistry).inspect(applyAttemptId)
+    reconciledRegistry.close()
+
+    expect(reconciled.verdict).toBe('FAILED_ROLLED_BACK')
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('old')
+  })
 })
 
 function portFor(
@@ -168,7 +238,7 @@ function portFor(
     treeHash: TREE,
     porcelainStatus: [],
   },
-  registry = new InMemoryDeliveryApplyAttemptRegistryV1(),
+  registry: DeliveryApplyAttemptRegistryV1 = new InMemoryDeliveryApplyAttemptRegistryV1(),
 ) {
   const resolver: ProjectWorkspaceResolverV1 = { resolveProjectRoot: async () => root }
   const gitSnapshotReader: DeliveryGitSnapshotReaderV1 = { read: async () => snapshot }
@@ -253,4 +323,37 @@ function fileContentsFor(changeSet: DeliveryChangeSetV1, contents: Record<string
 
 function digest(value: string): Sha256Digest {
   return `sha256:${createHash('sha256').update(value).digest('hex')}` as Sha256Digest
+}
+
+function startedAttempt(
+  applyAttemptId: DeliveryApplyAttemptIdV1,
+  root: string,
+  changeSet: DeliveryChangeSetV1,
+  writtenRelativePaths: readonly string[],
+) {
+  return {
+    applyAttemptId,
+    requestDigest: digest(`request:${applyAttemptId}`),
+    projectRoot: root,
+    changeSet,
+    plannedFiles: changeSet.fileChanges.map((file) => ({
+      operation: file.operation,
+      relativePath: file.relativePath,
+      realPath: join(root, file.relativePath),
+      ...(file.operation === 'MODIFY' ? { beforeBytesBase64: beforeTextFor(file).toString('base64') } : {}),
+    })),
+    writtenRelativePaths,
+    status: 'STARTED' as const,
+  }
+}
+
+function beforeTextFor(file: DeliveryFileChangeSummaryV1): Buffer {
+  const knownBefore: Record<string, string> = {
+    [digest('old')]: 'old',
+    [digest('old-a')]: 'old-a',
+    [digest('old-b')]: 'old-b',
+  }
+  const value = file.baselineDigest ? knownBefore[file.baselineDigest] : undefined
+  if (value === undefined) throw new Error(`missing before fixture for ${file.relativePath}`)
+  return Buffer.from(value, 'utf8')
 }

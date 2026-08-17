@@ -50,6 +50,7 @@ const DELIVERY_QA_CONFIG_VERSION_V1 = 'xiaogui.coding.delivery.v1'
 const DELIVERY_OUTBOX_OWNER_V1 = 'xiaogui-main-process-delivery'
 
 interface PrivateDeliveryVerificationRecoveryV1 {
+  readonly verificationRequestDigest?: Sha256Digest
   readonly deliveryChangeSet: DeliveryChangeSetV1
   readonly privateIntegrationContext: {
     readonly worktreeRoot: string
@@ -76,6 +77,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
   private readonly integrationRoots = new Map<string, string>()
   private closing = false
   private closed = false
+  private recoveryPromise: Promise<void> | undefined
   private closePromise: Promise<void> | undefined
 
   constructor(private readonly options: XiaoguiDeliveryWorkflowOptionsV1) {
@@ -139,6 +141,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           verificationRequestJson: JSON.stringify({
             ...verificationRequest,
             privateRecovery: serializeVerificationRecovery({
+              verificationRequestDigest: verificationRequest.requestDigest,
               deliveryChangeSet: composed.changeSet,
               privateIntegrationContext: composed.privateIntegrationContext,
               fileArtifacts: composed.artifacts,
@@ -153,7 +156,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           now: this.now(),
         })
         if (!claim) return fail('ILLEGAL_TRANSITION')
-        await this.completeRecoveredVerification(address, verificationAttemptId, {
+        await this.completeRecoveredVerification(address, verificationAttemptId, verificationRequest.requestDigest, {
           deliveryChangeSet: composed.changeSet,
           privateIntegrationContext: composed.privateIntegrationContext,
           fileArtifacts: composed.artifacts,
@@ -235,7 +238,11 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         if (!applyAttemptId) return fail('DELIVERY_NOT_FOUND')
         const packageRecord = this.store.readDeliveryApplyPackage(applyAttemptId)
         if (!packageRecord) return fail('DELIVERY_NOT_FOUND')
-        const receipt = await this.inspectOrUnknown(applyAttemptId, packageRecord.changeSet.deliveryChangeSetId)
+        const receipt = await this.inspectOrResumeClaimedApply(
+          applyAttemptId,
+          packageRecord.changeSet,
+          approvalSubject(packageRecord.changeSet),
+        )
         this.store.completeDeliveryApply(address, {
           applyAttemptId,
           outcome: applyOutcome(receipt),
@@ -254,7 +261,9 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
     return this.singleFlight(`retry:${address.projectId}:${address.sessionKey}:${request.requestId}`, async () => {
       try {
         const failed = this.store.readDeliveryApplyAttempt(request.failedApplyAttemptId)
-        if (!failed || failed.batchId !== request.batchId || failed.state !== 'FAILED') return fail('ILLEGAL_TRANSITION')
+        if (!failed || failed.batchId !== request.batchId || (failed.state !== 'FAILED' && failed.state !== 'OUTCOME_UNKNOWN')) {
+          return fail('ILLEGAL_TRANSITION')
+        }
         const changeSet = this.store.readDeliveryChangeSetForBatch(request.batchId)
         if (!changeSet) return fail('DELIVERY_NOT_FOUND')
         await this.applyApproved(address, request.batchId, {
@@ -269,10 +278,21 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
     })
   }
 
-  async recover(): Promise<void> {
+  recover(): Promise<void> {
+    if (this.closing || this.closed) return Promise.resolve()
+    if (this.recoveryPromise) return this.recoveryPromise
+    const recoveryPromise = this.recoverInternal().finally(() => {
+      if (this.recoveryPromise === recoveryPromise) this.recoveryPromise = undefined
+    })
+    this.recoveryPromise = recoveryPromise
+    return recoveryPromise
+  }
+
+  private async recoverInternal(): Promise<void> {
     if (this.closing || this.closed) return
     for (const pending of this.store.pendingDeliveryVerificationOutboxes()) {
       try {
+        if (this.closing || this.closed) break
         const outbox = pending.outbox
         const recovery = parseVerificationRecovery(outbox.requestJson)
         if (!recovery) continue
@@ -285,21 +305,19 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           })
           if (!claim) continue
         }
-        await this.completeRecoveredVerification(pending.address, outbox.verificationAttemptId, recovery)
+        if (this.closing || this.closed) continue
+        await this.completeRecoveredVerification(pending.address, outbox.verificationAttemptId, outbox.requestDigest, recovery)
       } catch {
         // Explicit user retry/reconcile remains possible; recovery must not throw during startup.
       }
     }
     for (const pending of this.store.pendingDeliveryApplyOutboxes()) {
       try {
+        if (this.closing || this.closed) break
         const outbox = pending.outbox
         const packageRecord = this.store.readDeliveryApplyPackage(outbox.applyAttemptId)
         if (!packageRecord) continue
-        const approval = {
-              deliveryChangeSetId: packageRecord.changeSet.deliveryChangeSetId,
-              version: packageRecord.changeSet.version,
-              digest: packageRecord.changeSet.digest,
-            } as DeliveryApprovalSubjectV1
+        const approval = approvalSubject(packageRecord.changeSet)
         if (outbox.status === 'READY') {
           const claim = this.store.claimDeliveryApplyOutbox({
             applyAttemptId: outbox.applyAttemptId,
@@ -309,9 +327,10 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           })
           if (!claim) continue
         }
+        if (this.closing || this.closed) continue
         const receipt = outbox.status === 'READY'
           ? await this.runClaimedApply(packageRecord.changeSet, approval, outbox.applyAttemptId)
-          : await this.inspectOrUnknown(outbox.applyAttemptId, packageRecord.changeSet.deliveryChangeSetId)
+          : await this.inspectOrResumeClaimedApply(outbox.applyAttemptId, packageRecord.changeSet, approval)
         this.store.completeDeliveryApply(pending.address, {
           applyAttemptId: outbox.applyAttemptId,
           outcome: applyOutcome(receipt),
@@ -328,10 +347,12 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
   private async completeRecoveredVerification(
     address: HubAddressV1,
     verificationAttemptId: DeliveryVerificationAttemptId,
+    verificationRequestDigest: Sha256Digest,
     recovery: PrivateDeliveryVerificationRecoveryV1,
   ): Promise<void> {
     const verification = await this.verificationService.verify({
       verificationAttemptId,
+      verificationRequestDigest: recovery.verificationRequestDigest ?? verificationRequestDigest,
       deliveryChangeSet: recovery.deliveryChangeSet,
       worktreeRoot: recovery.privateIntegrationContext.worktreeRoot,
       trustedToolchainRoot: recovery.privateIntegrationContext.trustedToolchainRoot,
@@ -365,7 +386,10 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise
     this.closing = true
-    this.closePromise = Promise.allSettled([...this.inFlight.values()]).then(() => {
+    this.closePromise = Promise.allSettled([
+      ...this.inFlight.values(),
+      ...(this.recoveryPromise ? [this.recoveryPromise] : []),
+    ]).then(() => {
       if (this.closed) return
       this.closed = true
       this.store.close()
@@ -444,14 +468,18 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
     }
   }
 
-  private async inspectOrUnknown(
+  private async inspectOrResumeClaimedApply(
     applyAttemptId: DeliveryApplyAttemptId,
-    deliveryChangeSetId: DeliveryChangeSetId,
+    changeSet: DeliveryChangeSetV1,
+    approval: DeliveryApprovalSubjectV1,
   ): Promise<DeliveryApplyReceiptV1> {
     try {
       return await this.options.applyPort.inspect(applyAttemptId)
-    } catch {
-      return unknownApplyReceipt(applyAttemptId, deliveryChangeSetId, 'APPLY_ATTEMPT_NOT_FOUND')
+    } catch (error) {
+      if (isApplyAttemptNotFound(error)) {
+        return this.runClaimedApply(changeSet, approval, applyAttemptId)
+      }
+      return unknownApplyReceipt(applyAttemptId, changeSet.deliveryChangeSetId, 'APPLY_ATTEMPT_NOT_FOUND')
     }
   }
 
@@ -565,6 +593,7 @@ function toDeliveryFileArtifact(artifact: DeliveryComposedFileArtifactV1) {
 
 function serializeVerificationRecovery(input: PrivateDeliveryVerificationRecoveryV1) {
   return {
+    verificationRequestDigest: input.verificationRequestDigest,
     deliveryChangeSet: input.deliveryChangeSet,
     privateIntegrationContext: input.privateIntegrationContext,
     fileArtifacts: input.fileArtifacts.map((artifact) => ({
@@ -580,7 +609,9 @@ function serializeVerificationRecovery(input: PrivateDeliveryVerificationRecover
 function parseVerificationRecovery(requestJson: string): PrivateDeliveryVerificationRecoveryV1 | null {
   try {
     const parsed = JSON.parse(requestJson) as {
+      requestDigest?: Sha256Digest
       privateRecovery?: {
+        verificationRequestDigest?: Sha256Digest
         deliveryChangeSet?: DeliveryChangeSetV1
         privateIntegrationContext?: PrivateDeliveryVerificationRecoveryV1['privateIntegrationContext']
         fileArtifacts?: Array<{
@@ -595,6 +626,11 @@ function parseVerificationRecovery(requestJson: string): PrivateDeliveryVerifica
     const recovery = parsed.privateRecovery
     if (!recovery?.deliveryChangeSet || !recovery.privateIntegrationContext || !Array.isArray(recovery.fileArtifacts)) return null
     return {
+      ...(typeof recovery.verificationRequestDigest === 'string'
+        ? { verificationRequestDigest: recovery.verificationRequestDigest }
+        : typeof parsed.requestDigest === 'string'
+          ? { verificationRequestDigest: parsed.requestDigest }
+          : {}),
       deliveryChangeSet: recovery.deliveryChangeSet,
       privateIntegrationContext: recovery.privateIntegrationContext,
       fileArtifacts: recovery.fileArtifacts.map((artifact) => ({
@@ -614,6 +650,24 @@ function applyOutcome(receipt: DeliveryApplyReceiptV1): 'SUCCEEDED' | 'FAILED' |
   if (receipt.verdict === 'SUCCEEDED') return 'SUCCEEDED'
   if (receipt.verdict === 'FAILED_ROLLED_BACK') return 'FAILED'
   return 'OUTCOME_UNKNOWN'
+}
+
+function approvalSubject(changeSet: DeliveryChangeSetV1): DeliveryApprovalSubjectV1 {
+  return {
+    deliveryChangeSetId: changeSet.deliveryChangeSetId,
+    version: changeSet.version,
+    digest: changeSet.digest,
+  }
+}
+
+function isApplyAttemptNotFound(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const values = [
+    'reasonCode' in error ? (error as { reasonCode?: unknown }).reasonCode : undefined,
+    'code' in error ? (error as { code?: unknown }).code : undefined,
+    error instanceof Error ? error.message : undefined,
+  ]
+  return values.some((value) => value === 'APPLY_ATTEMPT_NOT_FOUND')
 }
 
 function unknownApplyReceipt(
