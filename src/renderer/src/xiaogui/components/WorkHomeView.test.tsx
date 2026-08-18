@@ -36,6 +36,7 @@ describe('WorkHomeView', () => {
   it('只把 DOCX 模板+JSON 另存新文档写成已接入能力', () => {
     render(<WorkHomeView />)
     expect(screen.getByText(/根据 DOCX 模板和 JSON 数据另存一份新文档/)).toBeInTheDocument()
+    expect(screen.queryByText(/帮我用 DOCX 模板/)).toBeNull()
     // 不得宣传尚未接入的能力
     expect(screen.queryByText(/PDF/)).toBeNull()
     expect(screen.queryByText(/XLSX/)).toBeNull()
@@ -44,7 +45,8 @@ describe('WorkHomeView', () => {
 
   it('DOCX 工具栏按钮仅以弱化的过渡入口出现，不新增功能按钮', () => {
     render(<WorkHomeView />)
-    expect(screen.getByText(/过渡入口：也可以点击输入框旁的文档按钮/)).toBeInTheDocument()
+    expect(screen.getByText(/目前仍需点击输入框旁的文档按钮/)).toBeInTheDocument()
+    expect(screen.getByText(/自然语言调度接通后将移除这个过渡入口/)).toBeInTheDocument()
     // 本页不提供任何功能按钮
     expect(screen.queryByRole('button')).toBeNull()
   })

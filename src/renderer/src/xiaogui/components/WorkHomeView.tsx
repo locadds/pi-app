@@ -14,12 +14,8 @@ import { useXiaoguiStore } from '../stores/xiaogui-store'
 /** 朱砂红——与 ModeSelector / ProjectInspectView 保持同一强调色。 */
 const ACCENT = '#c0392b'
 
-/** 示例提示词：全部基于 Pi 原生对话能力和已接入的小规工具。 */
+/** 示例提示词：只覆盖当前对话能力，不暗示尚未接通的自然语言工具调用。 */
 const EXAMPLE_PROMPTS: { title: string; prompt: string }[] = [
-  {
-    title: '生成文档',
-    prompt: '帮我用 DOCX 模板和 JSON 数据生成一份新文档',
-  },
   {
     title: '整理文件',
     prompt: '帮我看看当前目录里有哪些文件，按类型归类列一份清单',
@@ -27,6 +23,10 @@ const EXAMPLE_PROMPTS: { title: string; prompt: string }[] = [
   {
     title: '撰写文本报告',
     prompt: '根据本项目里的资料，帮我起草一份工作小结的文本初稿',
+  },
+  {
+    title: '读写与汇总',
+    prompt: '读取我指定的几个文本文件，把要点汇总成一份纪要',
   },
 ]
 
@@ -61,15 +61,15 @@ export function WorkHomeView() {
           <span className="font-semibold" style={{ color: ACCENT }}>
             小规
           </span>
-          会理解你的意图并调用已接入的能力；需要选择资料、确认范围或展示结果时，
-          界面才会出现卡片或对话框，由你决定是否继续。
+          会围绕当前项目和会话协助整理、起草与分析。需要选择资料、确认范围或展示结果时，
+          界面会出现卡片或对话框，由你决定是否继续。
         </p>
         <p className="mt-2 text-[12px] leading-relaxed text-foreground/90">
-          当前已接入的真实能力：根据 DOCX 模板和 JSON 数据另存一份新文档，
+          当前已接入的专用文档能力：根据 DOCX 模板和 JSON 数据另存一份新文档；
           生成前会请你确认，原文件不会被修改。
         </p>
         <p className="mt-2 text-[11px] text-muted-foreground/80">
-          过渡入口：也可以点击输入框旁的文档按钮手动选择模板和数据。
+          这项能力目前仍需点击输入框旁的文档按钮；自然语言调度接通后将移除这个过渡入口。
         </p>
       </section>
 
@@ -101,7 +101,7 @@ export function WorkHomeView() {
 
       {/* ---- 尾注 ---- */}
       <footer className="mt-6 border-t border-dashed border-border/70 pt-2 font-mono text-[10px] text-muted-foreground">
-        卡片和对话框只负责确认与结果；能力范围以实际接入为准。
+        自然语言是主入口；专用能力以实际接入状态为准。
       </footer>
     </div>
   )
