@@ -233,6 +233,72 @@ describe('XiaoguiDeliveryWorkflowV1', () => {
     expect(store.trace.indexOf('recheck-target')).toBeLessThan(store.trace.indexOf('seal-recovery'))
   })
 
+  it('rejects recovery replay with a different valid failed apply attempt when a candidate already exists', async () => {
+    const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
+    store.installFailedBaselineDriftApplyPackage()
+    store.installEquivalentFailedBaselineDriftApplyPackage('apply-wrong' as DeliveryApplyAttemptId)
+    const recoveryPort = recordingBaselineRecoveryPort(store.trace)
+    const workflow = workflowFor(
+      store,
+      'repo',
+      'managed',
+      recordingApplyPort(),
+      undefined,
+      undefined,
+      recordingPassVerificationPort(store.trace),
+      recoveryPort,
+    )
+
+    await expect(workflow.prepareRecovery(ADDRESS, {
+      requestId: 'recovery-1',
+      batchId: store.batchId,
+      failedApplyAttemptId: 'apply-1' as DeliveryApplyAttemptId,
+    })).resolves.toMatchObject({ ok: true })
+
+    const wrongAttempt = await workflow.prepareRecovery(ADDRESS, {
+      requestId: 'recovery-wrong',
+      batchId: store.batchId,
+      failedApplyAttemptId: 'apply-wrong' as DeliveryApplyAttemptId,
+    })
+
+    expect(wrongAttempt).toMatchObject({ ok: false, error: { code: 'ILLEGAL_TRANSITION' } })
+    expect(store.trace.filter((item) => item === 'recover-baseline')).toHaveLength(1)
+  })
+
+  it('rejects a different failed apply attempt before joining an in-flight source-batch recovery', async () => {
+    const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
+    store.installFailedBaselineDriftApplyPackage()
+    store.installEquivalentFailedBaselineDriftApplyPackage('apply-wrong' as DeliveryApplyAttemptId)
+    const verification = deferredPassVerificationPort()
+    const workflow = workflowFor(
+      store,
+      'repo',
+      'managed',
+      recordingApplyPort(),
+      undefined,
+      undefined,
+      verification.port,
+      recordingBaselineRecoveryPort(store.trace),
+    )
+
+    const valid = workflow.prepareRecovery(ADDRESS, {
+      requestId: 'recovery-valid-in-flight',
+      batchId: store.batchId,
+      failedApplyAttemptId: 'apply-1' as DeliveryApplyAttemptId,
+    })
+    await waitForTrace(store, 'recover-baseline')
+    const wrong = workflow.prepareRecovery(ADDRESS, {
+      requestId: 'recovery-wrong-in-flight',
+      batchId: store.batchId,
+      failedApplyAttemptId: 'apply-wrong' as DeliveryApplyAttemptId,
+    })
+    verification.resolve()
+
+    await expect(valid).resolves.toMatchObject({ ok: true })
+    await expect(wrong).resolves.toMatchObject({ ok: false, error: { code: 'ILLEGAL_TRANSITION' } })
+    expect(store.trace.filter((item) => item === 'recover-baseline')).toHaveLength(1)
+  })
+
   it('waits for in-flight work before closing the store and rejects new calls while closing', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-close-'))
     const repo = join(root, 'repo')
@@ -345,6 +411,8 @@ class FakeDeliveryStore {
   projection: DeliveryBatchProjectionV1
   private sealedChangeSet: DeliveryChangeSetV1 | null = null
   private recoveredProjection: DeliveryBatchProjectionV1 | null = null
+  private recoveredSourceApplyAttemptId: DeliveryApplyAttemptId | null = null
+  private readonly validApplyPackageAttemptIds = new Set<DeliveryApplyAttemptId>(['apply-1' as DeliveryApplyAttemptId])
   private applyPackageAttemptState: 'STARTED' | 'FAILED' | 'FAILED_ROLLED_BACK' = 'STARTED'
   private applyPackageSafeCode: DeliveryApplySafeCodeV1 | undefined
   private applyPackageChangedRelativePaths: readonly string[] = []
@@ -377,8 +445,17 @@ class FakeDeliveryStore {
     return this.projection
   }
 
-  readRecoveredDeliveryProjection(): DeliveryBatchProjectionV1 | null {
+  readRecoveredDeliveryProjection(
+    _address: HubAddressV1,
+    _sourceBatchId: DeliveryBatchId,
+    sourceFailedApplyAttemptId: DeliveryApplyAttemptId,
+  ): DeliveryBatchProjectionV1 | null {
     this.trace.push('read-recovered')
+    if (this.recoveredProjection && this.recoveredSourceApplyAttemptId !== sourceFailedApplyAttemptId) {
+      throw Object.assign(new Error('DELIVERY_RECOVERY_IDEMPOTENCY_CONFLICT'), {
+        code: 'DELIVERY_RECOVERY_IDEMPOTENCY_CONFLICT',
+      })
+    }
     return this.recoveredProjection
   }
 
@@ -473,6 +550,7 @@ class FakeDeliveryStore {
 
   readDeliveryApplyPackage(applyAttemptId: DeliveryApplyAttemptId) {
     if (!this.sealedChangeSet) this.installAppliedChangeSet()
+    if (!this.validApplyPackageAttemptIds.has(applyAttemptId)) return null
     return {
       applyAttempt: {
         applyAttemptId,
@@ -517,10 +595,17 @@ class FakeDeliveryStore {
 
   sealRecoveredDeliveryCandidate(_address: HubAddressV1, record: {
     sourceBatchId: DeliveryBatchId
+    sourceFailedApplyAttemptId: DeliveryApplyAttemptId
     batchId: DeliveryBatchId
     deliveryChangeSet: DeliveryChangeSetV1
   }): { batchId: DeliveryBatchId; replayed: boolean } {
     this.trace.push('seal-recovery')
+    if (this.recoveredProjection && this.recoveredSourceApplyAttemptId !== record.sourceFailedApplyAttemptId) {
+      throw Object.assign(new Error('DELIVERY_RECOVERY_IDEMPOTENCY_CONFLICT'), {
+        code: 'DELIVERY_RECOVERY_IDEMPOTENCY_CONFLICT',
+      })
+    }
+    this.recoveredSourceApplyAttemptId = record.sourceFailedApplyAttemptId
     this.recoveredProjection = {
       ...this.projection,
       batchId: record.batchId,
@@ -608,6 +693,10 @@ class FakeDeliveryStore {
         finishedAt: '2026-08-18T00:00:01.000Z' as never,
       },
     }
+  }
+
+  installEquivalentFailedBaselineDriftApplyPackage(applyAttemptId: DeliveryApplyAttemptId): void {
+    this.validApplyPackageAttemptIds.add(applyAttemptId)
   }
 
   private deliveryChangeSet() {

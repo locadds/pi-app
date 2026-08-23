@@ -395,6 +395,25 @@ describe('M2A collaboration hub application', () => {
       ok: true,
       value: { availableActions: ['flow.cancel', 'apply.recovery.prepare'] },
     })
+    const failedApplyAttemptWithoutPaths: NonNullable<DeliveryBatchProjectionV1['applyAttempt']> = {
+      applyAttemptId: failedApplyAttempt.applyAttemptId,
+      batchId: failedApplyAttempt.batchId,
+      deliveryChangeSetId: failedApplyAttempt.deliveryChangeSetId,
+      requestDigest: failedApplyAttempt.requestDigest,
+      targetFingerprintBefore: failedApplyAttempt.targetFingerprintBefore,
+      state: failedApplyAttempt.state,
+      safeCode: 'TARGET_BASELINE_DRIFT',
+      startedAt: failedApplyAttempt.startedAt,
+      finishedAt: failedApplyAttempt.finishedAt,
+    }
+    activeDelivery = {
+      ...activeDelivery,
+      applyAttempt: failedApplyAttemptWithoutPaths,
+    }
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { availableActions: ['flow.cancel'] },
+    })
     activeDelivery = {
       ...activeDelivery,
       applyAttempt: { ...failedApplyAttempt, safeCode: 'TARGET_BASELINE_DRIFT', changedRelativePaths: ['src/index.ts'] },
@@ -798,7 +817,7 @@ describe('M2A collaboration hub application', () => {
     const migration = unchangedDb.prepare('select max(version) as version from schema_migrations').get() as { version: number }
     unchangedDb.close()
     expect(JSON.parse(stored.projection_json).activeRevision).not.toHaveProperty('draft')
-    expect(migration.version).toBe(8)
+    expect(migration.version).toBe(9)
   })
 
   it('keeps public projection actions user-only and persisted event payload sanitized', async () => {

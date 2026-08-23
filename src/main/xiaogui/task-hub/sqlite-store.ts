@@ -6,6 +6,7 @@ import {
   deliveryChangeSetDigestV1,
   deliveryGateDecisionDigestV1,
   deliverySelectionDigestV1,
+  deliveryTargetFingerprintV1,
   deliveryVerificationReceiptDigestV1,
   deliveryVerificationRequestDigestV1,
 } from '@shared/xiaogui-delivery'
@@ -191,6 +192,7 @@ interface DeliveryBatchRow {
   selection_digest: Sha256Digest
   target_fingerprint: Sha256Digest
   recovery_source_batch_id: DeliveryBatchId | null
+  recovery_source_apply_attempt_id: DeliveryApplyAttemptId | null
   created_at: string
   updated_at: string
 }
@@ -798,7 +800,7 @@ export class CollaborationHubSqliteStoreV1 {
 
       this.db
         .prepare(
-          'insert into delivery_batches (batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?)',
+          'insert into delivery_batches (batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, recovery_source_apply_attempt_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)',
         )
         .run(
           record.batchId,
@@ -858,12 +860,18 @@ export class CollaborationHubSqliteStoreV1 {
   readRecoveredDeliveryProjection(
     address: HubAddressV1,
     sourceBatchId: DeliveryBatchId,
+    sourceFailedApplyAttemptId: DeliveryApplyAttemptId,
   ): DeliveryBatchProjectionV1 | null {
     const row = this.db
       .prepare(
-        'select batch_id from delivery_batches where project_id = ? and session_key = ? and recovery_source_batch_id = ?',
+        'select batch_id, recovery_source_apply_attempt_id from delivery_batches where project_id = ? and session_key = ? and recovery_source_batch_id = ?',
       )
-      .get(address.projectId, address.sessionKey, sourceBatchId) as { batch_id: DeliveryBatchId } | undefined
+      .get(address.projectId, address.sessionKey, sourceBatchId) as
+      | { batch_id: DeliveryBatchId; recovery_source_apply_attempt_id: DeliveryApplyAttemptId | null }
+      | undefined
+    if (row && row.recovery_source_apply_attempt_id !== sourceFailedApplyAttemptId) {
+      throw deliveryStoreError('DELIVERY_RECOVERY_IDEMPOTENCY_CONFLICT')
+    }
     return row ? this.deliveryProjection(row.batch_id) : null
   }
 
@@ -1474,33 +1482,12 @@ export class CollaborationHubSqliteStoreV1 {
     return this.transaction(() => {
       const existing = this.db
         .prepare(
-          'select batch_id, state from delivery_batches where project_id = ? and session_key = ? and recovery_source_batch_id = ?',
+          'select batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, recovery_source_apply_attempt_id, created_at, updated_at from delivery_batches where project_id = ? and session_key = ? and recovery_source_batch_id = ?',
         )
-        .get(address.projectId, address.sessionKey, record.sourceBatchId) as
-        | { batch_id: DeliveryBatchId; state: DeliveryBatchStateV1 }
-        | undefined
+        .get(address.projectId, address.sessionKey, record.sourceBatchId) as DeliveryBatchRow | undefined
       if (existing) {
-        const existingChangeSet = this.deliveryChangeSet(record.deliveryChangeSet.deliveryChangeSetId)
-        const existingGate = this.deliveryGate(record.gateId)
-        const existingVerification = this.deliveryVerificationAttempt(record.verificationAttemptId)
-        const existingReceipt = this.db
-          .prepare('select receipt_json from delivery_verification_receipts where receipt_digest = ?')
-          .get(record.receipt.receiptDigest) as { receipt_json: string } | undefined
-        if (
-          existing.batch_id === record.batchId &&
-          existing.state === 'READY_FOR_REVIEW' &&
-          existingChangeSet?.batch_id === record.batchId &&
-          existingChangeSet.digest === record.deliveryChangeSet.digest &&
-          existingGate?.batch_id === record.batchId &&
-          existingGate.state === 'OPEN' &&
-          existingVerification?.batch_id === record.batchId &&
-          existingVerification.state === 'SUCCEEDED' &&
-          existingVerification.outcome_receipt_digest === record.receipt.receiptDigest &&
-          existingReceipt?.receipt_json === JSON.stringify(record.receipt)
-        ) {
-          return { batchId: existing.batch_id, replayed: true }
-        }
-        throw deliveryStoreError('DELIVERY_RECOVERY_IDEMPOTENCY_CONFLICT')
+        assertRecoveredDeliveryCandidateReplay(this.db, address, existing, record)
+        return { batchId: existing.batch_id, replayed: true }
       }
 
       const sourceBatch = this.deliveryBatch(record.sourceBatchId)
@@ -1515,7 +1502,7 @@ export class CollaborationHubSqliteStoreV1 {
       }
       const failedReceipt = persistedDeliveryApplyReceipt(sourceAttempt)
       if (
-        sourceAttempt.state !== 'FAILED' ||
+        (sourceAttempt.state !== 'FAILED' && sourceAttempt.state !== 'FAILED_ROLLED_BACK') ||
         failedReceipt?.verdict !== 'FAILED_ROLLED_BACK' ||
         failedReceipt.safeCode !== 'TARGET_BASELINE_DRIFT' ||
         failedReceipt.changedRelativePaths.length !== 0
@@ -1526,31 +1513,53 @@ export class CollaborationHubSqliteStoreV1 {
       const sourceChangeSet = sourceChangeSetRow
         ? JSON.parse(sourceChangeSetRow.change_set_json) as DeliveryChangeSetV1
         : null
+      const sourceTargetFingerprint = sourceChangeSet ? deliveryTargetFingerprintV1(sourceChangeSet.target) : null
       if (
+        !sourceChangeSetRow ||
         !sourceChangeSet ||
+        sourceChangeSetRow.delivery_change_set_id !== sourceChangeSet.deliveryChangeSetId ||
+        sourceChangeSetRow.batch_id !== sourceBatch.batch_id ||
+        sourceChangeSetRow.flow_id !== sourceBatch.flow_id ||
+        sourceChangeSetRow.version !== 1 ||
+        sourceChangeSet.batchId !== sourceBatch.batch_id ||
+        sourceChangeSet.flowId !== sourceBatch.flow_id ||
+        sourceChangeSet.selectionDraftId !== sourceBatch.selection_draft_id ||
+        sourceChangeSet.selectionDigest !== sourceBatch.selection_digest ||
+        sourceChangeSetRow.digest !== sourceChangeSet.digest ||
+        deliveryChangeSetDigestWithEvidence(sourceChangeSet, sourceChangeSet.evidenceArtifactIds) !== sourceChangeSet.digest ||
         record.recoveryLineage.sourceDeliveryChangeSetId !== sourceChangeSet.deliveryChangeSetId ||
         record.recoveryLineage.sourceDeliveryChangeSetDigest !== sourceChangeSet.digest ||
-        record.recoveryLineage.sourceTargetFingerprint !== sourceChangeSet.target.initialTargetFingerprint ||
-        sourceBatch.target_fingerprint !== sourceChangeSet.target.initialTargetFingerprint
+        sourceChangeSet.target.projectId !== address.projectId ||
+        sourceChangeSet.target.initialTargetFingerprint !== sourceTargetFingerprint ||
+        record.recoveryLineage.sourceTargetFingerprint !== sourceTargetFingerprint ||
+        sourceBatch.target_fingerprint !== sourceTargetFingerprint ||
+        sourceAttempt.target_fingerprint_before !== sourceTargetFingerprint
       ) {
         throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
       }
 
       const request = parseDeliveryVerificationRequest(record.verificationRequestJson)
       validateDeliveryVerificationReceipt(record.receipt)
+      const requestChangeSetDigest = deliveryChangeSetDigestWithEvidence(record.deliveryChangeSet, [])
+      const finalTargetFingerprint = deliveryTargetFingerprintV1(record.deliveryChangeSet.target)
       if (
         request.verificationAttemptId !== record.verificationAttemptId ||
         request.batchId !== record.batchId ||
         request.flowId !== sourceBatch.flow_id ||
         request.requestDigest !== record.receipt.requestDigest ||
-        request.deliveryChangeSetDigest !== record.deliveryChangeSet.digest ||
+        request.deliveryChangeSetDigest !== requestChangeSetDigest ||
         request.selectionDigest !== record.receipt.selectionDigest ||
+        request.selectionDigest !== record.deliveryChangeSet.selectionDigest ||
         request.targetFingerprint !== record.recoveryLineage.currentTargetFingerprint ||
         request.qaConfigVersion !== record.receipt.qaConfigVersion ||
+        request.qaConfigVersion !== record.deliveryChangeSet.qaConfigVersion ||
         record.receipt.batchId !== record.batchId ||
         record.receipt.flowId !== sourceBatch.flow_id ||
         record.receipt.verificationAttemptId !== record.verificationAttemptId ||
-        record.receipt.deliveryChangeSetId !== record.deliveryChangeSet.deliveryChangeSetId
+        record.receipt.deliveryChangeSetId !== record.deliveryChangeSet.deliveryChangeSetId ||
+        record.receipt.deliveryChangeSetDigest !== record.deliveryChangeSet.digest ||
+        record.receipt.selectionDigest !== record.deliveryChangeSet.selectionDigest ||
+        record.receipt.qaConfigVersion !== record.deliveryChangeSet.qaConfigVersion
       ) {
         throw deliveryStoreError('DELIVERY_VERIFICATION_BINDING_MISMATCH')
       }
@@ -1558,6 +1567,8 @@ export class CollaborationHubSqliteStoreV1 {
       if (
         !record.deliveryChangeSet.recoveryLineage ||
         !sameRecoveryLineage(record.deliveryChangeSet.recoveryLineage, record.recoveryLineage) ||
+        record.deliveryChangeSet.target.projectId !== address.projectId ||
+        record.deliveryChangeSet.target.initialTargetFingerprint !== finalTargetFingerprint ||
         record.deliveryChangeSet.target.initialTargetFingerprint !== record.recoveryLineage.currentTargetFingerprint
       ) {
         throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
@@ -1603,11 +1614,13 @@ export class CollaborationHubSqliteStoreV1 {
         selection_digest: recoveredDraft.digest,
         target_fingerprint: record.recoveryLineage.currentTargetFingerprint,
         recovery_source_batch_id: record.sourceBatchId,
+        recovery_source_apply_attempt_id: record.sourceFailedApplyAttemptId,
         created_at: record.now,
         updated_at: record.now,
       }
       validateDeliveryChangeSet(recoveredBatch, record.receipt, record.deliveryChangeSet)
       assertDeliveryFileArtifactsMatch(record.deliveryChangeSet, record.deliveryFileArtifacts)
+      assertDeliveryRecoveryArtifactsMatch(record)
 
       const superseded = this.db
         .prepare("update delivery_batches set state = 'SUPERSEDED', updated_at = ? where batch_id = ? and state = 'APPROVED'")
@@ -1615,7 +1628,7 @@ export class CollaborationHubSqliteStoreV1 {
       if (superseded.changes !== 1) throw deliveryStoreError('DELIVERY_ILLEGAL_TRANSITION')
       this.db
         .prepare(
-          'insert into delivery_batches (batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'insert into delivery_batches (batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, recovery_source_apply_attempt_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           record.batchId,
@@ -1627,6 +1640,7 @@ export class CollaborationHubSqliteStoreV1 {
           recoveredDraft.digest,
           record.recoveryLineage.currentTargetFingerprint,
           record.sourceBatchId,
+          record.sourceFailedApplyAttemptId,
           record.now,
           record.now,
         )
@@ -3071,6 +3085,7 @@ export class CollaborationHubSqliteStoreV1 {
           selection_digest text not null,
           target_fingerprint text not null,
           recovery_source_batch_id text,
+          recovery_source_apply_attempt_id text,
           created_at text not null,
           updated_at text not null,
           unique(selection_digest)
@@ -3256,6 +3271,12 @@ export class CollaborationHubSqliteStoreV1 {
         insert or ignore into schema_migrations (version, applied_at) values (8, datetime('now'));
       `)
     })
+    this.transaction(() => {
+      this.addColumnIfMissing('delivery_batches', 'recovery_source_apply_attempt_id', 'text')
+      this.db.exec(`
+        insert or ignore into schema_migrations (version, applied_at) values (9, datetime('now'));
+      `)
+    })
   }
 
   private taskRunsForFlow(flowId: FlowId | null): TaskRunRecord[] {
@@ -3349,7 +3370,7 @@ export class CollaborationHubSqliteStoreV1 {
   private activeDeliveryBatch(address: HubAddressV1, flowId: FlowId): DeliveryBatchRow | null {
     const row = this.db
       .prepare(
-        "select batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, created_at, updated_at from delivery_batches where project_id = ? and session_key = ? and flow_id = ? and state in ('COMPOSING', 'VERIFYING', 'READY_FOR_REVIEW', 'APPROVED', 'APPLYING', 'OUTCOME_UNKNOWN') order by rowid desc limit 1",
+        "select batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, recovery_source_apply_attempt_id, created_at, updated_at from delivery_batches where project_id = ? and session_key = ? and flow_id = ? and state in ('COMPOSING', 'VERIFYING', 'READY_FOR_REVIEW', 'APPROVED', 'APPLYING', 'OUTCOME_UNKNOWN') order by rowid desc limit 1",
       )
       .get(address.projectId, address.sessionKey, flowId) as DeliveryBatchRow | undefined
     return row ?? null
@@ -3358,7 +3379,7 @@ export class CollaborationHubSqliteStoreV1 {
   private deliveryBatch(batchId: DeliveryBatchId): DeliveryBatchRow | null {
     const row = this.db
       .prepare(
-        'select batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, created_at, updated_at from delivery_batches where batch_id = ?',
+        'select batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, recovery_source_apply_attempt_id, created_at, updated_at from delivery_batches where batch_id = ?',
       )
       .get(batchId) as DeliveryBatchRow | undefined
     return row ?? null
@@ -3737,12 +3758,6 @@ const DELIVERY_APPLY_SAFE_CODES_V1 = new Set<DeliveryApplySafeCodeV1>([
   'APPLY_ATTEMPT_NOT_FOUND',
 ])
 
-const DELIVERY_TARGET_INTEGRITY_SAFE_CODES_V1 = new Set<string>([
-  'TARGET_BASELINE_DRIFT',
-  'TARGET_STATUS_DIRTY',
-  'TARGET_FILE_DRIFT',
-])
-
 function validateDeliveryApplyReceipt(
   receipt: DeliveryApplyReceiptV1,
   attempt: Pick<DeliveryApplyAttemptRow, 'apply_attempt_id' | 'delivery_change_set_id'>,
@@ -3871,6 +3886,316 @@ function validateDeliveryChangeSet(
   }
 }
 
+function deliveryChangeSetDigestWithEvidence(
+  changeSet: DeliveryChangeSetV1,
+  evidenceArtifactIds: readonly ArtifactId[],
+): Sha256Digest {
+  const { digest: _oldDigest, ...base } = changeSet
+  return deliveryChangeSetDigestV1({ ...base, evidenceArtifactIds })
+}
+
+function assertDeliveryRecoveryArtifactsMatch(record: SealRecoveredDeliveryCandidateRecordV1): void {
+  const evidenceArtifacts = record.evidenceArtifacts ?? []
+  const diagnosticArtifacts = record.diagnosticArtifacts ?? []
+  if (
+    !sameStringArray(record.deliveryChangeSet.evidenceArtifactIds, record.receipt.evidenceArtifactIds) ||
+    !sameStringArray(evidenceArtifacts.map((artifact) => artifact.artifactId), record.receipt.evidenceArtifactIds) ||
+    !sameStringArray(diagnosticArtifacts.map((artifact) => artifact.artifactId), record.receipt.diagnosticArtifactIds)
+  ) {
+    throw deliveryStoreError('DELIVERY_ARTIFACT_INVALID')
+  }
+  const allArtifactIds = [
+    ...record.deliveryFileArtifacts.map((artifact) => artifact.artifactId),
+    ...evidenceArtifacts.map((artifact) => artifact.artifactId),
+    ...diagnosticArtifacts.map((artifact) => artifact.artifactId),
+  ]
+  if (new Set(allArtifactIds).size !== allArtifactIds.length) throw deliveryStoreError('DELIVERY_ARTIFACT_INVALID')
+  for (const artifact of evidenceArtifacts) {
+    if (artifact.kind !== 'VERIFICATION_EVIDENCE' || artifact.contentDigest !== digestBytes(artifact.content)) {
+      throw deliveryStoreError('DELIVERY_ARTIFACT_INVALID')
+    }
+  }
+  for (const artifact of diagnosticArtifacts) {
+    if (artifact.kind !== 'VERIFICATION_DIAGNOSTIC' || artifact.contentDigest !== digestBytes(artifact.content)) {
+      throw deliveryStoreError('DELIVERY_ARTIFACT_INVALID')
+    }
+  }
+}
+
+function assertRecoveredDeliveryCandidateReplay(
+  db: DatabaseSync,
+  address: HubAddressV1,
+  existing: DeliveryBatchRow,
+  record: SealRecoveredDeliveryCandidateRecordV1,
+): void {
+  const sourceBatch = db
+    .prepare(
+      'select batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, recovery_source_batch_id, recovery_source_apply_attempt_id, created_at, updated_at from delivery_batches where batch_id = ?',
+    )
+    .get(record.sourceBatchId) as DeliveryBatchRow | undefined
+  const sourceAttempt = db
+    .prepare(
+      'select apply_attempt_id, batch_id, delivery_change_set_id, request_digest, target_fingerprint_before, state, receipt_digest, safe_code, changed_relative_paths_json, receipt_json, target_fingerprint_after, started_at, finished_at from delivery_apply_attempts where apply_attempt_id = ?',
+    )
+    .get(record.sourceFailedApplyAttemptId) as DeliveryApplyAttemptRow | undefined
+  const sourceChangeSetRow = sourceAttempt
+    ? (db
+        .prepare(
+          'select delivery_change_set_id, batch_id, flow_id, version, digest, change_set_json, created_at from delivery_change_sets where delivery_change_set_id = ?',
+        )
+        .get(sourceAttempt.delivery_change_set_id) as DeliveryChangeSetRow | undefined)
+    : undefined
+  const sourceChangeSet = sourceChangeSetRow
+    ? JSON.parse(sourceChangeSetRow.change_set_json) as DeliveryChangeSetV1
+    : null
+  const failedReceipt = sourceAttempt ? persistedDeliveryApplyReceipt(sourceAttempt) : null
+  const sourceTargetFingerprint = sourceChangeSet ? deliveryTargetFingerprintV1(sourceChangeSet.target) : null
+  const sourceDraft = db
+    .prepare(
+      'select draft_id, batch_id, flow_id, selected_task_run_ids_json, resolved_task_change_set_ids_json, dependency_task_run_ids_json, selection_digest, draft_json, created_at from delivery_selection_drafts where batch_id = ?',
+    )
+    .get(record.sourceBatchId) as DeliverySelectionDraftRow | undefined
+  if (
+    !sourceBatch ||
+    sourceBatch.project_id !== address.projectId ||
+    sourceBatch.session_key !== address.sessionKey ||
+    sourceBatch.state !== 'SUPERSEDED' ||
+    !sourceAttempt ||
+    sourceAttempt.batch_id !== record.sourceBatchId ||
+    (sourceAttempt.state !== 'FAILED' && sourceAttempt.state !== 'FAILED_ROLLED_BACK') ||
+    failedReceipt?.verdict !== 'FAILED_ROLLED_BACK' ||
+    failedReceipt.safeCode !== 'TARGET_BASELINE_DRIFT' ||
+    failedReceipt.changedRelativePaths.length !== 0 ||
+    !sourceChangeSetRow ||
+    !sourceChangeSet ||
+    sourceChangeSetRow.delivery_change_set_id !== sourceChangeSet.deliveryChangeSetId ||
+    sourceChangeSetRow.batch_id !== sourceBatch.batch_id ||
+    sourceChangeSetRow.flow_id !== sourceBatch.flow_id ||
+    sourceChangeSetRow.version !== 1 ||
+    sourceChangeSet.batchId !== sourceBatch.batch_id ||
+    sourceChangeSet.flowId !== sourceBatch.flow_id ||
+    sourceChangeSet.selectionDraftId !== sourceBatch.selection_draft_id ||
+    sourceChangeSet.selectionDigest !== sourceBatch.selection_digest ||
+    sourceChangeSetRow.digest !== sourceChangeSet.digest ||
+    deliveryChangeSetDigestWithEvidence(sourceChangeSet, sourceChangeSet.evidenceArtifactIds) !== sourceChangeSet.digest ||
+    sourceChangeSet.deliveryChangeSetId !== record.recoveryLineage.sourceDeliveryChangeSetId ||
+    sourceChangeSet.digest !== record.recoveryLineage.sourceDeliveryChangeSetDigest ||
+    sourceChangeSet.target.projectId !== address.projectId ||
+    sourceChangeSet.target.initialTargetFingerprint !== sourceTargetFingerprint ||
+    sourceBatch.target_fingerprint !== sourceTargetFingerprint ||
+    sourceAttempt.target_fingerprint_before !== sourceTargetFingerprint ||
+    record.recoveryLineage.sourceTargetFingerprint !== sourceTargetFingerprint ||
+    record.recoveryLineage.sourceBatchId !== record.sourceBatchId ||
+    !sourceDraft
+  ) {
+    throw deliveryStoreError('DELIVERY_RECOVERY_IDEMPOTENCY_CONFLICT')
+  }
+
+  const changeSetRow = db
+    .prepare(
+      'select delivery_change_set_id, batch_id, flow_id, version, selection_digest, task_change_set_ids_json, evidence_artifact_ids_json, qa_config_version, digest, change_set_json, created_at from delivery_change_sets where batch_id = ?',
+    )
+    .get(existing.batch_id) as
+    | (DeliveryChangeSetRow & {
+        selection_digest: Sha256Digest
+        task_change_set_ids_json: string
+        evidence_artifact_ids_json: string
+        qa_config_version: string
+      })
+    | undefined
+  const gate = db
+    .prepare(
+      'select gate_id, batch_id, delivery_change_set_id, subject_version, subject_digest, state, decision_digest, decided_at, gate_json, created_at from delivery_human_gates where batch_id = ?',
+    )
+    .get(existing.batch_id) as DeliveryGateRow | undefined
+  const verification = db
+    .prepare(
+      'select delivery_verification_attempt_id, verification_request_id, batch_id, flow_id, request_digest, selection_digest, qa_config_version, state, started_at, finished_at, outcome_receipt_digest from delivery_verification_attempts where batch_id = ?',
+    )
+    .get(existing.batch_id) as DeliveryVerificationAttemptRow | undefined
+  const outbox = verification
+    ? (db
+        .prepare(
+          'select outbox_id, delivery_verification_attempt_id, request_digest, request_json, status, claim_owner_id, claim_digest, claimed_at, completed_at, created_at from delivery_verification_outbox where delivery_verification_attempt_id = ?',
+        )
+        .get(verification.delivery_verification_attempt_id) as DeliveryVerificationOutboxRow | undefined)
+    : undefined
+  const receiptRow = verification?.outcome_receipt_digest
+    ? (db
+        .prepare(
+          'select receipt_digest, delivery_verification_attempt_id, request_digest, verdict, receipt_json, diagnostic_artifact_ids_json, created_at from delivery_verification_receipts where receipt_digest = ?',
+        )
+        .get(verification.outcome_receipt_digest) as
+        | {
+            receipt_digest: Sha256Digest
+            delivery_verification_attempt_id: DeliveryVerificationAttemptId
+            request_digest: Sha256Digest
+            verdict: string
+            receipt_json: string
+            diagnostic_artifact_ids_json: string
+            created_at: string
+          }
+        | undefined)
+    : undefined
+  const draft = db
+    .prepare(
+      'select draft_id, batch_id, flow_id, selected_task_run_ids_json, resolved_task_change_set_ids_json, dependency_task_run_ids_json, selection_digest, draft_json, created_at from delivery_selection_drafts where batch_id = ?',
+    )
+    .get(existing.batch_id) as DeliverySelectionDraftRow | undefined
+
+  const request = parseDeliveryVerificationRequest(record.verificationRequestJson)
+  validateDeliveryVerificationReceipt(record.receipt)
+  const requestChangeSetDigest = deliveryChangeSetDigestWithEvidence(record.deliveryChangeSet, [])
+  const finalTargetFingerprint = deliveryTargetFingerprintV1(record.deliveryChangeSet.target)
+  const sourceDraftValue = JSON.parse(sourceDraft.draft_json) as DeliverySelectionDraftV1
+  const expectedDraftBase = {
+    ...sourceDraftValue,
+    draftId: record.draftId,
+    batchId: record.batchId,
+    targetFingerprint: finalTargetFingerprint,
+    createdAt: record.now as never,
+  }
+  const expectedDraft = { ...expectedDraftBase, digest: deliverySelectionDigestV1(expectedDraftBase) }
+  const expectedGate: DeliveryHumanGateV1 = {
+    gateId: record.gateId,
+    batchId: record.batchId,
+    subject: {
+      deliveryChangeSetId: record.deliveryChangeSet.deliveryChangeSetId,
+      version: 1,
+      digest: record.deliveryChangeSet.digest,
+    },
+    state: 'OPEN',
+    createdAt: record.now as never,
+  }
+  if (
+    existing.batch_id !== record.batchId ||
+    existing.project_id !== address.projectId ||
+    existing.session_key !== address.sessionKey ||
+    existing.flow_id !== sourceBatch.flow_id ||
+    existing.selection_draft_id !== record.draftId ||
+    existing.state !== 'READY_FOR_REVIEW' ||
+    existing.selection_digest !== expectedDraft.digest ||
+    existing.target_fingerprint !== finalTargetFingerprint ||
+    existing.recovery_source_batch_id !== record.sourceBatchId ||
+    existing.recovery_source_apply_attempt_id !== record.sourceFailedApplyAttemptId ||
+    existing.created_at !== record.now ||
+    existing.updated_at !== record.now ||
+    request.verificationAttemptId !== record.verificationAttemptId ||
+    request.batchId !== record.batchId ||
+    request.flowId !== sourceBatch.flow_id ||
+    request.requestDigest !== record.receipt.requestDigest ||
+    request.deliveryChangeSetDigest !== requestChangeSetDigest ||
+    request.selectionDigest !== record.receipt.selectionDigest ||
+    request.selectionDigest !== record.deliveryChangeSet.selectionDigest ||
+    request.targetFingerprint !== record.recoveryLineage.currentTargetFingerprint ||
+    request.qaConfigVersion !== record.receipt.qaConfigVersion ||
+    request.qaConfigVersion !== record.deliveryChangeSet.qaConfigVersion ||
+    record.receipt.batchId !== record.batchId ||
+    record.receipt.flowId !== sourceBatch.flow_id ||
+    record.receipt.verificationAttemptId !== record.verificationAttemptId ||
+    record.receipt.deliveryChangeSetId !== record.deliveryChangeSet.deliveryChangeSetId ||
+    record.receipt.deliveryChangeSetDigest !== record.deliveryChangeSet.digest ||
+    record.receipt.selectionDigest !== record.deliveryChangeSet.selectionDigest ||
+    record.receipt.qaConfigVersion !== record.deliveryChangeSet.qaConfigVersion ||
+    record.receipt.verdict !== 'PASS' ||
+    record.deliveryChangeSet.selectionDraftId !== record.draftId ||
+    !record.deliveryChangeSet.recoveryLineage ||
+    !sameRecoveryLineage(record.deliveryChangeSet.recoveryLineage, record.recoveryLineage) ||
+    !changeSetRow ||
+    changeSetRow.delivery_change_set_id !== record.deliveryChangeSet.deliveryChangeSetId ||
+    changeSetRow.batch_id !== record.batchId ||
+    changeSetRow.flow_id !== sourceBatch.flow_id ||
+    changeSetRow.version !== 1 ||
+    changeSetRow.selection_digest !== record.deliveryChangeSet.selectionDigest ||
+    changeSetRow.task_change_set_ids_json !== JSON.stringify(record.deliveryChangeSet.taskChangeSetIds) ||
+    changeSetRow.qa_config_version !== record.deliveryChangeSet.qaConfigVersion ||
+    changeSetRow.digest !== record.deliveryChangeSet.digest ||
+    changeSetRow.change_set_json !== JSON.stringify(record.deliveryChangeSet) ||
+    changeSetRow.evidence_artifact_ids_json !== JSON.stringify(record.deliveryChangeSet.evidenceArtifactIds) ||
+    changeSetRow.created_at !== record.now ||
+    !gate ||
+    gate.gate_id !== record.gateId ||
+    gate.batch_id !== record.batchId ||
+    gate.delivery_change_set_id !== record.deliveryChangeSet.deliveryChangeSetId ||
+    gate.subject_version !== 1 ||
+    gate.subject_digest !== record.deliveryChangeSet.digest ||
+    gate.state !== 'OPEN' ||
+    gate.decision_digest !== null ||
+    gate.decided_at !== null ||
+    gate.gate_json !== JSON.stringify(expectedGate) ||
+    gate.created_at !== record.now ||
+    !verification ||
+    verification.delivery_verification_attempt_id !== record.verificationAttemptId ||
+    verification.verification_request_id !== request.verificationRequestId ||
+    verification.batch_id !== record.batchId ||
+    verification.flow_id !== sourceBatch.flow_id ||
+    verification.request_digest !== request.requestDigest ||
+    verification.selection_digest !== record.deliveryChangeSet.selectionDigest ||
+    verification.qa_config_version !== request.qaConfigVersion ||
+    verification.state !== 'SUCCEEDED' ||
+    verification.outcome_receipt_digest !== record.receipt.receiptDigest ||
+    verification.started_at !== record.now ||
+    verification.finished_at !== record.now ||
+    !outbox ||
+    outbox.outbox_id !== `xhbdvo_${record.verificationAttemptId}` ||
+    outbox.delivery_verification_attempt_id !== record.verificationAttemptId ||
+    outbox.request_digest !== request.requestDigest ||
+    outbox.request_json !== record.verificationRequestJson ||
+    outbox.status !== 'DONE' ||
+    outbox.claim_owner_id !== 'xiaogui-main-process-delivery' ||
+    outbox.claim_digest !== `delivery.recovery.prepare:${record.verificationAttemptId}:${request.requestDigest}` ||
+    outbox.claimed_at !== record.now ||
+    outbox.completed_at !== record.now ||
+    outbox.created_at !== record.now ||
+    !receiptRow ||
+    receiptRow.receipt_digest !== record.receipt.receiptDigest ||
+    receiptRow.delivery_verification_attempt_id !== record.verificationAttemptId ||
+    receiptRow.request_digest !== request.requestDigest ||
+    receiptRow.verdict !== record.receipt.verdict ||
+    receiptRow.receipt_json !== JSON.stringify(record.receipt) ||
+    receiptRow.diagnostic_artifact_ids_json !== JSON.stringify(record.receipt.diagnosticArtifactIds) ||
+    receiptRow.created_at !== record.now ||
+    !draft ||
+    draft.draft_id !== record.draftId ||
+    draft.batch_id !== record.batchId ||
+    draft.flow_id !== sourceBatch.flow_id ||
+    draft.selection_digest !== record.deliveryChangeSet.selectionDigest ||
+    draft.selected_task_run_ids_json !== JSON.stringify(expectedDraft.selectedTaskRunIds ?? []) ||
+    draft.resolved_task_change_set_ids_json !== JSON.stringify(
+      (expectedDraft.resolvedTaskChangeSets ?? []).map((item) => item.taskChangeSetId),
+    ) ||
+    draft.dependency_task_run_ids_json !== JSON.stringify(expectedDraft.dependencyTaskRunIds ?? []) ||
+    draft.draft_json !== JSON.stringify(expectedDraft) ||
+    draft.created_at !== record.now ||
+    record.deliveryChangeSet.target.projectId !== address.projectId ||
+    record.deliveryChangeSet.target.initialTargetFingerprint !== finalTargetFingerprint ||
+    record.recoveryLineage.currentTargetFingerprint !== finalTargetFingerprint
+  ) {
+    throw deliveryStoreError('DELIVERY_RECOVERY_IDEMPOTENCY_CONFLICT')
+  }
+  validateDeliveryChangeSet({
+    batch_id: existing.batch_id,
+    project_id: address.projectId,
+    session_key: address.sessionKey,
+    flow_id: sourceBatch.flow_id,
+    selection_draft_id: record.draftId,
+    state: existing.state,
+    selection_digest: record.deliveryChangeSet.selectionDigest,
+    target_fingerprint: finalTargetFingerprint,
+    recovery_source_batch_id: record.sourceBatchId,
+    recovery_source_apply_attempt_id: record.sourceFailedApplyAttemptId,
+    created_at: record.now,
+    updated_at: record.now,
+  }, record.receipt, record.deliveryChangeSet)
+  assertDeliveryFileArtifactsMatch(record.deliveryChangeSet, record.deliveryFileArtifacts)
+  assertDeliveryRecoveryArtifactsMatch(record)
+  assertPersistedArtifactsMatch(db, [
+    ...record.deliveryFileArtifacts,
+    ...(record.evidenceArtifacts ?? []),
+    ...(record.diagnosticArtifacts ?? []),
+  ])
+}
+
 function sameRecoveryLineage(left: DeliveryRecoveryLineageV1, right: DeliveryRecoveryLineageV1): boolean {
   return (
     left.sourceBatchId === right.sourceBatchId &&
@@ -3899,6 +4224,17 @@ function assertDeliveryFileArtifactsMatch(
     ) {
       throw deliveryStoreError('DELIVERY_ARTIFACT_INVALID')
     }
+  }
+}
+
+function assertPersistedArtifactsMatch(db: DatabaseSync, artifacts: readonly TaskArtifactWriteV1[]): void {
+  for (const artifact of artifacts) {
+    const row = db
+      .prepare('select kind, media_type, content_digest, content from artifacts where artifact_id = ?')
+      .get(artifact.artifactId) as
+      | { kind: string; media_type: string; content_digest: string; content: Uint8Array }
+      | undefined
+    if (!row || !artifactMatches(row, artifact)) throw deliveryStoreError('DELIVERY_ARTIFACT_INVALID')
   }
 }
 

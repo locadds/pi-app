@@ -826,6 +826,7 @@ describe('collaboration-hub-store', () => {
       { state: 'SUCCEEDED' as const, safeCode: 'TARGET_BASELINE_DRIFT' as const, changedRelativePaths: [] as readonly string[] },
       { state: 'FAILED_ROLLED_BACK' as const, safeCode: 'TARGET_STATUS_DIRTY' as const, changedRelativePaths: [] as readonly string[] },
       { state: 'FAILED_ROLLED_BACK' as const, safeCode: 'TARGET_BASELINE_DRIFT' as const, changedRelativePaths: ['src/a.ts'] as readonly string[] },
+      { state: 'FAILED_ROLLED_BACK' as const, safeCode: 'TARGET_BASELINE_DRIFT' as const, changedRelativePaths: undefined },
     ]) {
       prepareRecoveryMock.mockClear()
       useCollaborationHubStore.setState({
@@ -838,5 +839,84 @@ describe('collaboration-hub-store', () => {
       await useCollaborationHubStore.getState().prepareActiveDeliveryRecovery()
       expect(prepareRecoveryMock).not.toHaveBeenCalled()
     }
+  })
+
+  it('普通重试只允许失败终态且排除结果未知和完整性失败', async () => {
+    const delivery = deliveryProjection()
+    const failedApplyAttempt = {
+      applyAttemptId: 'xhbdapp_failed' as never,
+      batchId: delivery.batchId,
+      deliveryChangeSetId: delivery.deliveryChangeSetId!,
+      requestDigest: `sha256:${'a'.repeat(64)}` as never,
+      targetFingerprintBefore: `sha256:${'b'.repeat(64)}` as never,
+      state: 'FAILED' as const,
+      receiptDigest: `sha256:${'c'.repeat(64)}` as never,
+      safeCode: 'TARGET_WRITE_FAILED' as const,
+      changedRelativePaths: [] as readonly string[],
+      startedAt: '2026-08-18T00:00:00.000Z' as never,
+      finishedAt: '2026-08-18T00:00:01.000Z' as never,
+    }
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    retryDeliveryMock.mockResolvedValue({ ok: true, value: { ...delivery, state: 'APPROVED' } })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    useCollaborationHubStore.setState({
+      projection: {
+        ...useCollaborationHubStore.getState().projection!,
+        activeDelivery: { ...delivery, state: 'APPROVED', applyAttempt: failedApplyAttempt },
+        availableActions: ['flow.cancel', 'apply.retry.request'],
+      },
+    })
+
+    await useCollaborationHubStore.getState().retryActiveDelivery()
+
+    expect(retryDeliveryMock).toHaveBeenCalledTimes(1)
+    expect(retryDeliveryMock.mock.calls[0]![1]).toEqual({
+      requestId: 'test-req-1',
+      batchId: delivery.batchId,
+      failedApplyAttemptId: 'xhbdapp_failed',
+    })
+
+    const blockedPatches = [
+      { state: 'OUTCOME_UNKNOWN' as const, safeCode: 'TARGET_WRITE_FAILED' as const },
+      { state: 'SUCCEEDED' as const, safeCode: 'TARGET_WRITE_FAILED' as const },
+      { state: 'FAILED' as const, safeCode: 'TARGET_BASELINE_DRIFT' as const },
+      { state: 'FAILED' as const, safeCode: 'TARGET_STATUS_DIRTY' as const },
+      { state: 'FAILED' as const, safeCode: 'TARGET_FILE_DRIFT' as const },
+    ]
+    for (const patch of blockedPatches) {
+      retryDeliveryMock.mockClear()
+      useCollaborationHubStore.setState({
+        projection: {
+          ...useCollaborationHubStore.getState().projection!,
+          activeDelivery: { ...delivery, state: 'APPROVED', applyAttempt: { ...failedApplyAttempt, ...patch } },
+          availableActions: ['apply.retry.request'],
+        },
+      })
+      await useCollaborationHubStore.getState().retryActiveDelivery()
+      expect(retryDeliveryMock).not.toHaveBeenCalled()
+    }
+
+    retryDeliveryMock.mockClear()
+    useCollaborationHubStore.setState({
+      projection: {
+        ...useCollaborationHubStore.getState().projection!,
+        activeDelivery: { ...delivery, state: 'APPROVED', applyAttempt: failedApplyAttempt },
+        availableActions: [],
+      },
+    })
+    await useCollaborationHubStore.getState().retryActiveDelivery()
+    expect(retryDeliveryMock).not.toHaveBeenCalled()
+
+    retryDeliveryMock.mockClear()
+    useCollaborationHubStore.setState({
+      projection: {
+        ...useCollaborationHubStore.getState().projection!,
+        activeDelivery: { ...delivery, state: 'APPROVED', applyAttempt: undefined },
+        availableActions: ['apply.retry.request'],
+      },
+    })
+    await useCollaborationHubStore.getState().retryActiveDelivery()
+    expect(retryDeliveryMock).not.toHaveBeenCalled()
   })
 })

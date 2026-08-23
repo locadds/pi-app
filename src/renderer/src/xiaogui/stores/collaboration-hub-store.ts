@@ -17,7 +17,7 @@ import type {
   SessionCollaborationProjectionM2BV1,
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
-import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
+import type { DeliveryApplyAttemptV1, DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { XiaoguiDeliveryOutcomeV1, XiaoguiDeliverySafeErrorV1 } from '@shared/xiaogui-delivery-ipc'
 import type {
   XiaoguiTaskExecutionSafeErrorV1,
@@ -246,6 +246,21 @@ export const DELIVERY_ERROR_TEXT: Record<XiaoguiDeliverySafeErrorV1['code'], str
   DELIVERY_NOT_FOUND: '交付批次不存在',
   ILLEGAL_TRANSITION: '当前交付状态不允许执行该操作',
   INTERNAL: '交付内部错误',
+}
+
+const DELIVERY_FAILED_APPLY_STATES = new Set<DeliveryApplyAttemptV1['state']>(['FAILED', 'FAILED_ROLLED_BACK'])
+const DELIVERY_NON_RETRYABLE_APPLY_SAFE_CODES = new Set<NonNullable<DeliveryApplyAttemptV1['safeCode']>>([
+  'TARGET_BASELINE_DRIFT',
+  'TARGET_STATUS_DIRTY',
+  'TARGET_FILE_DRIFT',
+])
+
+function isFailedApplyAttempt(applyAttempt: DeliveryApplyAttemptV1 | undefined): applyAttempt is DeliveryApplyAttemptV1 {
+  return Boolean(applyAttempt && DELIVERY_FAILED_APPLY_STATES.has(applyAttempt.state))
+}
+
+function hasExplicitEmptyChangedRelativePaths(applyAttempt: DeliveryApplyAttemptV1 | undefined): boolean {
+  return Array.isArray(applyAttempt?.changedRelativePaths) && applyAttempt.changedRelativePaths.length === 0
 }
 
 interface CollaborationHubState {
@@ -630,29 +645,37 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
     retryActiveDelivery: async () =>
       runDeliveryIntent((address, current) => {
         const delivery = current.activeDelivery
-        if (!delivery?.applyAttempt || !current.availableActions.includes('apply.retry.request')) return null
+        const applyAttempt = delivery?.applyAttempt
+        if (
+          !delivery ||
+          !current.availableActions.includes('apply.retry.request') ||
+          !isFailedApplyAttempt(applyAttempt) ||
+          (applyAttempt.safeCode !== undefined && DELIVERY_NON_RETRYABLE_APPLY_SAFE_CODES.has(applyAttempt.safeCode))
+        )
+          return null
         return retryDeliveryApply(address, {
           requestId: newHubRequestId(),
           batchId: delivery.batchId,
-          failedApplyAttemptId: delivery.applyAttempt.applyAttemptId,
+          failedApplyAttemptId: applyAttempt.applyAttemptId,
         })
       }),
 
     prepareActiveDeliveryRecovery: async () =>
       runDeliveryIntent((address, current) => {
         const delivery = current.activeDelivery
+        const applyAttempt = delivery?.applyAttempt
         if (
-          !delivery?.applyAttempt ||
+          !delivery ||
           !current.availableActions.includes('apply.recovery.prepare') ||
-          (delivery.applyAttempt.state !== 'FAILED' && delivery.applyAttempt.state !== 'FAILED_ROLLED_BACK') ||
-          delivery.applyAttempt.safeCode !== 'TARGET_BASELINE_DRIFT' ||
-          (delivery.applyAttempt.changedRelativePaths?.length ?? 0) !== 0
+          !isFailedApplyAttempt(applyAttempt) ||
+          applyAttempt.safeCode !== 'TARGET_BASELINE_DRIFT' ||
+          !hasExplicitEmptyChangedRelativePaths(applyAttempt)
         )
           return null
         return prepareDeliveryRecovery(address, {
           requestId: newHubRequestId(),
           batchId: delivery.batchId,
-          failedApplyAttemptId: delivery.applyAttempt.applyAttemptId,
+          failedApplyAttemptId: applyAttempt.applyAttemptId,
         })
       }),
 

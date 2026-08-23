@@ -759,7 +759,7 @@ describe('CollaborationHubPanel', () => {
     expect(approveDeliveryMock).not.toHaveBeenCalled()
   })
 
-  it('交付完整性失败显示中文处理建议，基准漂移仅显示重新准备按钮而不显示普通重试', async () => {
+  it('交付应用失败门禁区分基准恢复、普通重试和结果未知', async () => {
     const address: HubAddressV1 = {
       projectId: scopeCoding.projectId,
       sessionKey: scopeCoding.sessionKey,
@@ -805,6 +805,76 @@ describe('CollaborationHubPanel', () => {
 
     cleanup()
     prepareRecoveryMock.mockReset()
+    retryDeliveryMock.mockReset()
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: {
+        ...projection,
+        activeDelivery: {
+          ...projection.activeDelivery!,
+          state: 'APPROVED',
+          applyAttempt: { ...failedApplyAttempt, safeCode: 'TARGET_WRITE_FAILED' as const },
+        },
+        availableActions: ['flow.cancel', 'apply.retry.request'],
+      },
+    })
+    retryDeliveryMock.mockResolvedValue({ ok: true, value: projection.activeDelivery! })
+    showSession(sessionWith('s-delivery-retry', scopeCoding))
+    render(<CollaborationHubPanel />)
+    const retryButton = await screen.findByRole('button', { name: '重试应用' })
+    await user.click(retryButton)
+    expect(retryDeliveryMock).toHaveBeenCalledTimes(1)
+    expect(retryDeliveryMock.mock.calls[0]![1]).toEqual({
+      requestId: 'test-req-2',
+      batchId: 'xhbd_batch1',
+      failedApplyAttemptId: 'xhbdapp_failed',
+    })
+    expect(screen.queryByRole('button', { name: '按当前代码重新准备交付' })).toBeNull()
+
+    cleanup()
+    prepareRecoveryMock.mockReset()
+    retryDeliveryMock.mockReset()
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: {
+        ...projection,
+        activeDelivery: {
+          ...projection.activeDelivery!,
+          state: 'APPROVED',
+          applyAttempt: { ...failedApplyAttempt, changedRelativePaths: undefined },
+        },
+        availableActions: ['flow.cancel', 'apply.recovery.prepare', 'apply.retry.request'],
+      },
+    })
+    showSession(sessionWith('s-delivery-recovery-missing-paths', scopeCoding))
+    render(<CollaborationHubPanel />)
+    await screen.findByTestId('hub-delivery-integrity-note')
+    expect(screen.queryByRole('button', { name: '按当前代码重新准备交付' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '重试应用' })).toBeNull()
+
+    cleanup()
+    retryDeliveryMock.mockReset()
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: {
+        ...projection,
+        activeDelivery: {
+          ...projection.activeDelivery!,
+          state: 'APPROVED',
+          applyAttempt: { ...failedApplyAttempt, state: 'OUTCOME_UNKNOWN' as const, safeCode: 'TARGET_WRITE_FAILED' as const },
+        },
+        availableActions: ['flow.cancel', 'apply.retry.request'],
+      },
+    })
+    showSession(sessionWith('s-delivery-unknown', scopeCoding))
+    render(<CollaborationHubPanel />)
+    await screen.findByTestId('hub-delivery-review')
+    expect(screen.queryByRole('button', { name: '重试应用' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '按当前代码重新准备交付' })).toBeNull()
+
+    cleanup()
+    prepareRecoveryMock.mockReset()
+    retryDeliveryMock.mockReset()
     observeMock.mockResolvedValue({
       ok: true,
       value: {

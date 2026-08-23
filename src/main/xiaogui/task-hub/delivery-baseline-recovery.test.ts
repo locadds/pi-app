@@ -55,7 +55,7 @@ describe('MainProcessDeliveryBaselineRecoveryPortV1', () => {
     const createDesired = Buffer.from('new child file\n')
     const desiredFiles = [
       desiredFile('docs/plan.md', 'artifact-plan', modifyDesired),
-      desiredFile('notes/created.md', 'artifact-created', createDesired),
+      desiredFile('docs/created.md', 'artifact-created', createDesired),
     ]
     const sourceChangeSet = changeSet(sourceTarget, [
       {
@@ -68,7 +68,7 @@ describe('MainProcessDeliveryBaselineRecoveryPortV1', () => {
       },
       {
         operation: 'CREATE',
-        relativePath: 'notes/created.md',
+        relativePath: 'docs/created.md',
         baselineDigest: null,
         contentDigest: digestBytes(createDesired),
         contentArtifactId: 'artifact-created' as ArtifactId,
@@ -86,7 +86,7 @@ describe('MainProcessDeliveryBaselineRecoveryPortV1', () => {
 
     const worktreeRoot = result.privateIntegrationContext.worktreeRoot
     expect(await readFile(join(worktreeRoot, 'docs/plan.md'), 'utf8')).toBe('alpha\nleft: current\nmiddle\nright: desired\nomega\n')
-    expect(await readFile(join(worktreeRoot, 'notes/created.md'), 'utf8')).toBe('new child file\n')
+    expect(await readFile(join(worktreeRoot, 'docs/created.md'), 'utf8')).toBe('new child file\n')
     expect(result.evidenceMaterial).toMatchObject({
       recoveredFileCount: 2,
       directReplacementCount: 0,
@@ -94,7 +94,7 @@ describe('MainProcessDeliveryBaselineRecoveryPortV1', () => {
       createCount: 1,
     })
     expect(await readFile(join(fixture.repoRoot, 'docs/plan.md'), 'utf8')).toBe(targetContentBefore)
-    expect(existsSync(join(fixture.repoRoot, 'notes/created.md'))).toBe(false)
+    expect(existsSync(join(fixture.repoRoot, 'docs/created.md'))).toBe(false)
     expect(await git(fixture.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
     expect(existsSync(worktreeRoot)).toBe(true)
 
@@ -140,6 +140,72 @@ describe('MainProcessDeliveryBaselineRecoveryPortV1', () => {
     })).rejects.toMatchObject({ reasonCode: 'DELIVERY_RECOVERY_FILE_CONFLICT' })
 
     expect(await readFile(join(fixture.repoRoot, 'docs/plan.md'), 'utf8')).toBe(targetContentBefore)
+    expect(await git(fixture.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
+    expect(await managedRecoveryEntries(fixture.managedRoot)).toEqual([])
+    expect(await git(fixture.repoRoot, ['worktree', 'list', '--porcelain'])).not.toContain('delivery-recovery-')
+  })
+
+  it('fails closed on binary CREATE desired content before writing and leaves the original target untouched', async () => {
+    const fixture = await createFixture('create-binary')
+    await writeRepoFile(fixture.repoRoot, 'docs/plan.md', 'alpha\nbase\nomega\n')
+    await git(fixture.repoRoot, ['add', 'docs/plan.md'])
+    await git(fixture.repoRoot, ['commit', '-m', 'base'])
+    const sourceTarget = await targetFor(fixture.repoRoot)
+    const targetContentBefore = await readFile(join(fixture.repoRoot, 'docs/plan.md'), 'utf8')
+
+    const desired = Buffer.from([0xff, 0xfe, 0xfd])
+    const sourceChangeSet = changeSet(sourceTarget, [{
+      operation: 'CREATE',
+      relativePath: 'docs/payload.dat',
+      baselineDigest: null,
+      contentDigest: digestBytes(desired),
+      contentArtifactId: 'artifact-binary-create' as ArtifactId,
+      sourceTaskChangeSetIds: ['task-change-binary-create' as TaskChangeSetId],
+    }])
+
+    const port = recoveryPort(fixture)
+    await expect(port.recover({
+      sourceBatchId: sourceChangeSet.batchId,
+      sourceChangeSet,
+      desiredFiles: [desiredFile('docs/payload.dat', 'artifact-binary-create', desired)],
+      currentTarget: sourceTarget,
+    })).rejects.toMatchObject({ reasonCode: 'DELIVERY_RECOVERY_BINARY_UNSUPPORTED' })
+
+    expect(await readFile(join(fixture.repoRoot, 'docs/plan.md'), 'utf8')).toBe(targetContentBefore)
+    expect(existsSync(join(fixture.repoRoot, 'docs/payload.dat'))).toBe(false)
+    expect(await git(fixture.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
+    expect(await managedRecoveryEntries(fixture.managedRoot)).toEqual([])
+    expect(await git(fixture.repoRoot, ['worktree', 'list', '--porcelain'])).not.toContain('delivery-recovery-')
+  })
+
+  it('fails closed on CREATE missing parent directories and cleans the managed worktree', async () => {
+    const fixture = await createFixture('create-missing-parent')
+    await writeRepoFile(fixture.repoRoot, 'docs/plan.md', 'alpha\nbase\nomega\n')
+    await git(fixture.repoRoot, ['add', 'docs/plan.md'])
+    await git(fixture.repoRoot, ['commit', '-m', 'base'])
+    const sourceTarget = await targetFor(fixture.repoRoot)
+    const targetContentBefore = await readFile(join(fixture.repoRoot, 'docs/plan.md'), 'utf8')
+
+    const desired = Buffer.from('created in missing parent\n')
+    const sourceChangeSet = changeSet(sourceTarget, [{
+      operation: 'CREATE',
+      relativePath: 'missing/created.md',
+      baselineDigest: null,
+      contentDigest: digestBytes(desired),
+      contentArtifactId: 'artifact-missing-parent-create' as ArtifactId,
+      sourceTaskChangeSetIds: ['task-change-missing-parent-create' as TaskChangeSetId],
+    }])
+
+    const port = recoveryPort(fixture)
+    await expect(port.recover({
+      sourceBatchId: sourceChangeSet.batchId,
+      sourceChangeSet,
+      desiredFiles: [desiredFile('missing/created.md', 'artifact-missing-parent-create', desired)],
+      currentTarget: sourceTarget,
+    })).rejects.toMatchObject({ reasonCode: 'DELIVERY_RECOVERY_FILE_CONFLICT' })
+
+    expect(await readFile(join(fixture.repoRoot, 'docs/plan.md'), 'utf8')).toBe(targetContentBefore)
+    expect(existsSync(join(fixture.repoRoot, 'missing/created.md'))).toBe(false)
     expect(await git(fixture.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
     expect(await managedRecoveryEntries(fixture.managedRoot)).toEqual([])
     expect(await git(fixture.repoRoot, ['worktree', 'list', '--porcelain'])).not.toContain('delivery-recovery-')

@@ -60,9 +60,6 @@ import {
 
 const DELIVERY_QA_CONFIG_VERSION_V1 = 'xiaogui.coding.delivery.v1'
 const DELIVERY_OUTBOX_OWNER_V1 = 'xiaogui-main-process-delivery'
-const DELIVERY_TARGET_INTEGRITY_FAILURES = new Set([
-  'TARGET_BASELINE_DRIFT',
-])
 
 interface PrivateDeliveryVerificationRecoveryV1 {
   readonly verificationRequestDigest?: Sha256Digest
@@ -90,6 +87,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
   private readonly store: CollaborationHubSqliteStoreV1
   private readonly verificationService: DeliveryVerificationServiceV1
   private readonly inFlight = new Map<string, Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>>>()
+  private readonly recoveryInFlightAttempts = new Map<string, DeliveryApplyAttemptId>()
   private readonly integrationRoots = new Map<string, string>()
   private closing = false
   private closed = false
@@ -294,25 +292,33 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
   }
 
   prepareRecovery(address: HubAddressV1, request: XiaoguiDeliveryPrepareRecoveryRequestV1): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
-    return this.singleFlight(`prepare-recovery:${address.projectId}:${address.sessionKey}:${request.batchId}`, async () => {
+    let packageRecord: ReturnType<CollaborationHubSqliteStoreV1['readDeliveryApplyPackage']>
+    try {
+      packageRecord = this.store.readDeliveryApplyPackage(request.failedApplyAttemptId)
+    } catch (error) {
+      return Promise.resolve(mapDeliveryError(error))
+    }
+    if (
+      !packageRecord ||
+      packageRecord.applyAttempt.applyAttemptId !== request.failedApplyAttemptId ||
+      packageRecord.applyAttempt.batchId !== request.batchId
+    ) {
+      return Promise.resolve(fail('DELIVERY_NOT_FOUND'))
+    }
+    if (
+      (packageRecord.applyAttempt.state !== 'FAILED' && packageRecord.applyAttempt.state !== 'FAILED_ROLLED_BACK') ||
+      packageRecord.applyAttempt.safeCode !== 'TARGET_BASELINE_DRIFT' ||
+      !Array.isArray(packageRecord.applyAttempt.changedRelativePaths) ||
+      packageRecord.applyAttempt.changedRelativePaths.length !== 0
+    ) {
+      return Promise.resolve(fail('ILLEGAL_TRANSITION'))
+    }
+    const recoveryKey = `prepare-recovery:${address.projectId}:${address.sessionKey}:${request.batchId}`
+    return this.recoverySingleFlight(recoveryKey, request.failedApplyAttemptId, async () => {
       let cleanupContext: { worktreeRoot: string; trustedToolchainRoot: string } | undefined
       try {
-        const existing = this.store.readRecoveredDeliveryProjection(address, request.batchId)
+        const existing = this.store.readRecoveredDeliveryProjection(address, request.batchId, request.failedApplyAttemptId)
         if (existing) return { ok: true, value: existing }
-        const packageRecord = this.store.readDeliveryApplyPackage(request.failedApplyAttemptId)
-        if (!packageRecord || packageRecord.applyAttempt.batchId !== request.batchId) return fail('DELIVERY_NOT_FOUND')
-        if (
-          packageRecord.applyAttempt.state !== 'FAILED' &&
-          packageRecord.applyAttempt.state !== 'FAILED_ROLLED_BACK'
-        ) {
-          return fail('ILLEGAL_TRANSITION')
-        }
-        if (
-          !DELIVERY_TARGET_INTEGRITY_FAILURES.has(packageRecord.applyAttempt.safeCode ?? '') ||
-          (packageRecord.applyAttempt.changedRelativePaths ?? []).length !== 0
-        ) {
-          return fail('ILLEGAL_TRANSITION')
-        }
         const sourceDraft = this.store.readDeliverySelectionDraft(request.batchId)
         if (!sourceDraft) return fail('DELIVERY_NOT_FOUND')
         const currentTarget = await this.captureDeliveryTarget(address, packageRecord.changeSet.flowId)
@@ -673,6 +679,23 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
   private okProjection(batchId: DeliveryBatchId): XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1> {
     const projection = this.store.readDeliveryProjection(batchId)
     return projection ? { ok: true, value: projection } : fail('DELIVERY_NOT_FOUND')
+  }
+
+  private recoverySingleFlight(
+    key: string,
+    failedApplyAttemptId: DeliveryApplyAttemptId,
+    run: () => Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>>,
+  ): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+    const boundAttemptId = this.recoveryInFlightAttempts.get(key)
+    if (boundAttemptId && boundAttemptId !== failedApplyAttemptId) {
+      return Promise.resolve(fail('ILLEGAL_TRANSITION'))
+    }
+    this.recoveryInFlightAttempts.set(key, failedApplyAttemptId)
+    return this.singleFlight(key, run).finally(() => {
+      if (this.recoveryInFlightAttempts.get(key) === failedApplyAttemptId && !this.inFlight.has(key)) {
+        this.recoveryInFlightAttempts.delete(key)
+      }
+    })
   }
 
   private singleFlight(
