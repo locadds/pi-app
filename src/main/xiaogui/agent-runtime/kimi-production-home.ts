@@ -1,7 +1,10 @@
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 
-import { KIMI_ACP_LEGACY_AGENT_PROFILE_CONTENT_V1 } from './acp/kimi-tool-policy'
+import {
+  KIMI_ACP_LEGACY_AGENT_PROFILE_CONTENT_V1,
+  validateKimiAcpConfigContentV1,
+} from './acp/kimi-tool-policy'
 
 export const KIMI_PRODUCTION_CONFIG_CONTENT_V1 =
   '[tools]\nenabled = ["Read", "Write", "Edit", "TodoList"]\n'
@@ -39,7 +42,7 @@ export function prepareKimiProductionHomeV1(input: {
     ensureManagedDirectory(runtimeDir)
     ensureManagedDirectory(kimiCodeHome)
     ensureManagedDirectory(agentsDir)
-    ensureManagedFile(join(kimiCodeHome, 'config.toml'), KIMI_PRODUCTION_CONFIG_CONTENT_V1)
+    ensureManagedKimiConfig(join(kimiCodeHome, 'config.toml'))
     ensureManagedFile(
       join(agentsDir, 'agent.md'),
       KIMI_ACP_LEGACY_AGENT_PROFILE_CONTENT_V1,
@@ -95,13 +98,40 @@ function ensureManagedFile(path: string, expectedContent: string): void {
     if (!isNodeErrorCode(error, 'EEXIST')) throw error
   }
 
+  if (readManagedFile(path) !== expectedContent) {
+    throw new KimiProductionHomeError('KIMI_PRODUCTION_HOME_POLICY_DRIFT')
+  }
+}
+
+/** Kimi owns the login/model sections; Xiaogui owns and validates the tool boundary. */
+function ensureManagedKimiConfig(path: string): void {
+  try {
+    writeFileSync(path, KIMI_PRODUCTION_CONFIG_CONTENT_V1, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    })
+    return
+  } catch (error) {
+    if (!isNodeErrorCode(error, 'EEXIST')) throw error
+  }
+
+  try {
+    validateKimiAcpConfigContentV1(readManagedFile(path))
+  } catch {
+    throw new KimiProductionHomeError('KIMI_PRODUCTION_HOME_POLICY_DRIFT')
+  }
+}
+
+function readManagedFile(path: string): string {
   const info = lstatSync(path, { bigint: true })
   if (info.isSymbolicLink() || !info.isFile() || info.nlink !== 1n) {
     throw new KimiProductionHomeError('KIMI_PRODUCTION_HOME_POLICY_DRIFT')
   }
-  if (pathKey(realpathSync.native(path)) !== pathKey(path) || readFileSync(path, 'utf8') !== expectedContent) {
+  if (pathKey(realpathSync.native(path)) !== pathKey(path)) {
     throw new KimiProductionHomeError('KIMI_PRODUCTION_HOME_POLICY_DRIFT')
   }
+  return readFileSync(path, 'utf8')
 }
 
 function isNodeErrorCode(error: unknown, code: string): boolean {

@@ -40,6 +40,16 @@ export interface PreparedKimiAcpToolPolicyV1 {
   revalidateBeforeSpawn(): void
 }
 
+/**
+ * Validates the mutable Kimi config without requiring byte-for-byte equality.
+ * `kimi login` legitimately adds provider/model/credential sections, while the
+ * product-owned tool allowlist and agent-directory boundary remain immutable.
+ */
+export function validateKimiAcpConfigContentV1(config: string): void {
+  validateEnabledTools(parseEnabledTools(config))
+  validateNoExtraAgentDirs(config)
+}
+
 interface KimiToolFileIdentityV1 {
   readonly realPath: string
   readonly dev: bigint
@@ -75,9 +85,7 @@ export function prepareKimiAcpToolPolicyV1(kimiCodeHome: string | undefined, wor
     notFile: 'KIMI_TOOL_POLICY_CONFIG_NOT_FILE',
     hardlink: 'KIMI_TOOL_POLICY_CONFIG_HARDLINK',
   })
-  const enabled = parseEnabledTools(configIdentity.content)
-  validateEnabledTools(enabled)
-  validateNoExtraAgentDirs(configIdentity.content)
+  validateKimiAcpConfigContentV1(configIdentity.content)
 
   const profilePath = join(realHome, 'agents', `${KIMI_ACP_LEGACY_AGENT_PROFILE_NAME_V1}.md`)
   const profileIdentity = readIdentity(profilePath, {
@@ -109,8 +117,7 @@ export function prepareKimiAcpToolPolicyV1(kimiCodeHome: string | undefined, wor
         throw new KimiAcpToolPolicyError('KIMI_TOOL_POLICY_CONFIG_IDENTITY_CHANGED')
       }
       if (current.contentDigest !== configIdentity.contentDigest) throw new KimiAcpToolPolicyError('KIMI_TOOL_POLICY_CONFIG_CONTENT_CHANGED')
-      validateEnabledTools(parseEnabledTools(current.content))
-      validateNoExtraAgentDirs(current.content)
+      validateKimiAcpConfigContentV1(current.content)
       const currentProfile = readIdentity(profilePath, {
         missing: 'KIMI_TOOL_POLICY_AGENT_PROFILE_MISSING',
         alias: 'KIMI_TOOL_POLICY_AGENT_PROFILE_ALIAS',

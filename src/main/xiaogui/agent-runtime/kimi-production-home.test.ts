@@ -8,6 +8,20 @@ import { KimiProductionHomeError, prepareKimiProductionHomeV1 } from './kimi-pro
 
 const roots: string[] = []
 const KIMI_PRODUCTION_CONFIG_V1 = '[tools]\nenabled = ["Read", "Write", "Edit", "TodoList"]\n'
+const KIMI_LOGIN_EXPANDED_CONFIG_V1 = [
+  'default_model = "kimi-code/k3"',
+  '',
+  '[tools]',
+  'enabled = ["Read", "Write", "Edit", "TodoList"]',
+  '',
+  '[providers."managed:kimi-code"]',
+  'type = "kimi-code"',
+  '',
+  '[providers."managed:kimi-code".oauth]',
+  'storage = "file"',
+  'key = "credentials/kimi-code.json"',
+  '',
+].join('\n')
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -66,6 +80,37 @@ describe('prepareKimiProductionHomeV1', () => {
     }
     expect(driftError).toBeInstanceOf(KimiProductionHomeError)
     expect(driftError).toMatchObject({ reasonCode: 'KIMI_PRODUCTION_HOME_POLICY_DRIFT' })
+  })
+
+  it('accepts the login-expanded config without rewriting it when the tool policy is unchanged', () => {
+    const root = userDataDir()
+    const prepared = prepareKimiProductionHomeV1({ enabled: true, userDataDir: root })
+    if (!prepared.enabled) throw new Error('managed Kimi home was not enabled')
+    const configPath = join(prepared.kimiCodeHome, 'config.toml')
+    const stableTime = new Date('2002-03-04T05:06:07.000Z')
+    writeFileSync(configPath, KIMI_LOGIN_EXPANDED_CONFIG_V1)
+    utimesSync(configPath, stableTime, stableTime)
+    const configMtimeMs = statSync(configPath).mtimeMs
+
+    expect(prepareKimiProductionHomeV1({ enabled: true, userDataDir: root })).toEqual(prepared)
+    expect(readFileSync(configPath, 'utf8')).toBe(KIMI_LOGIN_EXPANDED_CONFIG_V1)
+    expect(statSync(configPath).mtimeMs).toBe(configMtimeMs)
+  })
+
+  it.each([
+    '[tools]\nenabled = ["Read", "Write", "Edit", "TodoList", "Bash"]\n',
+    '[tools]\nenabled = ["Read", "Write", "Edit"]\n',
+    '[tools]\nenabled = ["Read", "Write", "Edit", "TodoList"]\n[tools]\nenabled = ["Read", "Write", "Edit", "TodoList"]\n',
+    '[tools]\nextra_agent_dirs = ["../agents"]\nenabled = ["Read", "Write", "Edit", "TodoList"]\n',
+  ])('rejects login config that drifts from the product-owned tool policy', (unsafeConfig) => {
+    const root = userDataDir()
+    const prepared = prepareKimiProductionHomeV1({ enabled: true, userDataDir: root })
+    if (!prepared.enabled) throw new Error('managed Kimi home was not enabled')
+    writeFileSync(join(prepared.kimiCodeHome, 'config.toml'), unsafeConfig)
+
+    expect(() => prepareKimiProductionHomeV1({ enabled: true, userDataDir: root })).toThrowError(
+      expect.objectContaining({ reasonCode: 'KIMI_PRODUCTION_HOME_POLICY_DRIFT' }),
+    )
   })
 
   it('rejects an aliased managed parent before writing into its external target', () => {
