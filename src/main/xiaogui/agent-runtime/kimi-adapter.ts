@@ -42,6 +42,7 @@ import { digestSafeText, isSafeAcpOpaqueId, localRuntimeSurrogate } from './acp/
 import type {
   AcpRequestPermissionParamsV1,
   AcpRequestPermissionResultV1,
+  AcpSessionUpdateParamsV1,
   AcpTransportFactoryV1,
   AcpTransportV1,
 } from './acp/types'
@@ -98,7 +99,14 @@ interface RuntimeSessionState {
   cancellationRequested: boolean
   writeSequence: number
   pendingPermissions: Map<string, PendingPermission>
+  vendorToolCalls: Map<string, VendorToolCallSnapshot>
   candidateDigest?: string
+}
+
+interface VendorToolCallSnapshot {
+  kind?: string
+  locations?: Array<{ path: string; line?: number }>
+  rawInput?: unknown
 }
 
 type PendingPermission = VendorPendingPermission | WritePendingPermission
@@ -318,6 +326,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
         cancellationRequested: false,
         writeSequence: 0,
         pendingPermissions: new Map(),
+        vendorToolCalls: new Map(),
       }
       this.sessions.set(publicRuntimeSessionId, state)
       pushEvent(state, { type: 'SESSION_READY', runtimeSessionId: publicRuntimeSessionId })
@@ -651,12 +660,17 @@ function isExactKimiProductionSelection(selection: RuntimeAdapterSelectionV1, ex
   )
 }
 
-function handleSessionUpdate(state: RuntimeSessionState, params: { update?: { sessionUpdate?: string; content?: { text?: string }; kind?: string; title?: string } }): void {
+function handleSessionUpdate(state: RuntimeSessionState, params: AcpSessionUpdateParamsV1): void {
   const update = params.update
   if (!update) return
-  if (update.sessionUpdate === 'agent_message_chunk' && update.content?.text) {
+  if (
+    update.sessionUpdate === 'agent_message_chunk' &&
+    !Array.isArray(update.content) &&
+    update.content?.text
+  ) {
     pushEvent(state, { type: 'TEXT_DELTA', runtimeSessionId: state.publicRuntimeSessionId, textDigest: digestJson(digestSafeText(update.content.text, 8000)) })
   } else if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+    cacheVendorToolCall(state, update)
     pushEvent(state, {
       type: 'TOOL_EVENT',
       runtimeSessionId: state.publicRuntimeSessionId,
@@ -733,6 +747,7 @@ function markOutcome(state: RuntimeSessionState, outcome: RuntimeOutcomeV1): voi
   state.outcome = outcome
   state.promptQueue = []
   clearPendingPermissions(state)
+  state.vendorToolCalls.clear()
   if (outcome.state === 'OUTCOME_UNKNOWN') {
     pushEvent(state, { type: 'OUTCOME_UNKNOWN', runtimeSessionId: state.publicRuntimeSessionId, reasonCode: outcome.reasonCode })
   } else {
@@ -756,22 +771,97 @@ function isApprovedVendorFileToolRequest(
   state: RuntimeSessionState,
   params: AcpRequestPermissionParamsV1,
 ): boolean {
-  const kind = typeof params.toolCall?.kind === 'string'
-    ? params.toolCall.kind.trim().toLowerCase()
-    : ''
-  const locations = Array.isArray(params.toolCall?.locations)
-    ? params.toolCall.locations
-    : []
-  if (!['read', 'edit', 'write'].includes(kind) || locations.length === 0) return false
+  // Kimi 0.34 sends request_permission with a partial ToolCallUpdate. Bind it
+  // to the earlier full session/update by toolCallId before trusting the path.
+  if (params.sessionId !== state.vendorSessionId) return false
+  const toolCallId = safeToolCallId(params.toolCall?.toolCallId)
+  const cached = toolCallId ? state.vendorToolCalls.get(toolCallId) : undefined
+  const kind = normalizedToolKind(cached?.kind)
+  if (!cached || kind !== 'edit') return false
   try {
-    for (const location of locations) {
-      if (typeof location?.path !== 'string') return false
-      state.policy.readTextFile(location.path)
+    const rawPath = fileToolInputPath(cached.rawInput)
+    if (!rawPath) return false
+    const targetDigest = state.policy.approvedTargetDigest(rawPath)
+    if (!allLocationsMatchTarget(state.policy, cached.locations, targetDigest)) return false
+
+    const requestKind = params.toolCall?.kind
+    if (requestKind !== undefined && normalizedToolKind(requestKind) !== kind) return false
+    if (
+      params.toolCall?.locations !== undefined &&
+      !allLocationsMatchTarget(state.policy, params.toolCall.locations, targetDigest)
+    ) {
+      return false
     }
-    return true
+    return allPermissionDiffsMatchTarget(state.policy, params.toolCall?.content, targetDigest)
   } catch {
     return false
   }
+}
+
+function cacheVendorToolCall(
+  state: RuntimeSessionState,
+  update: AcpSessionUpdateParamsV1['update'],
+): void {
+  const toolCallId = safeToolCallId(update.toolCallId)
+  if (!toolCallId) return
+  const current = state.vendorToolCalls.get(toolCallId) ?? {}
+  const next: VendorToolCallSnapshot = { ...current }
+  if (typeof update.kind === 'string') next.kind = update.kind
+  if (Array.isArray(update.locations)) next.locations = update.locations
+  if (Object.prototype.hasOwnProperty.call(update, 'rawInput')) next.rawInput = update.rawInput
+  state.vendorToolCalls.set(toolCallId, next)
+  if (update.status === 'completed' || update.status === 'failed') {
+    state.vendorToolCalls.delete(toolCallId)
+  }
+}
+
+function safeToolCallId(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 && value === value.trim()
+    ? value
+    : null
+}
+
+function normalizedToolKind(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
+function fileToolInputPath(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const input = value as Record<string, unknown>
+  for (const key of ['path', 'file_path']) {
+    const path = input[key]
+    if (typeof path === 'string' && path.length > 0 && path === path.trim()) return path
+  }
+  return null
+}
+
+function allLocationsMatchTarget(
+  policy: PreparedKimiAcpWorkspacePolicyV1,
+  locations: unknown,
+  targetDigest: string,
+): boolean {
+  if (!Array.isArray(locations) || locations.length === 0) return false
+  return locations.every((location) => (
+    typeof location === 'object' &&
+    location !== null &&
+    typeof (location as { path?: unknown }).path === 'string' &&
+    policy.approvedTargetDigest((location as { path: string }).path) === targetDigest
+  ))
+}
+
+function allPermissionDiffsMatchTarget(
+  policy: PreparedKimiAcpWorkspacePolicyV1,
+  content: unknown,
+  targetDigest: string,
+): boolean {
+  if (!Array.isArray(content)) return false
+  const diffs = content.filter((entry): entry is { type: 'diff'; path: string } => (
+    typeof entry === 'object' &&
+    entry !== null &&
+    (entry as { type?: unknown }).type === 'diff' &&
+    typeof (entry as { path?: unknown }).path === 'string'
+  ))
+  return diffs.length > 0 && diffs.every((diff) => policy.approvedTargetDigest(diff.path) === targetDigest)
 }
 
 function releaseTransport(state: RuntimeSessionState): Promise<void> {

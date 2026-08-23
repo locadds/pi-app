@@ -23,12 +23,13 @@ export interface AcpSessionUpdateParamsV1 {
   sessionId: string
   update: {
     sessionUpdate?: string
-    content?: AcpContentBlockV1
+    content?: AcpContentBlockV1 | unknown[]
     toolCallId?: string
     title?: string
     kind?: string
     status?: string
     locations?: Array<{ path: string; line?: number }>
+    rawInput?: unknown
     [key: string]: unknown
   }
 }
@@ -46,6 +47,8 @@ export interface AcpRequestPermissionParamsV1 {
     kind?: string
     status?: string
     locations?: Array<{ path: string; line?: number }>
+    content?: unknown[]
+    rawInput?: unknown
     [key: string]: unknown
   }
   options?: AcpPermissionOptionV1[]
