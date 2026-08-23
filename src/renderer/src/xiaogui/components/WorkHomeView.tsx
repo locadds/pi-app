@@ -68,8 +68,10 @@ export function WorkHomeView() {
           当前已接入的专用文档能力：根据 DOCX 模板和 JSON 数据另存一份新文档；
           生成前会请你确认，原文件不会被修改。
         </p>
-        <p className="mt-2 text-[11px] text-muted-foreground/80">
-          这项能力目前仍需点击输入框旁的文档按钮；自然语言调度接通后将移除这个过渡入口。
+        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
+          想用 DOCX 模板生成文档？直接在输入框里用大白话说明要用哪个模板、哪份 JSON
+          数据即可。需要选文件时，小规会打开系统文件选择器；生成前先给你看安全摘要，
+          等你下一条消息明确确认后才会生成。
         </p>
       </section>
 

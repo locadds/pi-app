@@ -307,6 +307,64 @@ describe('Worker host-tool bridge', () => {
       }),
     )
   })
+
+  it('aborts only the matching main-process handler when Worker cancels a host-tool request', async () => {
+    const transport = makeFakeTransport()
+    const slot = fakeSlot('/sessions/current.jsonl', '/workspace', true)
+    slot.worker = transport
+    let receivedSignal: AbortSignal | undefined
+    const onHostToolRequest = vi.fn(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise<{
+          ok: false
+          error: { code: 'HOST_TOOL_ABORTED'; message: string }
+        }>((resolve) => {
+          receivedSignal = signal
+          signal?.addEventListener(
+            'abort',
+            () =>
+              resolve({
+                ok: false,
+                error: { code: 'HOST_TOOL_ABORTED', message: 'cancelled' },
+              }),
+            { once: true },
+          )
+        }),
+    )
+    attachWorkerHandlers(slot, transport, {
+      mainWindow: null,
+      onAppEvent: vi.fn(),
+      onHostToolRequest,
+      onSlotExit: vi.fn(),
+    })
+
+    transport.emitMessage({
+      type: 'host-tool-request',
+      requestId: 'host-tool-cancellable',
+      method: 'xiaogui.work.docx.v1',
+      payload: {
+        action: 'PREPARE',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
+        toolCallId: 'call-1',
+      },
+    })
+    await vi.waitFor(() => expect(onHostToolRequest).toHaveBeenCalledOnce())
+
+    transport.emitMessage({ type: 'host-tool-cancel', requestId: 'host-tool-cancellable' })
+
+    expect(receivedSignal?.aborted).toBe(true)
+    await vi.waitFor(() =>
+      expect(transport.postMessage).toHaveBeenCalledWith({
+        type: 'host-tool-response',
+        requestId: 'host-tool-cancellable',
+        outcome: {
+          ok: false,
+          error: { code: 'HOST_TOOL_ABORTED', message: 'cancelled' },
+        },
+      }),
+    )
+  })
 })
 
 describe('WorkerManager listSessions routing', () => {

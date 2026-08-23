@@ -27,6 +27,24 @@ import { resolveUtilityEntry } from './utility-entry-path'
 import { buildXiaoguiWorkerEnv } from './xiaogui/worker-env'
 
 export const extensionUiDialogSource = new Map<string, WorkerSlot>()
+const hostToolAbortControllers = new WeakMap<WorkerSlot, Map<string, AbortController>>()
+
+function hostToolControllersFor(slot: WorkerSlot): Map<string, AbortController> {
+  let controllers = hostToolAbortControllers.get(slot)
+  if (!controllers) {
+    controllers = new Map()
+    hostToolAbortControllers.set(slot, controllers)
+  }
+  return controllers
+}
+
+function abortHostToolsForSlot(slot: WorkerSlot): void {
+  const controllers = hostToolAbortControllers.get(slot)
+  if (!controllers) return
+  for (const controller of controllers.values()) controller.abort()
+  controllers.clear()
+  hostToolAbortControllers.delete(slot)
+}
 
 export function dismissExtensionUiRequestsForSlot(
   slot: WorkerSlot,
@@ -203,6 +221,12 @@ export function attachWorkerHandlers(
       })
     }
 
+    if (data.type === 'host-tool-cancel') {
+      const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+      if (requestId) hostToolAbortControllers.get(slot)?.get(requestId)?.abort()
+      return
+    }
+
     if (data.type === 'host-tool-request') {
       const requestId = typeof data.requestId === 'string' ? data.requestId : ''
       if (!requestId) return
@@ -226,20 +250,35 @@ export function attachWorkerHandlers(
         })
         return
       }
+      const controllers = hostToolControllersFor(slot)
+      if (controllers.has(requestId)) {
+        respond({
+          ok: false,
+          error: { code: 'HOST_TOOL_REQUEST_INVALID', message: '重复的小规操作请求已拒绝' },
+        })
+        return
+      }
+      const controller = new AbortController()
+      controllers.set(requestId, controller)
       void handler({
         request: data as unknown as WorkerHostToolRequestV1,
         fromCwd: slot.cwd,
         fromPoolKey: slot.poolKey,
         sessionFile: slot.sessionFile,
         fromSessionId: slot.sessionId,
+        signal: controller.signal,
       })
         .then(respond)
         .catch(() =>
           respond({
             ok: false,
-            error: { code: 'HOST_TOOL_FAILED', message: '协作计划创建失败，请稍后重试' },
+            error: { code: 'HOST_TOOL_FAILED', message: '小规操作失败，请稍后重试' },
           }),
         )
+        .finally(() => {
+          controllers.delete(requestId)
+          if (controllers.size === 0) hostToolAbortControllers.delete(slot)
+        })
       return
     }
 
@@ -324,6 +363,7 @@ export function attachWorkerHandlers(
       return
     }
     rejectPendingWorkerRequests(slot, new Error(`Worker exited with code ${code}`))
+    abortHostToolsForSlot(slot)
     clearExtensionUiSourcesForSlot(slot, opts.mainWindow)
     opts.onSlotExit(slot, code)
   })
@@ -334,6 +374,7 @@ export async function disposeWorkerSlot(
   mainWindow?: BrowserWindow | null,
 ): Promise<void> {
   slot.stopping = true
+  abortHostToolsForSlot(slot)
   clearExtensionUiSourcesForSlot(slot, mainWindow)
   if (slot.initRejecter) {
     slot.initRejecter(new Error('Worker stopped'))

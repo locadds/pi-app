@@ -105,6 +105,18 @@ describe('worker session event lifecycle', () => {
     expect(runningEvent).not.toMatchObject({ turnId: 'turn-old' })
   })
 
+  it('keeps the user-run identity stable while Pi advances through tool subturns', () => {
+    const harness = createSessionEventHarness()
+    handleSessionEvent({ type: 'agent_start' } as AgentSessionEvent, harness.dependencies)
+    const runId = harness.getCurrentRunId()
+    const firstTurnId = harness.getCurrentTurnId()
+
+    handleSessionEvent({ type: 'turn_start' } as AgentSessionEvent, harness.dependencies)
+
+    expect(harness.getCurrentRunId()).toBe(runId)
+    expect(harness.getCurrentTurnId()).not.toBe(firstTurnId)
+  })
+
   it('should_preserve_provisional_run_identity_when_agent_starts', () => {
     const harness = createSessionEventHarness()
     harness.dependencies.setCurrentRunId('run-provisional')

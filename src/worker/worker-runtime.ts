@@ -13,6 +13,7 @@ import { createDesktopWidgetHost } from './desktop-widget-host.js'
 import { applySkillsOverride } from './skill-override.js'
 import { decorateQuestionnaireTools } from './questionnaire-tool-decorator.js'
 import { addXiaoguiCollaborationTool } from './xiaogui-collaboration-tool.js'
+import { addXiaoguiWorkDocxTool } from './xiaogui-work-docx-tool.js'
 import {
   handleSessionEvent as dispatchSessionEvent,
   resetCompletionTurnTracking,
@@ -171,11 +172,22 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       agentDir,
       resourceLoaderOptions: {
         eventBus: st.sharedEventBus!,
-        extensionsOverride: (result) =>
-          addXiaoguiCollaborationTool(decorateQuestionnaireTools(result, cwd), {
+        extensionsOverride: (result) => {
+          const collaborationToolOptions = {
             getSourceSessionId: () => st.currentSessionId || undefined,
             getSourceTurnId: () => st.currentTurnId || undefined,
-          }),
+          }
+          return addXiaoguiWorkDocxTool(
+            addXiaoguiCollaborationTool(
+              decorateQuestionnaireTools(result, cwd),
+              collaborationToolOptions,
+            ),
+            {
+              getSourceSessionId: collaborationToolOptions.getSourceSessionId,
+              getSourceRunId: () => st.currentRunId || undefined,
+            },
+          )
+        },
         skillsOverride: applySkillsOverride as never,
       },
     })

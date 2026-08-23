@@ -120,6 +120,18 @@ export function addXiaoguiCollaborationTool(
           isError: true,
         }
       }
+      if (outcome.value.kind !== 'XIAOGUI_COLLABORATION_DRAFT_CREATED') {
+        const message = '主进程返回了无法识别的协作计划结果，请稍后重试'
+        return {
+          content: [{ type: 'text', text: message }],
+          details: {
+            kind: 'XIAOGUI_COLLABORATION_DRAFT_FAILED' as const,
+            code: 'HOST_TOOL_FAILED' as const,
+            message,
+          },
+          isError: true,
+        }
+      }
       return {
         content: [
           {

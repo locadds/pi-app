@@ -52,6 +52,8 @@ export type WorkerHostToolRequestForward = {
   fromPoolKey: string
   sessionFile: string | null
   fromSessionId: string | null
+  /** Worker 本地超时、用户中止或 slot 退出时由主进程触发。 */
+  signal?: AbortSignal
 }
 
 export type WorkerHostToolRequestHandler = (

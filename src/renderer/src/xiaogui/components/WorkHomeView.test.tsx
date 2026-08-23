@@ -43,10 +43,14 @@ describe('WorkHomeView', () => {
     expect(screen.queryByText(/自动校审/)).toBeNull()
   })
 
-  it('DOCX 工具栏按钮仅以弱化的过渡入口出现，不新增功能按钮', () => {
+  it('DOCX 生成走自然语言对话，本页不提供功能按钮', () => {
     render(<WorkHomeView />)
-    expect(screen.getByText(/目前仍需点击输入框旁的文档按钮/)).toBeInTheDocument()
-    expect(screen.getByText(/自然语言调度接通后将移除这个过渡入口/)).toBeInTheDocument()
+    expect(screen.getByText(/直接在输入框里用大白话说明/)).toBeInTheDocument()
+    expect(screen.getByText(/系统文件选择器/)).toBeInTheDocument()
+    expect(screen.getByText(/安全摘要/)).toBeInTheDocument()
+    expect(screen.getByText(/明确确认后才会生成/)).toBeInTheDocument()
+    // 过渡入口文案已移除，不再提及文档按钮
+    expect(screen.queryByText(/文档按钮/)).toBeNull()
     // 本页不提供任何功能按钮
     expect(screen.queryByRole('button')).toBeNull()
   })

@@ -15,11 +15,13 @@ import {
   closeDefaultCollaborationHubRuntimeComposition,
   registerCollaborationHubHandlers,
 } from './task-hub/ipc'
-import { registerWorkDocxHandlers } from './work-docx-ipc'
+import { getDefaultWorkDocxServiceV1, registerWorkDocxHandlers } from './work-docx-ipc'
 import { workerManager } from '../worker-manager'
 import { sessionScopeResolverV1 } from './scope-service'
 import { createXiaoguiWorkerToolHandlerV1 } from './task-hub/worker-tool'
 import { getDefaultCollaborationHubApplication } from './task-hub/ipc'
+import { createXiaoguiWorkDocxWorkerToolHandlerV1 } from './work-docx-worker-tool'
+import { createXiaoguiWorkerHostToolRouterV1 } from './worker-host-tool-router'
 
 let initialized = false
 
@@ -31,9 +33,15 @@ export function initXiaogui(): void {
   registerCollaborationHubHandlers()
   registerWorkDocxHandlers()
   workerManager.setHostToolRequestHandler(
-    createXiaoguiWorkerToolHandlerV1({
-      application: getDefaultCollaborationHubApplication(),
-      scopeResolver: sessionScopeResolverV1,
+    createXiaoguiWorkerHostToolRouterV1({
+      collaboration: createXiaoguiWorkerToolHandlerV1({
+        application: getDefaultCollaborationHubApplication(),
+        scopeResolver: sessionScopeResolverV1,
+      }),
+      workDocx: createXiaoguiWorkDocxWorkerToolHandlerV1({
+        getService: getDefaultWorkDocxServiceV1,
+        scopeResolver: sessionScopeResolverV1,
+      }),
     }),
   )
 

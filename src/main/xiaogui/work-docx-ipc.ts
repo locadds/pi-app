@@ -76,7 +76,8 @@ const nativeOutputAccess: WorkDocxOutputAccessPortV1 = {
 
 let defaultService: WorkDocxServiceV1 | null = null
 
-function service(): WorkDocxServiceV1 {
+/** Renderer IPC 与 Pi Worker 工具共享的唯一 WORK DOCX 领域实例。 */
+export function getDefaultWorkDocxServiceV1(): WorkDocxServiceV1 {
   defaultService ??= new WorkDocxServiceV1({
     lookup: sessionScopeResolverV1,
     dialogs: nativeDialogs,
@@ -88,18 +89,18 @@ function service(): WorkDocxServiceV1 {
 
 export function registerWorkDocxHandlers(): void {
   registerHandlerWithSchema('ipc:xiaogui.work.docx.discover', AddressSchema, async (address) => {
-    return service().discover(address as SessionAddressV1)
+    return getDefaultWorkDocxServiceV1().discover(address as SessionAddressV1)
   })
   registerHandlerWithSchema('ipc:xiaogui.work.docx.prepare', PrepareSchema, async (request) => {
-    return service().prepare(request as WorkDocxPrepareRequestV1)
+    return getDefaultWorkDocxServiceV1().prepare(request as WorkDocxPrepareRequestV1)
   })
   registerHandlerWithSchema('ipc:xiaogui.work.docx.confirm', ConfirmSchema, async (request) => {
-    return service().confirm(request as WorkDocxConfirmRequestV1)
+    return getDefaultWorkDocxServiceV1().confirm(request as WorkDocxConfirmRequestV1)
   })
   registerHandlerWithSchema('ipc:xiaogui.work.docx.cancel', CancelSchema, async (request) => {
-    return service().cancel(request as WorkDocxCancelRequestV1)
+    return getDefaultWorkDocxServiceV1().cancel(request as WorkDocxCancelRequestV1)
   })
   registerHandlerWithSchema('ipc:xiaogui.work.docx.output.access', OutputAccessSchema, async (request) => {
-    return service().accessOutput(request as WorkDocxOutputAccessRequestV1)
+    return getDefaultWorkDocxServiceV1().accessOutput(request as WorkDocxOutputAccessRequestV1)
   })
 }
