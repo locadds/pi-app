@@ -123,6 +123,7 @@ export type XiaoguiWorkDocumentSnapshotResultV1 =
 export type WorkerHostToolErrorCodeV1 =
   | 'HOST_TOOL_UNAVAILABLE'
   | 'HOST_TOOL_REQUEST_INVALID'
+  | 'HOST_TOOL_NOT_FOREGROUND'
   | 'SESSION_NOT_READY'
   | 'DESIGN_RESERVED'
   | 'DRAFT_INVALID'
