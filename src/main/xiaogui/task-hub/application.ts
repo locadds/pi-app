@@ -1153,6 +1153,16 @@ const DELIVERY_ACTIONS = new Set([
   'delivery.gate.reject',
   'apply.reconcile.request',
   'apply.retry.request',
+  'apply.recovery.prepare',
+])
+
+const DELIVERY_TARGET_INTEGRITY_FAILURES = new Set([
+  'TARGET_BASELINE_DRIFT',
+])
+const DELIVERY_NON_RETRYABLE_INTEGRITY_FAILURES = new Set([
+  'TARGET_BASELINE_DRIFT',
+  'TARGET_STATUS_DIRTY',
+  'TARGET_FILE_DRIFT',
 ])
 
 function withAuthoritativeDeliveryActions(
@@ -1180,7 +1190,16 @@ function withAuthoritativeDeliveryActions(
   }
   if (
     activeDelivery.state === 'APPROVED' &&
-    (activeDelivery.applyAttempt?.state === 'FAILED' || activeDelivery.applyAttempt?.state === 'FAILED_ROLLED_BACK')
+    (activeDelivery.applyAttempt?.state === 'FAILED' || activeDelivery.applyAttempt?.state === 'FAILED_ROLLED_BACK') &&
+    DELIVERY_TARGET_INTEGRITY_FAILURES.has(activeDelivery.applyAttempt.safeCode ?? '') &&
+    (activeDelivery.applyAttempt.changedRelativePaths ?? []).length === 0
+  ) {
+    return { ...base, availableActions: [...availableActions, 'apply.recovery.prepare'] }
+  }
+  if (
+    activeDelivery.state === 'APPROVED' &&
+    (activeDelivery.applyAttempt?.state === 'FAILED' || activeDelivery.applyAttempt?.state === 'FAILED_ROLLED_BACK') &&
+    !DELIVERY_NON_RETRYABLE_INTEGRITY_FAILURES.has(activeDelivery.applyAttempt.safeCode ?? '')
   ) {
     return { ...base, availableActions: [...availableActions, 'apply.retry.request'] }
   }

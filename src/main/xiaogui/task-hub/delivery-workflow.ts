@@ -11,7 +11,11 @@ import {
   MainProcessDeliveryIntegrationWorktreePortV1,
 } from './delivery-integration-worktree'
 import { DeliveryVerificationServiceV1 } from './delivery-verification'
-import type { DeliveryApplyFileContentV1, DeliveryApplyPortV1 } from './change-apply'
+import {
+  isPreStartChangeApplyErrorV1,
+  type DeliveryApplyFileContentV1,
+  type DeliveryApplyPortV1,
+} from './change-apply'
 import type { TaskVerificationExecutionPortV1 } from './verification-port'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import {
@@ -19,6 +23,7 @@ import {
   deliveryApplyRequestDigestV1,
   deliveryChangeSetDigestV1,
   deliveryGateDecisionDigestV1,
+  deliverySelectionDigestV1,
   deliveryTargetFingerprintV1,
   deliveryVerificationReceiptDigestV1,
   deliveryVerificationRequestDigestV1,
@@ -30,6 +35,8 @@ import {
   type DeliveryChangeSetId,
   type DeliveryChangeSetV1,
   type DeliveryGateId,
+  type DeliveryRecoveryLineageV1,
+  type DeliverySelectionDraftId,
   type DeliveryTargetV1,
   type DeliveryVerificationAttemptId,
   type DeliveryVerificationRequestV1,
@@ -39,15 +46,23 @@ import type {
   XiaoguiDeliveryCoordinatorPortV1,
   XiaoguiDeliveryOutcomeV1,
   XiaoguiDeliveryReconcileApplyRequestV1,
+  XiaoguiDeliveryPrepareRecoveryRequestV1,
   XiaoguiDeliveryReturnBatchRequestV1,
   XiaoguiDeliveryRetryApplyRequestV1,
   XiaoguiDeliverySelectTasksRequestV1,
 } from '@shared/xiaogui-delivery-ipc'
 import type { FlowId, HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
 import type { ArtifactId, Sha256Digest, TaskChangeSetId } from '@shared/xiaogui-task-verification'
+import {
+  MainProcessDeliveryBaselineRecoveryPortV1,
+  type DeliveryBaselineRecoveryPortV1,
+} from './delivery-baseline-recovery'
 
 const DELIVERY_QA_CONFIG_VERSION_V1 = 'xiaogui.coding.delivery.v1'
 const DELIVERY_OUTBOX_OWNER_V1 = 'xiaogui-main-process-delivery'
+const DELIVERY_TARGET_INTEGRITY_FAILURES = new Set([
+  'TARGET_BASELINE_DRIFT',
+])
 
 interface PrivateDeliveryVerificationRecoveryV1 {
   readonly verificationRequestDigest?: Sha256Digest
@@ -66,6 +81,7 @@ export interface XiaoguiDeliveryWorkflowOptionsV1 {
   readonly deliveryManagedRoot: string
   readonly verificationPort: TaskVerificationExecutionPortV1
   readonly applyPort: DeliveryApplyPortV1
+  readonly baselineRecoveryPort?: DeliveryBaselineRecoveryPortV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
 }
@@ -246,8 +262,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         this.store.completeDeliveryApply(address, {
           applyAttemptId,
           outcome: applyOutcome(receipt),
-          receiptDigest: receipt.receiptDigest,
-          ...('targetFingerprint' in receipt ? { targetFingerprintAfter: receipt.targetFingerprint } : {}),
+          receipt,
           now: this.now(),
         })
         return this.okProjection(packageRecord.applyAttempt.batchId)
@@ -274,6 +289,146 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         return this.okProjection(request.batchId)
       } catch (error) {
         return mapDeliveryError(error)
+      }
+    })
+  }
+
+  prepareRecovery(address: HubAddressV1, request: XiaoguiDeliveryPrepareRecoveryRequestV1): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+    return this.singleFlight(`prepare-recovery:${address.projectId}:${address.sessionKey}:${request.batchId}`, async () => {
+      let cleanupContext: { worktreeRoot: string; trustedToolchainRoot: string } | undefined
+      try {
+        const existing = this.store.readRecoveredDeliveryProjection(address, request.batchId)
+        if (existing) return { ok: true, value: existing }
+        const packageRecord = this.store.readDeliveryApplyPackage(request.failedApplyAttemptId)
+        if (!packageRecord || packageRecord.applyAttempt.batchId !== request.batchId) return fail('DELIVERY_NOT_FOUND')
+        if (
+          packageRecord.applyAttempt.state !== 'FAILED' &&
+          packageRecord.applyAttempt.state !== 'FAILED_ROLLED_BACK'
+        ) {
+          return fail('ILLEGAL_TRANSITION')
+        }
+        if (
+          !DELIVERY_TARGET_INTEGRITY_FAILURES.has(packageRecord.applyAttempt.safeCode ?? '') ||
+          (packageRecord.applyAttempt.changedRelativePaths ?? []).length !== 0
+        ) {
+          return fail('ILLEGAL_TRANSITION')
+        }
+        const sourceDraft = this.store.readDeliverySelectionDraft(request.batchId)
+        if (!sourceDraft) return fail('DELIVERY_NOT_FOUND')
+        const currentTarget = await this.captureDeliveryTarget(address, packageRecord.changeSet.flowId)
+        const recoveryPort = this.baselineRecoveryPort()
+        const recovered = await recoveryPort.recover({
+          sourceBatchId: request.batchId,
+          sourceChangeSet: packageRecord.changeSet,
+          currentTarget,
+          desiredFiles: packageRecord.fileArtifacts.map((artifact) => ({
+            relativePath: packageRecord.changeSet.fileChanges.find((file) => file.contentArtifactId === artifact.artifactId)?.relativePath ?? '',
+            contentArtifactId: artifact.artifactId,
+            contentDigest: artifact.contentDigest,
+            content: artifact.content,
+          })),
+        })
+        cleanupContext = recovered.privateIntegrationContext
+        const now = this.now()
+        const batchId = this.id('xhbd_batch') as DeliveryBatchId
+        const draftId = this.id('xhbd_draft') as DeliverySelectionDraftId
+        const recoveredDraftBase = {
+          ...sourceDraft,
+          draftId,
+          batchId,
+          targetFingerprint: recovered.evidenceMaterial.currentTargetFingerprint,
+          createdAt: now as never,
+        }
+        const selectionDigest = deliverySelectionDigestV1(recoveredDraftBase)
+        const recoveryLineage: DeliveryRecoveryLineageV1 = {
+          sourceBatchId: request.batchId,
+          sourceDeliveryChangeSetId: recovered.evidenceMaterial.sourceDeliveryChangeSetId,
+          sourceDeliveryChangeSetDigest: recovered.evidenceMaterial.sourceDeliveryChangeSetDigest,
+          sourceTargetFingerprint: recovered.evidenceMaterial.sourceTargetFingerprint,
+          currentTargetFingerprint: recovered.evidenceMaterial.currentTargetFingerprint,
+        }
+        const fileArtifacts = recovered.files.map((file): DeliveryComposedFileArtifactV1 => ({
+          artifactId: this.id('xhbdart_recovery_file') as ArtifactId,
+          contentDigest: file.contentDigest,
+          kind: 'DELIVERY_FILE_CONTENT',
+          mediaType: 'application/vnd.xiaogui.delivery-file-content',
+          content: file.content,
+        }))
+        const fileChanges = recovered.files.map((file, index) => ({
+          operation: file.operation,
+          relativePath: file.relativePath,
+          baselineDigest: file.baselineDigest,
+          contentDigest: file.contentDigest,
+          contentArtifactId: fileArtifacts[index].artifactId,
+          sourceTaskChangeSetIds: file.sourceTaskChangeSetIds,
+        }))
+        const changeSetWithoutDigest = {
+          kind: 'DELIVERY_CHANGESET' as const,
+          version: 1 as const,
+          deliveryChangeSetId: this.id('xhbdcs') as DeliveryChangeSetId,
+          batchId,
+          selectionDraftId: draftId,
+          flowId: packageRecord.changeSet.flowId,
+          selectionDigest,
+          taskChangeSetIds: packageRecord.changeSet.taskChangeSetIds,
+          taskChangeSets: packageRecord.changeSet.taskChangeSets,
+          dependencyOrder: packageRecord.changeSet.dependencyOrder,
+          fileChanges,
+          target: recovered.currentTarget,
+          integrationTreeHash: recovered.integrationTreeHash,
+          recoveryLineage,
+          evidenceArtifactIds: [] as readonly ArtifactId[],
+          qaConfigVersion: packageRecord.changeSet.qaConfigVersion,
+          createdAt: now as never,
+        }
+        const changeSet = { ...changeSetWithoutDigest, digest: deliveryChangeSetDigestV1(changeSetWithoutDigest) }
+        const verificationAttemptId = this.id('xhbdva') as DeliveryVerificationAttemptId
+        const verificationRequest = deliveryVerificationRequest(verificationAttemptId, changeSet)
+        const verification = await this.verificationService.verify({
+          verificationAttemptId,
+          verificationRequestDigest: verificationRequest.requestDigest,
+          deliveryChangeSet: changeSet,
+          worktreeRoot: recovered.privateIntegrationContext.worktreeRoot,
+          trustedToolchainRoot: recovered.privateIntegrationContext.trustedToolchainRoot,
+        })
+        if (verification.receipt.verdict !== 'PASS') return fail('ILLEGAL_TRANSITION')
+        const passedChangeSet = {
+          ...changeSet,
+          evidenceArtifactIds: verification.receipt.evidenceArtifactIds,
+          digest: deliveryChangeSetDigestWithEvidence(changeSet, verification.receipt.evidenceArtifactIds),
+        }
+        const finalReceipt = retargetDeliveryReceipt(verification.receipt, passedChangeSet)
+        await recoveryPort.cleanup(cleanupContext)
+        cleanupContext = undefined
+        await recoveryPort.recheckTarget(recovered.currentTarget)
+        const sealed = this.store.sealRecoveredDeliveryCandidate(address, {
+          sourceBatchId: request.batchId,
+          sourceFailedApplyAttemptId: request.failedApplyAttemptId,
+          batchId,
+          draftId,
+          verificationAttemptId,
+          verificationRequestJson: JSON.stringify(verificationRequest),
+          receipt: finalReceipt,
+          deliveryChangeSet: passedChangeSet,
+          deliveryFileArtifacts: fileArtifacts.map(toDeliveryFileArtifact),
+          evidenceArtifacts: verification.artifacts.filter((artifact) => artifact.kind === 'VERIFICATION_EVIDENCE'),
+          diagnosticArtifacts: verification.artifacts.filter((artifact) => artifact.kind === 'VERIFICATION_DIAGNOSTIC'),
+          gateId: this.id('xhbdg') as DeliveryGateId,
+          recoveryLineage,
+          now,
+        })
+        return this.okProjection(sealed.batchId)
+      } catch (error) {
+        return mapDeliveryError(error)
+      } finally {
+        if (cleanupContext) {
+          try {
+            await this.baselineRecoveryPort().cleanup(cleanupContext)
+          } catch {
+            // Cleanup is deterministic on the next prepare request; the user-facing
+            // recovery outcome remains the sealed candidate or the safe error above.
+          }
+        }
       }
     })
   }
@@ -334,8 +489,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         this.store.completeDeliveryApply(pending.address, {
           applyAttemptId: outbox.applyAttemptId,
           outcome: applyOutcome(receipt),
-          receiptDigest: receipt.receiptDigest,
-          ...('targetFingerprint' in receipt ? { targetFingerprintAfter: receipt.targetFingerprint } : {}),
+          receipt,
           now: this.now(),
         })
       } catch {
@@ -440,8 +594,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
     this.store.completeDeliveryApply(address, {
       applyAttemptId,
       outcome: applyOutcome(receipt),
-      receiptDigest: receipt.receiptDigest,
-      ...('targetFingerprint' in receipt ? { targetFingerprintAfter: receipt.targetFingerprint } : {}),
+      receipt,
       now: this.now(),
     })
     return receipt
@@ -463,7 +616,10 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
       : []
     try {
       return await this.options.applyPort.apply({ applyAttemptId, approval, changeSet, fileContents })
-    } catch {
+    } catch (error) {
+      if (isPreStartChangeApplyErrorV1(error)) {
+        return failedRolledBackApplyReceipt(applyAttemptId, changeSet.deliveryChangeSetId, error.reasonCode)
+      }
       return unknownApplyReceipt(applyAttemptId, changeSet.deliveryChangeSetId, 'TARGET_WRITE_FAILED')
     }
   }
@@ -539,6 +695,13 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
 
   private id(prefix: string): string {
     return this.options.idFactory?.(prefix) ?? `${prefix}_${randomUUID()}`
+  }
+
+  private baselineRecoveryPort(): DeliveryBaselineRecoveryPortV1 {
+    return this.options.baselineRecoveryPort ?? new MainProcessDeliveryBaselineRecoveryPortV1({
+      projectResolver: this.options.projectResolver,
+      managedRoot: this.options.deliveryManagedRoot,
+    })
   }
 }
 
@@ -679,6 +842,21 @@ function unknownApplyReceipt(
     applyAttemptId,
     deliveryChangeSetId,
     verdict: 'OUTCOME_UNKNOWN' as const,
+    changedRelativePaths: [] as readonly string[],
+    safeCode,
+  }
+  return { ...withoutDigest, receiptDigest: deliveryApplyReceiptDigestV1(withoutDigest) }
+}
+
+function failedRolledBackApplyReceipt(
+  applyAttemptId: DeliveryApplyAttemptId,
+  deliveryChangeSetId: DeliveryChangeSetId,
+  safeCode: Extract<DeliveryApplyReceiptV1, { verdict: 'FAILED_ROLLED_BACK' }>['safeCode'],
+): DeliveryApplyReceiptV1 {
+  const withoutDigest = {
+    applyAttemptId,
+    deliveryChangeSetId,
+    verdict: 'FAILED_ROLLED_BACK' as const,
     changedRelativePaths: [] as readonly string[],
     safeCode,
   }

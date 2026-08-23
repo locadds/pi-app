@@ -43,6 +43,7 @@ function coordinator(): XiaoguiDeliveryCoordinatorPortV1 {
     returnBatch: vi.fn(async () => okBatch()),
     reconcileApply: vi.fn(async () => okBatch()),
     retryApply: vi.fn(async () => okBatch()),
+    prepareRecovery: vi.fn(async () => okBatch()),
   }
 }
 
@@ -134,13 +135,15 @@ describe('M4D delivery IPC adapter', () => {
     expect(port.returnBatch).toHaveBeenCalledWith(ADDRESS, payload.request)
     expect(port.reconcileApply).not.toHaveBeenCalled()
     expect(port.retryApply).not.toHaveBeenCalled()
+    expect(port.prepareRecovery).not.toHaveBeenCalled()
   })
 
-  it('keeps reconcile and retry as intent-only IPC without apply bytes or commands', async () => {
+  it('keeps reconcile, retry, and recovery prepare as intent-only IPC without apply bytes or commands', async () => {
     const port = coordinator()
     registerXiaoguiDeliveryHandlers(port)
     const reconcile = mocks.handlers.get('ipc:xiaogui.delivery.apply.reconcile')!
     const retry = mocks.handlers.get('ipc:xiaogui.delivery.apply.retry')!
+    const prepareRecovery = mocks.handlers.get('ipc:xiaogui.delivery.apply.recovery.prepare')!
 
     await expect(
       reconcile({
@@ -154,6 +157,13 @@ describe('M4D delivery IPC adapter', () => {
         contractVersion: 'm4d.v1',
         address: ADDRESS,
         request: { requestId: 'req-retry', batchId: 'xhbdb_1', failedApplyAttemptId: 'xhbdaa_1' },
+      }),
+    ).resolves.toMatchObject({ ok: true })
+    await expect(
+      prepareRecovery({
+        contractVersion: 'm4d.v1',
+        address: ADDRESS,
+        request: { requestId: 'req-recovery', batchId: 'xhbdb_1', failedApplyAttemptId: 'xhbdaa_1' },
       }),
     ).resolves.toMatchObject({ ok: true })
 
@@ -176,8 +186,21 @@ describe('M4D delivery IPC adapter', () => {
         },
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'DELIVERY_INPUT_INVALID' } })
+    await expect(
+      prepareRecovery({
+        contractVersion: 'm4d.v1',
+        address: ADDRESS,
+        request: {
+          requestId: 'req-bad-recovery',
+          batchId: 'xhbdb_1',
+          failedApplyAttemptId: 'xhbdaa_1',
+          absolutePath: 'D:\\private\\patch.diff',
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'DELIVERY_INPUT_INVALID' } })
 
     expect(port.reconcileApply).toHaveBeenCalledOnce()
     expect(port.retryApply).toHaveBeenCalledOnce()
+    expect(port.prepareRecovery).toHaveBeenCalledOnce()
   })
 })

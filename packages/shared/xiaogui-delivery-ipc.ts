@@ -58,6 +58,12 @@ export interface XiaoguiDeliveryRetryApplyRequestV1 {
   readonly failedApplyAttemptId: DeliveryApplyAttemptId
 }
 
+export interface XiaoguiDeliveryPrepareRecoveryRequestV1 {
+  readonly requestId: string
+  readonly batchId: DeliveryBatchId
+  readonly failedApplyAttemptId: DeliveryApplyAttemptId
+}
+
 export interface XiaoguiDeliverySelectTasksIpcRequestV1 {
   readonly contractVersion: XiaoguiDeliveryIpcContractVersionV1
   readonly address: HubAddressV1
@@ -88,6 +94,12 @@ export interface XiaoguiDeliveryRetryApplyIpcRequestV1 {
   readonly request: XiaoguiDeliveryRetryApplyRequestV1
 }
 
+export interface XiaoguiDeliveryPrepareRecoveryIpcRequestV1 {
+  readonly contractVersion: XiaoguiDeliveryIpcContractVersionV1
+  readonly address: HubAddressV1
+  readonly request: XiaoguiDeliveryPrepareRecoveryRequestV1
+}
+
 export interface XiaoguiDeliveryCoordinatorPortV1 {
   readonly selectTasks: (
     address: HubAddressV1,
@@ -108,5 +120,9 @@ export interface XiaoguiDeliveryCoordinatorPortV1 {
   readonly retryApply: (
     address: HubAddressV1,
     request: XiaoguiDeliveryRetryApplyRequestV1,
+  ) => Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>>
+  readonly prepareRecovery: (
+    address: HubAddressV1,
+    request: XiaoguiDeliveryPrepareRecoveryRequestV1,
   ) => Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>>
 }

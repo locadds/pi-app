@@ -6,6 +6,7 @@ import { z } from 'zod'
 import type {
   XiaoguiDeliveryCoordinatorPortV1,
   XiaoguiDeliveryApproveGateIpcRequestV1,
+  XiaoguiDeliveryPrepareRecoveryIpcRequestV1,
   XiaoguiDeliveryReconcileApplyIpcRequestV1,
   XiaoguiDeliveryReturnBatchIpcRequestV1,
   XiaoguiDeliveryRetryApplyIpcRequestV1,
@@ -81,6 +82,16 @@ const RetryApplySchema = BaseIpcSchema.extend({
     .strict(),
 }).strict()
 
+const PrepareRecoverySchema = BaseIpcSchema.extend({
+  request: z
+    .object({
+      requestId: z.string().min(1).max(256).refine(isTrimmed),
+      batchId: z.string().min(1).max(256).refine(isTrimmed),
+      failedApplyAttemptId: z.string().min(1).max(256).refine(isTrimmed),
+    })
+    .strict(),
+}).strict()
+
 export function registerXiaoguiDeliveryHandlers(coordinator: XiaoguiDeliveryCoordinatorPortV1): void {
   registerHandler('ipc:xiaogui.delivery.selection.submit', async (payload) => {
     const parsed = SelectTasksSchema.safeParse(payload)
@@ -115,6 +126,13 @@ export function registerXiaoguiDeliveryHandlers(coordinator: XiaoguiDeliveryCoor
     if (!parsed.success || containsUnsafeRendererValue(payload)) return invalidDeliveryInput()
     const typed = parsed.data as unknown as XiaoguiDeliveryRetryApplyIpcRequestV1
     return coordinator.retryApply(typed.address, typed.request)
+  })
+
+  registerHandler('ipc:xiaogui.delivery.apply.recovery.prepare', async (payload) => {
+    const parsed = PrepareRecoverySchema.safeParse(payload)
+    if (!parsed.success || containsUnsafeRendererValue(payload)) return invalidDeliveryInput()
+    const typed = parsed.data as unknown as XiaoguiDeliveryPrepareRecoveryIpcRequestV1
+    return coordinator.prepareRecovery(typed.address, typed.request)
   })
 }
 

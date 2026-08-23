@@ -20,6 +20,7 @@ const approveDeliveryMock = vi.fn()
 const returnDeliveryMock = vi.fn()
 const reconcileDeliveryMock = vi.fn()
 const retryDeliveryMock = vi.fn()
+const prepareRecoveryMock = vi.fn()
 let requestCounter = 0
 vi.mock('../lib/collaboration-hub-client', () => ({
   HUB_CONTRACT_VERSION: 'm2a.v1',
@@ -33,6 +34,7 @@ vi.mock('../lib/collaboration-hub-client', () => ({
   returnDeliveryBatch: (address: HubAddressV1, request: unknown) => returnDeliveryMock(address, request),
   reconcileDeliveryApply: (address: HubAddressV1, request: unknown) => reconcileDeliveryMock(address, request),
   retryDeliveryApply: (address: HubAddressV1, request: unknown) => retryDeliveryMock(address, request),
+  prepareDeliveryRecovery: (address: HubAddressV1, request: unknown) => prepareRecoveryMock(address, request),
   newHubRequestId: () => `test-req-${++requestCounter}`,
 }))
 
@@ -160,6 +162,7 @@ beforeEach(() => {
   returnDeliveryMock.mockReset()
   reconcileDeliveryMock.mockReset()
   retryDeliveryMock.mockReset()
+  prepareRecoveryMock.mockReset()
   requestCounter = 0
   useCollaborationHubStore.getState().setAddress(null)
 })
@@ -779,5 +782,61 @@ describe('collaboration-hub-store', () => {
       rejectionReason: '需要调整',
     })
     expect(approveDeliveryMock).not.toHaveBeenCalled()
+  })
+
+  it('基准恢复只在失败回滚、safeCode 为基准漂移且未写路径时提交', async () => {
+    const delivery = deliveryProjection()
+    const failedApplyAttempt = {
+      applyAttemptId: 'xhbdapp_failed' as never,
+      batchId: delivery.batchId,
+      deliveryChangeSetId: delivery.deliveryChangeSetId!,
+      requestDigest: `sha256:${'a'.repeat(64)}` as never,
+      targetFingerprintBefore: `sha256:${'b'.repeat(64)}` as never,
+      state: 'FAILED_ROLLED_BACK' as const,
+      receiptDigest: `sha256:${'c'.repeat(64)}` as never,
+      safeCode: 'TARGET_BASELINE_DRIFT' as const,
+      changedRelativePaths: [] as readonly string[],
+      startedAt: '2026-08-18T00:00:00.000Z' as never,
+      finishedAt: '2026-08-18T00:00:01.000Z' as never,
+    }
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    prepareRecoveryMock.mockResolvedValue({ ok: true, value: { ...delivery, state: 'READY_FOR_REVIEW' } })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    useCollaborationHubStore.setState({
+      deliveryReviewSubjectKey: 'stale-review',
+      projection: {
+        ...useCollaborationHubStore.getState().projection!,
+        activeDelivery: { ...delivery, state: 'APPROVED', applyAttempt: failedApplyAttempt },
+        availableActions: ['flow.cancel', 'apply.recovery.prepare', 'apply.retry.request'],
+      },
+    })
+
+    await useCollaborationHubStore.getState().prepareActiveDeliveryRecovery()
+
+    expect(prepareRecoveryMock).toHaveBeenCalledTimes(1)
+    expect(prepareRecoveryMock.mock.calls[0]![1]).toEqual({
+      requestId: 'test-req-1',
+      batchId: delivery.batchId,
+      failedApplyAttemptId: 'xhbdapp_failed',
+    })
+    expect(useCollaborationHubStore.getState().deliveryReviewSubjectKey).toBeNull()
+
+    for (const patch of [
+      { state: 'SUCCEEDED' as const, safeCode: 'TARGET_BASELINE_DRIFT' as const, changedRelativePaths: [] as readonly string[] },
+      { state: 'FAILED_ROLLED_BACK' as const, safeCode: 'TARGET_STATUS_DIRTY' as const, changedRelativePaths: [] as readonly string[] },
+      { state: 'FAILED_ROLLED_BACK' as const, safeCode: 'TARGET_BASELINE_DRIFT' as const, changedRelativePaths: ['src/a.ts'] as readonly string[] },
+    ]) {
+      prepareRecoveryMock.mockClear()
+      useCollaborationHubStore.setState({
+        projection: {
+          ...useCollaborationHubStore.getState().projection!,
+          activeDelivery: { ...delivery, state: 'APPROVED', applyAttempt: { ...failedApplyAttempt, ...patch } },
+          availableActions: ['apply.recovery.prepare'],
+        },
+      })
+      await useCollaborationHubStore.getState().prepareActiveDeliveryRecovery()
+      expect(prepareRecoveryMock).not.toHaveBeenCalled()
+    }
   })
 })

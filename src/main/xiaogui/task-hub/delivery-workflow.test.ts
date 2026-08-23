@@ -11,6 +11,7 @@ import {
   deliveryTargetFingerprintV1,
   type DeliveryApplyAttemptId,
   type DeliveryApplyReceiptV1,
+  type DeliveryApplySafeCodeV1,
   type DeliveryBatchId,
   type DeliveryBatchProjectionV1,
   type DeliveryChangeSetId,
@@ -30,8 +31,9 @@ import {
 
 import { XiaoguiDeliveryWorkflowV1 } from './delivery-workflow'
 import type { CollaborationHubSqliteStoreV1 } from './sqlite-store'
-import type { DeliveryApplyPortV1 } from './change-apply'
+import { ChangeApplyErrorV1, type DeliveryApplyPortV1 } from './change-apply'
 import type { TaskVerificationExecutionPortV1, TaskVerificationExecutionResultV1 } from './verification-port'
+import type { DeliveryBaselineRecoveryPortV1 } from './delivery-baseline-recovery'
 
 const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
@@ -178,6 +180,59 @@ describe('XiaoguiDeliveryWorkflowV1', () => {
     expect(store.trace).toContain('complete-apply:SUCCEEDED')
   })
 
+  it('records pre-write baseline drift as a deterministic failed receipt instead of outcome unknown', async () => {
+    const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
+    store.installPendingApplyOutbox('READY')
+    const applyPort = recordingApplyPort({ applyErrorCode: 'TARGET_BASELINE_DRIFT' })
+    const workflow = workflowFor(store, 'repo', 'managed', applyPort)
+
+    await workflow.recover()
+
+    expect(applyPort.applies).toHaveLength(1)
+    expect(store.trace).toContain('complete-apply:FAILED')
+    expect(store.completedApplyReceipts).toEqual([
+      expect.objectContaining({
+        verdict: 'FAILED_ROLLED_BACK',
+        safeCode: 'TARGET_BASELINE_DRIFT',
+        changedRelativePaths: [],
+      }),
+    ])
+  })
+
+  it('prepares one recovered delivery batch and replays the same batch after cleanup-before-seal', async () => {
+    const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
+    store.installFailedBaselineDriftApplyPackage()
+    const recoveryPort = recordingBaselineRecoveryPort(store.trace)
+    const workflow = workflowFor(
+      store,
+      'repo',
+      'managed',
+      recordingApplyPort(),
+      undefined,
+      undefined,
+      recordingPassVerificationPort(store.trace),
+      recoveryPort,
+    )
+
+    const first = await workflow.prepareRecovery(ADDRESS, {
+      requestId: 'recovery-1',
+      batchId: store.batchId,
+      failedApplyAttemptId: 'apply-1' as DeliveryApplyAttemptId,
+    })
+    const second = await workflow.prepareRecovery(ADDRESS, {
+      requestId: 'recovery-2',
+      batchId: store.batchId,
+      failedApplyAttemptId: 'apply-1' as DeliveryApplyAttemptId,
+    })
+
+    expect(first).toMatchObject({ ok: true, value: { batchId: 'xhbd_batch_fixed', recoverySourceBatchId: store.batchId } })
+    expect(second).toMatchObject({ ok: true, value: { batchId: 'xhbd_batch_fixed', recoverySourceBatchId: store.batchId } })
+    expect(store.trace.filter((item) => item === 'recover-baseline')).toHaveLength(1)
+    expect(store.trace.indexOf('cleanup-recovery')).toBeGreaterThan(store.trace.indexOf('verify-recovery'))
+    expect(store.trace.indexOf('cleanup-recovery')).toBeLessThan(store.trace.indexOf('recheck-target'))
+    expect(store.trace.indexOf('recheck-target')).toBeLessThan(store.trace.indexOf('seal-recovery'))
+  })
+
   it('waits for in-flight work before closing the store and rejects new calls while closing', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-close-'))
     const repo = join(root, 'repo')
@@ -266,6 +321,7 @@ class FakeDeliveryStore {
     createdAt: '2026-08-18T00:00:00.000Z' as never,
   }
   readonly trace: string[] = []
+  readonly completedApplyReceipts: DeliveryApplyReceiptV1[] = []
   readonly taskChangeSets: TaskChangeSetV1[]
   readonly artifacts = new Map<string, { artifactId: ArtifactId; kind: string; mediaType: string; contentDigest: Sha256Digest; content: Uint8Array }>()
   pendingVerificationOutboxes: Array<{
@@ -288,6 +344,10 @@ class FakeDeliveryStore {
   }> = []
   projection: DeliveryBatchProjectionV1
   private sealedChangeSet: DeliveryChangeSetV1 | null = null
+  private recoveredProjection: DeliveryBatchProjectionV1 | null = null
+  private applyPackageAttemptState: 'STARTED' | 'FAILED' | 'FAILED_ROLLED_BACK' = 'STARTED'
+  private applyPackageSafeCode: DeliveryApplySafeCodeV1 | undefined
+  private applyPackageChangedRelativePaths: readonly string[] = []
 
   constructor(targetFingerprint: Sha256Digest) {
     this.taskChangeSets = [
@@ -312,8 +372,14 @@ class FakeDeliveryStore {
     return { batchId: this.batchId, selectionDigest: this.projection.selectionDigest, replayed: false }
   }
 
-  readDeliveryProjection(): DeliveryBatchProjectionV1 {
+  readDeliveryProjection(batchId?: DeliveryBatchId): DeliveryBatchProjectionV1 {
+    if (batchId && this.recoveredProjection?.batchId === batchId) return this.recoveredProjection
     return this.projection
+  }
+
+  readRecoveredDeliveryProjection(): DeliveryBatchProjectionV1 | null {
+    this.trace.push('read-recovered')
+    return this.recoveredProjection
   }
 
   readDeliverySelectionDraft(): DeliverySelectionDraftV1 {
@@ -414,7 +480,9 @@ class FakeDeliveryStore {
         deliveryChangeSetId: this.deliveryChangeSetId,
         requestDigest: 'sha256:req' as Sha256Digest,
         targetFingerprintBefore: 'sha256:target' as Sha256Digest,
-        state: 'STARTED' as const,
+        state: this.applyPackageAttemptState,
+        ...(this.applyPackageSafeCode ? { safeCode: this.applyPackageSafeCode } : {}),
+        changedRelativePaths: this.applyPackageChangedRelativePaths,
         startedAt: '2026-08-18T00:00:00.000Z' as never,
       },
       changeSet: this.sealedChangeSet!,
@@ -434,13 +502,35 @@ class FakeDeliveryStore {
     }
   }
 
-  completeDeliveryApply(_address: HubAddressV1, record: { outcome: string }): void {
+  completeDeliveryApply(_address: HubAddressV1, record: { outcome: string; receipt: DeliveryApplyReceiptV1 }): void {
     this.trace.push(`complete-apply:${record.outcome}`)
-    this.projection = { ...this.projection, state: record.outcome === 'SUCCEEDED' ? 'APPLIED' : 'OUTCOME_UNKNOWN' }
+    this.completedApplyReceipts.push(record.receipt)
+    this.projection = {
+      ...this.projection,
+      state: record.outcome === 'SUCCEEDED' ? 'APPLIED' : record.outcome === 'FAILED' ? 'APPROVED' : 'OUTCOME_UNKNOWN',
+    }
   }
 
   pendingDeliveryApplyOutboxes() {
     return this.pendingApplyOutboxes
+  }
+
+  sealRecoveredDeliveryCandidate(_address: HubAddressV1, record: {
+    sourceBatchId: DeliveryBatchId
+    batchId: DeliveryBatchId
+    deliveryChangeSet: DeliveryChangeSetV1
+  }): { batchId: DeliveryBatchId; replayed: boolean } {
+    this.trace.push('seal-recovery')
+    this.recoveredProjection = {
+      ...this.projection,
+      batchId: record.batchId,
+      state: 'READY_FOR_REVIEW',
+      recoverySourceBatchId: record.sourceBatchId,
+      recoveryLineage: record.deliveryChangeSet.recoveryLineage,
+      deliveryChangeSetId: record.deliveryChangeSet.deliveryChangeSetId,
+      deliveryChangeSetDigest: record.deliveryChangeSet.digest,
+    }
+    return { batchId: record.batchId, replayed: false }
   }
 
   close(): void {
@@ -497,6 +587,29 @@ class FakeDeliveryStore {
     }]
   }
 
+  installFailedBaselineDriftApplyPackage(): void {
+    this.installAppliedChangeSet()
+    this.applyPackageAttemptState = 'FAILED'
+    this.applyPackageSafeCode = 'TARGET_BASELINE_DRIFT'
+    this.applyPackageChangedRelativePaths = []
+    this.projection = {
+      ...this.projection,
+      state: 'APPROVED',
+      applyAttempt: {
+        applyAttemptId: 'apply-1' as DeliveryApplyAttemptId,
+        batchId: this.batchId,
+        deliveryChangeSetId: this.deliveryChangeSetId,
+        requestDigest: 'sha256:req' as Sha256Digest,
+        targetFingerprintBefore: this.projection.targetFingerprint,
+        state: 'FAILED',
+        safeCode: 'TARGET_BASELINE_DRIFT',
+        changedRelativePaths: [],
+        startedAt: '2026-08-18T00:00:00.000Z' as never,
+        finishedAt: '2026-08-18T00:00:01.000Z' as never,
+      },
+    }
+  }
+
   private deliveryChangeSet() {
     const target = {
       projectId: ADDRESS.projectId,
@@ -534,6 +647,7 @@ function workflowFor(
   baseRevision = 'a'.repeat(40),
   baselineTreeHash = 'b'.repeat(40),
   verificationPort: TaskVerificationExecutionPortV1 = passVerificationPort(),
+  baselineRecoveryPort?: DeliveryBaselineRecoveryPortV1,
 ): XiaoguiDeliveryWorkflowV1 {
   return new XiaoguiDeliveryWorkflowV1({
     storeFactory: () => store as unknown as CollaborationHubSqliteStoreV1,
@@ -550,6 +664,7 @@ function workflowFor(
     deliveryManagedRoot: managedRoot,
     verificationPort,
     applyPort,
+    baselineRecoveryPort,
     now: () => '2026-08-18T00:00:00.000Z',
     idFactory: (prefix) => `${prefix}_fixed`,
   })
@@ -588,6 +703,53 @@ function passVerificationPort(): TaskVerificationExecutionPortV1 {
   }
 }
 
+function recordingPassVerificationPort(trace: string[]): TaskVerificationExecutionPortV1 {
+  return {
+    verify: async (request, context) => {
+      trace.push('verify-recovery')
+      return passVerificationResult(request, context.scopeEvidenceArtifactId)
+    },
+  }
+}
+
+function recordingBaselineRecoveryPort(trace: string[]): DeliveryBaselineRecoveryPortV1 {
+  return {
+    recover: async (input) => {
+      trace.push('recover-baseline')
+      const currentTargetFingerprint = deliveryTargetFingerprintV1(input.currentTarget)
+      return {
+        files: [],
+        currentTarget: input.currentTarget,
+        integrationTreeHash: digest('recovered-tree'),
+        privateIntegrationContext: {
+          worktreeRoot: 'E:/CodexTemp/pi-app-m4f/recovery-worktree',
+          trustedToolchainRoot: 'repo',
+        },
+        evidenceMaterial: {
+          kind: 'DELIVERY_BASELINE_RECOVERY_EVIDENCE_V1',
+          version: 1,
+          sourceBatchId: input.sourceBatchId,
+          sourceDeliveryChangeSetId: input.sourceChangeSet.deliveryChangeSetId,
+          sourceDeliveryChangeSetDigest: input.sourceChangeSet.digest,
+          sourceTargetFingerprint: input.sourceChangeSet.target.initialTargetFingerprint,
+          currentTargetFingerprint,
+          recoveredFileSetDigest: digest('recovered-files'),
+          recoveredFileCount: 0,
+          directReplacementCount: 0,
+          threeWayMergeCount: 0,
+          createCount: 0,
+        },
+      }
+    },
+    cleanup: async () => {
+      trace.push('cleanup-recovery')
+    },
+    recheckTarget: async () => {
+      trace.push('recheck-target')
+    },
+  }
+}
+
 function passVerificationResult(
   request: Parameters<TaskVerificationExecutionPortV1['verify']>[0],
   evidenceArtifactId: ArtifactId,
@@ -618,12 +780,17 @@ function passVerificationResult(
   return { receipt: { ...withoutDigest, receiptDigest: verificationReceiptDigestV1(withoutDigest) }, artifacts: [evidence] }
 }
 
-function recordingApplyPort(options: { inspectThrows?: boolean; inspectErrorCode?: string } = {}): DeliveryApplyPortV1 & { applies: unknown[] } {
+function recordingApplyPort(options: {
+  inspectThrows?: boolean
+  inspectErrorCode?: string
+  applyErrorCode?: 'TARGET_BASELINE_DRIFT'
+} = {}): DeliveryApplyPortV1 & { applies: unknown[] } {
   const applies: unknown[] = []
   return {
     applies,
     apply: async (request) => {
       applies.push(request)
+      if (options.applyErrorCode) throw new ChangeApplyErrorV1(options.applyErrorCode)
       const withoutDigest = {
         applyAttemptId: request.applyAttemptId,
         deliveryChangeSetId: request.changeSet.deliveryChangeSetId,

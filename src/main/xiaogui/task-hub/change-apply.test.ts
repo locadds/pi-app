@@ -75,6 +75,25 @@ describe('MainProcessChangeApplyPortV1', () => {
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('old')
   })
 
+  it('reports a dirty target before baseline drift when both are present', async () => {
+    const root = await tempRoot()
+    await writeFile(join(root, 'a.txt'), 'old')
+    const changeSet = deliveryChangeSet([fileChange('MODIFY', 'a.txt', 'old', 'new')])
+    const port = portFor(root, {
+      headRevision: 'c'.repeat(40),
+      treeHash: 'd'.repeat(40),
+      porcelainStatus: [' M a.txt'],
+    })
+
+    await expect(port.apply({
+      applyAttemptId: 'xhba_dirty_and_drifted' as DeliveryApplyAttemptIdV1,
+      approval: approvalFor(changeSet),
+      changeSet,
+      fileContents: fileContentsFor(changeSet, { 'a.txt': 'new' }),
+    })).rejects.toMatchObject({ reasonCode: 'TARGET_STATUS_DIRTY' })
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('old')
+  })
+
   it('rolls back all proven writes when a later write fails', async () => {
     const root = await tempRoot()
     await writeFile(join(root, 'a.txt'), 'old')

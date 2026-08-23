@@ -26,6 +26,7 @@ import {
   approveDeliveryGate,
   newHubRequestId,
   observeCollaborationHub,
+  prepareDeliveryRecovery,
   performHubIntent,
   startTaskExecution,
   submitDeliverySelection,
@@ -235,6 +236,58 @@ describe('collaboration-hub-client', () => {
         activeDelivery: {
           ...deliveryFixture(),
           fileChangeSummaries: [{ ...deliveryFixture().fileChangeSummaries![0], relativePath: 'C:\\secret.ts' }],
+        },
+      },
+    })
+    await expect(observeCollaborationHub(address)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+    })
+  })
+
+  it('observe 接受恢复交付投影与 SUPERSEDED，但拒绝未知 apply safeCode', async () => {
+    const recoveredDelivery: DeliveryBatchProjectionV1 = {
+      ...deliveryFixture(),
+      state: 'SUPERSEDED',
+      recoverySourceBatchId: 'xhbd_source' as DeliveryBatchProjectionV1['recoverySourceBatchId'],
+      recoveryLineage: {
+        sourceBatchId: 'xhbd_source' as never,
+        sourceDeliveryChangeSetId: 'xhbdcs_source' as never,
+        sourceDeliveryChangeSetDigest: `sha256:${'7'.repeat(64)}` as never,
+        sourceTargetFingerprint: `sha256:${'8'.repeat(64)}` as never,
+        currentTargetFingerprint: `sha256:${'9'.repeat(64)}` as never,
+      },
+      applyAttempt: {
+        applyAttemptId: 'xhbdapp_failed' as never,
+        batchId: 'xhbd_batch1' as never,
+        deliveryChangeSetId: 'xhbdcs_delivery' as never,
+        requestDigest: `sha256:${'a'.repeat(64)}` as never,
+        targetFingerprintBefore: `sha256:${'b'.repeat(64)}` as never,
+        state: 'FAILED_ROLLED_BACK',
+        receiptDigest: `sha256:${'c'.repeat(64)}` as never,
+        safeCode: 'TARGET_BASELINE_DRIFT',
+        changedRelativePaths: [],
+        startedAt: '2026-08-18T00:00:00.000Z' as never,
+        finishedAt: '2026-08-18T00:00:01.000Z' as never,
+      },
+    }
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...projectionFixture(),
+        activeDelivery: recoveredDelivery,
+        availableActions: ['apply.recovery.prepare'],
+      },
+    })
+    await expect(observeCollaborationHub(address)).resolves.toMatchObject({ ok: true })
+
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...projectionFixture(),
+        activeDelivery: {
+          ...recoveredDelivery,
+          applyAttempt: { ...recoveredDelivery.applyAttempt!, safeCode: 'SECRET_DRIFT' },
         },
       },
     })
@@ -495,6 +548,34 @@ describe('collaboration-hub-client', () => {
         taskRunIds: ['xhbtr_delivery'],
       },
     })
+  })
+
+  it('基准恢复只调用 M4F 窄通道，载荷不含路径、字节或命令', async () => {
+    const delivery = deliveryFixture()
+    invokeMock.mockResolvedValueOnce({ ok: true, value: delivery })
+
+    const result = await prepareDeliveryRecovery(address, {
+      requestId: 'req-recovery',
+      batchId: delivery.batchId,
+      failedApplyAttemptId: 'xhbdapp_failed' as never,
+    })
+
+    expect(result).toEqual({ ok: true, value: delivery })
+    expect(invokeMock).toHaveBeenCalledWith('xiaogui.delivery.apply.recovery.prepare', {
+      contractVersion: DELIVERY_CONTRACT_VERSION,
+      address,
+      request: {
+        requestId: 'req-recovery',
+        batchId: delivery.batchId,
+        failedApplyAttemptId: 'xhbdapp_failed',
+      },
+    })
+    expect(Object.keys((invokeMock.mock.calls[0]![1] as { request: Record<string, unknown> }).request).sort()).toEqual([
+      'batchId',
+      'failedApplyAttemptId',
+      'requestId',
+    ])
+    expect(JSON.stringify(invokeMock.mock.calls[0]![1])).not.toMatch(/path|bytes|content|command|trusted|absolute/i)
   })
 
   it('最终执行拒绝关系不一致的结果并映射为安全 INTERNAL', async () => {

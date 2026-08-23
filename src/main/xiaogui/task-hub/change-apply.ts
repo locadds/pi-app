@@ -244,7 +244,7 @@ export class MainProcessChangeApplyPortV1 implements DeliveryApplyPortV1 {
       this.registry.put(started)
       return await this.writeAll(started, prepared.writes, request.faultInjection)
     } catch (error) {
-      if (isPreStartFailure(error)) throw error
+      if (isPreStartChangeApplyErrorV1(error)) throw error
       const receipt = await this.rollbackAsReceipt({
         applyAttemptId: request.applyAttemptId,
         requestDigest,
@@ -318,6 +318,7 @@ export class MainProcessChangeApplyPortV1 implements DeliveryApplyPortV1 {
   private async assertTargetBaseline(projectRoot: string, changeSet: DeliveryChangeSetV1): Promise<void> {
     const snapshot = await this.gitSnapshotReader.read(projectRoot)
     const target = deliveryTarget(changeSet)
+    if (snapshot.porcelainStatus.length > 0) throw new ChangeApplyErrorV1('TARGET_STATUS_DIRTY')
     if (
       snapshot.headRevision !== target.baseRevision ||
       snapshot.treeHash !== target.baselineTreeHash ||
@@ -325,7 +326,6 @@ export class MainProcessChangeApplyPortV1 implements DeliveryApplyPortV1 {
     ) {
       throw new ChangeApplyErrorV1('TARGET_BASELINE_DRIFT')
     }
-    if (snapshot.porcelainStatus.length > 0) throw new ChangeApplyErrorV1('TARGET_STATUS_DIRTY')
   }
 
   private async writeAll(
@@ -670,7 +670,7 @@ function failedReceipt(
   return { ...withoutDigest, receiptDigest: deliveryApplyReceiptDigestV1(withoutDigest) }
 }
 
-function isPreStartFailure(error: unknown): boolean {
+export function isPreStartChangeApplyErrorV1(error: unknown): error is ChangeApplyErrorV1 {
   return error instanceof ChangeApplyErrorV1 && [
     'APPROVAL_SUBJECT_MISMATCH',
     'DELIVERY_CHANGESET_DIGEST_MISMATCH',
