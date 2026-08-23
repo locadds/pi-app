@@ -29,6 +29,7 @@ import {
   newHubRequestId,
   observeCollaborationHub,
   performHubIntent,
+  prepareDeliveryRecovery,
   reconcileDeliveryApply,
   retryDeliveryApply,
   returnDeliveryBatch,
@@ -285,6 +286,7 @@ interface CollaborationHubState {
   rejectActiveDelivery: (reason?: string) => Promise<boolean>
   reconcileActiveDelivery: () => Promise<boolean>
   retryActiveDelivery: () => Promise<boolean>
+  prepareActiveDeliveryRecovery: () => Promise<boolean>
   clearError: () => void
   clearExecutionError: () => void
   clearDeliveryError: () => void
@@ -630,6 +632,24 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
         const delivery = current.activeDelivery
         if (!delivery?.applyAttempt || !current.availableActions.includes('apply.retry.request')) return null
         return retryDeliveryApply(address, {
+          requestId: newHubRequestId(),
+          batchId: delivery.batchId,
+          failedApplyAttemptId: delivery.applyAttempt.applyAttemptId,
+        })
+      }),
+
+    prepareActiveDeliveryRecovery: async () =>
+      runDeliveryIntent((address, current) => {
+        const delivery = current.activeDelivery
+        if (
+          !delivery?.applyAttempt ||
+          !current.availableActions.includes('apply.recovery.prepare') ||
+          (delivery.applyAttempt.state !== 'FAILED' && delivery.applyAttempt.state !== 'FAILED_ROLLED_BACK') ||
+          delivery.applyAttempt.safeCode !== 'TARGET_BASELINE_DRIFT' ||
+          (delivery.applyAttempt.changedRelativePaths?.length ?? 0) !== 0
+        )
+          return null
+        return prepareDeliveryRecovery(address, {
           requestId: newHubRequestId(),
           batchId: delivery.batchId,
           failedApplyAttemptId: delivery.applyAttempt.applyAttemptId,

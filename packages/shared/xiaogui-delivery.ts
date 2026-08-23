@@ -28,6 +28,7 @@ export type DeliveryBatchStateV1 =
   | 'REJECTED'
   | 'APPLYING'
   | 'APPLIED'
+  | 'SUPERSEDED'
   | 'OUTCOME_UNKNOWN'
 
 export type DeliveryVerificationOutboxStateV1 =
@@ -80,6 +81,14 @@ export interface DeliveryFileChangeSummaryV1 {
 /** Compatibility name for the public, byte-free file summary. */
 export type DeliveryFileChangeV1 = DeliveryFileChangeSummaryV1
 
+export interface DeliveryRecoveryLineageV1 {
+  readonly sourceBatchId: DeliveryBatchId
+  readonly sourceDeliveryChangeSetId: DeliveryChangeSetId
+  readonly sourceDeliveryChangeSetDigest: Sha256Digest
+  readonly sourceTargetFingerprint: Sha256Digest
+  readonly currentTargetFingerprint: Sha256Digest
+}
+
 export interface DeliveryChangeSetV1 {
   readonly kind: 'DELIVERY_CHANGESET'
   readonly version: 1
@@ -94,6 +103,7 @@ export interface DeliveryChangeSetV1 {
   readonly fileChanges: readonly DeliveryFileChangeSummaryV1[]
   readonly target: DeliveryTargetV1
   readonly integrationTreeHash: Sha256Digest
+  readonly recoveryLineage?: DeliveryRecoveryLineageV1
   readonly evidenceArtifactIds: readonly ArtifactId[]
   readonly qaConfigVersion: string
   readonly createdAt: IsoDateTime
@@ -179,6 +189,8 @@ export interface DeliveryApplyAttemptV1 {
   readonly targetFingerprintBefore: Sha256Digest
   readonly state: 'STARTED' | 'SUCCEEDED' | 'FAILED' | 'FAILED_ROLLED_BACK' | 'OUTCOME_UNKNOWN'
   readonly receiptDigest?: Sha256Digest
+  readonly safeCode?: DeliveryApplySafeCodeV1
+  readonly changedRelativePaths?: readonly string[]
   readonly targetFingerprintAfter?: Sha256Digest
   readonly startedAt: IsoDateTime
   readonly finishedAt?: IsoDateTime
@@ -194,6 +206,8 @@ export interface DeliveryBatchProjectionV1 {
   readonly targetFingerprint: Sha256Digest
   readonly deliveryChangeSetId?: DeliveryChangeSetId
   readonly deliveryChangeSetDigest?: Sha256Digest
+  readonly recoverySourceBatchId?: DeliveryBatchId
+  readonly recoveryLineage?: DeliveryRecoveryLineageV1
   readonly fileChangeSummaries?: readonly DeliveryFileChangeSummaryV1[]
   readonly evidenceArtifactIds?: readonly ArtifactId[]
   readonly qaConfigVersion?: string
@@ -277,6 +291,7 @@ export function deliveryChangeSetDigestV1(
     fileChanges: value.fileChanges,
     target: value.target,
     integrationTreeHash: value.integrationTreeHash,
+    ...('recoveryLineage' in value && value.recoveryLineage ? { recoveryLineage: value.recoveryLineage } : {}),
     evidenceArtifactIds: value.evidenceArtifactIds,
     qaConfigVersion: value.qaConfigVersion,
     createdAt: value.createdAt,

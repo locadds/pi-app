@@ -83,6 +83,7 @@ export type M2ADisabledIntentTypeV1 =
   | 'gate.decide'
   | 'apply.reconcile.request'
   | 'apply.retry.request'
+  | 'apply.recovery.prepare'
   | 'correction.create'
   | 'system.schedule'
   | 'system.workspace.prepare.result.record'
@@ -195,6 +196,7 @@ export type CollaborationHubActionM2BV1 =
   | 'delivery.gate.reject'
   | 'apply.reconcile.request'
   | 'apply.retry.request'
+  | 'apply.recovery.prepare'
 
 export interface SessionCollaborationProjectionV1 {
   kind: 'SESSION_COLLABORATION_PROJECTION'

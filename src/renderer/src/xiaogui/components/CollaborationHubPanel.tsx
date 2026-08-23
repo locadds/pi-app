@@ -100,8 +100,17 @@ const DELIVERY_STATE_TEXT: Record<DeliveryBatchStateV1, string> = {
   REJECTED: '已退回',
   APPLYING: '应用中',
   APPLIED: '已应用',
+  SUPERSEDED: '已被新交付替代',
   OUTCOME_UNKNOWN: '结果未知',
 }
+
+const DELIVERY_APPLY_INTEGRITY_TEXT: Record<string, string> = {
+  TARGET_BASELINE_DRIFT: '项目代码已变化，旧批准不能继续使用。',
+  TARGET_STATUS_DIRTY: '项目存在未提交改动，请先自行处理并刷新；小规不会覆盖这些改动。',
+  TARGET_FILE_DRIFT: '交付文件已变化，当前交付不能直接重试。',
+}
+
+const DELIVERY_NON_RETRYABLE_SAFE_CODES = new Set(Object.keys(DELIVERY_APPLY_INTEGRITY_TEXT))
 
 function shortDigest(digest: string): string {
   if (digest.startsWith('sha256:')) {
@@ -413,12 +422,22 @@ function DeliveryReviewSection({ delivery }: { delivery: DeliveryBatchProjection
   const rejectActiveDelivery = useCollaborationHubStore((s) => s.rejectActiveDelivery)
   const reconcileActiveDelivery = useCollaborationHubStore((s) => s.reconcileActiveDelivery)
   const retryActiveDelivery = useCollaborationHubStore((s) => s.retryActiveDelivery)
+  const prepareActiveDeliveryRecovery = useCollaborationHubStore((s) => s.prepareActiveDeliveryRecovery)
   const availableActions = useCollaborationHubStore((s) => s.projection?.availableActions ?? [])
   const files = delivery.fileChangeSummaries ?? []
   const evidenceCount = delivery.evidenceArtifactIds?.length ?? 0
   const canApprove = availableActions.includes('delivery.gate.approve') && delivery.gate?.state === 'OPEN'
   const canReject = availableActions.includes('delivery.gate.reject') && delivery.gate?.state === 'OPEN'
   const reviewing = deliveryReviewSubjectKey !== null && deliveryReviewSubjectKey === currentDeliverySubjectKey(delivery)
+  const applySafeCode = delivery.applyAttempt?.safeCode
+  const integrityText = applySafeCode ? DELIVERY_APPLY_INTEGRITY_TEXT[applySafeCode] : null
+  const canPrepareRecovery =
+    availableActions.includes('apply.recovery.prepare') &&
+    delivery.applyAttempt?.safeCode === 'TARGET_BASELINE_DRIFT' &&
+    (delivery.applyAttempt.changedRelativePaths?.length ?? 0) === 0
+  const canRetryApply =
+    availableActions.includes('apply.retry.request') &&
+    !(applySafeCode && DELIVERY_NON_RETRYABLE_SAFE_CODES.has(applySafeCode))
 
   return (
     <div className="mt-3 rounded-lg border border-border/50 p-2.5" data-testid="hub-delivery-review">
@@ -469,6 +488,14 @@ function DeliveryReviewSection({ delivery }: { delivery: DeliveryBatchProjection
             </button>
           </div>
           {deliveryError.traceId && <div className="mt-1 font-mono text-[10px] opacity-70">traceId: {deliveryError.traceId}</div>}
+        </div>
+      )}
+      {integrityText && (
+        <div
+          className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-200"
+          data-testid="hub-delivery-integrity-note"
+        >
+          {integrityText}
         </div>
       )}
       {reviewing ? (
@@ -527,7 +554,7 @@ function DeliveryReviewSection({ delivery }: { delivery: DeliveryBatchProjection
               对账
             </button>
           )}
-          {availableActions.includes('apply.retry.request') && (
+          {canRetryApply && (
             <button
               type="button"
               disabled={submitting}
@@ -535,6 +562,16 @@ function DeliveryReviewSection({ delivery }: { delivery: DeliveryBatchProjection
               className="rounded-md border border-border/60 px-2 py-1 text-[12px] text-foreground-secondary hover:bg-accent disabled:opacity-40"
             >
               重试应用
+            </button>
+          )}
+          {canPrepareRecovery && (
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => void prepareActiveDeliveryRecovery()}
+              className="rounded-md border border-border/60 px-2 py-1 text-[12px] text-foreground-secondary hover:bg-accent disabled:opacity-40"
+            >
+              {submitting ? '正在重新准备…' : '按当前代码重新准备交付'}
             </button>
           )}
         </div>

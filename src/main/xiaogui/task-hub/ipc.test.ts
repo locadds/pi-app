@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
       returnBatch: ReturnType<typeof vi.fn>
       reconcileApply: ReturnType<typeof vi.fn>
       retryApply: ReturnType<typeof vi.fn>
+      prepareRecovery: ReturnType<typeof vi.fn>
     }
   }>,
   loginCoordinators: [] as Array<{
@@ -62,6 +63,7 @@ mocks.createRuntimeComposition.mockImplementation(() => {
       returnBatch: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
       reconcileApply: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
       retryApply: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
+      prepareRecovery: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
     },
   }
   mocks.runtimeCompositions.push(composition)
@@ -237,11 +239,12 @@ describe('M2A collaboration hub IPC adapter', () => {
     expect(coordinator.startLogin).toHaveBeenCalledOnce()
   })
 
-  it('registers the five delivery handlers when using the default runtime composition', async () => {
+  it('registers the six delivery handlers when using the default runtime composition', async () => {
     registerCollaborationHubHandlers()
 
     expect([...mocks.handlers.keys()].filter((channel) => channel.startsWith('ipc:xiaogui.delivery.')).sort()).toEqual([
       'ipc:xiaogui.delivery.apply.reconcile',
+      'ipc:xiaogui.delivery.apply.recovery.prepare',
       'ipc:xiaogui.delivery.apply.retry',
       'ipc:xiaogui.delivery.batch.return',
       'ipc:xiaogui.delivery.gate.approve',

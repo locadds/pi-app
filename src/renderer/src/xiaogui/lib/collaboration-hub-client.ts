@@ -27,15 +27,18 @@ import type {
 } from '@shared/xiaogui-collaboration-hub'
 import type {
   DeliveryApplyAttemptV1,
+  DeliveryApplySafeCodeV1,
   DeliveryBatchProjectionV1,
   DeliveryBatchStateV1,
   DeliveryFileChangeSummaryV1,
   DeliveryGateSubjectV1,
   DeliveryHumanGateV1,
+  DeliveryRecoveryLineageV1,
 } from '@shared/xiaogui-delivery'
 import type {
   XiaoguiDeliveryApproveGateRequestV1,
   XiaoguiDeliveryOutcomeV1,
+  XiaoguiDeliveryPrepareRecoveryRequestV1,
   XiaoguiDeliveryReconcileApplyRequestV1,
   XiaoguiDeliveryReturnBatchRequestV1,
   XiaoguiDeliveryRetryApplyRequestV1,
@@ -122,7 +125,21 @@ const DELIVERY_STATES = new Set<DeliveryBatchStateV1>([
   'REJECTED',
   'APPLYING',
   'APPLIED',
+  'SUPERSEDED',
   'OUTCOME_UNKNOWN',
+])
+
+const DELIVERY_APPLY_SAFE_CODES = new Set<DeliveryApplySafeCodeV1>([
+  'APPROVAL_SUBJECT_MISMATCH',
+  'DELIVERY_CHANGESET_DIGEST_MISMATCH',
+  'DELIVERY_FILE_INVALID',
+  'TARGET_BASELINE_DRIFT',
+  'TARGET_STATUS_DIRTY',
+  'TARGET_FILE_DRIFT',
+  'TARGET_WRITE_FAILED',
+  'ROLLBACK_INCOMPLETE',
+  'APPLY_ATTEMPT_CONFLICT',
+  'APPLY_ATTEMPT_NOT_FOUND',
 ])
 
 const INTENT_TYPES = new Set([
@@ -136,6 +153,7 @@ const INTENT_TYPES = new Set([
   'gate.decide',
   'apply.reconcile.request',
   'apply.retry.request',
+  'apply.recovery.prepare',
   'correction.create',
   'system.schedule',
   'system.workspace.prepare.result.record',
@@ -150,6 +168,7 @@ for (const action of [
   'delivery.gate.reject',
   'apply.reconcile.request',
   'apply.retry.request',
+  'apply.recovery.prepare',
 ] as const) {
   HUB_M2B_ACTIONS.add(action)
 }
@@ -493,6 +512,8 @@ function isDeliveryApplyAttempt(value: unknown): value is DeliveryApplyAttemptV1
         'targetFingerprintBefore',
         'state',
         'receiptDigest',
+        'safeCode',
+        'changedRelativePaths',
         'targetFingerprintAfter',
         'startedAt',
         'finishedAt',
@@ -507,10 +528,34 @@ function isDeliveryApplyAttempt(value: unknown): value is DeliveryApplyAttemptV1
     SHA256_DIGEST.test(value.targetFingerprintBefore) &&
     ['STARTED', 'SUCCEEDED', 'FAILED', 'FAILED_ROLLED_BACK', 'OUTCOME_UNKNOWN'].includes(String(value.state)) &&
     (value.receiptDigest === undefined || (typeof value.receiptDigest === 'string' && SHA256_DIGEST.test(value.receiptDigest))) &&
+    (value.safeCode === undefined || DELIVERY_APPLY_SAFE_CODES.has(value.safeCode as DeliveryApplySafeCodeV1)) &&
+    (value.changedRelativePaths === undefined ||
+      (isStringArray(value.changedRelativePaths) && value.changedRelativePaths.every(isSafeRelativePath))) &&
     (value.targetFingerprintAfter === undefined ||
       (typeof value.targetFingerprintAfter === 'string' && SHA256_DIGEST.test(value.targetFingerprintAfter))) &&
     typeof value.startedAt === 'string' &&
     (value.finishedAt === undefined || typeof value.finishedAt === 'string')
+  )
+}
+
+function isDeliveryRecoveryLineage(value: unknown): value is DeliveryRecoveryLineageV1 {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'sourceBatchId',
+      'sourceDeliveryChangeSetId',
+      'sourceDeliveryChangeSetDigest',
+      'sourceTargetFingerprint',
+      'currentTargetFingerprint',
+    ]) &&
+    isNonEmptyString(value.sourceBatchId) &&
+    isNonEmptyString(value.sourceDeliveryChangeSetId) &&
+    typeof value.sourceDeliveryChangeSetDigest === 'string' &&
+    SHA256_DIGEST.test(value.sourceDeliveryChangeSetDigest) &&
+    typeof value.sourceTargetFingerprint === 'string' &&
+    SHA256_DIGEST.test(value.sourceTargetFingerprint) &&
+    typeof value.currentTargetFingerprint === 'string' &&
+    SHA256_DIGEST.test(value.currentTargetFingerprint)
   )
 }
 
@@ -528,6 +573,8 @@ function isDeliveryBatchProjection(value: unknown): value is DeliveryBatchProjec
         'targetFingerprint',
         'deliveryChangeSetId',
         'deliveryChangeSetDigest',
+        'recoverySourceBatchId',
+        'recoveryLineage',
         'fileChangeSummaries',
         'evidenceArtifactIds',
         'qaConfigVersion',
@@ -547,6 +594,8 @@ function isDeliveryBatchProjection(value: unknown): value is DeliveryBatchProjec
     (value.deliveryChangeSetId === undefined || isNonEmptyString(value.deliveryChangeSetId)) &&
     (value.deliveryChangeSetDigest === undefined ||
       (typeof value.deliveryChangeSetDigest === 'string' && SHA256_DIGEST.test(value.deliveryChangeSetDigest))) &&
+    (value.recoverySourceBatchId === undefined || isNonEmptyString(value.recoverySourceBatchId)) &&
+    (value.recoveryLineage === undefined || isDeliveryRecoveryLineage(value.recoveryLineage)) &&
     (value.fileChangeSummaries === undefined ||
       (Array.isArray(value.fileChangeSummaries) && value.fileChangeSummaries.every(isDeliveryFileChangeSummary))) &&
     (value.evidenceArtifactIds === undefined || isStringArray(value.evidenceArtifactIds)) &&
@@ -769,6 +818,13 @@ export function retryDeliveryApply(
   request: XiaoguiDeliveryRetryApplyRequestV1,
 ): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
   return invokeDelivery('xiaogui.delivery.apply.retry', address, request)
+}
+
+export function prepareDeliveryRecovery(
+  address: HubAddressV1,
+  request: XiaoguiDeliveryPrepareRecoveryRequestV1,
+): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+  return invokeDelivery('xiaogui.delivery.apply.recovery.prepare', address, request)
 }
 
 /** 生成唯一请求标识（幂等键由 requestId + payload hash 在主进程判定）。 */

@@ -28,6 +28,7 @@ const approveDeliveryMock = vi.fn()
 const returnDeliveryMock = vi.fn()
 const reconcileDeliveryMock = vi.fn()
 const retryDeliveryMock = vi.fn()
+const prepareRecoveryMock = vi.fn()
 let requestCounter = 0
 let appEventHandler: ((event: AppEvent) => void) | null = null
 vi.mock('../lib/collaboration-hub-client', () => ({
@@ -42,6 +43,7 @@ vi.mock('../lib/collaboration-hub-client', () => ({
   returnDeliveryBatch: (address: HubAddressV1, request: unknown) => returnDeliveryMock(address, request),
   reconcileDeliveryApply: (address: HubAddressV1, request: unknown) => reconcileDeliveryMock(address, request),
   retryDeliveryApply: (address: HubAddressV1, request: unknown) => retryDeliveryMock(address, request),
+  prepareDeliveryRecovery: (address: HubAddressV1, request: unknown) => prepareRecoveryMock(address, request),
   newHubRequestId: () => `test-req-${++requestCounter}`,
 }))
 
@@ -362,6 +364,7 @@ beforeEach(() => {
   returnDeliveryMock.mockReset()
   reconcileDeliveryMock.mockReset()
   retryDeliveryMock.mockReset()
+  prepareRecoveryMock.mockReset()
   requestCounter = 0
   appEventHandler = null
   window.piDesktop = {
@@ -754,6 +757,93 @@ describe('CollaborationHubPanel', () => {
 
     await waitFor(() => expect(returnDeliveryMock).toHaveBeenCalledTimes(1))
     expect(approveDeliveryMock).not.toHaveBeenCalled()
+  })
+
+  it('交付完整性失败显示中文处理建议，基准漂移仅显示重新准备按钮而不显示普通重试', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    const failedApplyAttempt = {
+      applyAttemptId: 'xhbdapp_failed' as never,
+      batchId: 'xhbd_batch1' as never,
+      deliveryChangeSetId: 'xhbdcs_delivery' as never,
+      requestDigest: `sha256:${'a'.repeat(64)}` as never,
+      targetFingerprintBefore: `sha256:${'b'.repeat(64)}` as never,
+      state: 'FAILED_ROLLED_BACK' as const,
+      receiptDigest: `sha256:${'c'.repeat(64)}` as never,
+      safeCode: 'TARGET_BASELINE_DRIFT' as const,
+      changedRelativePaths: [] as readonly string[],
+      startedAt: '2026-08-18T00:00:00.000Z' as never,
+      finishedAt: '2026-08-18T00:00:01.000Z' as never,
+    }
+    const projection = deliveryProjection(address)
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: {
+        ...projection,
+        activeDelivery: { ...projection.activeDelivery!, state: 'APPROVED', applyAttempt: failedApplyAttempt },
+        availableActions: ['flow.cancel', 'apply.recovery.prepare', 'apply.retry.request'],
+      },
+    })
+    prepareRecoveryMock.mockResolvedValue({ ok: true, value: projection.activeDelivery! })
+    showSession(sessionWith('s-delivery-recovery', scopeCoding))
+    const user = userEvent.setup()
+    render(<CollaborationHubPanel />)
+
+    expect(await screen.findByTestId('hub-delivery-integrity-note')).toHaveTextContent('项目代码已变化，旧批准不能继续使用')
+    expect(screen.queryByRole('button', { name: '重试应用' })).toBeNull()
+    const recoveryButton = screen.getByRole('button', { name: '按当前代码重新准备交付' })
+    await user.click(recoveryButton)
+
+    expect(prepareRecoveryMock).toHaveBeenCalledTimes(1)
+    expect(prepareRecoveryMock.mock.calls[0]![1]).toEqual({
+      requestId: 'test-req-1',
+      batchId: 'xhbd_batch1',
+      failedApplyAttemptId: 'xhbdapp_failed',
+    })
+
+    cleanup()
+    prepareRecoveryMock.mockReset()
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: {
+        ...projection,
+        activeDelivery: {
+          ...projection.activeDelivery!,
+          state: 'APPROVED',
+          applyAttempt: { ...failedApplyAttempt, safeCode: 'TARGET_STATUS_DIRTY' as const },
+        },
+        availableActions: ['flow.cancel', 'apply.retry.request'],
+      },
+    })
+    showSession(sessionWith('s-delivery-dirty', scopeCoding))
+    render(<CollaborationHubPanel />)
+    expect(await screen.findByTestId('hub-delivery-integrity-note')).toHaveTextContent(
+      '项目存在未提交改动，请先自行处理并刷新；小规不会覆盖这些改动',
+    )
+    expect(screen.queryByRole('button', { name: '重试应用' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '按当前代码重新准备交付' })).toBeNull()
+
+    cleanup()
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: {
+        ...projection,
+        activeDelivery: {
+          ...projection.activeDelivery!,
+          state: 'APPROVED',
+          applyAttempt: { ...failedApplyAttempt, safeCode: 'TARGET_FILE_DRIFT' as const },
+        },
+        availableActions: ['flow.cancel', 'apply.retry.request'],
+      },
+    })
+    showSession(sessionWith('s-delivery-file-drift', scopeCoding))
+    render(<CollaborationHubPanel />)
+    expect(await screen.findByTestId('hub-delivery-integrity-note')).toHaveTextContent(
+      '交付文件已变化，当前交付不能直接重试',
+    )
+    expect(screen.queryByRole('button', { name: '重试应用' })).toBeNull()
   })
 
   it('切换会话后旧投影不串到新会话', async () => {

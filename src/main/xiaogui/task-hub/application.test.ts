@@ -372,6 +372,57 @@ describe('M2A collaboration hub application', () => {
         availableActions: ['flow.cancel', 'delivery.gate.approve', 'delivery.gate.reject'],
       },
     })
+
+    const approvedGate = { ...activeDelivery.gate!, state: 'APPROVED' as const }
+    const failedApplyAttempt = {
+      applyAttemptId: 'xhbdap_delivery' as never,
+      batchId: activeDelivery.batchId,
+      deliveryChangeSetId: activeDelivery.gate!.subject.deliveryChangeSetId,
+      requestDigest: `sha256:${'4'.repeat(64)}` as never,
+      targetFingerprintBefore: activeDelivery.targetFingerprint,
+      state: 'FAILED' as const,
+      changedRelativePaths: [] as readonly string[],
+      startedAt: '2026-08-23T00:00:01.000Z' as never,
+      finishedAt: '2026-08-23T00:00:02.000Z' as never,
+    }
+    activeDelivery = {
+      ...activeDelivery,
+      state: 'APPROVED',
+      gate: approvedGate,
+      applyAttempt: { ...failedApplyAttempt, safeCode: 'TARGET_BASELINE_DRIFT' },
+    }
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { availableActions: ['flow.cancel', 'apply.recovery.prepare'] },
+    })
+    activeDelivery = {
+      ...activeDelivery,
+      applyAttempt: { ...failedApplyAttempt, safeCode: 'TARGET_BASELINE_DRIFT', changedRelativePaths: ['src/index.ts'] },
+    }
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { availableActions: ['flow.cancel'] },
+    })
+
+    for (const safeCode of ['TARGET_STATUS_DIRTY', 'TARGET_FILE_DRIFT'] as const) {
+      activeDelivery = {
+        ...activeDelivery,
+        applyAttempt: { ...failedApplyAttempt, safeCode },
+      }
+      await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+        ok: true,
+        value: { availableActions: ['flow.cancel'] },
+      })
+    }
+
+    activeDelivery = {
+      ...activeDelivery,
+      applyAttempt: { ...failedApplyAttempt, safeCode: 'TARGET_WRITE_FAILED' },
+    }
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: { availableActions: ['flow.cancel', 'apply.retry.request'] },
+    })
     app.close()
   })
 
@@ -470,6 +521,15 @@ describe('M2A collaboration hub application', () => {
       task_evidence_bundles: 0,
       task_qa_results: 0,
       task_change_sets: 0,
+      delivery_batches: 0,
+      delivery_selection_drafts: 0,
+      delivery_verification_attempts: 0,
+      delivery_verification_outbox: 0,
+      delivery_verification_receipts: 0,
+      delivery_change_sets: 0,
+      delivery_human_gates: 0,
+      delivery_apply_attempts: 0,
+      delivery_apply_outbox: 0,
     })
     store.close()
   })
@@ -738,7 +798,7 @@ describe('M2A collaboration hub application', () => {
     const migration = unchangedDb.prepare('select max(version) as version from schema_migrations').get() as { version: number }
     unchangedDb.close()
     expect(JSON.parse(stored.projection_json).activeRevision).not.toHaveProperty('draft')
-    expect(migration.version).toBe(4)
+    expect(migration.version).toBe(8)
   })
 
   it('keeps public projection actions user-only and persisted event payload sanitized', async () => {

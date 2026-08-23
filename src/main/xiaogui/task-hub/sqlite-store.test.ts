@@ -1,7 +1,6 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
@@ -15,11 +14,25 @@ import type {
   InitialPlanDraftInputV1,
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
-import type {
-  DeliveryApplyAttemptId,
-  DeliveryBatchId,
-  DeliveryChangeSetId,
-  DeliverySelectionDraftId,
+import {
+  deliveryApplyReceiptDigestV1,
+  deliveryChangeSetDigestV1,
+  deliverySelectionDigestV1,
+  deliveryVerificationReceiptDigestV1,
+  deliveryVerificationRequestDigestV1,
+  type DeliveryApplyReceiptV1,
+  type DeliveryApplyAttemptId,
+  type DeliveryApplySafeCodeV1,
+  type DeliveryBatchId,
+  type DeliveryChangeSetV1,
+  type DeliveryChangeSetId,
+  type DeliveryGateId,
+  type DeliveryRecoveryLineageV1,
+  type DeliverySelectionDraftId,
+  type DeliverySelectionDraftV1,
+  type DeliveryVerificationAttemptId,
+  type DeliveryVerificationReceiptV1,
+  type DeliveryVerificationRequestV1,
 } from '@shared/xiaogui-delivery'
 import {
   taskCandidateDigestV1,
@@ -63,13 +76,15 @@ const ADDRESS = {
 } as SessionAddressV1
 
 const roots: string[] = []
+const TEST_TEMP_ROOT = 'E:\\CodexTemp\\m4f-c-store'
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
 async function tempDb(name = 'hub.sqlite') {
-  const root = await mkdtemp(join(tmpdir(), 'xiaogui-hub-m2b-store-'))
+  await mkdir(TEST_TEMP_ROOT, { recursive: true })
+  const root = await mkdtemp(join(TEST_TEMP_ROOT, 'xiaogui-hub-m2b-store-'))
   roots.push(root)
   return join(root, name)
 }
@@ -431,7 +446,267 @@ async function unknownDeliveryApply(dbPath: string, suffix: string) {
   } finally {
     db.close()
   }
-  return { flowId: flowId as FlowId, taskRunId: taskRun.task_run_id, batchId, applyAttemptId }
+  return { flowId: flowId as FlowId, taskRunId: taskRun.task_run_id, batchId, deliveryChangeSetId, applyAttemptId }
+}
+
+async function baselineDriftRecoveryFixture(
+  dbPath: string,
+  suffix: string,
+  input: { safeCode?: DeliveryApplySafeCodeV1; changedRelativePaths?: readonly string[] } = {},
+) {
+  const { app, flowId } = await activePlan(dbPath)
+  app.close()
+  const store = new CollaborationHubSqliteStoreV1(dbPath)
+  const taskRun = store.taskRuns(flowId as FlowId)[0]
+  store.close()
+  if (!taskRun) throw new Error('missing recovery task run')
+
+  const sourceBatchId = `xhbd_source_${suffix}` as DeliveryBatchId
+  const sourceDraftId = `xhbds_source_${suffix}` as DeliverySelectionDraftId
+  const sourceDeliveryChangeSetId = `xhbdcs_source_${suffix}` as DeliveryChangeSetId
+  const sourceApplyAttemptId = `xhbdap_source_${suffix}` as DeliveryApplyAttemptId
+  const recoveredBatchId = `xhbd_recovered_${suffix}` as DeliveryBatchId
+  const recoveredDraftId = `xhbds_recovered_${suffix}` as DeliverySelectionDraftId
+  const recoveredDeliveryChangeSetId = `xhbdcs_recovered_${suffix}` as DeliveryChangeSetId
+  const recoveredVerificationAttemptId = `xhbdv_recovered_${suffix}` as DeliveryVerificationAttemptId
+  const gateId = `xhbdg_recovered_${suffix}` as DeliveryGateId
+  const now = '2026-08-24T00:00:00.000Z'
+  const sourceTargetFingerprint = asDigest(`sha256:delivery-source-target-${suffix}`)
+  const currentTargetFingerprint = asDigest(`sha256:delivery-current-target-${suffix}`)
+  const sourceTarget = {
+    projectId: ADDRESS.projectId,
+    baseRevision: 'a'.repeat(40),
+    baselineTreeHash: 'b'.repeat(40),
+    initialTargetFingerprint: sourceTargetFingerprint,
+  }
+  const sourceDraftBase: Omit<DeliverySelectionDraftV1, 'digest'> = {
+    kind: 'DELIVERY_SELECTION_DRAFT',
+    version: 1,
+    draftId: sourceDraftId,
+    batchId: sourceBatchId,
+    flowId: flowId as FlowId,
+    selectedTaskRunIds: [taskRun.task_run_id],
+    resolvedTaskChangeSets: [],
+    dependencyTaskRunIds: [taskRun.task_run_id],
+    targetFingerprint: sourceTargetFingerprint,
+    createdAt: now as never,
+  }
+  const sourceDraft: DeliverySelectionDraftV1 = {
+    ...sourceDraftBase,
+    digest: deliverySelectionDigestV1(sourceDraftBase),
+  }
+  const recoveredDraftBase: Omit<DeliverySelectionDraftV1, 'digest'> = {
+    ...sourceDraft,
+    draftId: recoveredDraftId,
+    batchId: recoveredBatchId,
+    targetFingerprint: currentTargetFingerprint,
+    createdAt: now as never,
+  }
+  const recoveredSelectionDigest = deliverySelectionDigestV1(recoveredDraftBase)
+  const sourceChangeSetBase = {
+    kind: 'DELIVERY_CHANGESET' as const,
+    version: 1 as const,
+    deliveryChangeSetId: sourceDeliveryChangeSetId,
+    batchId: sourceBatchId,
+    selectionDraftId: sourceDraftId,
+    flowId: flowId as FlowId,
+    selectionDigest: sourceDraft.digest,
+    taskChangeSetIds: [] as readonly TaskChangeSetId[],
+    taskChangeSets: [],
+    dependencyOrder: [] as readonly TaskChangeSetId[],
+    fileChanges: [],
+    target: sourceTarget,
+    integrationTreeHash: asDigest(`sha256:delivery-source-tree-${suffix}`),
+    evidenceArtifactIds: [] as readonly ArtifactId[],
+    qaConfigVersion: 'delivery-test-v1',
+    createdAt: now as never,
+  }
+  const sourceChangeSet: DeliveryChangeSetV1 = {
+    ...sourceChangeSetBase,
+    digest: deliveryChangeSetDigestV1(sourceChangeSetBase),
+  }
+  const failedReceiptBase = {
+    applyAttemptId: sourceApplyAttemptId,
+    deliveryChangeSetId: sourceDeliveryChangeSetId,
+    verdict: 'FAILED_ROLLED_BACK' as const,
+    changedRelativePaths: input.changedRelativePaths ?? [],
+    safeCode: input.safeCode ?? 'TARGET_BASELINE_DRIFT',
+  }
+  const failedReceipt: DeliveryApplyReceiptV1 = {
+    ...failedReceiptBase,
+    receiptDigest: deliveryApplyReceiptDigestV1(failedReceiptBase),
+  } as DeliveryApplyReceiptV1
+  const recoveryLineage: DeliveryRecoveryLineageV1 = {
+    sourceBatchId,
+    sourceDeliveryChangeSetId,
+    sourceDeliveryChangeSetDigest: sourceChangeSet.digest,
+    sourceTargetFingerprint,
+    currentTargetFingerprint,
+  }
+  const recoveredTarget = { ...sourceTarget, initialTargetFingerprint: currentTargetFingerprint }
+  const recoveredChangeSetBase = {
+    ...sourceChangeSetBase,
+    deliveryChangeSetId: recoveredDeliveryChangeSetId,
+    batchId: recoveredBatchId,
+    selectionDraftId: recoveredDraftId,
+    selectionDigest: recoveredSelectionDigest,
+    target: recoveredTarget,
+    integrationTreeHash: asDigest(`sha256:delivery-recovered-tree-${suffix}`),
+    recoveryLineage,
+    evidenceArtifactIds: [`artifact-recovery-evidence-${suffix}` as ArtifactId],
+    createdAt: now as never,
+  }
+  const recoveredChangeSet: DeliveryChangeSetV1 = {
+    ...recoveredChangeSetBase,
+    digest: deliveryChangeSetDigestV1(recoveredChangeSetBase),
+  }
+  const verificationRequestBase = {
+    scope: 'DELIVERY' as const,
+    verificationAttemptId: recoveredVerificationAttemptId,
+    verificationRequestId: `delivery-recovery-request-${suffix}`,
+    batchId: recoveredBatchId,
+    flowId: flowId as FlowId,
+    selectionDigest: recoveredSelectionDigest,
+    targetFingerprint: currentTargetFingerprint,
+    deliveryChangeSetDigest: recoveredChangeSet.digest,
+    qaConfigVersion: 'delivery-test-v1',
+  }
+  const verificationRequest: DeliveryVerificationRequestV1 = {
+    ...verificationRequestBase,
+    requestDigest: deliveryVerificationRequestDigestV1(verificationRequestBase),
+  }
+  const receiptBase = {
+    scope: 'DELIVERY' as const,
+    verificationAttemptId: recoveredVerificationAttemptId,
+    batchId: recoveredBatchId,
+    flowId: flowId as FlowId,
+    selectionDigest: recoveredSelectionDigest,
+    deliveryChangeSetId: recoveredDeliveryChangeSetId,
+    deliveryChangeSetDigest: recoveredChangeSet.digest,
+    requestDigest: verificationRequest.requestDigest,
+    qaConfigVersion: 'delivery-test-v1',
+    diagnosticArtifactIds: [] as readonly ArtifactId[],
+    verdict: 'PASS' as const,
+    checks: [{ checkId: 'recovery-smoke', verdict: 'PASS' as const, summary: 'recovered candidate is bounded' }],
+    evidenceArtifactIds: [`artifact-recovery-evidence-${suffix}` as ArtifactId],
+  }
+  const receipt: DeliveryVerificationReceiptV1 = {
+    ...receiptBase,
+    receiptDigest: deliveryVerificationReceiptDigestV1(receiptBase),
+  }
+  const evidenceArtifacts: readonly TaskArtifactWriteV1[] = [{
+    artifactId: `artifact-recovery-evidence-${suffix}` as ArtifactId,
+    kind: 'VERIFICATION_EVIDENCE',
+    mediaType: 'application/json',
+    content: Buffer.from(`{"suffix":"${suffix}"}`),
+    contentDigest: contentDigest(Buffer.from(`{"suffix":"${suffix}"}`)) as Sha256Digest,
+  }]
+
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.exec('pragma foreign_keys = on; begin immediate')
+    db.prepare(
+      'insert into delivery_batches (batch_id, project_id, session_key, flow_id, selection_draft_id, state, selection_digest, target_fingerprint, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      sourceBatchId,
+      ADDRESS.projectId,
+      ADDRESS.sessionKey,
+      flowId,
+      sourceDraftId,
+      'APPROVED',
+      sourceDraft.digest,
+      sourceTargetFingerprint,
+      now,
+      now,
+    )
+    db.prepare(
+      'insert into delivery_selection_drafts (draft_id, batch_id, flow_id, selected_task_run_ids_json, resolved_task_change_set_ids_json, dependency_task_run_ids_json, selection_digest, draft_json, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      sourceDraftId,
+      sourceBatchId,
+      flowId,
+      JSON.stringify(sourceDraft.selectedTaskRunIds),
+      '[]',
+      JSON.stringify(sourceDraft.dependencyTaskRunIds),
+      sourceDraft.digest,
+      JSON.stringify(sourceDraft),
+      now,
+    )
+    db.prepare(
+      'insert into delivery_change_sets (delivery_change_set_id, batch_id, flow_id, version, selection_digest, task_change_set_ids_json, evidence_artifact_ids_json, qa_config_version, digest, change_set_json, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      sourceDeliveryChangeSetId,
+      sourceBatchId,
+      flowId,
+      1,
+      sourceDraft.digest,
+      '[]',
+      '[]',
+      'delivery-test-v1',
+      sourceChangeSet.digest,
+      JSON.stringify(sourceChangeSet),
+      now,
+    )
+    db.prepare(
+      'insert into delivery_apply_attempts (apply_attempt_id, batch_id, delivery_change_set_id, request_digest, target_fingerprint_before, state, receipt_digest, safe_code, changed_relative_paths_json, receipt_json, target_fingerprint_after, started_at, finished_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?)',
+    ).run(
+      sourceApplyAttemptId,
+      sourceBatchId,
+      sourceDeliveryChangeSetId,
+      asDigest(`sha256:delivery-apply-request-${suffix}`),
+      sourceTargetFingerprint,
+      'FAILED',
+      failedReceipt.receiptDigest,
+      failedReceipt.verdict === 'FAILED_ROLLED_BACK' ? failedReceipt.safeCode : null,
+      JSON.stringify(failedReceipt.changedRelativePaths),
+      JSON.stringify(failedReceipt),
+      now,
+      now,
+    )
+    db.prepare(
+      'insert into delivery_apply_outbox (outbox_id, apply_attempt_id, request_digest, request_json, status, completed_at, created_at) values (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      `xhbdapo_${sourceApplyAttemptId}`,
+      sourceApplyAttemptId,
+      asDigest(`sha256:delivery-apply-request-${suffix}`),
+      '{}',
+      'FAILED',
+      now,
+      now,
+    )
+    db.prepare("update task_runs set status = 'DELIVERY_PENDING' where task_run_id = ?").run(taskRun.task_run_id)
+    db.exec('commit')
+  } catch (error) {
+    db.exec('rollback')
+    throw error
+  } finally {
+    db.close()
+  }
+
+  return {
+    sourceBatchId,
+    sourceApplyAttemptId,
+    recoveredBatchId,
+    recoveredDeliveryChangeSetId,
+    recoveredVerificationAttemptId,
+    gateId,
+    record: {
+      sourceBatchId,
+      sourceFailedApplyAttemptId: sourceApplyAttemptId,
+      batchId: recoveredBatchId,
+      draftId: recoveredDraftId,
+      verificationAttemptId: recoveredVerificationAttemptId,
+      verificationRequestJson: JSON.stringify(verificationRequest),
+      receipt,
+      deliveryChangeSet: recoveredChangeSet,
+      deliveryFileArtifacts: [],
+      evidenceArtifacts,
+      diagnosticArtifacts: [],
+      gateId,
+      recoveryLineage,
+      now,
+    },
+  }
 }
 
 function deliveryBatchState(dbPath: string, batchId: DeliveryBatchId): string | null {
@@ -441,6 +716,18 @@ function deliveryBatchState(dbPath: string, batchId: DeliveryBatchId): string | 
       | { state: string }
       | undefined
     return row?.state ?? null
+  } finally {
+    db.close()
+  }
+}
+
+function recoveryBatchCount(dbPath: string, sourceBatchId: DeliveryBatchId): number {
+  const db = new DatabaseSync(dbPath)
+  try {
+    const row = db
+      .prepare('select count(*) as count from delivery_batches where recovery_source_batch_id = ?')
+      .get(sourceBatchId) as { count: number }
+    return row.count
   } finally {
     db.close()
   }
@@ -598,7 +885,16 @@ describe('M2B sqlite store migration', () => {
     reopened.close()
 
     const db = new DatabaseSync(dbPath)
-    expect(db.prepare('select version from schema_migrations order by version').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }])
+    expect(db.prepare('select version from schema_migrations order by version').all()).toEqual([
+      { version: 1 },
+      { version: 2 },
+      { version: 3 },
+      { version: 4 },
+      { version: 5 },
+      { version: 6 },
+      { version: 7 },
+      { version: 8 },
+    ])
     expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
       { name: 'agent_dispatch_outbox' },
       { name: 'agent_failures' },
@@ -821,6 +1117,9 @@ describe('M2B sqlite store migration', () => {
         { version: 3 },
         { version: 4 },
         { version: 5 },
+        { version: 6 },
+        { version: 7 },
+        { version: 8 },
       ])
       expect(migrated.prepare('pragma table_info(flow_execution_baselines)').all()).toEqual(
         expect.arrayContaining([expect.objectContaining({ name: 'base_revision' })]),
@@ -1347,42 +1646,149 @@ describe('M4D delivery apply recovery persistence', () => {
     const fixture = await unknownDeliveryApply(dbPath, expected.outcome.toLowerCase())
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     const versionBefore = store.currentVersion(ADDRESS)
-    const receiptDigest = asDigest(`sha256:delivery-apply-${expected.outcome.toLowerCase()}`)
+    const receiptWithoutDigest = expected.outcome === 'SUCCEEDED'
+      ? {
+          applyAttemptId: fixture.applyAttemptId,
+          deliveryChangeSetId: fixture.deliveryChangeSetId,
+          verdict: 'SUCCEEDED' as const,
+          changedRelativePaths: ['a.txt'] as readonly string[],
+          targetFingerprint: asDigest('sha256:delivery-target-after-success'),
+        }
+      : {
+          applyAttemptId: fixture.applyAttemptId,
+          deliveryChangeSetId: fixture.deliveryChangeSetId,
+          verdict: 'FAILED_ROLLED_BACK' as const,
+          changedRelativePaths: [] as readonly string[],
+          safeCode: 'TARGET_BASELINE_DRIFT' as const,
+        }
+    const receipt: DeliveryApplyReceiptV1 = {
+      ...receiptWithoutDigest,
+      receiptDigest: deliveryApplyReceiptDigestV1(receiptWithoutDigest),
+    }
     const record = {
       applyAttemptId: fixture.applyAttemptId,
       outcome: expected.outcome,
-      receiptDigest,
-      ...(expected.outcome === 'SUCCEEDED'
-        ? { targetFingerprintAfter: asDigest('sha256:delivery-target-after-success') }
-        : {}),
+      receipt,
       now: '2026-08-18T00:00:02.000Z',
     }
+
+    const unboundWithoutDigest = {
+      ...receiptWithoutDigest,
+      deliveryChangeSetId: 'xhbdcs_unbound' as DeliveryChangeSetId,
+    }
+    const unboundReceipt = {
+      ...unboundWithoutDigest,
+      receiptDigest: deliveryApplyReceiptDigestV1(unboundWithoutDigest),
+    } as DeliveryApplyReceiptV1
+    expect(() => store.completeDeliveryApply(ADDRESS, { ...record, receipt: unboundReceipt }))
+      .toThrow('DELIVERY_APPLY_RECEIPT_BINDING_MISMATCH')
+    expect(store.currentVersion(ADDRESS)).toBe(versionBefore)
 
     expect(store.completeDeliveryApply(ADDRESS, record)).toEqual({
       applyAttemptId: fixture.applyAttemptId,
       outcome: expected.outcome,
       replayed: false,
     })
-    expect(store.readDeliveryApplyAttempt(fixture.applyAttemptId)).toMatchObject({
+    store.close()
+    const reopened = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(reopened.readDeliveryApplyAttempt(fixture.applyAttemptId)).toMatchObject({
       state: expected.outcome,
-      receiptDigest,
+      receiptDigest: receipt.receiptDigest,
+      changedRelativePaths: receipt.changedRelativePaths,
+      ...(receipt.verdict === 'FAILED_ROLLED_BACK' ? { safeCode: receipt.safeCode } : {}),
     })
-    expect(store.readDeliveryApplyOutbox(fixture.applyAttemptId)?.status).toBe(expected.outboxState)
-    expect(store.taskRun(fixture.taskRunId)?.status).toBe(expected.taskState)
+    expect(reopened.readDeliveryApplyOutbox(fixture.applyAttemptId)?.status).toBe(expected.outboxState)
+    expect(reopened.taskRun(fixture.taskRunId)?.status).toBe(expected.taskState)
     expect(deliveryBatchState(dbPath, fixture.batchId)).toBe(expected.batchState)
-    expect(store.currentVersion(ADDRESS)).toBe(versionBefore + 1)
+    expect(reopened.currentVersion(ADDRESS)).toBe(versionBefore + 1)
 
-    const terminalVersion = store.currentVersion(ADDRESS)
-    expect(store.completeDeliveryApply(ADDRESS, record)).toMatchObject({ replayed: true })
-    expect(store.currentVersion(ADDRESS)).toBe(terminalVersion)
+    const terminalVersion = reopened.currentVersion(ADDRESS)
+    expect(reopened.completeDeliveryApply(ADDRESS, record)).toMatchObject({ replayed: true })
+    expect(reopened.currentVersion(ADDRESS)).toBe(terminalVersion)
+    const reverseWithoutDigest = expected.outcome === 'SUCCEEDED'
+      ? {
+          applyAttemptId: fixture.applyAttemptId,
+          deliveryChangeSetId: fixture.deliveryChangeSetId,
+          verdict: 'FAILED_ROLLED_BACK' as const,
+          changedRelativePaths: [] as readonly string[],
+          safeCode: 'TARGET_WRITE_FAILED' as const,
+        }
+      : {
+          applyAttemptId: fixture.applyAttemptId,
+          deliveryChangeSetId: fixture.deliveryChangeSetId,
+          verdict: 'SUCCEEDED' as const,
+          changedRelativePaths: ['a.txt'] as readonly string[],
+          targetFingerprint: asDigest('sha256:delivery-target-after-reverse'),
+        }
+    const reverseReceipt: DeliveryApplyReceiptV1 = {
+      ...reverseWithoutDigest,
+      receiptDigest: deliveryApplyReceiptDigestV1(reverseWithoutDigest),
+    }
     expect(() =>
-      store.completeDeliveryApply(ADDRESS, {
+      reopened.completeDeliveryApply(ADDRESS, {
         ...record,
         outcome: expected.outcome === 'SUCCEEDED' ? 'FAILED' : 'SUCCEEDED',
-        receiptDigest: asDigest('sha256:delivery-apply-illegal-reverse'),
+        receipt: reverseReceipt,
       }),
     ).toThrow('DELIVERY_APPLY_IDEMPOTENCY_CONFLICT')
-    expect(store.currentVersion(ADDRESS)).toBe(terminalVersion)
+    expect(reopened.currentVersion(ADDRESS)).toBe(terminalVersion)
+    reopened.close()
+  })
+})
+
+describe('M4F delivery baseline recovery seal', () => {
+  it('atomically supersedes the failed approved batch, seals one recovered review batch, and replays after reopen', async () => {
+    const dbPath = await tempDb('delivery-recovery-seal.sqlite')
+    const fixture = await baselineDriftRecoveryFixture(dbPath, 'success')
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+
+    expect(store.sealRecoveredDeliveryCandidate(ADDRESS, fixture.record)).toEqual({
+      batchId: fixture.recoveredBatchId,
+      replayed: false,
+    })
+    store.close()
+
+    const reopened = new CollaborationHubSqliteStoreV1(dbPath)
+    expect(deliveryBatchState(dbPath, fixture.sourceBatchId)).toBe('SUPERSEDED')
+    expect(deliveryBatchState(dbPath, fixture.recoveredBatchId)).toBe('READY_FOR_REVIEW')
+    expect(recoveryBatchCount(dbPath, fixture.sourceBatchId)).toBe(1)
+    expect(reopened.readDeliveryProjection(fixture.recoveredBatchId)).toMatchObject({
+      batchId: fixture.recoveredBatchId,
+      state: 'READY_FOR_REVIEW',
+      recoverySourceBatchId: fixture.sourceBatchId,
+      deliveryChangeSetId: fixture.recoveredDeliveryChangeSetId,
+      gate: expect.objectContaining({ state: 'OPEN' }),
+    })
+    expect(reopened.readRecoveredDeliveryProjection(ADDRESS, fixture.sourceBatchId)).toMatchObject({
+      batchId: fixture.recoveredBatchId,
+      state: 'READY_FOR_REVIEW',
+    })
+    const version = reopened.currentVersion(ADDRESS)
+    expect(reopened.sealRecoveredDeliveryCandidate(ADDRESS, fixture.record)).toEqual({
+      batchId: fixture.recoveredBatchId,
+      replayed: true,
+    })
+    expect(reopened.currentVersion(ADDRESS)).toBe(version)
+    expect(recoveryBatchCount(dbPath, fixture.sourceBatchId)).toBe(1)
+    reopened.close()
+  })
+
+  it.each([
+    { name: 'wrong safe code', safeCode: 'TARGET_STATUS_DIRTY' as const, changedRelativePaths: [] as readonly string[] },
+    { name: 'non-empty changed paths', safeCode: 'TARGET_BASELINE_DRIFT' as const, changedRelativePaths: ['a.txt'] as readonly string[] },
+  ])('rejects $name before any partial recovery writes', async (input) => {
+    const dbPath = await tempDb(`delivery-recovery-reject-${input.name.replace(/\s+/g, '-')}.sqlite`)
+    const fixture = await baselineDriftRecoveryFixture(dbPath, input.name.replace(/\s+/g, '-'), input)
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    const counts = store.tableCounts()
+    const version = store.currentVersion(ADDRESS)
+
+    expect(() => store.sealRecoveredDeliveryCandidate(ADDRESS, fixture.record)).toThrow('DELIVERY_ILLEGAL_TRANSITION')
+    expect(store.tableCounts()).toEqual(counts)
+    expect(store.currentVersion(ADDRESS)).toBe(version)
+    expect(deliveryBatchState(dbPath, fixture.sourceBatchId)).toBe('APPROVED')
+    expect(deliveryBatchState(dbPath, fixture.recoveredBatchId)).toBeNull()
+    expect(recoveryBatchCount(dbPath, fixture.sourceBatchId)).toBe(0)
     store.close()
   })
 })
