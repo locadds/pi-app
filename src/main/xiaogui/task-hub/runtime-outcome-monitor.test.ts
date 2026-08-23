@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
+import type {
+  RuntimeEventV1,
+  RuntimeOutcomeV1,
+  RuntimePermissionDecisionV1,
+} from '@shared/xiaogui-agent-runtime'
 
 import type { AgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { createRuntimeOutcomeMonitorV1 } from './runtime-outcome-monitor'
@@ -68,6 +72,86 @@ describe('RuntimeOutcomeMonitorV1', () => {
     })
   })
 
+  it('drains permission events and applies the supplied one-time decision before inspecting', async () => {
+    const permissionEvent = requestedPermission('runtime-1')
+    const stream = vi.fn(async function* (_runtimeSessionId: string, afterSequence: number) {
+      if (afterSequence < permissionEvent.sequence) yield permissionEvent
+    })
+    const permission = vi.fn(async () => ({ accepted: true }))
+    const inspect = vi.fn<AgentRuntimeHostV1['inspect']>().mockResolvedValue(succeeded('runtime-1'))
+    const callback = vi.fn()
+    const decision = allowOnce(permissionEvent)
+    const decisionFactory = vi.fn(async () => decision)
+    const runtime = { stream, permission, inspect } as unknown as AgentRuntimeHostV1
+    const monitor = createRuntimeOutcomeMonitorV1({ runtime, sleep: async () => undefined })
+
+    monitor.watch('runtime-1', callback, decisionFactory)
+    await eventually(() => expect(callback).toHaveBeenCalledOnce())
+    await monitor.close()
+
+    expect(decisionFactory).toHaveBeenCalledWith(permissionEvent)
+    expect(permission).toHaveBeenCalledWith(decision)
+    expect(permission.mock.invocationCallOrder[0]).toBeLessThan(inspect.mock.invocationCallOrder[0])
+    expect(callback).toHaveBeenCalledWith(succeeded('runtime-1'))
+  })
+
+  it('fails closed and interrupts when a permission decision is rejected', async () => {
+    const permissionEvent = requestedPermission('runtime-1')
+    const stream = vi.fn(async function* () {
+      yield permissionEvent
+    })
+    const permission = vi.fn(async () => ({ accepted: false, reasonCode: 'PERMISSION_SCOPE_MISMATCH' }))
+    const interrupt = vi.fn(async () => ({ requested: true as const }))
+    const inspect = vi.fn<AgentRuntimeHostV1['inspect']>()
+    const callback = vi.fn()
+    const runtime = { stream, permission, interrupt, inspect } as unknown as AgentRuntimeHostV1
+    const monitor = createRuntimeOutcomeMonitorV1({ runtime, sleep: async () => undefined })
+
+    monitor.watch('runtime-1', callback, () => allowOnce(permissionEvent))
+    await eventually(() => expect(callback).toHaveBeenCalledOnce())
+    await monitor.close()
+
+    expect(interrupt).toHaveBeenCalledWith(expect.objectContaining({
+      runtimeSessionId: 'runtime-1',
+      reason: 'PERMISSION_SCOPE_MISMATCH',
+    }))
+    expect(inspect).not.toHaveBeenCalled()
+    expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+      state: 'OUTCOME_UNKNOWN',
+      runtimeSessionId: 'runtime-1',
+      reasonCode: 'PERMISSION_SCOPE_MISMATCH',
+    }))
+  })
+
+  it('turns a stream-level OUTCOME_UNKNOWN event into an immediate fail-closed callback', async () => {
+    const stream = vi.fn(async function* () {
+      yield {
+        type: 'OUTCOME_UNKNOWN' as const,
+        runtimeSessionId: 'runtime-1',
+        sequence: 1,
+        reasonCode: 'EVENT_SEQUENCE_GAP',
+      }
+    })
+    const interrupt = vi.fn(async () => ({ requested: true as const }))
+    const inspect = vi.fn<AgentRuntimeHostV1['inspect']>()
+    const callback = vi.fn()
+    const runtime = { stream, interrupt, inspect } as unknown as AgentRuntimeHostV1
+    const monitor = createRuntimeOutcomeMonitorV1({ runtime, sleep: async () => undefined })
+
+    monitor.watch('runtime-1', callback, () => {
+      throw new Error('no permission decision expected')
+    })
+    await eventually(() => expect(callback).toHaveBeenCalledOnce())
+    await monitor.close()
+
+    expect(inspect).not.toHaveBeenCalled()
+    expect(interrupt).toHaveBeenCalledWith(expect.objectContaining({ reason: 'EVENT_SEQUENCE_GAP' }))
+    expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+      state: 'OUTCOME_UNKNOWN',
+      reasonCode: 'EVENT_SEQUENCE_GAP',
+    }))
+  })
+
   it('cancels pending polling on close and ignores watches after close', async () => {
     const inspect = vi.fn<AgentRuntimeHostV1['inspect']>().mockResolvedValue(running('runtime-1'))
     const sleepStarted = deferred<void>()
@@ -132,6 +216,44 @@ function running(runtimeSessionId: string): RuntimeOutcomeV1 {
 
 function succeeded(runtimeSessionId: string): RuntimeOutcomeV1 {
   return { state: 'SUCCEEDED', runtimeSessionId, receiptDigest: 'sha256:succeeded', candidateDigest: 'sha256:candidate' }
+}
+
+function requestedPermission(runtimeSessionId: string): Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> {
+  return {
+    type: 'PERMISSION_REQUESTED',
+    permissionRequestId: 'write-perm-1',
+    runtimeSessionId,
+    sequence: 1,
+    challengeDigest: 'sha256:challenge',
+    decisionRequired: 'ALLOW_ONCE_OR_DENY',
+    permissionPurpose: 'FILE_WRITE',
+    scope: {
+      projectId: 'project-1',
+      sessionKey: 'session-1',
+      sessionMode: 'CODING',
+      flowId: 'flow-1',
+      taskRunId: 'task-run-1',
+      attemptId: 'attempt-1',
+      attemptDigest: 'sha256:attempt',
+      workspaceReceiptId: 'workspace-receipt-1',
+      workspaceReceiptDigest: 'sha256:workspace-receipt',
+    },
+  }
+}
+
+function allowOnce(
+  event: Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }>,
+): RuntimePermissionDecisionV1 {
+  return {
+    type: 'ALLOW_ONCE',
+    permissionRequestId: event.permissionRequestId,
+    challengeDigest: event.challengeDigest,
+    decisionRequestId: 'decision-1',
+    scope: event.scope,
+    runtimeSessionId: event.runtimeSessionId,
+    proofId: 'proof-1',
+    proofDigest: 'sha256:proof',
+  }
 }
 
 function deferred<T>() {

@@ -26,6 +26,10 @@ import type {
 } from './attempt-workspace'
 import { PRIVATE_RUNTIME_PAYLOAD_MAX_BYTES } from './private-payload-vault'
 import type { RuntimeOutcomeMonitorV1 } from './runtime-outcome-monitor'
+import type {
+  RuntimePermissionDecisionFactoryV1,
+  RuntimePermissionRequestEventV1,
+} from './runtime-outcome-monitor'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
 
@@ -278,11 +282,13 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     if (operation.phase === 'SCHEDULED') {
       if (!operation.attempt_id) return executionError('INTERNAL')
       try {
+        const stagedProjection = await this.options.application.observeM2B(addressOf(operation))
+        if (!stagedProjection.ok) throw new Error('TASK_EXECUTION_PLAN_CONTEXT_MISSING')
         this.options.inputStage.stageAttemptInput({
           attemptId: operation.attempt_id,
           projectId: operation.project_id,
           sessionKey: operation.session_key,
-          promptBytes: privatePrompt(operation),
+          promptBytes: composePrivateExecutionPrompt(operation, stagedProjection.value),
           grants: privateGrants(operation),
         })
       } catch {
@@ -480,8 +486,49 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
         await this.recordRuntimeTerminal(address, flowId, taskRunId, attemptId, outcome)
       }
       await this.settleOperationFromAuthority(operation.operation_id)
-    })
+    }, this.runtimePermissionDecisionFactory(operation, current, runtimeSessionId))
     return true
+  }
+
+  private runtimePermissionDecisionFactory(
+    operation: ExecutionSagaRowV1,
+    current: XiaoguiTaskExecutionStartResultV1,
+    runtimeSessionId: string,
+  ): RuntimePermissionDecisionFactoryV1 {
+    return (event) => {
+      assertPermissionEventScope(operation, current, runtimeSessionId, event)
+      const binding = {
+        domain: 'xiaogui.task-execution.scope-approval-proof.v1',
+        operationId: operation.operation_id,
+        inputDigest: operation.input_digest,
+        runtimeSessionId,
+        permissionRequestId: event.permissionRequestId,
+        challengeDigest: event.challengeDigest,
+        scope: event.scope,
+      }
+      const decisionKey = hashHex(JSON.stringify(binding))
+      if (event.permissionPurpose !== 'APPROVED_FILE_TOOL' && event.permissionPurpose !== 'FILE_WRITE') {
+        return {
+          type: 'DENY',
+          permissionRequestId: event.permissionRequestId,
+          challengeDigest: event.challengeDigest,
+          decisionRequestId: `xhbrpd_${decisionKey.slice(0, 48)}`,
+          scope: event.scope,
+          runtimeSessionId,
+          reasonCode: 'UNAPPROVED_PERMISSION_PURPOSE',
+        }
+      }
+      return {
+        type: 'ALLOW_ONCE',
+        permissionRequestId: event.permissionRequestId,
+        challengeDigest: event.challengeDigest,
+        decisionRequestId: `xhbrpd_${decisionKey.slice(0, 48)}`,
+        scope: event.scope,
+        runtimeSessionId,
+        proofId: `xhbrpp_${decisionKey.slice(0, 48)}`,
+        proofDigest: digestJson(binding),
+      }
+    }
   }
 
   private async recordRuntimeTerminal(
@@ -818,9 +865,74 @@ function privatePrompt(operation: ExecutionSagaRowV1): Buffer {
   return Buffer.from(operation.prompt_blob)
 }
 
+function composePrivateExecutionPrompt(
+  operation: ExecutionSagaRowV1,
+  projection: SessionCollaborationProjectionM2BV1,
+): Buffer {
+  if (
+    projection.authoritativeMode !== 'CODING' ||
+    projection.activeFlow?.flowId !== operation.flow_id ||
+    !operation.task_run_id
+  ) throw new Error('TASK_EXECUTION_PLAN_CONTEXT_MISSING')
+
+  const taskRun = projection.taskRuns.find((candidate) => candidate.taskRunId === operation.task_run_id)
+  const taskSpec = taskRun
+    ? projection.taskSpecs.find((candidate) => candidate.taskSpecId === taskRun.taskSpecId)
+    : undefined
+  if (!taskRun || !taskSpec) throw new Error('TASK_EXECUTION_PLAN_CONTEXT_MISSING')
+
+  const userPrompt = privatePrompt(operation).toString('utf8')
+  const grants = privateGrants(operation)
+  const approvedFiles = grants.map((grant) => (
+    `- ${grant.operation === 'MODIFY' ? '修改' : '新建'}：${JSON.stringify(grant.relativePath)}`
+  ))
+  const prompt = [
+    '你正在小规的受控 CODING 执行环境中完成一个已经由用户批准的任务。',
+    '',
+    `总目标：${projection.activeFlow.objective}`,
+    `当前任务：${taskSpec.title}`,
+    ...(taskSpec.summary ? [`任务说明：${taskSpec.summary}`] : []),
+    `用户补充指令：${userPrompt}`,
+    '',
+    '已批准的文件范围（相对路径以当前任务工作树根目录为基准）：',
+    ...approvedFiles,
+    '',
+    '执行要求：',
+    '1. 请实际完成文件修改，不要只回复说明、建议或计划。',
+    '2. 读取文件时使用 fs/read_text_file；写入文件时使用 fs/write_text_file。',
+    '3. 只能修改或新建上面列出的文件，不得删除文件，也不得操作清单外文件。',
+    '4. 不得调用终端命令，不得启动子智能体。',
+    '5. 保持现有项目结构和未要求改变的行为；完成写入后结束本次任务。',
+  ].join('\n')
+  const bytes = Buffer.from(prompt, 'utf8')
+  if (bytes.length > PRIVATE_RUNTIME_PAYLOAD_MAX_BYTES) {
+    throw new Error('TASK_EXECUTION_PRIVATE_INPUT_TOO_LARGE')
+  }
+  return bytes
+}
+
 function privateGrants(operation: ExecutionSagaRowV1): readonly AttemptFileGrantV1[] {
   if (!operation.grants_json) throw new Error('TASK_EXECUTION_PRIVATE_INPUT_MISSING')
   return JSON.parse(operation.grants_json) as readonly AttemptFileGrantV1[]
+}
+
+function assertPermissionEventScope(
+  operation: ExecutionSagaRowV1,
+  current: XiaoguiTaskExecutionStartResultV1,
+  runtimeSessionId: string,
+  event: RuntimePermissionRequestEventV1,
+): void {
+  if (
+    event.runtimeSessionId !== runtimeSessionId ||
+    event.scope.projectId !== operation.project_id ||
+    event.scope.sessionKey !== operation.session_key ||
+    event.scope.sessionMode !== 'CODING' ||
+    event.scope.flowId !== operation.flow_id ||
+    event.scope.taskRunId !== current.taskRun.taskRunId ||
+    event.scope.attemptId !== current.attempt.attemptId ||
+    (current.attempt.workspaceReceiptId !== undefined &&
+      event.scope.workspaceReceiptId !== current.attempt.workspaceReceiptId)
+  ) throw new Error('RUNTIME_PERMISSION_SCOPE_MISMATCH')
 }
 
 function mapSystemError(code: HubSystemErrorCodeM2BV1): XiaoguiTaskExecutionErrorCodeV1 {
