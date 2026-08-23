@@ -1187,7 +1187,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     }
   })
 
-  it('binds Kimi partial file permissions to cached scope metadata and denies execute tools', async () => {
+  it('binds Kimi early partial file permissions to cached tool kind and denies execute tools', async () => {
     const root = workspace({ 'a.txt': 'before' })
     const factory = new FakeTransportFactory(async (transport, sessionId) => {
       transport.sessionUpdate({
@@ -1195,11 +1195,9 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
         update: {
           sessionUpdate: 'tool_call',
           toolCallId: 'tool-1',
-          title: 'Editing a.txt',
+          title: 'Edit',
           kind: 'edit',
-          status: 'in_progress',
-          rawInput: { path: 'a.txt', old_string: 'before', new_string: 'after' },
-          locations: [{ path: join(root, 'a.txt') }],
+          status: 'pending',
         },
       })
       const permission = transport.requestPermission({
@@ -1215,6 +1213,18 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
         ],
       })
       await permission
+      transport.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'tool-1',
+          title: 'Editing a.txt',
+          kind: 'edit',
+          status: 'in_progress',
+          rawInput: { path: 'a.txt', old_string: 'before', new_string: 'after' },
+          locations: [{ path: join(root, 'a.txt') }],
+        },
+      })
       await new Promise<void>(() => {})
     })
     const adapter = new KimiAcpRuntimeAdapterV1({

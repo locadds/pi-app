@@ -771,18 +771,28 @@ function isApprovedVendorFileToolRequest(
   state: RuntimeSessionState,
   params: AcpRequestPermissionParamsV1,
 ): boolean {
-  // Kimi 0.34 sends request_permission with a partial ToolCallUpdate. Bind it
-  // to the earlier full session/update by toolCallId before trusting the path.
+  // Kimi 0.34 asks permission after announcing the tool kind, but before it
+  // publishes rawInput/locations. Bind the request to that toolCallId and use
+  // the permission diff as the path-bearing evidence. Actual writes are still
+  // checked independently by the workspace policy.
   if (params.sessionId !== state.vendorSessionId) return false
   const toolCallId = safeToolCallId(params.toolCall?.toolCallId)
   const cached = toolCallId ? state.vendorToolCalls.get(toolCallId) : undefined
   const kind = normalizedToolKind(cached?.kind)
   if (!cached || kind !== 'edit') return false
   try {
+    const targetDigest = permissionDiffTargetDigest(state.policy, params.toolCall?.content)
+    if (!targetDigest) return false
+
     const rawPath = fileToolInputPath(cached.rawInput)
-    if (!rawPath) return false
-    const targetDigest = state.policy.approvedTargetDigest(rawPath)
-    if (!allLocationsMatchTarget(state.policy, cached.locations, targetDigest)) return false
+    if (cached.rawInput !== undefined && !rawPath) return false
+    if (rawPath && state.policy.approvedTargetDigest(rawPath) !== targetDigest) return false
+    if (
+      cached.locations !== undefined &&
+      !allLocationsMatchTarget(state.policy, cached.locations, targetDigest)
+    ) {
+      return false
+    }
 
     const requestKind = params.toolCall?.kind
     if (requestKind !== undefined && normalizedToolKind(requestKind) !== kind) return false
@@ -792,7 +802,7 @@ function isApprovedVendorFileToolRequest(
     ) {
       return false
     }
-    return allPermissionDiffsMatchTarget(state.policy, params.toolCall?.content, targetDigest)
+    return true
   } catch {
     return false
   }
@@ -849,19 +859,26 @@ function allLocationsMatchTarget(
   ))
 }
 
-function allPermissionDiffsMatchTarget(
+function permissionDiffTargetDigest(
   policy: PreparedKimiAcpWorkspacePolicyV1,
   content: unknown,
-  targetDigest: string,
-): boolean {
-  if (!Array.isArray(content)) return false
-  const diffs = content.filter((entry): entry is { type: 'diff'; path: string } => (
+): string | null {
+  if (!Array.isArray(content)) return null
+  const diffEntries = content.filter((entry) => (
     typeof entry === 'object' &&
     entry !== null &&
-    (entry as { type?: unknown }).type === 'diff' &&
-    typeof (entry as { path?: unknown }).path === 'string'
+    (entry as { type?: unknown }).type === 'diff'
   ))
-  return diffs.length > 0 && diffs.every((diff) => policy.approvedTargetDigest(diff.path) === targetDigest)
+  if (diffEntries.length === 0) return null
+  let targetDigest: string | null = null
+  for (const entry of diffEntries) {
+    const path = (entry as { path?: unknown }).path
+    if (typeof path !== 'string' || path.length === 0 || path !== path.trim()) return null
+    const digest = policy.approvedTargetDigest(path)
+    if (targetDigest && targetDigest !== digest) return null
+    targetDigest = digest
+  }
+  return targetDigest
 }
 
 function releaseTransport(state: RuntimeSessionState): Promise<void> {
