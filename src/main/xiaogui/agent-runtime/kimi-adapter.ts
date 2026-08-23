@@ -516,7 +516,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     const optionIds = options.map((option) => option.optionId)
     const optionsValid = optionIds.every((optionId) => typeof optionId === 'string' && optionId.length > 0 && optionId === optionId.trim()) && new Set(optionIds).size === optionIds.length
     const allowOnce = options.filter((option) => option.kind === 'allow_once')
-    if (!optionsValid || allowOnce.length !== 1) {
+    if (!optionsValid || allowOnce.length !== 1 || !isApprovedVendorFileToolRequest(state, params)) {
       return Promise.resolve({ outcome: { outcome: 'cancelled' } })
     }
     const rejectOnce = options.find((option) => option.kind === 'reject_once')
@@ -529,6 +529,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       scope: state.request.scope,
       challengeDigest,
       decisionRequired: 'ALLOW_ONCE_OR_DENY',
+      permissionPurpose: 'APPROVED_FILE_TOOL',
     })
     return new Promise((resolve) => {
       state.pendingPermissions.set(permissionRequestId, { kind: 'vendor', challengeDigest, allowOnceOptionId: allowOnce[0].optionId, rejectOptionId: rejectOnce?.optionId, resolve, consumed: false })
@@ -553,6 +554,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       scope: state.request.scope,
       challengeDigest,
       decisionRequired: 'ALLOW_ONCE_OR_DENY',
+      permissionPurpose: 'FILE_WRITE',
     })
     return new Promise((resolve) => {
       state.pendingPermissions.set(permissionRequestId, { kind: 'write', challengeDigest, resolve, consumed: false })
@@ -748,6 +750,28 @@ function clearPendingPermissions(state: RuntimeSessionState): void {
     pending.consumed = true
   }
   state.pendingPermissions.clear()
+}
+
+function isApprovedVendorFileToolRequest(
+  state: RuntimeSessionState,
+  params: AcpRequestPermissionParamsV1,
+): boolean {
+  const kind = typeof params.toolCall?.kind === 'string'
+    ? params.toolCall.kind.trim().toLowerCase()
+    : ''
+  const locations = Array.isArray(params.toolCall?.locations)
+    ? params.toolCall.locations
+    : []
+  if (!['read', 'edit', 'write'].includes(kind) || locations.length === 0) return false
+  try {
+    for (const location of locations) {
+      if (typeof location?.path !== 'string') return false
+      state.policy.readTextFile(location.path)
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
 function releaseTransport(state: RuntimeSessionState): Promise<void> {

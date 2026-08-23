@@ -13,7 +13,7 @@ import type {
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { XiaoguiTaskExecutionStartRequestV1 } from '@shared/xiaogui-task-execution'
-import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
+import type { RuntimeEventV1, RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
 
 import type { CollaborationHubApplicationV1 } from './application'
 import {
@@ -24,7 +24,11 @@ import type {
   AttemptFileScopeResolverV1,
   UserApprovedFileSelectionV1,
 } from './attempt-workspace'
-import type { RuntimeOutcomeCallbackV1, RuntimeOutcomeMonitorV1 } from './runtime-outcome-monitor'
+import type {
+  RuntimeOutcomeCallbackV1,
+  RuntimeOutcomeMonitorV1,
+  RuntimePermissionDecisionFactoryV1,
+} from './runtime-outcome-monitor'
 import type {
   TaskVerificationCoordinatorResultV1,
   TaskVerificationCoordinatorV1,
@@ -61,6 +65,40 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     })
     expect(events).toEqual(['resolve', 'schedule', 'stage', 'prepare', 'dispatch'])
     expect(hub.scheduleCount()).toBe(1)
+    await orchestrator.close()
+  })
+
+  it('stages a self-contained private prompt with plan context, approved files, and controlled-tool instructions', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    const staged: Parameters<TaskExecutionInputStageV1['stageAttemptInput']>[0][] = []
+    const inputStage: TaskExecutionInputStageV1 = {
+      stageAttemptInput(input) {
+        events.push('stage')
+        staged.push(input)
+        return {}
+      },
+    }
+    const orchestrator = await createOrchestrator(
+      hub.application,
+      events,
+      undefined,
+      undefined,
+      undefined,
+      inputStage,
+    )
+
+    await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true })
+
+    const prompt = Buffer.from(staged[0].promptBytes).toString('utf8')
+    expect(prompt).toContain('总目标：执行任务')
+    expect(prompt).toContain('当前任务：当前任务')
+    expect(prompt).toContain('任务说明：只调整受控文件中的实现')
+    expect(prompt).toContain('用户补充指令：完成当前任务')
+    expect(prompt).toContain('- 修改："src/task.ts"')
+    expect(prompt).toContain('fs/read_text_file')
+    expect(prompt).toContain('fs/write_text_file')
+    expect(prompt).toContain('不得调用终端命令')
     await orchestrator.close()
   })
 
@@ -154,6 +192,43 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     await orchestrator.close()
   })
 
+  it('binds deterministic ALLOW_ONCE decisions to the confirmed execution scope', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    const monitor = fakeRuntimeMonitor()
+    const coordinator = fakeVerificationCoordinator()
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
+      runtimeMonitor: monitor,
+      verificationCoordinator: coordinator,
+    })
+
+    await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true })
+    const permission = permissionRequestedEvent()
+    const first = await monitor.decide('runtime-1', permission)
+    const replay = await monitor.decide('runtime-1', permission)
+
+    expect(first).toEqual(replay)
+    expect(first).toMatchObject({
+      type: 'ALLOW_ONCE',
+      permissionRequestId: permission.permissionRequestId,
+      challengeDigest: permission.challengeDigest,
+      runtimeSessionId: 'runtime-1',
+      scope: permission.scope,
+    })
+    expect(first).toHaveProperty('proofDigest', expect.stringMatching(/^sha256:[0-9a-f]{64}$/))
+
+    const { permissionPurpose: _permissionPurpose, ...unclassified } = permission
+    expect(await monitor.decide('runtime-1', unclassified)).toMatchObject({
+      type: 'DENY',
+      reasonCode: 'UNAPPROVED_PERMISSION_PURPOSE',
+    })
+    await expect(Promise.resolve().then(() => monitor.decide('runtime-1', {
+      ...permission,
+      scope: { ...permission.scope, workspaceReceiptId: 'workspace-receipt-other' },
+    }))).rejects.toThrow('RUNTIME_PERMISSION_SCOPE_MISMATCH')
+    await orchestrator.close()
+  })
+
   it('writes CANDIDATE_AUDIT_FAILED when verification cannot capture the task candidate', async () => {
     const events: string[] = []
     const hub = fakeHub(events)
@@ -223,6 +298,7 @@ async function createOrchestrator(
     runtimeMonitor?: RuntimeOutcomeMonitorV1
     verificationCoordinator?: TaskVerificationCoordinatorV1
   },
+  inputStageOverride?: TaskExecutionInputStageV1,
 ): Promise<XiaoguiTaskExecutionOrchestratorV1> {
   const fileScopeResolver = resolver ?? {
     resolveApprovedFiles: vi.fn(async (
@@ -235,7 +311,7 @@ async function createOrchestrator(
         : selection)
     }),
   }
-  const inputStage: TaskExecutionInputStageV1 = {
+  const inputStage: TaskExecutionInputStageV1 = inputStageOverride ?? {
     stageAttemptInput: vi.fn(() => {
       events.push('stage')
       return {}
@@ -255,20 +331,31 @@ async function createOrchestrator(
 
 function fakeRuntimeMonitor(): RuntimeOutcomeMonitorV1 & {
   emit(runtimeSessionId: string, outcome: RuntimeOutcomeV1): Promise<void>
+  decide(
+    runtimeSessionId: string,
+    event: Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }>,
+  ): ReturnType<RuntimePermissionDecisionFactoryV1>
   watched(): string[]
 } {
   const callbacks = new Map<string, RuntimeOutcomeCallbackV1>()
+  const decisionFactories = new Map<string, RuntimePermissionDecisionFactoryV1>()
   const watched: string[] = []
   return {
-    watch(runtimeSessionId, callback) {
+    watch(runtimeSessionId, callback, decisionFactory) {
       if (callbacks.has(runtimeSessionId)) return
       watched.push(runtimeSessionId)
       callbacks.set(runtimeSessionId, callback)
+      if (decisionFactory) decisionFactories.set(runtimeSessionId, decisionFactory)
     },
     async emit(runtimeSessionId, outcome) {
       const callback = callbacks.get(runtimeSessionId)
       if (!callback) throw new Error('runtime session was not watched')
       await callback(outcome)
+    },
+    decide(runtimeSessionId, event) {
+      const decisionFactory = decisionFactories.get(runtimeSessionId)
+      if (!decisionFactory) throw new Error('runtime session has no permission decision factory')
+      return decisionFactory(event)
     },
     watched: () => [...watched],
     close: vi.fn(async () => undefined),
@@ -418,6 +505,7 @@ function fakeHub(events: string[]) {
       taskSpecId: 'xhbts_task' as never,
       taskKey: 'task',
       title: '当前任务',
+      summary: '只调整受控文件中的实现',
       dependsOn: [],
       unavailableReason: 'AGENT_DISABLED_M2A',
     }],
@@ -437,6 +525,7 @@ function fakeHub(events: string[]) {
       taskRunId: TASK_RUN_ID,
       status: attemptStatus,
       ...(runtimeSession ? { runtimeSessionId: runtimeSession } : {}),
+      workspaceReceiptId: 'workspace-receipt-1' as never,
     }] : [],
     history: [],
     availableActions: attemptStatus ? ['flow.cancel'] : ['flow.cancel', 'execution.next.confirm'],
@@ -506,6 +595,29 @@ function fakeHub(events: string[]) {
     scheduleCount: () => schedules,
     runtimeSessionId: () => runtimeSession,
     systemCommands: () => executeSystem.mock.calls.map(([command]) => command),
+  }
+}
+
+function permissionRequestedEvent(): Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> {
+  return {
+    type: 'PERMISSION_REQUESTED',
+    permissionRequestId: 'write-perm-1',
+    runtimeSessionId: 'runtime-1',
+    sequence: 2,
+    challengeDigest: 'sha256:challenge',
+    decisionRequired: 'ALLOW_ONCE_OR_DENY',
+    permissionPurpose: 'FILE_WRITE',
+    scope: {
+      projectId: ADDRESS.projectId,
+      sessionKey: ADDRESS.sessionKey,
+      sessionMode: 'CODING',
+      flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID,
+      attemptDigest: 'sha256:attempt',
+      workspaceReceiptId: 'workspace-receipt-1',
+      workspaceReceiptDigest: 'sha256:workspace-receipt',
+    },
   }
 }
 

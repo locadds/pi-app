@@ -1206,7 +1206,10 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     const [permissionEvent] = (await collect(adapter.stream(created.runtimeSessionId, 0))).filter(
       (event): event is Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> => event.type === 'PERMISSION_REQUESTED',
     )
-    expect(permissionEvent).toMatchObject({ decisionRequired: 'ALLOW_ONCE_OR_DENY' })
+    expect(permissionEvent).toMatchObject({
+      decisionRequired: 'ALLOW_ONCE_OR_DENY',
+      permissionPurpose: 'APPROVED_FILE_TOOL',
+    })
     const decision = {
       type: 'ALLOW_ONCE',
       permissionRequestId: permissionEvent.permissionRequestId,

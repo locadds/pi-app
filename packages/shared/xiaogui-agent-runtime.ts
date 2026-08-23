@@ -191,6 +191,7 @@ export interface RuntimePermissionRequestV1 {
   sequence: number
   challengeDigest: RuntimeDigestV1 | string
   decisionRequired: 'ALLOW_ONCE_OR_DENY'
+  permissionPurpose?: 'APPROVED_FILE_TOOL' | 'FILE_WRITE'
 }
 
 export interface RuntimeSendRequestV1 {

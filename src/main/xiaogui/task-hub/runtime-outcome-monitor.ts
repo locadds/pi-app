@@ -1,4 +1,10 @@
-import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
+import { createHash } from 'node:crypto'
+
+import type {
+  RuntimeEventV1,
+  RuntimeOutcomeV1,
+  RuntimePermissionDecisionV1,
+} from '@shared/xiaogui-agent-runtime'
 
 import type { AgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 
@@ -6,9 +12,17 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000
 const CLOSED = Symbol('runtime-outcome-monitor-closed')
 
 export type RuntimeOutcomeCallbackV1 = (outcome: RuntimeOutcomeV1) => void | Promise<void>
+export type RuntimePermissionRequestEventV1 = Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }>
+export type RuntimePermissionDecisionFactoryV1 = (
+  event: RuntimePermissionRequestEventV1,
+) => RuntimePermissionDecisionV1 | Promise<RuntimePermissionDecisionV1>
 
 export interface RuntimeOutcomeMonitorV1 {
-  watch(runtimeSessionId: string, callback: RuntimeOutcomeCallbackV1): void
+  watch(
+    runtimeSessionId: string,
+    callback: RuntimeOutcomeCallbackV1,
+    permissionDecisionFactory?: RuntimePermissionDecisionFactoryV1,
+  ): void
   close(): Promise<void>
 }
 
@@ -31,11 +45,19 @@ export function createRuntimeOutcomeMonitorV1(options: RuntimeOutcomeMonitorOpti
   })
 
   return {
-    watch(runtimeSessionId, callback) {
+    watch(runtimeSessionId, callback, permissionDecisionFactory) {
       if (closed || watchedSessions.has(runtimeSessionId)) return
       watchedSessions.add(runtimeSessionId)
 
-      const poll = pollUntilSettled(options.runtime, runtimeSessionId, callback, sleep, intervalMs, closedSignal).finally(() => {
+      const poll = pollUntilSettled(
+        options.runtime,
+        runtimeSessionId,
+        callback,
+        permissionDecisionFactory,
+        sleep,
+        intervalMs,
+        closedSignal,
+      ).finally(() => {
         activePolls.delete(runtimeSessionId)
       })
       activePolls.set(runtimeSessionId, poll)
@@ -55,11 +77,27 @@ async function pollUntilSettled(
   runtime: AgentRuntimeHostV1,
   runtimeSessionId: string,
   callback: RuntimeOutcomeCallbackV1,
+  permissionDecisionFactory: RuntimePermissionDecisionFactoryV1 | undefined,
   sleep: (delayMs: number) => Promise<void>,
   intervalMs: number,
   closedSignal: Promise<void>,
 ): Promise<void> {
+  let afterSequence = 0
   while (true) {
+    if (permissionDecisionFactory) {
+      const drained = await raceWithClose(
+        drainPermissionEvents(runtime, runtimeSessionId, afterSequence, permissionDecisionFactory),
+        closedSignal,
+      )
+      if (drained === CLOSED) return
+      afterSequence = drained.afterSequence
+      if (!drained.ok) {
+        await interruptAfterPermissionFailure(runtime, runtimeSessionId, drained.reasonCode)
+        await containCallback(callback, permissionFailure(runtimeSessionId, drained.reasonCode))
+        return
+      }
+    }
+
     const inspected = await raceWithClose(inspect(runtime, runtimeSessionId), closedSignal)
     if (inspected === CLOSED) return
 
@@ -69,12 +107,75 @@ async function pollUntilSettled(
       continue
     }
 
-    try {
-      await callback(inspected)
-    } catch {
-      // A consumer failure must not escape into Electron's main process.
-    }
+    await containCallback(callback, inspected)
     return
+  }
+}
+
+async function drainPermissionEvents(
+  runtime: AgentRuntimeHostV1,
+  runtimeSessionId: string,
+  afterSequence: number,
+  decisionFactory: RuntimePermissionDecisionFactoryV1,
+): Promise<{ ok: true; afterSequence: number } | { ok: false; afterSequence: number; reasonCode: string }> {
+  let cursor = afterSequence
+  try {
+    for await (const event of runtime.stream(runtimeSessionId, afterSequence)) {
+      cursor = Math.max(cursor, event.sequence)
+      if (event.type === 'OUTCOME_UNKNOWN') {
+        return { ok: false, afterSequence: cursor, reasonCode: event.reasonCode }
+      }
+      if (event.type !== 'PERMISSION_REQUESTED') continue
+      const decision = await decisionFactory(event)
+      const result = await runtime.permission(decision)
+      if (!result.accepted) {
+        return {
+          ok: false,
+          afterSequence: cursor,
+          reasonCode: result.reasonCode ?? 'RUNTIME_PERMISSION_REJECTED',
+        }
+      }
+    }
+    return { ok: true, afterSequence: cursor }
+  } catch {
+    return { ok: false, afterSequence: cursor, reasonCode: 'RUNTIME_PERMISSION_BROKER_ERROR' }
+  }
+}
+
+async function interruptAfterPermissionFailure(
+  runtime: AgentRuntimeHostV1,
+  runtimeSessionId: string,
+  reasonCode: string,
+): Promise<void> {
+  try {
+    await runtime.interrupt({
+      requestId: `xhbrmi_${hashHex(`permission-failure:${runtimeSessionId}`).slice(0, 48)}`,
+      runtimeSessionId,
+      reason: reasonCode,
+    })
+  } catch {
+    // Best-effort cleanup; the authoritative outcome remains OUTCOME_UNKNOWN.
+  }
+}
+
+function permissionFailure(runtimeSessionId: string, reasonCode: string): RuntimeOutcomeV1 {
+  return {
+    state: 'OUTCOME_UNKNOWN',
+    runtimeSessionId,
+    inspectHandleDigest: `sha256:${hashHex(JSON.stringify({
+      domain: 'xiaogui.runtime-permission-failure.v1',
+      runtimeSessionId,
+      reasonCode,
+    }))}`,
+    reasonCode,
+  }
+}
+
+async function containCallback(callback: RuntimeOutcomeCallbackV1, outcome: RuntimeOutcomeV1): Promise<void> {
+  try {
+    await callback(outcome)
+  } catch {
+    // A consumer failure must not escape into Electron's main process.
   }
 }
 
@@ -109,4 +210,8 @@ function validInterval(value: number | undefined): value is number {
 
 function defaultSleep(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+function hashHex(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
 }
