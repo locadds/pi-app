@@ -1,10 +1,12 @@
 import { utilityProcess, app, type BrowserWindow } from 'electron'
 import type { AppEvent } from '@shared/app-events'
 import type { WorkerResponsePayload } from '@shared/worker-rpc-types'
-import type {
-  WorkerHostToolOutcomeV1,
-  WorkerHostToolRequestV1,
-  WorkerHostToolResponseV1,
+import {
+  XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1,
+  XIAOGUI_WORK_DOCX_METHOD_V1,
+  type WorkerHostToolOutcomeV1,
+  type WorkerHostToolRequestV1,
+  type WorkerHostToolResponseV1,
 } from '@shared/worker-host-tools'
 import { windowsPathToWsl } from '@shared/wsl-path'
 import { resolveActiveSdk } from './sdk-loader'
@@ -28,6 +30,13 @@ import { buildXiaoguiWorkerEnv } from './xiaogui/worker-env'
 
 export const extensionUiDialogSource = new Map<string, WorkerSlot>()
 const hostToolAbortControllers = new WeakMap<WorkerSlot, Map<string, AbortController>>()
+
+function requiresForegroundHostTool(request: WorkerHostToolRequestV1): boolean {
+  return (
+    request.method === XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 ||
+    request.method === XIAOGUI_WORK_DOCX_METHOD_V1
+  )
+}
 
 function hostToolControllersFor(slot: WorkerSlot): Map<string, AbortController> {
   let controllers = hostToolAbortControllers.get(slot)
@@ -250,6 +259,20 @@ export function attachWorkerHandlers(
         })
         return
       }
+      const request = data as unknown as WorkerHostToolRequestV1
+      if (requiresForegroundHostTool(request)) {
+        const foregroundPoolKey = opts.getForegroundPoolKey?.() ?? null
+        if (!foregroundPoolKey || foregroundPoolKey !== slot.poolKey) {
+          respond({
+            ok: false,
+            error: {
+              code: 'HOST_TOOL_NOT_FOREGROUND',
+              message: '请切回发起这项操作的对话后重试',
+            },
+          })
+          return
+        }
+      }
       const controllers = hostToolControllersFor(slot)
       if (controllers.has(requestId)) {
         respond({
@@ -261,7 +284,7 @@ export function attachWorkerHandlers(
       const controller = new AbortController()
       controllers.set(requestId, controller)
       void handler({
-        request: data as unknown as WorkerHostToolRequestV1,
+        request,
         fromCwd: slot.cwd,
         fromPoolKey: slot.poolKey,
         sessionFile: slot.sessionFile,

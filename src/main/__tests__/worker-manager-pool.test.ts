@@ -228,6 +228,7 @@ describe('Worker host-tool bridge', () => {
       onAppEvent: vi.fn(),
       onHostToolRequest,
       onSlotExit: vi.fn(),
+      getForegroundPoolKey: () => '/sessions/other.jsonl',
     })
 
     transport.emitMessage({
@@ -336,6 +337,7 @@ describe('Worker host-tool bridge', () => {
       onAppEvent: vi.fn(),
       onHostToolRequest,
       onSlotExit: vi.fn(),
+      getForegroundPoolKey: () => slot.poolKey,
     })
 
     transport.emitMessage({
@@ -364,6 +366,107 @@ describe('Worker host-tool bridge', () => {
         },
       }),
     )
+  })
+
+  it.each([
+    {
+      label: 'PDF',
+      method: 'xiaogui.work.document-snapshot.v1',
+      payload: {
+        action: 'READ_PDF',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
+        toolCallId: 'call-pdf',
+      },
+    },
+    {
+      label: 'DOCX',
+      method: 'xiaogui.work.docx.v1',
+      payload: {
+        action: 'PREPARE',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
+        toolCallId: 'call-docx',
+      },
+    },
+  ])('rejects a background $label host-tool before invoking the main-process handler', async ({ method, payload }) => {
+    const transport = makeFakeTransport()
+    const slot = fakeSlot('/sessions/background.jsonl', '/workspace', true)
+    slot.worker = transport
+    const onHostToolRequest = vi.fn(async () => ({
+      ok: false as const,
+      error: { code: 'HOST_TOOL_FAILED' as const, message: 'unexpected handler call' },
+    }))
+    attachWorkerHandlers(slot, transport, {
+      mainWindow: null,
+      onAppEvent: vi.fn(),
+      onHostToolRequest,
+      onSlotExit: vi.fn(),
+      getForegroundPoolKey: () => '/sessions/foreground.jsonl',
+    })
+
+    transport.emitMessage({
+      type: 'host-tool-request',
+      requestId: `host-tool-background-${method}`,
+      method,
+      payload,
+    } as WorkerResponsePayload)
+
+    await vi.waitFor(() =>
+      expect(transport.postMessage).toHaveBeenCalledWith({
+        type: 'host-tool-response',
+        requestId: `host-tool-background-${method}`,
+        outcome: {
+          ok: false,
+          error: {
+            code: 'HOST_TOOL_NOT_FOREGROUND',
+            message: '请切回发起这项操作的对话后重试',
+          },
+        },
+      }),
+    )
+    expect(onHostToolRequest).not.toHaveBeenCalled()
+  })
+
+  it('routes a foreground PDF host-tool once and returns the result to its worker', async () => {
+    const transport = makeFakeTransport()
+    const slot = fakeSlot('/sessions/foreground.jsonl', '/workspace', true)
+    slot.worker = transport
+    const onHostToolRequest = vi.fn(async () => ({
+      ok: true as const,
+      value: { kind: 'XIAOGUI_WORK_DOCUMENT_SELECTION_CANCELLED' as const },
+    }))
+    attachWorkerHandlers(slot, transport, {
+      mainWindow: null,
+      onAppEvent: vi.fn(),
+      onHostToolRequest,
+      onSlotExit: vi.fn(),
+      getForegroundPoolKey: () => slot.poolKey,
+    })
+
+    transport.emitMessage({
+      type: 'host-tool-request',
+      requestId: 'host-tool-foreground-pdf',
+      method: 'xiaogui.work.document-snapshot.v1',
+      payload: {
+        action: 'READ_PDF',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
+        toolCallId: 'call-pdf',
+      },
+    } as WorkerResponsePayload)
+
+    await vi.waitFor(() => {
+      expect(onHostToolRequest).toHaveBeenCalledOnce()
+      expect(transport.postMessage).toHaveBeenCalledWith({
+        type: 'host-tool-response',
+        requestId: 'host-tool-foreground-pdf',
+        outcome: {
+          ok: true,
+          value: { kind: 'XIAOGUI_WORK_DOCUMENT_SELECTION_CANCELLED' },
+        },
+      })
+    })
   })
 })
 
