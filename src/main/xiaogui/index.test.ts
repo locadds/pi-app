@@ -8,14 +8,18 @@ const mocks = vi.hoisted(() => ({
   shutdownSidecar: vi.fn(),
   collaborationApplication: { kind: 'collaboration-application' },
   workDocxService: { kind: 'work-docx-service' },
+  workDocumentSnapshotService: { kind: 'work-document-snapshot-service' },
   collaborationHandler: vi.fn(),
   workDocxHandler: vi.fn(),
+  workDocumentSnapshotHandler: vi.fn(),
   routedHandler: vi.fn(),
   createCollaborationHandler: vi.fn(),
   createWorkDocxHandler: vi.fn(),
+  createWorkDocumentSnapshotHandler: vi.fn(),
   createRouter: vi.fn(),
   getCollaborationApplication: vi.fn(),
   getWorkDocxService: vi.fn(),
+  getWorkDocumentSnapshotService: vi.fn(),
   setHostToolRequestHandler: vi.fn(),
   scopeResolver: { kind: 'scope-resolver' },
 }))
@@ -45,6 +49,14 @@ vi.mock('./task-hub/worker-tool', () => ({
 
 vi.mock('./work-docx-worker-tool', () => ({
   createXiaoguiWorkDocxWorkerToolHandlerV1: mocks.createWorkDocxHandler,
+}))
+
+vi.mock('./work-document-snapshot-composition', () => ({
+  getDefaultWorkDocumentSnapshotServiceV1: mocks.getWorkDocumentSnapshotService,
+}))
+
+vi.mock('./work-document-snapshot-worker-tool', () => ({
+  createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1: mocks.createWorkDocumentSnapshotHandler,
 }))
 
 vi.mock('./worker-host-tool-router', () => ({
@@ -92,11 +104,13 @@ describe('xiaogui shutdown lifecycle', () => {
 })
 
 describe('xiaogui Worker host-tool wiring', () => {
-  it('routes collaboration and WORK DOCX through the single WorkerManager handler', () => {
+  it('routes collaboration, WORK DOCX, and WORK document snapshot through the single WorkerManager handler', () => {
     mocks.getCollaborationApplication.mockReturnValue(mocks.collaborationApplication)
     mocks.getWorkDocxService.mockReturnValue(mocks.workDocxService)
+    mocks.getWorkDocumentSnapshotService.mockReturnValue(mocks.workDocumentSnapshotService)
     mocks.createCollaborationHandler.mockReturnValue(mocks.collaborationHandler)
     mocks.createWorkDocxHandler.mockReturnValue(mocks.workDocxHandler)
+    mocks.createWorkDocumentSnapshotHandler.mockReturnValue(mocks.workDocumentSnapshotHandler)
     mocks.createRouter.mockReturnValue(mocks.routedHandler)
 
     initXiaogui()
@@ -109,9 +123,14 @@ describe('xiaogui Worker host-tool wiring', () => {
       getService: mocks.getWorkDocxService,
       scopeResolver: mocks.scopeResolver,
     })
+    expect(mocks.createWorkDocumentSnapshotHandler).toHaveBeenCalledWith({
+      getService: mocks.getWorkDocumentSnapshotService,
+      scopeResolver: mocks.scopeResolver,
+    })
     expect(mocks.createRouter).toHaveBeenCalledWith({
       collaboration: mocks.collaborationHandler,
       workDocx: mocks.workDocxHandler,
+      workDocumentSnapshot: mocks.workDocumentSnapshotHandler,
     })
     expect(mocks.setHostToolRequestHandler).toHaveBeenCalledWith(mocks.routedHandler)
   })
