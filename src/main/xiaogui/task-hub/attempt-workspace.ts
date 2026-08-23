@@ -705,7 +705,8 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
       if (grant.operation === 'MODIFY') {
         const baselineBytes = await gitBytes(lease.projectRoot, [
           'cat-file',
-          'blob',
+          '--filters',
+          `--path=${grant.relativePath}`,
           `${lease.baseRevision}:${grant.relativePath}`,
         ])
         if (!grant.baselineDigest || digestBytes(baselineBytes) !== grant.baselineDigest) {

@@ -337,6 +337,44 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     registry.close()
   })
 
+  it('compares MODIFY baselines using checkout-filtered bytes', async () => {
+    const projectRoot = await gitRepo()
+    const target = join(projectRoot, 'src', 'existing.txt')
+    writeFileSync(target, 'before\nsecond line\n')
+    git(projectRoot, ['add', 'src/existing.txt'])
+    git(projectRoot, ['commit', '-m', 'add multiline fixture'])
+    git(projectRoot, ['config', 'core.autocrlf', 'true'])
+    await rm(target)
+    git(projectRoot, ['checkout', '--', 'src/existing.txt'])
+    const baselineBytes = readFileSync(target)
+    expect(baselineBytes.includes(Buffer.from('\r\n'))).toBe(true)
+
+    projectRoots.set(PROJECT_ID, projectRoot)
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    const [grant] = await workspace.resolveApprovedFiles(PROJECT_ID, [
+      { operation: 'MODIFY', relativePath: 'src/existing.txt' },
+    ])
+    const prepared = await workspace.prepare(
+      prepareRequest({
+        projectRoot,
+        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+        grants: [grant],
+      }),
+    )
+    writeFileSync(join(prepared.handle.rootPath, 'src', 'existing.txt'), 'after\r\nsecond line\r\n')
+
+    await expect(workspace.captureTaskPatch(prepared.handle.attemptId)).resolves.toMatchObject({
+      changedFiles: [
+        {
+          operation: 'MODIFY',
+          relativePath: 'src/existing.txt',
+          baselineDigest: digestBytes(baselineBytes),
+        },
+      ],
+    })
+    registry.close()
+  })
+
   it('replays the same request and rejects manifest or source-worktree drift', async () => {
     const projectRoot = await gitRepo()
     const managedRoot = await tempRoot('xiaogui-attempt-managed-')
