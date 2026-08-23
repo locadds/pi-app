@@ -127,6 +127,11 @@ export const IPC_INVOKE_CHANNELS = [
   // 小规 Agent 集成（src/main/xiaogui/ipc-handlers.ts 注册；渲染进程经
   // ipcClient.invoke('xiaogui.*') 调用，模式切换 / DESIGN Tool 调用 / sidecar 状态）
   'ipc:xiaogui.guard.status',
+  'ipc:xiaogui.delivery.apply.reconcile',
+  'ipc:xiaogui.delivery.apply.retry',
+  'ipc:xiaogui.delivery.batch.return',
+  'ipc:xiaogui.delivery.gate.approve',
+  'ipc:xiaogui.delivery.selection.submit',
   'ipc:xiaogui.hub.observe',
   'ipc:xiaogui.hub.execution.start',
   'ipc:xiaogui.hub.perform',
