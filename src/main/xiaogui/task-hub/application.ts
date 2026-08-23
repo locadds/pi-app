@@ -37,6 +37,7 @@ import type {
   WorkspacePreparedReceiptM2BV1,
   WorkspaceReceiptId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { canonicalizePlanDraft, payloadDigest, type CanonicalPlanDraftV1 } from './digest'
 import { hubError } from './errors'
@@ -129,16 +130,23 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
           },
         }
       }
-      const projection = this.getStore().readProjectionM2B(address) ?? {
+      const store = this.getStore()
+      const projection = store.readProjectionM2B(address) ?? {
         ...emptyProjection(address, scope.value.mode),
         version: 'm2b.v1' as const,
         taskRuns: [],
         attempts: [],
         availableActions: ['flow.start.with_draft'],
       }
+      const activeDelivery = projection.activeFlow
+        ? store.readActiveDelivery(address, projection.activeFlow.flowId)
+        : null
       return {
         ok: true,
-        value: withAuthoritativeM2BActions(projection, this.options.agentRuntime !== undefined),
+        value: withAuthoritativeM2BActions(
+          withAuthoritativeDeliveryActions(projection, activeDelivery),
+          this.options.agentRuntime !== undefined,
+        ),
       }
     } catch {
       return hubError('INTERNAL')
@@ -1137,6 +1145,46 @@ function withAuthoritativeM2BActions(
   return executable
     ? { ...projection, availableActions: [...baseActions, 'execution.next.confirm'] }
     : { ...projection, availableActions: baseActions }
+}
+
+const DELIVERY_ACTIONS = new Set([
+  'delivery.selection.submit',
+  'delivery.gate.approve',
+  'delivery.gate.reject',
+  'apply.reconcile.request',
+  'apply.retry.request',
+])
+
+function withAuthoritativeDeliveryActions(
+  projection: SessionCollaborationProjectionM2BV1,
+  activeDelivery: DeliveryBatchProjectionV1 | null,
+): SessionCollaborationProjectionM2BV1 {
+  const availableActions = projection.availableActions.filter((action) => !DELIVERY_ACTIONS.has(action))
+  const base = { ...projection, activeDelivery, availableActions }
+  if (projection.authoritativeMode !== 'CODING' || projection.activeFlow?.status !== 'PLAN_ACTIVE') return base
+
+  if (!activeDelivery) {
+    return projection.taskRuns.some((run) => run.status === 'VERIFIED')
+      ? { ...base, availableActions: [...availableActions, 'delivery.selection.submit'] }
+      : base
+  }
+
+  if (activeDelivery.state === 'READY_FOR_REVIEW' && activeDelivery.gate?.state === 'OPEN') {
+    return {
+      ...base,
+      availableActions: [...availableActions, 'delivery.gate.approve', 'delivery.gate.reject'],
+    }
+  }
+  if (activeDelivery.state === 'OUTCOME_UNKNOWN' || activeDelivery.applyAttempt?.state === 'OUTCOME_UNKNOWN') {
+    return { ...base, availableActions: [...availableActions, 'apply.reconcile.request'] }
+  }
+  if (
+    activeDelivery.state === 'APPROVED' &&
+    (activeDelivery.applyAttempt?.state === 'FAILED' || activeDelivery.applyAttempt?.state === 'FAILED_ROLLED_BACK')
+  ) {
+    return { ...base, availableActions: [...availableActions, 'apply.retry.request'] }
+  }
+  return base
 }
 
 function matchesCapturedFlowBaseline(

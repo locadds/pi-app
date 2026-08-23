@@ -16,10 +16,12 @@ import type {
   InitialPlanDraftInputV1,
   M2ADisabledIntentTypeV1,
   PlanRevisionId,
+  SessionCollaborationProjectionM2BV1,
   TaskRunId,
   UserIntentRequestV1,
   WorkspaceReceiptId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
@@ -293,6 +295,84 @@ describe('M2A collaboration hub application', () => {
       })
       app.close()
     }
+  })
+
+  it('projects authoritative delivery selection and review actions from the shared store', async () => {
+    const taskRunId = 'xhbtr_verified' as TaskRunId
+    const flowId = 'xhbf_delivery' as FlowId
+    const projection = {
+      kind: 'SESSION_COLLABORATION_PROJECTION',
+      version: 'm2b.v1',
+      address: ADDRESS,
+      sessionVersion: 3,
+      sessionMode: 'CODING',
+      authoritativeMode: 'CODING',
+      reserved: false,
+      activeFlow: {
+        flowId,
+        status: 'PLAN_ACTIVE',
+        activeRevisionId: 'xhbr_delivery' as PlanRevisionId,
+        objective: '交付已验证任务',
+      },
+      activeRevision: null,
+      taskSpecs: [],
+      taskRuns: [{
+        taskRunId,
+        taskSpecId: 'xhbts_delivery' as never,
+        taskKey: 'delivery',
+        status: 'VERIFIED',
+      }],
+      attempts: [],
+      history: [],
+      availableActions: ['flow.cancel'],
+    } satisfies SessionCollaborationProjectionM2BV1
+    let activeDelivery: DeliveryBatchProjectionV1 | null = null
+    const store = {
+      readProjectionM2B: () => projection,
+      readActiveDelivery: () => activeDelivery,
+      close: vi.fn(),
+    } as unknown as CollaborationHubSqliteStoreV1
+    const app = createCollaborationHubApplicationV1({
+      lookup: lookup('CODING'),
+      storeFactory: () => store,
+    })
+
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        activeDelivery: null,
+        availableActions: ['flow.cancel', 'delivery.selection.submit'],
+      },
+    })
+
+    activeDelivery = {
+      batchId: 'xhbd_delivery' as never,
+      flowId,
+      state: 'READY_FOR_REVIEW',
+      selectionDigest: `sha256:${'1'.repeat(64)}` as never,
+      selectedTaskRunIds: [taskRunId],
+      taskChangeSetIds: ['xhbcs_delivery' as never],
+      targetFingerprint: `sha256:${'2'.repeat(64)}` as never,
+      gate: {
+        gateId: 'xhbdg_delivery' as never,
+        batchId: 'xhbd_delivery' as never,
+        subject: {
+          deliveryChangeSetId: 'xhbdcs_delivery' as never,
+          version: 1,
+          digest: `sha256:${'3'.repeat(64)}` as never,
+        },
+        state: 'OPEN',
+        createdAt: '2026-08-23T00:00:00.000Z' as never,
+      },
+    }
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        activeDelivery,
+        availableActions: ['flow.cancel', 'delivery.gate.approve', 'delivery.gate.reject'],
+      },
+    })
+    app.close()
   })
 
   it('keeps DESIGN reserved in memory and does not create a SQLite file', async () => {
