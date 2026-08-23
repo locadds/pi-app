@@ -21,6 +21,15 @@ import {
 } from '../worker-pool-config'
 import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
 
+vi.mock('electron', () => ({
+  app: {
+    getPath: vi.fn(() => process.cwd()),
+  },
+  utilityProcess: {
+    fork: vi.fn(),
+  },
+}))
+
 vi.mock('../config-store', () => ({
   configStore: {
     get: vi.fn(() => undefined),
@@ -51,6 +60,7 @@ function fakeSlot(poolKey: string, cwd: string, active: boolean, lastFg = Date.n
     cwd,
     runtime: { mode: 'host', distro: null },
     sessionFile: poolKey.startsWith('ws:') ? null : poolKey,
+    sessionId: 'session-1',
     worker: {} as WorkerSlot['worker'],
     pendingRequests: new Map(),
     requestCounter: 0,
@@ -197,6 +207,105 @@ describe('WorkerManager active turns', () => {
 
     internals.pool.get('/s/running')!.agentTurnActive = false
     expect(manager.hasActiveTurns).toBe(false)
+  })
+})
+
+describe('Worker host-tool bridge', () => {
+  it('returns the main-process outcome to the exact worker request', async () => {
+    const transport = makeFakeTransport()
+    const slot = fakeSlot('/sessions/current.jsonl', '/workspace', true)
+    slot.worker = transport
+    const onHostToolRequest = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        kind: 'XIAOGUI_COLLABORATION_DRAFT_CREATED' as const,
+        taskCount: 2,
+        sessionVersion: 1,
+      },
+    }))
+    attachWorkerHandlers(slot, transport, {
+      mainWindow: null,
+      onAppEvent: vi.fn(),
+      onHostToolRequest,
+      onSlotExit: vi.fn(),
+    })
+
+    transport.emitMessage({
+      type: 'host-tool-request',
+      requestId: 'host-tool-1',
+      method: 'xiaogui.collaboration.create-plan-draft',
+      payload: {
+        toolCallId: 'call-1',
+        sourceSessionId: 'session-1',
+        draft: {
+          objective: '完成周报',
+          tasks: [{ taskKey: 'draft', title: '起草周报' }],
+        },
+      },
+    })
+
+    await vi.waitFor(() => expect(onHostToolRequest).toHaveBeenCalledOnce())
+    expect(onHostToolRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromCwd: '/workspace',
+        fromPoolKey: '/sessions/current.jsonl',
+        sessionFile: '/sessions/current.jsonl',
+        fromSessionId: 'session-1',
+      }),
+    )
+    expect(transport.postMessage).toHaveBeenCalledWith({
+      type: 'host-tool-response',
+      requestId: 'host-tool-1',
+      outcome: {
+        ok: true,
+        value: {
+          kind: 'XIAOGUI_COLLABORATION_DRAFT_CREATED',
+          taskCount: 2,
+          sessionVersion: 1,
+        },
+      },
+    })
+  })
+
+  it('synchronizes a reused worker session before routing its first host-tool request', async () => {
+    const transport = makeFakeTransport()
+    const slot = fakeSlot('/sessions/previous.jsonl', '/workspace', false)
+    slot.worker = transport
+    const onHostToolRequest = vi.fn(async () => ({
+      ok: false as const,
+      error: { code: 'ACTIVE_FLOW_EXISTS' as const, message: 'already active' },
+    }))
+    attachWorkerHandlers(slot, transport, {
+      mainWindow: null,
+      onAppEvent: vi.fn(),
+      onHostToolRequest,
+      onSlotExit: vi.fn(),
+    })
+
+    transport.emitMessage({
+      type: 'newSession-done',
+      requestId: 'lifecycle-1',
+      sessionId: 'session-2',
+      sessionFile: '/sessions/next.jsonl',
+    })
+    transport.emitMessage({
+      type: 'host-tool-request',
+      requestId: 'host-tool-2',
+      method: 'xiaogui.collaboration.create-plan-draft',
+      payload: {
+        toolCallId: 'call-2',
+        sourceSessionId: 'session-2',
+        draft: { objective: '下一会话计划', tasks: [{ taskKey: 'next', title: '下一步' }] },
+      },
+    })
+
+    await vi.waitFor(() => expect(onHostToolRequest).toHaveBeenCalledOnce())
+    expect(onHostToolRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionFile: expect.stringContaining('next.jsonl'),
+        fromSessionId: 'session-2',
+      }),
+    )
   })
 })
 

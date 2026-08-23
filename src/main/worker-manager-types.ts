@@ -1,5 +1,6 @@
 import type { AppEvent } from '@shared/app-events'
 import type { WorkerResponsePayload } from '@shared/worker-rpc-types'
+import type { WorkerHostToolOutcomeV1, WorkerHostToolRequestV1 } from '@shared/worker-host-tools'
 import type { WorkerTransport } from './worker-transport'
 
 export type WorkerInitResult = {
@@ -16,6 +17,8 @@ export type WorkerSlot = {
   runtime: { mode: 'host' | 'wsl'; distro: string | null }
   /** Bound session file when known; null for workspace-only slots */
   sessionFile: string | null
+  /** Worker 当前实际绑定的 Pi session id；与 sessionFile 一起随生命周期回包同步更新。 */
+  sessionId: string | null
   worker: WorkerTransport
   pendingRequests: Map<
     string,
@@ -42,3 +45,15 @@ export type WorkerAppEventForward = {
   sessionFile: string | null
   agentTurnActive: boolean
 }
+
+export type WorkerHostToolRequestForward = {
+  request: WorkerHostToolRequestV1
+  fromCwd: string
+  fromPoolKey: string
+  sessionFile: string | null
+  fromSessionId: string | null
+}
+
+export type WorkerHostToolRequestHandler = (
+  payload: WorkerHostToolRequestForward,
+) => Promise<WorkerHostToolOutcomeV1>

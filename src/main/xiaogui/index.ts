@@ -16,6 +16,10 @@ import {
   registerCollaborationHubHandlers,
 } from './task-hub/ipc'
 import { registerWorkDocxHandlers } from './work-docx-ipc'
+import { workerManager } from '../worker-manager'
+import { sessionScopeResolverV1 } from './scope-service'
+import { createXiaoguiWorkerToolHandlerV1 } from './task-hub/worker-tool'
+import { getDefaultCollaborationHubApplication } from './task-hub/ipc'
 
 let initialized = false
 
@@ -26,6 +30,12 @@ export function initXiaogui(): void {
   registerXiaoguiHandlers()
   registerCollaborationHubHandlers()
   registerWorkDocxHandlers()
+  workerManager.setHostToolRequestHandler(
+    createXiaoguiWorkerToolHandlerV1({
+      application: getDefaultCollaborationHubApplication(),
+      scopeResolver: sessionScopeResolverV1,
+    }),
+  )
 
   console.log('[xiaogui] 集成层已初始化（sidecar 惰性启动：首次 tool.invoke 时 spawn）')
 }

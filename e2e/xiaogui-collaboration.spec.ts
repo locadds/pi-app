@@ -7,7 +7,7 @@ import { launchApp } from './helpers'
 
 /**
  * UI-M3A-01 协作计划最小前端真实 Electron 场景：
- * WORK 建稿并批准、刷新后审批恢复、CODING 只读任务、DESIGN reserved、
+ * WORK/CODING 自然语言入口、草稿批准、刷新后审批恢复、DESIGN 保留、
  * 切换会话不串投影、取消 Flow。
  * 会话 fixture 与 canonical scope 建立方式复用 m1-canonical-scope.spec.ts 的做法。
  */
@@ -56,6 +56,30 @@ async function openSessionAndPanel(page: Page, title: string) {
   await expect(activeTab).toBeInViewport()
 }
 
+interface HubAddress {
+  projectId: string
+  sessionKey: string
+}
+
+async function seedDraft(
+  page: Page,
+  address: HubAddress,
+  requestId: string,
+  objective: string,
+  tasks: Array<{ taskKey: string; title: string; dependsOn?: string[] }>,
+) {
+  const result = await invoke<{ ok: boolean }>(page, 'ipc:xiaogui.hub.perform', {
+    contractVersion: 'm2a.v1',
+    address,
+    request: {
+      requestId,
+      expectedSessionVersion: 0,
+      intent: { type: 'flow.start.with_draft', draft: { objective, tasks } },
+    },
+  })
+  expect(result.ok).toBe(true)
+}
+
 test.describe('协作计划 M2A 真实 Electron 场景', () => {
   test('WORK 建稿/刷新后审批/取消，CODING 只读，DESIGN reserved，切换不串投影', async ({}, testInfo) => {
     const root = mkdtempSync(join(tmpdir(), 'xiaogui-m3a-electron-'))
@@ -95,6 +119,16 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
         key: design.file,
         mode: 'DESIGN',
       })
+      const listed = await invoke<{
+        sessions: Array<{ sessionFile: string; canonicalScope?: HubAddress }>
+      }>(page, 'ipc:session.list', { workspaceId: workspace, refresh: true })
+      const addressFor = (sessionFile: string): HubAddress => {
+        const address = listed.sessions.find((session) => session.sessionFile === sessionFile)?.canonicalScope
+        if (!address) throw new Error(`missing canonical scope for ${sessionFile}`)
+        return address
+      }
+      const workAddress = addressFor(work.file)
+      const codingAddress = addressFor(coding.file)
       await invoke(page, 'ipc:settings.set', {
         key: 'recentProjects',
         value: [workspace],
@@ -110,16 +144,14 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
       await expect(projectButton).toHaveCount(1)
       await projectButton.click()
 
-      // ── 1. WORK 建稿 ──────────────────────────────────────────────
+      // ── 1. WORK 自然语言入口；测试夹具从主进程种入待批准草稿 ────
       await openSessionAndPanel(page, work.title)
-      await page.getByLabel('协作计划目标').fill('完成季度总结')
-      await page.getByLabel('任务 1 标识').fill('collect')
-      await page.getByLabel('任务 1 标题').fill('收集数据')
-      await page.getByRole('button', { name: '+ 添加任务' }).click()
-      await page.getByLabel('任务 2 标识').fill('write')
-      await page.getByLabel('任务 2 标题').fill('撰写报告')
-      await page.getByLabel('任务 2 依赖').fill('collect')
-      await page.getByRole('button', { name: '建立草稿' }).click()
+      await expect(page.getByTestId('hub-natural-language-entry')).toBeVisible()
+      await seedDraft(page, workAddress, 'e2e-work-draft', '完成季度总结', [
+        { taskKey: 'collect', title: '收集数据' },
+        { taskKey: 'write', title: '撰写报告', dependsOn: ['collect'] },
+      ])
+      await page.getByRole('button', { name: '刷新协作计划' }).click()
       const awaiting = page.getByTestId('hub-awaiting-approval')
       await expect(awaiting).toBeVisible()
       await expect(awaiting).toContainText('完成季度总结')
@@ -144,17 +176,17 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
 
       // ── 3. 切换会话不串投影：CODING 会话无活动 Flow ──────────────
       await openSessionAndPanel(page, coding.title)
-      await expect(page.getByTestId('hub-draft-form')).toBeVisible({
+      await expect(page.getByTestId('hub-natural-language-entry')).toBeVisible({
         timeout: 30_000,
       })
       await expect(page.getByTestId('hub-active-plan')).toHaveCount(0)
       await expect(page.getByTestId('hub-awaiting-approval')).toHaveCount(0)
 
-      // ── 4. CODING 建稿并批准 → 只读任务视图 ──────────────────────
-      await page.getByLabel('协作计划目标').fill('修复登录缺陷')
-      await page.getByLabel('任务 1 标识').fill('fix')
-      await page.getByLabel('任务 1 标题').fill('定位并修复')
-      await page.getByRole('button', { name: '建立草稿' }).click()
+      // ── 4. CODING 夹具种入草稿并批准 → 只读任务视图 ──────────────
+      await seedDraft(page, codingAddress, 'e2e-coding-draft', '修复登录缺陷', [
+        { taskKey: 'fix', title: '定位并修复' },
+      ])
+      await page.getByRole('button', { name: '刷新协作计划' }).click()
       await page.getByRole('button', { name: '批准计划' }).click()
       const codingActive = page.getByTestId('hub-active-plan')
       await expect(codingActive).toBeVisible()
@@ -163,7 +195,7 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
       await expect(codingActive).not.toContainText('运行中')
       await expect(codingActive).not.toContainText('已完成')
 
-      // ── 5. DESIGN reserved：无任何动作按钮 ───────────────────────
+      // ── 5. DESIGN 保留：无任何动作按钮 ───────────────────────────
       await openSessionAndPanel(page, design.title)
       await expect(page.getByTestId('hub-design-reserved')).toBeVisible({
         timeout: 30_000,
@@ -180,7 +212,7 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
       await page.getByRole('button', { name: '取消协作计划' }).click()
       await page.getByLabel('取消原因').fill('需求变更，暂停协作')
       await page.getByRole('button', { name: '确认取消' }).click()
-      await expect(page.getByTestId('hub-draft-form')).toBeVisible()
+      await expect(page.getByTestId('hub-natural-language-entry')).toBeVisible()
       await expect(page.getByText('已取消').first()).toBeVisible()
 
       const evidenceDir = process.env.M3A_E2E_EVIDENCE_DIR || testInfo.outputDir

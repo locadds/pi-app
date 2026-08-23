@@ -1,9 +1,18 @@
 import { utilityProcess, app, type BrowserWindow } from 'electron'
 import type { AppEvent } from '@shared/app-events'
 import type { WorkerResponsePayload } from '@shared/worker-rpc-types'
+import type {
+  WorkerHostToolOutcomeV1,
+  WorkerHostToolRequestV1,
+  WorkerHostToolResponseV1,
+} from '@shared/worker-host-tools'
 import { windowsPathToWsl } from '@shared/wsl-path'
 import { resolveActiveSdk } from './sdk-loader'
-import type { WorkerInitResult, WorkerSlot } from './worker-manager-types'
+import type {
+  WorkerHostToolRequestHandler,
+  WorkerInitResult,
+  WorkerSlot,
+} from './worker-manager-types'
 import { readMaxSessionWorkers, minutesToIdleDelayMs, readSessionWorkerIdleTimeoutMinutes } from './worker-pool-config'
 import { normalizeSessionKey, workspacePoolKey } from './worker-session-key'
 import {
@@ -57,6 +66,7 @@ function createSlot(
     cwd,
     runtime,
     sessionFile,
+    sessionId: null,
     worker,
     pendingRequests: new Map(),
     requestCounter: 0,
@@ -77,6 +87,24 @@ function safeWrite(msg: string): void {
     process.stderr.write(msg + '\n')
   } catch {
     /* ignore */
+  }
+}
+
+const SESSION_IDENTITY_RESPONSE_TYPES = new Set([
+  'init-done',
+  'newSession-done',
+  'loadSession-done',
+  'fork-done',
+  'clone-done',
+])
+
+function synchronizeSlotSessionIdentity(slot: WorkerSlot, data: WorkerResponsePayload): void {
+  if (!SESSION_IDENTITY_RESPONSE_TYPES.has(String(data.type ?? ''))) return
+  if (typeof data.sessionId === 'string' && data.sessionId.trim()) {
+    slot.sessionId = data.sessionId.trim()
+  }
+  if (typeof data.sessionFile === 'string' && data.sessionFile.trim()) {
+    slot.sessionFile = normalizeSessionKey(data.sessionFile)
   }
 }
 
@@ -130,6 +158,7 @@ export function attachWorkerHandlers(
       sessionFile: string | null
       agentTurnActive: boolean
     }) => void
+    onHostToolRequest?: WorkerHostToolRequestHandler
     onSlotExit: (slot: WorkerSlot, code: number) => void
     /** When set, only forward extension UI from this pool key (X1). */
     getForegroundPoolKey?: () => string | null
@@ -151,6 +180,9 @@ export function attachWorkerHandlers(
   transport.onMessage((data) => {
     if (slot.worker !== transport) return
     if (!data || typeof data !== 'object') return
+    // 必须在 pending promise 的微任务续体前同步更新；WSL 一个 chunk 可连续带来
+    // 生命周期回包和新会话的首个 host-tool 请求。
+    synchronizeSlotSessionIdentity(slot, data)
 
     if (data.type === 'app-event') {
       const ev = data.event as AppEvent
@@ -169,6 +201,46 @@ export function attachWorkerHandlers(
         sessionFile: slot.sessionFile,
         agentTurnActive: slot.agentTurnActive,
       })
+    }
+
+    if (data.type === 'host-tool-request') {
+      const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+      if (!requestId) return
+      const respond = (outcome: WorkerHostToolOutcomeV1): void => {
+        if (slot.worker !== transport || slot.stopping) return
+        try {
+          transport.postMessage({
+            type: 'host-tool-response',
+            requestId,
+            outcome,
+          } satisfies WorkerHostToolResponseV1)
+        } catch {
+          safeWrite('[WorkerManager] Dropped host-tool response after worker transport closed')
+        }
+      }
+      const handler = opts.onHostToolRequest
+      if (!handler) {
+        respond({
+          ok: false,
+          error: { code: 'HOST_TOOL_UNAVAILABLE', message: '小规主进程能力尚未就绪' },
+        })
+        return
+      }
+      void handler({
+        request: data as unknown as WorkerHostToolRequestV1,
+        fromCwd: slot.cwd,
+        fromPoolKey: slot.poolKey,
+        sessionFile: slot.sessionFile,
+        fromSessionId: slot.sessionId,
+      })
+        .then(respond)
+        .catch(() =>
+          respond({
+            ok: false,
+            error: { code: 'HOST_TOOL_FAILED', message: '协作计划创建失败，请稍后重试' },
+          }),
+        )
+      return
     }
 
     const win = opts.mainWindow

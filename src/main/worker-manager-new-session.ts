@@ -8,7 +8,11 @@ import {
   remapSessionWorkerSlot,
   slotRequest,
 } from './worker-manager-pool'
-import type { WorkerAppEventForward, WorkerSlot } from './worker-manager-types'
+import type {
+  WorkerAppEventForward,
+  WorkerHostToolRequestHandler,
+  WorkerSlot,
+} from './worker-manager-types'
 import { readMaxSessionWorkers } from './worker-pool-config'
 import { normalizeSessionKey, workspacePoolKey } from './worker-session-key'
 
@@ -20,6 +24,7 @@ export type NewSessionPoolOptions = {
   slotMatchesCurrentRuntime: (slot: WorkerSlot) => boolean
   setForeground: (slot: WorkerSlot) => void
   onAppEvent: (payload: WorkerAppEventForward) => void
+  onHostToolRequest?: WorkerHostToolRequestHandler
   onSlotExit: (slot: WorkerSlot, code: number) => void
   beforeActivate?: (result: { sessionId: string; sessionFile: string }) => Promise<void>
 }
@@ -117,6 +122,7 @@ export async function createNewSessionInPool(
     mainWindow: options.mainWindow,
     getForegroundPoolKey: options.foregroundPoolKey,
     onAppEvent: options.onAppEvent,
+    onHostToolRequest: options.onHostToolRequest,
     onSlotExit: options.onSlotExit,
   })
 

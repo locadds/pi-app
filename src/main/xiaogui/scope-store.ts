@@ -31,6 +31,7 @@ import {
   SessionScopeResolutionError,
   type SandboxBindingCommitV1,
   type SessionBindingCommitV1,
+  type SessionBindingLookupV1,
   type SessionScopePersistenceV1,
 } from './scope-resolver'
 
@@ -214,6 +215,33 @@ function lookupCanonicalSession(address: SessionAddressV1): SessionScopeLookupRe
   }
 }
 
+function lookupCanonicalBoundSession(input: SessionBindingLookupV1): SessionScopeLookupResultV1 {
+  assertProjectBinding(input.project)
+  validateIncomingId(input.session.opaqueId, SESSION_KEY_PATTERN)
+  validateIncomingId(input.session.projectId, PROJECT_ID_PATTERN)
+  validateIncomingFingerprint(input.session.canonicalInputFingerprint)
+  if (input.session.projectId !== input.project.opaqueId) {
+    throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+  }
+
+  const current = readCanonicalScopeBindings()
+  const session = current.sessions[input.session.opaqueId]
+  if (!session) return { kind: 'NOT_FOUND' }
+  assertProjectCompatible(current.projects[input.project.opaqueId], input.project)
+  if (session.projectId !== input.session.projectId) return { kind: 'PROJECT_MISMATCH' }
+  if (session.canonicalInputFingerprint !== input.session.canonicalInputFingerprint) {
+    throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
+  }
+  return {
+    kind: 'FOUND',
+    scope: {
+      projectId: input.project.opaqueId,
+      sessionKey: input.session.opaqueId,
+      sessionMode: session.sessionMode,
+    },
+  }
+}
+
 function commitCanonicalSession(input: SessionBindingCommitV1): SessionMode {
   assertProjectBinding(input.project)
   validateIncomingId(input.session.opaqueId, SESSION_KEY_PATTERN)
@@ -303,6 +331,7 @@ function commitCanonicalSandbox(input: SandboxBindingCommitV1): void {
 
 export const sessionScopePersistenceV1: SessionScopePersistenceV1 = {
   lookup: lookupCanonicalSession,
+  lookupBoundSession: lookupCanonicalBoundSession,
   getLegacySessionMode: (normalizedSessionFile) => getScope('session', normalizedSessionFile),
   getLegacyProjectMode: (normalizedProjectRoot) => getScope('project', normalizedProjectRoot),
   commitSession: commitCanonicalSession,

@@ -30,6 +30,26 @@ class FakePersistence implements SessionScopePersistenceV1 {
     }
   }
 
+  lookupBoundSession(input: Pick<SessionBindingCommitV1, 'project' | 'session'>): SessionScopeLookupResultV1 {
+    const binding = this.sessions.get(input.session.opaqueId)
+    if (!binding) return { kind: 'NOT_FOUND' }
+    if (binding.session.projectId !== input.session.projectId) return { kind: 'PROJECT_MISMATCH' }
+    if (
+      binding.project.canonicalInputFingerprint !== input.project.canonicalInputFingerprint ||
+      binding.session.canonicalInputFingerprint !== input.session.canonicalInputFingerprint
+    ) {
+      throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
+    }
+    return {
+      kind: 'FOUND',
+      scope: {
+        projectId: input.project.opaqueId,
+        sessionKey: input.session.opaqueId,
+        sessionMode: binding.sessionMode,
+      },
+    }
+  }
+
   getLegacySessionMode(normalizedSessionFile: string): SessionMode | null {
     return this.legacySessions.get(normalizedSessionFile) ?? null
   }
@@ -160,6 +180,22 @@ describe('SessionScopeResolverV1.resolve', () => {
 })
 
 describe('SessionScopeResolverV1 lookup and derivation', () => {
+  it('resolves only an existing binding without migrating or writing', async () => {
+    const resolver = createSessionScopeResolverV1(persistence)
+    const ref = {
+      rootPath: 'D:/projects/alpha',
+      sessionFile: 'D:/projects/alpha/session.jsonl',
+    }
+
+    await expect(resolver.resolveExisting(ref)).resolves.toBeNull()
+    expect(persistence.writes).toBe(0)
+
+    const registered = await resolver.registerNew(ref, 'DESIGN')
+    const writes = persistence.writes
+    await expect(resolver.resolveExisting(ref)).resolves.toEqual(registered)
+    expect(persistence.writes).toBe(writes)
+  })
+
   it('keeps lookup read-only for absence and project mismatch', async () => {
     const resolver = createSessionScopeResolverV1(persistence)
     const source = await resolver.resolve({

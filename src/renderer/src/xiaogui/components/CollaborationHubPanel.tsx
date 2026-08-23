@@ -22,6 +22,8 @@ import type { DeliveryBatchProjectionV1, DeliveryBatchStateV1 } from '@shared/xi
 import type { TaskVerificationFailureSourceV1, TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 import { useUIStore } from '@renderer/stores/ui-store'
+import { onAppEvent } from '@renderer/lib/ipc-client'
+import { sessionFilesEqual } from '@renderer/lib/session-file-key'
 
 import {
   DEFAULT_CANCEL_REASON,
@@ -30,7 +32,6 @@ import {
   TASK_EXECUTION_ERROR_TEXT,
   parseTaskExecutionPaths,
   useCollaborationHubStore,
-  type PlanTaskFormItem,
 } from '../stores/collaboration-hub-store'
 
 const FLOW_STATUS_TEXT: Record<CollaborationFlowSummaryV1['status'], string> = {
@@ -103,8 +104,10 @@ const DELIVERY_STATE_TEXT: Record<DeliveryBatchStateV1, string> = {
 }
 
 function shortDigest(digest: string): string {
-  const value = digest.startsWith('sha256:') ? digest.slice('sha256:'.length) : digest
-  return `sha256:${value.slice(0, 12)}…`
+  if (digest.startsWith('sha256:')) {
+    return `sha256:${digest.slice('sha256:'.length, 'sha256:'.length + 12)}…`
+  }
+  return `${digest.slice(0, 12)}…`
 }
 
 function TaskVerificationSummaryCard({
@@ -165,163 +168,72 @@ function ErrorBanner({ error, onDismiss }: { error: HubSafeErrorV1; onDismiss: (
   return (
     <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-[12px] text-red-700 dark:text-red-300">
       <div className="flex items-start justify-between gap-2">
-        <span>
-          错误 {error.code}：{HUB_ERROR_TEXT[error.code] ?? '未知错误'}
-        </span>
+        <span>{HUB_ERROR_TEXT[error.code] ?? '发生了未知错误，请稍后重试'}</span>
         <button type="button" onClick={onDismiss} className="shrink-0 text-red-500/70 hover:text-red-500">
           ✕
         </button>
       </div>
-      {error.traceId && <div className="mt-1 font-mono text-[10px] opacity-70">traceId: {error.traceId}</div>}
+      <details className="mt-1 text-[10px] opacity-70">
+        <summary className="cursor-pointer">错误详情（供反馈使用）</summary>
+        <div className="mt-1 font-mono">
+          {error.code}
+          {error.traceId ? ` · ${error.traceId}` : ''}
+        </div>
+      </details>
     </div>
   )
 }
 
-function TaskRowFields({
-  task,
-  index,
-  canRemove,
-  onChange,
-  onRemove,
-}: {
-  task: PlanTaskFormItem
-  index: number
-  canRemove: boolean
-  onChange: (index: number, patch: Partial<PlanTaskFormItem>) => void
-  onRemove: (index: number) => void
-}) {
-  const inputCls = 'w-full rounded-md border border-border/60 bg-transparent px-2 py-1 text-[12px] outline-none focus:border-primary/60'
-  return (
-    <div className="rounded-lg border border-border/40 p-2">
-      <div className="mb-1.5 flex items-center gap-1.5">
-        <input
-          aria-label={`任务 ${index + 1} 标识`}
-          placeholder="任务标识 taskKey"
-          value={task.taskKey}
-          onChange={(e) => onChange(index, { taskKey: e.target.value })}
-          className={inputCls}
-        />
-        {canRemove && (
-          <button
-            type="button"
-            aria-label={`删除任务 ${index + 1}`}
-            onClick={() => onRemove(index)}
-            className="shrink-0 rounded-md px-1.5 py-1 text-[12px] text-muted-foreground hover:text-destructive"
-          >
-            ✕
-          </button>
-        )}
+function NaturalLanguagePlanEntry({ available }: { available: boolean }) {
+  if (!available) {
+    return (
+      <div className="rounded-lg border border-dashed border-border/60 p-3 text-[12px] text-muted-foreground">
+        当前会话暂不支持创建协作计划。
       </div>
-      <input
-        aria-label={`任务 ${index + 1} 标题`}
-        placeholder="任务标题"
-        value={task.title}
-        onChange={(e) => onChange(index, { title: e.target.value })}
-        className={`${inputCls} mb-1.5`}
-      />
-      <input
-        aria-label={`任务 ${index + 1} 摘要`}
-        placeholder="摘要（可选）"
-        value={task.summary}
-        onChange={(e) => onChange(index, { summary: e.target.value })}
-        className={`${inputCls} mb-1.5`}
-      />
-      <input
-        aria-label={`任务 ${index + 1} 依赖`}
-        placeholder="依赖 taskKey，逗号分隔（可选）"
-        value={task.dependsOnText}
-        onChange={(e) => onChange(index, { dependsOnText: e.target.value })}
-        className={inputCls}
-      />
-    </div>
-  )
-}
-
-function DraftCreateForm({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
-  const form = useCollaborationHubStore((s) => s.form)
-  const formErrors = useCollaborationHubStore((s) => s.formErrors)
-  const submitting = useCollaborationHubStore((s) => s.submitting)
-  const setForm = useCollaborationHubStore((s) => s.setForm)
-  const startWithDraft = useCollaborationHubStore((s) => s.startWithDraft)
-  const canStart = projection.availableActions.includes('flow.start.with_draft')
-
-  const patchTask = (index: number, patch: Partial<PlanTaskFormItem>) => {
-    const tasks = form.tasks.map((t, i) => (i === index ? { ...t, ...patch } : t))
-    setForm({ ...form, tasks })
+    )
   }
-  const removeTask = (index: number) => setForm({ ...form, tasks: form.tasks.filter((_, i) => i !== index) })
-  const addTask = () =>
-    setForm({
-      ...form,
-      tasks: [...form.tasks, { taskKey: '', title: '', summary: '', dependsOnText: '' }],
-    })
-
   return (
-    <div data-testid="hub-draft-form">
-      <div className="mb-2 text-[12px] font-medium text-foreground">新建协作计划草稿</div>
-      <textarea
-        aria-label="协作计划目标"
-        placeholder="目标（必填）"
-        value={form.objective}
-        onChange={(e) => setForm({ ...form, objective: e.target.value })}
-        rows={2}
-        className="mb-2 w-full resize-y rounded-md border border-border/60 bg-transparent px-2 py-1 text-[12px] outline-none focus:border-primary/60"
-      />
-      <div className="flex flex-col gap-2">
-        {form.tasks.map((task, index) => (
-          <TaskRowFields
-            key={index}
-            task={task}
-            index={index}
-            canRemove={form.tasks.length > 1}
-            onChange={patchTask}
-            onRemove={removeTask}
-          />
-        ))}
+    <div
+      className="rounded-lg border border-dashed border-border/60 p-3"
+      data-testid="hub-natural-language-entry"
+    >
+      <div className="text-[12px] font-medium text-foreground">直接在对话里说出你要完成的事</div>
+      <div className="mt-1.5 text-[12px] leading-5 text-muted-foreground">
+        直接说需求就行，拆分和先后顺序由小规帮你整理；结果会回到这里等你确认。
       </div>
-      <div className="mt-2 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={addTask}
-          className="rounded-md border border-border/60 px-2 py-1 text-[12px] text-foreground-secondary hover:bg-accent"
-        >
-          + 添加任务
-        </button>
-        {canStart && (
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={() => void startWithDraft()}
-            className="rounded-md bg-primary px-3 py-1 text-[12px] text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
-          >
-            建立草稿
-          </button>
-        )}
+      <div className="mt-2 rounded-md bg-muted/40 px-2 py-1.5 text-[11px] text-foreground-secondary">
+        例如：把本周项目汇报拆成资料整理、初稿编写和复核，安排多个 Agent 协作完成。
       </div>
-      {formErrors.length > 0 && (
-        <ul className="mt-2 list-disc pl-4 text-[12px] text-amber-700 dark:text-amber-300">
-          {formErrors.map((err) => (
-            <li key={err}>{err}</li>
-          ))}
-        </ul>
-      )}
     </div>
   )
 }
 
-function ReadonlyTaskSpec({ spec }: { spec: TaskSpecProjectionV1 }) {
+function dependencyTitles(dependsOn: readonly string[], titleByKey: ReadonlyMap<string, string>): string[] {
+  return dependsOn.map((key) => titleByKey.get(key) ?? '未命名任务')
+}
+
+function ReadonlyTaskSpec({
+  spec,
+  titleByKey,
+}: {
+  spec: TaskSpecProjectionV1
+  titleByKey: ReadonlyMap<string, string>
+}) {
   // M2B 投影已携带真实 taskRun 状态，旧契约遗留的 unavailableReason 徽标不再展示
   return (
     <li className="rounded-lg border border-border/40 p-2">
       <div className="text-[12px] font-medium text-foreground">{spec.title}</div>
-      <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{spec.taskKey}</div>
       {spec.summary && <div className="mt-1 text-[12px] text-foreground-secondary">{spec.summary}</div>}
-      {spec.dependsOn.length > 0 && <div className="mt-1 text-[11px] text-muted-foreground">依赖：{spec.dependsOn.join('、')}</div>}
+      {spec.dependsOn.length > 0 && (
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          需先完成：{dependencyTitles(spec.dependsOn, titleByKey).join('、')}
+        </div>
+      )}
     </li>
   )
 }
 
-function CancelFlowSection({ flowId }: { flowId: string }) {
+function CancelFlowSection() {
   const [open, setOpen] = useState(false)
   const [reason, setReason] = useState('')
   const submitting = useCollaborationHubStore((s) => s.submitting)
@@ -369,7 +281,6 @@ function CancelFlowSection({ flowId }: { flowId: string }) {
           返回
         </button>
       </div>
-      <div className="mt-1 font-mono text-[10px] text-muted-foreground">{flowId}</div>
     </div>
   )
 }
@@ -645,6 +556,7 @@ function DeliverySelectionSection({ projection }: { projection: SessionCollabora
     )
   })
   if (verifiedRuns.length === 0) return null
+  const titleByKey = new Map(projection.taskSpecs.map((spec) => [spec.taskKey, spec.title]))
 
   return (
     <div className="mt-3 rounded-lg border border-border/50 p-2.5" data-testid="hub-delivery-selection">
@@ -659,8 +571,9 @@ function DeliverySelectionSection({ projection }: { projection: SessionCollabora
                 disabled={submitting}
                 onChange={() => toggleDeliveryTaskSelection(run.taskRunId)}
               />
-              <span className="font-mono text-muted-foreground">{run.taskKey}</span>
-              <span className="min-w-0 break-all text-foreground-secondary">{run.taskRunId}</span>
+              <span className="min-w-0 text-foreground-secondary">
+                {titleByKey.get(run.taskKey) ?? '已完成任务'}
+              </span>
             </label>
           </li>
         ))}
@@ -708,20 +621,20 @@ function AwaitingApprovalView({ projection }: { projection: SessionCollaboration
   const revision = projection.activeRevision
   if (!flow || !revision) return null
   const canApprove = projection.availableActions.includes('plan.revision.submit')
+  const titleByKey = new Map(revision.draft.tasks.map((task) => [task.taskKey, task.title]))
   return (
     <div data-testid="hub-awaiting-approval">
       <div className="mb-1 text-[12px] font-medium text-foreground">{flow.objective}</div>
-      <div className="mb-2 text-[11px] text-muted-foreground">
-        计划版本 {revision.revisionId} · digest <span className="font-mono">{revision.digest}</span>
-      </div>
+      <div className="mb-2 text-[11px] text-muted-foreground">小规已整理出 {revision.draft.tasks.length} 项任务，请确认是否按此执行。</div>
       <ul className="flex flex-col gap-1.5">
         {revision.draft.tasks.map((task) => (
           <li key={task.taskKey} className="rounded-lg border border-border/40 p-2">
             <div className="text-[12px] font-medium text-foreground">{task.title}</div>
-            <div className="font-mono text-[10px] text-muted-foreground">{task.taskKey}</div>
             {task.summary && <div className="mt-1 text-[12px] text-foreground-secondary">{task.summary}</div>}
             {task.dependsOn && task.dependsOn.length > 0 && (
-              <div className="mt-1 text-[11px] text-muted-foreground">依赖：{task.dependsOn.join('、')}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                需先完成：{dependencyTitles(task.dependsOn, titleByKey).join('、')}
+              </div>
             )}
           </li>
         ))}
@@ -737,7 +650,7 @@ function AwaitingApprovalView({ projection }: { projection: SessionCollaboration
             批准计划
           </button>
         )}
-        <CancelFlowSection flowId={flow.flowId} />
+        <CancelFlowSection />
       </div>
     </div>
   )
@@ -752,12 +665,13 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
     list.push(attempt)
     attemptsByRun.set(attempt.taskRunId, list)
   }
+  const titleByKey = new Map(projection.taskSpecs.map((spec) => [spec.taskKey, spec.title]))
   return (
     <div data-testid="hub-active-plan">
       <div className="mb-1 text-[12px] font-medium text-foreground">{flow.objective}</div>
       <ul className="flex flex-col gap-1.5">
         {projection.taskSpecs.map((spec) => (
-          <ReadonlyTaskSpec key={spec.taskSpecId} spec={spec} />
+          <ReadonlyTaskSpec key={spec.taskSpecId} spec={spec} titleByKey={titleByKey} />
         ))}
       </ul>
       {projection.taskRuns.length > 0 && (
@@ -767,7 +681,7 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
             {projection.taskRuns.map((run) => (
               <li key={run.taskRunId} className="rounded-md border border-border/30 px-2 py-1 text-[11px]">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono text-muted-foreground">{run.taskKey}</span>
+                  <span className="text-foreground-secondary">{titleByKey.get(run.taskKey) ?? '协作任务'}</span>
                   <span
                     className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
                     data-testid={`hub-taskrun-status-${run.taskKey}`}
@@ -795,7 +709,7 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
       {projection.activeDelivery && <DeliveryReviewSection delivery={projection.activeDelivery} />}
       <TaskExecutionSection projection={projection} />
       <div className="mt-3">
-        <CancelFlowSection flowId={flow.flowId} />
+        <CancelFlowSection />
       </div>
     </div>
   )
@@ -804,7 +718,12 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
 export function CollaborationHubPanel() {
   const currentSessionId = useUIStore((s) => s.currentSessionId)
   const sessions = useUIStore((s) => s.sessions)
-  const scope = useMemo(() => sessions.find((s) => s.sessionId === currentSessionId)?.canonicalScope, [sessions, currentSessionId])
+  const currentSession = useMemo(
+    () => sessions.find((session) => session.sessionId === currentSessionId),
+    [sessions, currentSessionId],
+  )
+  const scope = currentSession?.canonicalScope
+  const currentSessionFile = currentSession?.sessionFile
   const addressKey = scope ? `${scope.projectId}/${scope.sessionKey}` : ''
 
   const loading = useCollaborationHubStore((s) => s.loading)
@@ -821,10 +740,34 @@ export function CollaborationHubPanel() {
     if (next) void useCollaborationHubStore.getState().refresh()
   }, [addressKey, scope?.sessionMode])
 
+  // 主进程已在工具返回前落好草稿；同一会话的工具结束事件只负责使投影失效并刷新。
+  useEffect(() => {
+    if (!currentSessionFile || !scope) return
+    return onAppEvent((event) => {
+      if (
+        event.type !== 'tool' ||
+        event.phase !== 'end' ||
+        event.isError ||
+        !sessionFilesEqual(event.sessionFile, currentSessionFile)
+      ) {
+        return
+      }
+      const details = event.details as { kind?: string } | undefined
+      if (details?.kind !== 'XIAOGUI_COLLABORATION_DRAFT_CREATED') return
+      const state = useCollaborationHubStore.getState()
+      if (
+        state.address?.projectId === scope.projectId &&
+        state.address.sessionKey === scope.sessionKey
+      ) {
+        void state.refresh()
+      }
+    })
+  }, [addressKey, currentSessionFile])
+
   if (!scope) {
     return (
       <div className="p-4 text-[12px] text-muted-foreground" data-testid="hub-no-session">
-        请先进入已建立的会话
+        这里还没有可协作的会话。请先在左侧打开或新建一个工作或编码会话。
       </div>
     )
   }
@@ -856,11 +799,13 @@ export function CollaborationHubPanel() {
           className="rounded-lg border border-dashed border-border/60 p-3 text-[12px] text-muted-foreground"
           data-testid="hub-design-reserved"
         >
-          规划设计（DESIGN）模式暂未开放协作计划（DESIGN_RESERVED）。请在 WORK 或 CODING 会话中使用。
+          当前是规划设计会话，暂不支持协作计划；请切换到“工作”或“编码”会话后使用。
         </div>
       )}
 
-      {projection && !reserved && !flow && <DraftCreateForm projection={projection} />}
+      {projection && !reserved && !flow && (
+        <NaturalLanguagePlanEntry available={projection.availableActions.includes('flow.start.with_draft')} />
+      )}
       {projection && !reserved && flow?.status === 'AWAITING_PLAN_APPROVAL' && <AwaitingApprovalView projection={projection} />}
       {projection && !reserved && flow?.status === 'PLAN_ACTIVE' && <ActivePlanView projection={projection} />}
 

@@ -168,6 +168,29 @@ describe('scope-store：canonical binding 原子持久化', () => {
     expect(mem.setCalls).toEqual([])
   })
 
+  it('按可信绑定只读查询时核对指纹且绝不补写', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'DESIGN')
+    expect(sessionScopePersistenceV1.lookupBoundSession(input)).toEqual({ kind: 'NOT_FOUND' })
+    expect(mem.setCalls).toEqual([])
+
+    sessionScopePersistenceV1.commitSession(input)
+    mem.setCalls = []
+    expect(sessionScopePersistenceV1.lookupBoundSession(input)).toMatchObject({
+      kind: 'FOUND',
+      scope: { sessionMode: 'DESIGN' },
+    })
+    expect(() =>
+      sessionScopePersistenceV1.lookupBoundSession({
+        project: input.project,
+        session: {
+          ...input.session,
+          canonicalInputFingerprint: 'e'.repeat(64) as never,
+        },
+      }),
+    ).toThrow(expect.objectContaining({ code: 'OPAQUE_ID_COLLISION' }))
+    expect(mem.setCalls).toEqual([])
+  })
+
   it('same binding is idempotent and preserves the first canonical mode', () => {
     const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'WORK')
     expect(sessionScopePersistenceV1.commitSession(input)).toBe('WORK')

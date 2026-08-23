@@ -137,6 +137,7 @@ export async function handleLoadsession(msg: WorkerIncomingMessage, reply: Worke
             reply({
               type: 'loadSession-done',
               sessionId: st.currentSessionId,
+              sessionFile: st.session.sessionFile,
               model: modelStr,
               thinkingLevel: st.session.thinkingLevel,
               leafId: st.session.sessionManager.getLeafId?.() ?? null,
@@ -165,6 +166,7 @@ export async function handleLoadsession(msg: WorkerIncomingMessage, reply: Worke
           reply({
             type: 'loadSession-done',
             sessionId: st.currentSessionId,
+            sessionFile: st.session?.sessionFile,
             model: modelStr,
             thinkingLevel: st.session?.thinkingLevel,
             leafId: st.session?.sessionManager.getLeafId?.() ?? null,

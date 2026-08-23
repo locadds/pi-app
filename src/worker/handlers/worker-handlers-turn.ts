@@ -39,7 +39,7 @@ export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply)
           if (!st.sharedEventBus) st.sharedEventBus = st.sdk.createEventBus()
           await initSession(String(msg.cwd || ''))
           console.log('[Worker] Init done, sessionId:', st.currentSessionId)
-          reply({ type: 'init-done', sessionId: st.currentSessionId, model: currentSessionModelKey(), thinkingLevel: st.session?.thinkingLevel, sdkFallback })
+          reply({ type: 'init-done', sessionId: st.currentSessionId, sessionFile: st.session?.sessionFile, model: currentSessionModelKey(), thinkingLevel: st.session?.thinkingLevel, sdkFallback })
         } catch (e: unknown) {
           console.error('[Worker] Init FAILED:', errorMessage(e), e instanceof Error ? e.stack : '')
           reply({ type: 'error', error: `Init failed: ${errorMessage(e)}`, stack: e instanceof Error ? e.stack : undefined })

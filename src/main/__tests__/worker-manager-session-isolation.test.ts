@@ -4,6 +4,11 @@ import { WorkerManager } from '../worker-manager'
 import { attachWorkerHandlers } from '../worker-manager-pool'
 import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
 
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => process.cwd()) },
+  utilityProcess: { fork: vi.fn() },
+}))
+
 vi.mock('../config-store', () => ({
   configStore: { get: vi.fn(() => undefined) },
 }))
@@ -55,6 +60,7 @@ function fakeSlot(poolKey: string, active = false): WorkerSlot {
     cwd: '/workspace',
     runtime: { mode: 'host', distro: null },
     sessionFile: poolKey.startsWith('ws:') ? null : poolKey,
+    sessionId: `session:${poolKey}`,
     worker,
     pendingRequests: new Map(),
     requestCounter: 0,

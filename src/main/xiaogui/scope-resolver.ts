@@ -26,6 +26,8 @@ export interface SessionBindingCommitV1 {
   sessionMode: SessionMode
 }
 
+export type SessionBindingLookupV1 = Pick<SessionBindingCommitV1, 'project' | 'session'>
+
 export interface SandboxBindingCommitV1 {
   project: ProjectIdentityBindingV1
   sandbox: SandboxIdentityBindingV1
@@ -33,6 +35,7 @@ export interface SandboxBindingCommitV1 {
 
 export interface SessionScopePersistenceV1 {
   lookup(address: SessionAddressV1): SessionScopeLookupResultV1
+  lookupBoundSession(input: SessionBindingLookupV1): SessionScopeLookupResultV1
   getLegacySessionMode(normalizedSessionFile: string): SessionMode | null
   getLegacyProjectMode(normalizedProjectRoot: string): SessionMode | null
   commitSession(input: SessionBindingCommitV1): SessionMode
@@ -40,6 +43,8 @@ export interface SessionScopePersistenceV1 {
 }
 
 export interface SessionScopeResolverV1 extends SessionScopeLookupV1 {
+  /** 仅解析已经注册的会话；缺失时返回 null，绝不迁移或写入绑定。 */
+  resolveExisting(session: PiSessionRefV1): Promise<PiSessionScopeV1 | null>
   resolve(session: PiSessionRefV1): Promise<PiSessionScopeV1>
   derive(input: {
     kind: SessionDerivationKind
@@ -135,10 +140,35 @@ export function createSessionScopeResolverV1(
     return bindSession(normalized, requestedMode)
   }
 
+  async function resolveExistingSession(session: PiSessionRefV1): Promise<PiSessionScopeV1 | null> {
+    const normalized = normalizeSessionRef(session)
+    const project = idDeriver.deriveProject(normalized.rootPath)
+    const derivedSession = idDeriver.deriveSession(project.projectId, normalized.sessionFile)
+    const result = safePersistenceCall(() =>
+      persistence.lookupBoundSession({
+        project: projectBinding(project.projectId, project.canonicalInputFingerprint),
+        session: {
+          kind: 'SESSION',
+          opaqueId: derivedSession.sessionKey,
+          projectId: project.projectId,
+          canonicalInputFingerprint: derivedSession.canonicalInputFingerprint,
+        },
+      }),
+    )
+    if (result.kind !== 'FOUND') return null
+    return {
+      ...result.scope,
+      rootPath: normalized.rootPath,
+      sessionFile: normalized.sessionFile,
+    }
+  }
+
   return {
     async lookup(address) {
       return safePersistenceCall(() => persistence.lookup(address))
     },
+
+    resolveExisting: resolveExistingSession,
 
     resolve: resolveSession,
 

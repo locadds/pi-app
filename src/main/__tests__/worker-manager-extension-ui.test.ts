@@ -33,6 +33,7 @@ function slot(poolKey: string, worker: WorkerTransport = makeTransport()): Worke
     cwd: '/w',
     runtime: { mode: 'host', distro: null },
     sessionFile: poolKey,
+    sessionId: `session:${poolKey}`,
     worker,
     pendingRequests: new Map(),
     requestCounter: 0,

@@ -12,6 +12,7 @@ import { createDesktopUIBridge, type DesktopUIBridge } from './desktop-ui-bridge
 import { createDesktopWidgetHost } from './desktop-widget-host.js'
 import { applySkillsOverride } from './skill-override.js'
 import { decorateQuestionnaireTools } from './questionnaire-tool-decorator.js'
+import { addXiaoguiCollaborationTool } from './xiaogui-collaboration-tool.js'
 import {
   handleSessionEvent as dispatchSessionEvent,
   resetCompletionTurnTracking,
@@ -170,7 +171,11 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       agentDir,
       resourceLoaderOptions: {
         eventBus: st.sharedEventBus!,
-        extensionsOverride: (result) => decorateQuestionnaireTools(result, cwd),
+        extensionsOverride: (result) =>
+          addXiaoguiCollaborationTool(decorateQuestionnaireTools(result, cwd), {
+            getSourceSessionId: () => st.currentSessionId || undefined,
+            getSourceTurnId: () => st.currentTurnId || undefined,
+          }),
         skillsOverride: applySkillsOverride as never,
       },
     })

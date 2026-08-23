@@ -28,7 +28,12 @@ import {
   remapSessionWorkerSlot,
   slotRequest,
 } from './worker-manager-pool'
-import type { WorkerInitResult, WorkerSlot } from './worker-manager-types'
+import type {
+  WorkerHostToolRequestHandler,
+  WorkerHostToolRequestForward,
+  WorkerInitResult,
+  WorkerSlot,
+} from './worker-manager-types'
 import { normalizeSessionKey, workspacePoolKey } from './worker-session-key'
 import { isWslWindowsPath } from '@shared/wsl-path'
 import { getAgentRuntimeConfig, isWslRuntimeActive } from './wsl/runtime-config'
@@ -52,6 +57,22 @@ export class WorkerManager {
   private foregroundPoolKey: string | null = null
   private lifecycleChain: Promise<unknown> = Promise.resolve()
   private idleTimer: ReturnType<typeof setInterval> | null = null
+  private hostToolRequestHandler: WorkerHostToolRequestHandler | null = null
+
+  /** 小规等可信主进程模块通过此窄接口接管 Pi 内建工具请求。 */
+  setHostToolRequestHandler(handler: WorkerHostToolRequestHandler | null): void {
+    this.hostToolRequestHandler = handler
+  }
+
+  private async forwardHostToolRequest(payload: WorkerHostToolRequestForward) {
+    if (!this.hostToolRequestHandler) {
+      return {
+        ok: false as const,
+        error: { code: 'HOST_TOOL_UNAVAILABLE' as const, message: '小规主进程能力尚未就绪' },
+      }
+    }
+    return this.hostToolRequestHandler(payload)
+  }
 
   setMainWindow(win: BrowserWindow): void {
     this.mainWindow = win
@@ -178,6 +199,7 @@ export class WorkerManager {
       mainWindow: this.mainWindow,
       getForegroundPoolKey: () => this.foregroundPoolKey,
       onAppEvent: (p) => this.forwardAppEvent(p),
+      onHostToolRequest: (p) => this.forwardHostToolRequest(p),
       onSlotExit: (s, code) => this.handleSlotExit(s, code),
     })
 
@@ -271,6 +293,7 @@ export class WorkerManager {
       mainWindow: this.mainWindow,
       getForegroundPoolKey: () => this.foregroundPoolKey,
       onAppEvent: (p) => this.forwardAppEvent(p),
+      onHostToolRequest: (p) => this.forwardHostToolRequest(p),
       onSlotExit: (s, code) => this.handleSlotExit(s, code),
     })
 
@@ -511,6 +534,7 @@ export class WorkerManager {
         slotMatchesCurrentRuntime: (slot) => this.slotMatchesCurrentRuntime(slot),
         setForeground: (slot) => this.setForeground(slot),
         onAppEvent: (payload) => this.forwardAppEvent(payload),
+        onHostToolRequest: (payload) => this.forwardHostToolRequest(payload),
         onSlotExit: (slot, code) => this.handleSlotExit(slot, code),
         beforeActivate: options?.beforeActivate,
       }),
@@ -710,6 +734,7 @@ export class WorkerManager {
         mainWindow: this.mainWindow,
         getForegroundPoolKey: () => this.foregroundPoolKey,
         onAppEvent: (p) => this.forwardAppEvent(p),
+        onHostToolRequest: (p) => this.forwardHostToolRequest(p),
         onSlotExit: (s, code) => this.handleSlotExit(s, code),
       })
       await init

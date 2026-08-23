@@ -45,7 +45,7 @@ describe('ComposerCollaborationButton', () => {
     render(<ComposerCollaborationButton />)
     const btn = screen.getByRole('button', { name: '协作计划' })
     expect(btn).toBeDisabled()
-    expect(btn).toHaveAttribute('title', '请先进入已建立的会话')
+    expect(btn).toHaveAttribute('title', '请先在左侧打开或新建一个工作或编码会话')
   })
 
   it('无会话列表时同样禁用', () => {

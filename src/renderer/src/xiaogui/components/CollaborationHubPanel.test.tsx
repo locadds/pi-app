@@ -12,6 +12,7 @@ import type {
   TaskRunId,
   TaskSpecId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { AppEvent } from '@shared/app-events'
 import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { CanonicalSessionAddressScopeV1 } from '@shared/xiaogui-session-scope'
 import type { TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
@@ -28,6 +29,7 @@ const returnDeliveryMock = vi.fn()
 const reconcileDeliveryMock = vi.fn()
 const retryDeliveryMock = vi.fn()
 let requestCounter = 0
+let appEventHandler: ((event: AppEvent) => void) | null = null
 vi.mock('../lib/collaboration-hub-client', () => ({
   HUB_CONTRACT_VERSION: 'm2a.v1',
   HUB_OBSERVE_CONTRACT_VERSION: 'm2b.v1',
@@ -361,6 +363,15 @@ beforeEach(() => {
   reconcileDeliveryMock.mockReset()
   retryDeliveryMock.mockReset()
   requestCounter = 0
+  appEventHandler = null
+  window.piDesktop = {
+    onEvent: (handler) => {
+      appEventHandler = handler
+      return () => {
+        if (appEventHandler === handler) appEventHandler = null
+      }
+    },
+  } as Window['piDesktop']
   uiSnapshot = useUIStore.getState()
   useCollaborationHubStore.getState().setAddress(null)
 })
@@ -369,6 +380,7 @@ afterEach(() => {
   cleanup()
   useUIStore.setState(uiSnapshot, true)
   useCollaborationHubStore.getState().setAddress(null)
+  delete window.piDesktop
 })
 
 function showSession(session: SessionItem) {
@@ -384,7 +396,7 @@ describe('CollaborationHubPanel', () => {
   it('没有 canonical 会话时不调用 Hub IPC 并提示先进入会话', async () => {
     showSession(sessionWith('s-plain'))
     render(<CollaborationHubPanel />)
-    expect(await screen.findByTestId('hub-no-session')).toHaveTextContent('请先进入已建立的会话')
+    expect(await screen.findByTestId('hub-no-session')).toHaveTextContent('请先在左侧打开或新建一个工作或编码会话')
     expect(observeMock).not.toHaveBeenCalled()
   })
 
@@ -395,7 +407,8 @@ describe('CollaborationHubPanel', () => {
     })
     showSession(sessionWith('s-design', scopeDesign))
     render(<CollaborationHubPanel />)
-    expect(await screen.findByTestId('hub-design-reserved')).toHaveTextContent('DESIGN_RESERVED')
+    expect(await screen.findByTestId('hub-design-reserved')).toHaveTextContent('当前是规划设计会话')
+    expect(screen.getByTestId('hub-design-reserved')).not.toHaveTextContent('DESIGN_RESERVED')
     expect(screen.queryByRole('button', { name: '建立草稿' })).toBeNull()
     expect(screen.queryByRole('button', { name: '批准计划' })).toBeNull()
     expect(screen.queryByRole('button', { name: '取消协作计划' })).toBeNull()
@@ -413,39 +426,46 @@ describe('CollaborationHubPanel', () => {
     expect(screen.queryByRole('button', { name: '取消协作计划' })).toBeNull()
   })
 
-  it('WORK 建稿：填表 → 建立草稿 → 重新 observe 后进入待批准', async () => {
-    const address: HubAddressV1 = {
-      projectId: scopeWork.projectId,
-      sessionKey: scopeWork.sessionKey,
-    }
-    observeMock
-      .mockResolvedValueOnce({ ok: true, value: baseProjection(address) })
-      .mockResolvedValue({ ok: true, value: awaitingProjection(address) })
-    performMock.mockResolvedValue({
-      ok: true,
-      value: {
-        requestId: 'r',
-        intentType: 'flow.start.with_draft',
-        sessionVersion: 1,
-      },
-    })
+  it('WORK 空状态只提示自然语言入口，不暴露手填任务标识和建稿按钮', async () => {
+    observeMock.mockResolvedValue({ ok: true, value: baseProjection(scopeWork) })
     showSession(sessionWith('s-work', scopeWork))
-    const user = userEvent.setup()
     render(<CollaborationHubPanel />)
 
-    await screen.findByTestId('hub-draft-form')
-    await user.type(screen.getByLabelText('协作计划目标'), '完成报告')
-    await user.type(screen.getByLabelText('任务 1 标识'), 't1')
-    await user.type(screen.getByLabelText('任务 1 标题'), '写报告')
-    await user.click(screen.getByRole('button', { name: '建立草稿' }))
+    expect(await screen.findByTestId('hub-natural-language-entry')).toHaveTextContent(
+      '直接在对话里说出你要完成的事',
+    )
+    expect(screen.queryByLabelText('协作计划目标')).toBeNull()
+    expect(screen.queryByRole('button', { name: '建立草稿' })).toBeNull()
+    expect(performMock).not.toHaveBeenCalled()
+  })
+
+  it('同一会话成功创建草稿后自动刷新为待批准状态', async () => {
+    const sessionFile = 'C:\\sessions\\work.jsonl'
+    observeMock
+      .mockResolvedValueOnce({ ok: true, value: baseProjection(scopeWork) })
+      .mockResolvedValue({ ok: true, value: awaitingProjection(scopeWork) })
+    showSession({ ...sessionWith('s-work', scopeWork), sessionFile })
+    render(<CollaborationHubPanel />)
+
+    await screen.findByTestId('hub-natural-language-entry')
+    expect(appEventHandler).not.toBeNull()
+    act(() => {
+      appEventHandler?.({
+        type: 'tool',
+        seq: 1,
+        workspaceId: 'workspace',
+        sessionFile,
+        timestamp: Date.now(),
+        toolCallId: 'call-1',
+        toolName: 'xiaogui_create_collaboration_plan',
+        phase: 'end',
+        details: { kind: 'XIAOGUI_COLLABORATION_DRAFT_CREATED' },
+        isError: false,
+      })
+    })
 
     await screen.findByTestId('hub-awaiting-approval')
-    expect(performMock).toHaveBeenCalledTimes(1)
-    expect(performMock.mock.calls[0]![1].intent.draft).toEqual({
-      objective: '完成报告',
-      tasks: [{ taskKey: 't1', title: '写报告' }],
-    })
-    expect(screen.getByText('digest-1')).toBeInTheDocument()
+    expect(observeMock).toHaveBeenCalledTimes(2)
   })
 
   it('刷新后仍可批准：审批提交投影携带的 canonical draft', async () => {
@@ -760,7 +780,7 @@ describe('CollaborationHubPanel', () => {
 
     // 切换到 CODING 会话（空投影）→ 待批准视图必须消失
     showSession(sessionWith('s-coding', scopeCoding))
-    await screen.findByTestId('hub-draft-form')
+    await screen.findByTestId('hub-natural-language-entry')
     expect(screen.queryByTestId('hub-awaiting-approval')).toBeNull()
   })
 
@@ -775,15 +795,15 @@ describe('CollaborationHubPanel', () => {
 
     showSession(sessionWith('s-mode-change', scopeWork))
     render(<CollaborationHubPanel />)
-    await screen.findByTestId('hub-draft-form')
+    await screen.findByTestId('hub-natural-language-entry')
 
     showSession(sessionWith('s-mode-change', designAtSameAddress))
 
-    expect(await screen.findByTestId('hub-design-reserved')).toHaveTextContent('DESIGN_RESERVED')
+    expect(await screen.findByTestId('hub-design-reserved')).toHaveTextContent('当前是规划设计会话')
     expect(observeMock).toHaveBeenCalledTimes(2)
   })
 
-  it('错误只显示安全码、中文短文案和 traceId', async () => {
+  it('错误默认只显示中文短文案，内部信息折叠供反馈使用', async () => {
     observeMock.mockResolvedValue({
       ok: false,
       error: {
@@ -794,8 +814,10 @@ describe('CollaborationHubPanel', () => {
     })
     showSession(sessionWith('s-work', scopeWork))
     render(<CollaborationHubPanel />)
-    const banner = await screen.findByText(/STALE_SESSION_VERSION/)
-    expect(banner.textContent).toContain('会话状态已变化')
-    expect(await screen.findByText(/tr-9/)).toBeInTheDocument()
+    expect(await screen.findByText('会话状态已变化，请刷新后重试')).toBeInTheDocument()
+    const details = screen.getByText('错误详情（供反馈使用）').closest('details')
+    expect(details).not.toHaveAttribute('open')
+    expect(details).toHaveTextContent('STALE_SESSION_VERSION')
+    expect(details).toHaveTextContent('tr-9')
   })
 })
