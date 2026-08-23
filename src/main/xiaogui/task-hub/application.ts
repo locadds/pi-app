@@ -1192,7 +1192,8 @@ function withAuthoritativeDeliveryActions(
     activeDelivery.state === 'APPROVED' &&
     (activeDelivery.applyAttempt?.state === 'FAILED' || activeDelivery.applyAttempt?.state === 'FAILED_ROLLED_BACK') &&
     DELIVERY_TARGET_INTEGRITY_FAILURES.has(activeDelivery.applyAttempt.safeCode ?? '') &&
-    (activeDelivery.applyAttempt.changedRelativePaths ?? []).length === 0
+    Array.isArray(activeDelivery.applyAttempt.changedRelativePaths) &&
+    activeDelivery.applyAttempt.changedRelativePaths.length === 0
   ) {
     return { ...base, availableActions: [...availableActions, 'apply.recovery.prepare'] }
   }

@@ -18,7 +18,7 @@ import type {
   TaskRunStatusM2BV1,
   TaskSpecProjectionV1,
 } from '@shared/xiaogui-collaboration-hub'
-import type { DeliveryBatchProjectionV1, DeliveryBatchStateV1 } from '@shared/xiaogui-delivery'
+import type { DeliveryApplyAttemptV1, DeliveryBatchProjectionV1, DeliveryBatchStateV1 } from '@shared/xiaogui-delivery'
 import type { TaskVerificationFailureSourceV1, TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 import { useUIStore } from '@renderer/stores/ui-store'
@@ -111,6 +111,15 @@ const DELIVERY_APPLY_INTEGRITY_TEXT: Record<string, string> = {
 }
 
 const DELIVERY_NON_RETRYABLE_SAFE_CODES = new Set(Object.keys(DELIVERY_APPLY_INTEGRITY_TEXT))
+const DELIVERY_FAILED_APPLY_STATES = new Set<DeliveryApplyAttemptV1['state']>(['FAILED', 'FAILED_ROLLED_BACK'])
+
+function isFailedApplyAttempt(applyAttempt: DeliveryApplyAttemptV1 | undefined): applyAttempt is DeliveryApplyAttemptV1 {
+  return Boolean(applyAttempt && DELIVERY_FAILED_APPLY_STATES.has(applyAttempt.state))
+}
+
+function hasExplicitEmptyChangedRelativePaths(applyAttempt: DeliveryApplyAttemptV1 | undefined): boolean {
+  return Array.isArray(applyAttempt?.changedRelativePaths) && applyAttempt.changedRelativePaths.length === 0
+}
 
 function shortDigest(digest: string): string {
   if (digest.startsWith('sha256:')) {
@@ -429,14 +438,18 @@ function DeliveryReviewSection({ delivery }: { delivery: DeliveryBatchProjection
   const canApprove = availableActions.includes('delivery.gate.approve') && delivery.gate?.state === 'OPEN'
   const canReject = availableActions.includes('delivery.gate.reject') && delivery.gate?.state === 'OPEN'
   const reviewing = deliveryReviewSubjectKey !== null && deliveryReviewSubjectKey === currentDeliverySubjectKey(delivery)
-  const applySafeCode = delivery.applyAttempt?.safeCode
+  const applyAttempt = delivery.applyAttempt
+  const applySafeCode = applyAttempt?.safeCode
   const integrityText = applySafeCode ? DELIVERY_APPLY_INTEGRITY_TEXT[applySafeCode] : null
+  const failedApplyAttempt = isFailedApplyAttempt(applyAttempt)
   const canPrepareRecovery =
     availableActions.includes('apply.recovery.prepare') &&
-    delivery.applyAttempt?.safeCode === 'TARGET_BASELINE_DRIFT' &&
-    (delivery.applyAttempt.changedRelativePaths?.length ?? 0) === 0
+    failedApplyAttempt &&
+    applyAttempt.safeCode === 'TARGET_BASELINE_DRIFT' &&
+    hasExplicitEmptyChangedRelativePaths(applyAttempt)
   const canRetryApply =
     availableActions.includes('apply.retry.request') &&
+    failedApplyAttempt &&
     !(applySafeCode && DELIVERY_NON_RETRYABLE_SAFE_CODES.has(applySafeCode))
 
   return (

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
+import { TextDecoder } from 'node:util'
 
 import {
   deliveryChangeSetDigestV1,
@@ -105,6 +106,8 @@ export class DeliveryBaselineRecoveryErrorV1 extends Error {
 interface PreparedRecoveryFileV1 extends DeliveryBaselineRecoveredFileV1 {
   readonly strategy: 'DIRECT_REPLACEMENT' | 'THREE_WAY_MERGE' | 'CREATE'
 }
+
+const fatalUtf8Decoder = new TextDecoder('utf-8', { fatal: true })
 
 export class MainProcessDeliveryBaselineRecoveryPortV1 implements DeliveryBaselineRecoveryPortV1 {
   constructor(private readonly options: MainProcessDeliveryBaselineRecoveryOptionsV1) {}
@@ -365,6 +368,7 @@ async function recoverFiles(
       const desired = desiredByPath.get(pathKey(relativePath))
       if (!desired) throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_FILE_INVALID')
       if (file.operation === 'CREATE') {
+        assertSupportedTextContent(desired.content)
         const targetPath = await resolveMissingRecoveryPath(worktreeRoot, relativePath)
         await writeCreatedRecoveryFile(targetPath, desired.content)
         recovered.push({
@@ -381,16 +385,16 @@ async function recoverFiles(
       }
 
       const base = await readSourceBase(repositoryRoot, input.sourceChangeSet.target.baseRevision, relativePath)
+      assertSupportedTextContent(base)
+      assertSupportedTextContent(desired.content)
       if (digestBytes(base) !== file.baselineDigest) {
         throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_BASELINE_DIGEST_DRIFT')
       }
       const current = await readRegularRecoveryFile(worktreeRoot, relativePath)
+      assertSupportedTextContent(current.bytes)
       const currentDigest = digestBytes(current.bytes)
       let content: Buffer
       let strategy: PreparedRecoveryFileV1['strategy']
-      if (hasNul(base) || hasNul(current.bytes) || hasNul(desired.content)) {
-        throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_BINARY_UNSUPPORTED')
-      }
       if (currentDigest === file.baselineDigest) {
         content = Buffer.from(desired.content)
         strategy = 'DIRECT_REPLACEMENT'
@@ -472,9 +476,13 @@ async function resolveMissingRecoveryPath(worktreeRoot: string, relativePath: st
     try {
       const info = await lstat(cursor)
       if (info.isSymbolicLink() || !info.isDirectory()) throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_FILE_INVALID')
+      const realParent = await realpath(cursor)
+      if (pathKey(realParent) !== pathKey(cursor) || !isInside(worktreeRoot, realParent)) {
+        throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_FILE_INVALID')
+      }
     } catch (error) {
       if (error instanceof DeliveryBaselineRecoveryErrorV1) throw error
-      if (!isMissing(error)) throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_FILE_INVALID')
+      throw new DeliveryBaselineRecoveryErrorV1(isMissing(error) ? 'DELIVERY_RECOVERY_FILE_CONFLICT' : 'DELIVERY_RECOVERY_FILE_INVALID')
     }
   }
   try {
@@ -489,10 +497,10 @@ async function resolveMissingRecoveryPath(worktreeRoot: string, relativePath: st
 
 async function writeCreatedRecoveryFile(targetPath: string, content: Uint8Array): Promise<void> {
   try {
-    await mkdir(dirname(targetPath), { recursive: true })
     await writeFile(targetPath, Buffer.from(content), { flag: 'wx' })
   } catch (error) {
-    if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'EEXIST') {
+    const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined
+    if (code === 'EEXIST' || code === 'ENOENT') {
       throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_FILE_CONFLICT')
     }
     throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_WORKTREE_WRITE_FAILED')
@@ -628,6 +636,15 @@ function pathKey(value: string): string {
 
 function hasNul(value: Uint8Array): boolean {
   return value.includes(0)
+}
+
+function assertSupportedTextContent(value: Uint8Array): void {
+  if (hasNul(value)) throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_BINARY_UNSUPPORTED')
+  try {
+    fatalUtf8Decoder.decode(value)
+  } catch {
+    throw new DeliveryBaselineRecoveryErrorV1('DELIVERY_RECOVERY_BINARY_UNSUPPORTED')
+  }
 }
 
 function hasConflictMarkers(value: Buffer): boolean {
