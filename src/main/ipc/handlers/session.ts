@@ -157,7 +157,9 @@ export function registerSessionHandlers(): void {
   })
 
   registerHandler('ipc:session.setVisible', async (req) => {
-    setVisibleSessionFile(typeof req.sessionFile === 'string' ? req.sessionFile : null)
+    const visibleSessionFile = typeof req.sessionFile === 'string' ? req.sessionFile : null
+    setVisibleSessionFile(visibleSessionFile)
+    if (!visibleSessionFile) workerManager.clearForegroundSession()
     return { ok: true }
   })
 
