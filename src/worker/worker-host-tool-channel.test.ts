@@ -120,4 +120,33 @@ describe('worker host-tool response routing', () => {
       vi.useRealTimers()
     }
   })
+
+  it('gives the interactive PDF read an interactive timeout instead of the 30s default', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = requestWorkerHostTool({
+        method: 'xiaogui.work.document-snapshot.v1',
+        payload: {
+          action: 'READ_PDF',
+          sourceSessionId: 'session-1',
+          sourceRunId: 'run-1',
+          toolCallId: 'call-read',
+        },
+      })
+      const requestId = sendToMainMock.mock.calls[0]?.[0]?.requestId as string
+
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(sendToMainMock).toHaveBeenCalledTimes(1)
+      expect(sendToMainMock).not.toHaveBeenCalledWith({ type: 'host-tool-cancel', requestId })
+
+      await vi.advanceTimersByTimeAsync(15 * 60_000)
+      expect(sendToMainMock).toHaveBeenLastCalledWith({ type: 'host-tool-cancel', requestId })
+      await expect(pending).resolves.toEqual({
+        ok: false,
+        error: { code: 'HOST_TOOL_TIMEOUT', message: '小规操作超时，请稍后重试' },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
