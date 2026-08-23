@@ -20,6 +20,7 @@ import { createAgentRuntimeContractTestHostV1, createAgentRuntimeHostV1 } from '
 import type {
   AcpRequestPermissionParamsV1,
   AcpRequestPermissionResultV1,
+  AcpSessionUpdateParamsV1,
   AcpTransportCreateOptionsV1,
   AcpTransportFactoryV1,
   AcpTransportStartOptionsV1,
@@ -274,6 +275,11 @@ class FakeAcpTransport implements AcpTransportV1 {
     if (!this.startOptions) throw new Error('not started')
     this.permissionPromise = this.startOptions.onPermissionRequest(params)
     return this.permissionPromise
+  }
+
+  sessionUpdate(params: AcpSessionUpdateParamsV1) {
+    if (!this.startOptions) throw new Error('not started')
+    this.startOptions.onSessionUpdate(params)
   }
 
   disconnect(reasonCode = 'PROCESS_DISCONNECTED') {
@@ -1181,12 +1187,28 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     }
   })
 
-  it('bridges permission requests as allow-once or deny only and rejects allow-always options without publishing a challenge', async () => {
+  it('binds Kimi partial file permissions to cached scope metadata and denies execute tools', async () => {
     const root = workspace({ 'a.txt': 'before' })
     const factory = new FakeTransportFactory(async (transport, sessionId) => {
+      transport.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'tool-1',
+          title: 'Editing a.txt',
+          kind: 'edit',
+          status: 'in_progress',
+          rawInput: { path: 'a.txt', old_string: 'before', new_string: 'after' },
+          locations: [{ path: join(root, 'a.txt') }],
+        },
+      })
       const permission = transport.requestPermission({
         sessionId,
-        toolCall: { toolCallId: 'tool-1', kind: 'edit', locations: [{ path: 'a.txt' }] },
+        toolCall: {
+          toolCallId: 'tool-1',
+          title: 'Edit',
+          content: [{ type: 'diff', path: join(root, 'a.txt'), oldText: 'before', newText: 'after' }],
+        },
         options: [
           { optionId: 'allow-once', kind: 'allow_once' },
           { optionId: 'reject-once', kind: 'reject_once' },
@@ -1233,9 +1255,25 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
 
     const denyRoot = workspace({ 'a.txt': 'before' })
     const denyFactory = new FakeTransportFactory(async (transport, sessionId) => {
+      transport.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'tool-2',
+          title: 'Writing a.txt',
+          kind: 'edit',
+          status: 'in_progress',
+          rawInput: { path: 'a.txt', content: 'after' },
+          locations: [{ path: join(denyRoot, 'a.txt') }],
+        },
+      })
       const result = await transport.requestPermission({
         sessionId,
-        toolCall: { toolCallId: 'tool-2', kind: 'edit', locations: [{ path: 'a.txt' }] },
+        toolCall: {
+          toolCallId: 'tool-2',
+          title: 'Write',
+          content: [{ type: 'diff', path: join(denyRoot, 'a.txt'), oldText: 'before', newText: 'after' }],
+        },
         options: [
           { optionId: 'once', kind: 'allow_once' },
           { optionId: 'forever', kind: 'allow_always' },
@@ -1243,6 +1281,30 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
         ],
       })
       expect(result).toEqual({ outcome: { outcome: 'selected', optionId: 'reject' } })
+      transport.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'tool-terminal',
+          title: 'Running a command',
+          kind: 'execute',
+          status: 'in_progress',
+          rawInput: { path: 'a.txt', command: 'unsafe' },
+          locations: [{ path: join(denyRoot, 'a.txt') }],
+        },
+      })
+      await expect(transport.requestPermission({
+        sessionId,
+        toolCall: {
+          toolCallId: 'tool-terminal',
+          title: 'Shell',
+          content: [{ type: 'diff', path: join(denyRoot, 'a.txt'), oldText: 'before', newText: 'after' }],
+        },
+        options: [
+          { optionId: 'once', kind: 'allow_once' },
+          { optionId: 'reject', kind: 'reject_once' },
+        ],
+      })).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     })
     const denyAdapter = new KimiAcpRuntimeAdapterV1({
       payloadResolver: payloadResolver(),
@@ -1252,7 +1314,9 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     })
     const denied = await denyAdapter.createOrResume(request(denyRoot))
     await tick()
-    const [ready, permission] = await collect(denyAdapter.stream(denied.runtimeSessionId, 0))
+    const deniedEvents = await collect(denyAdapter.stream(denied.runtimeSessionId, 0))
+    const ready = deniedEvents.find((event) => event.type === 'SESSION_READY')
+    const permission = deniedEvents.find((event) => event.type === 'PERMISSION_REQUESTED')
     expect(ready).toMatchObject({ type: 'SESSION_READY' })
     expect(permission).toMatchObject({ type: 'PERMISSION_REQUESTED', decisionRequired: 'ALLOW_ONCE_OR_DENY' })
     if (permission?.type !== 'PERMISSION_REQUESTED') throw new Error('permission event missing')
@@ -1266,7 +1330,9 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       reasonCode: 'USER_DENIED',
     })).resolves.toEqual({ accepted: true })
     await tick()
-    const [, , unknown] = await collect(denyAdapter.stream(denied.runtimeSessionId, 0))
+    const unknown = (await collect(denyAdapter.stream(denied.runtimeSessionId, 0))).find(
+      (event) => event.type === 'OUTCOME_UNKNOWN',
+    )
     expect(unknown).toMatchObject({ type: 'OUTCOME_UNKNOWN', reasonCode: 'CANDIDATE_NOT_PRODUCED' })
   })
 

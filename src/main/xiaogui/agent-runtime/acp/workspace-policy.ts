@@ -10,6 +10,7 @@ export interface KimiAcpAllowedFileV1 {
 export interface PreparedKimiAcpWorkspacePolicyV1 {
   readonly rootPath: string
   readonly allowedRelativePaths: readonly string[]
+  approvedTargetDigest(requestedPath: string): string
   readTextFile(requestedPath: string): { content: string; contentDigest: string }
   preflightWriteTextFile(requestedPath: string, content: string): { targetDigest: string; contentDigest: string }
   writeTextFile(requestedPath: string, content: string, expected: { targetDigest: string; contentDigest: string }): { contentDigest: string; candidateDigest: string }
@@ -54,6 +55,9 @@ export function prepareKimiAcpWorkspacePolicy(
   const policy: PreparedKimiAcpWorkspacePolicyV1 = Object.freeze({
     rootPath: realRoot,
     allowedRelativePaths: allowedFiles.map((file) => file.relativePath),
+    approvedTargetDigest(requestedPath: string) {
+      return digestTarget(verifyAllowed(policy, requestedPath))
+    },
     readTextFile(requestedPath: string) {
       const identity = verifyAllowed(policy, requestedPath)
       const buffer = readFileSync(identity.realPath)
