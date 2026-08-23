@@ -153,6 +153,11 @@ export class WorkerManager {
     return slot != null
   }
 
+  /** The renderer is showing no session; revoke UI-bound authority without stopping workers. */
+  clearForegroundSession(): void {
+    this.foregroundPoolKey = null
+  }
+
   private async startWorkspaceUnlocked(cwd: string): Promise<InitResult> {
     const key = workspacePoolKey(cwd)
     const existing = this.pool.get(key)

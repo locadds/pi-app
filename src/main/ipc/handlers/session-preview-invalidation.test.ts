@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   setMode: vi.fn(),
   getMode: vi.fn(() => 'WORK'),
   focusExistingSession: vi.fn(() => false),
+  clearForegroundSession: vi.fn(),
   loadSession: vi.fn(),
   setPendingWorkerSessionFile: vi.fn(),
   renamePiSessionOnDisk: vi.fn(),
@@ -55,6 +56,7 @@ vi.mock('../../worker-manager', () => ({
     forkSession: mocks.forkSession,
     cloneSession: mocks.cloneSession,
     focusExistingSession: mocks.focusExistingSession,
+    clearForegroundSession: mocks.clearForegroundSession,
     loadSession: mocks.loadSession,
     deleteSessionFile: mocks.deleteSessionFile,
     getState: vi.fn(async () => ({})),
@@ -160,6 +162,7 @@ describe('session list preview invalidation', () => {
     mocks.getMode.mockReturnValue('WORK')
     mocks.focusExistingSession.mockReset()
     mocks.focusExistingSession.mockReturnValue(false)
+    mocks.clearForegroundSession.mockReset()
     mocks.loadSession.mockReset()
     mocks.setPendingWorkerSessionFile.mockReset()
     mocks.renamePiSessionOnDisk.mockReset()
@@ -250,6 +253,15 @@ describe('session list preview invalidation', () => {
     expect(mocks.setPendingWorkerSessionFile.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.focusExistingSession.mock.invocationCallOrder[0],
     )
+  })
+
+  it('revokes foreground authority only when the renderer reports no visible session', async () => {
+    await mocks.handlers.get('ipc:session.setVisible')!({ sessionFile: null })
+    expect(mocks.clearForegroundSession).toHaveBeenCalledOnce()
+
+    mocks.clearForegroundSession.mockClear()
+    await mocks.handlers.get('ipc:session.setVisible')!({ sessionFile: '/sessions/source.jsonl' })
+    expect(mocks.clearForegroundSession).not.toHaveBeenCalled()
   })
 
   it('registers a new session from the creation intent before returning it', async () => {
