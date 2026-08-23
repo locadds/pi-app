@@ -1,6 +1,14 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { accessSync, constants as fsConstants } from 'node:fs'
+import {
+  accessSync,
+  constants as fsConstants,
+  lstatSync,
+  realpathSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+} from 'node:fs'
 import path from 'node:path'
 
 import {
@@ -101,6 +109,19 @@ export type VerificationProcessResultV1 =
 
 export interface VerificationProcessRunnerV1 {
   run(invocation: VerificationProcessInvocationV1): Promise<VerificationProcessResultV1>
+}
+
+export type VerificationDependencyReleaseStatusV1 = 'RELEASED' | 'OWNERSHIP_LOST' | 'FAILED'
+
+export interface VerificationDependencyLeaseV1 {
+  release(): VerificationDependencyReleaseStatusV1
+}
+
+export interface VerificationDependencyLinkPortV1 {
+  acquire(
+    worktreeRoot: string,
+    trustedToolchainRoot: string,
+  ): VerificationDependencyLeaseV1 | null
 }
 
 type VerificationProcessCompletionV1 =
@@ -216,6 +237,41 @@ class NodeVerificationProcessRunnerV1 implements VerificationProcessRunnerV1 {
   }
 }
 
+class FileSystemVerificationDependencyLinkPortV1 implements VerificationDependencyLinkPortV1 {
+  acquire(worktreeRoot: string, trustedToolchainRoot: string): VerificationDependencyLeaseV1 | null {
+    const candidatePath = path.join(realpathSync(worktreeRoot), 'node_modules')
+    const trustedPath = realpathSync(path.join(trustedToolchainRoot, 'node_modules'))
+    accessSync(trustedPath, fsConstants.R_OK)
+    if (!statSync(trustedPath).isDirectory() || lstatIfPresent(candidatePath)) return null
+
+    try {
+      symlinkSync(trustedPath, candidatePath, process.platform === 'win32' ? 'junction' : 'dir')
+      if (!isOwnedDependencyLink(candidatePath, trustedPath)) {
+        removeOwnedDependencyLink(candidatePath, trustedPath)
+        return null
+      }
+    } catch {
+      removeOwnedDependencyLink(candidatePath, trustedPath)
+      return null
+    }
+
+    let active = true
+    return {
+      release: () => {
+        if (!active) return 'RELEASED'
+        active = false
+        if (!isOwnedDependencyLink(candidatePath, trustedPath)) return 'OWNERSHIP_LOST'
+        try {
+          unlinkSync(candidatePath)
+          return lstatIfPresent(candidatePath) ? 'FAILED' : 'RELEASED'
+        } catch {
+          return 'FAILED'
+        }
+      },
+    }
+  }
+}
+
 /**
  * Test seam. It still applies the same frozen-input and receipt-binding guard
  * as production, so a scripted fixture cannot create a second public shape.
@@ -252,7 +308,10 @@ export class ScriptedTaskVerificationPortV1 implements TaskVerificationExecution
  * the source installation's tsc checks the Attempt worktree's two configs.
  */
 export class FixedTypecheckVerificationPortV1 implements TaskVerificationExecutionPortV1 {
-  constructor(private readonly runner: VerificationProcessRunnerV1 = new NodeVerificationProcessRunnerV1()) {}
+  constructor(
+    private readonly runner: VerificationProcessRunnerV1 = new NodeVerificationProcessRunnerV1(),
+    private readonly dependencyLinks: VerificationDependencyLinkPortV1 = new FileSystemVerificationDependencyLinkPortV1(),
+  ) {}
 
   async verify(
     request: FrozenTaskVerificationRequestV1,
@@ -260,6 +319,44 @@ export class FixedTypecheckVerificationPortV1 implements TaskVerificationExecuti
   ): Promise<TaskVerificationExecutionResultV1> {
     const invalidCode = validateInvocation(request, executionContext)
     if (invalidCode) return unknownResult(request, executionContext, invalidCode, [])
+
+    let dependencyLease: VerificationDependencyLeaseV1 | null = null
+    try {
+      dependencyLease = this.dependencyLinks.acquire(
+        executionContext.worktreeRoot,
+        executionContext.trustedToolchainRoot,
+      )
+    } catch {
+      // The verifier owns this dependency link. Any pre-existing path or
+      // unavailable trusted installation therefore fails closed.
+    }
+    if (!dependencyLease) {
+      return unknownResult(request, executionContext, 'VERIFICATION_TOOLCHAIN_UNAVAILABLE', [])
+    }
+
+    let result: TaskVerificationExecutionResultV1 | null = null
+    try {
+      result = await this.runFixedTypechecks(request, executionContext)
+    } catch {
+      result = unknownResult(request, executionContext, 'VERIFICATION_PROCESS_ERROR', [])
+    }
+
+    let releaseStatus: VerificationDependencyReleaseStatusV1 = 'FAILED'
+    try {
+      releaseStatus = dependencyLease.release()
+    } catch {
+      // A cleanup exception is an unknown verification outcome, never PASS.
+    }
+    if (releaseStatus !== 'RELEASED') {
+      return unknownResult(request, executionContext, 'VERIFICATION_DEPENDENCY_CLEANUP_FAILED', [])
+    }
+    return result
+  }
+
+  private async runFixedTypechecks(
+    request: FrozenTaskVerificationRequestV1,
+    executionContext: Readonly<TaskVerificationExecutionContextV1>,
+  ): Promise<TaskVerificationExecutionResultV1> {
 
     const executable = path.join(
       executionContext.trustedToolchainRoot,
@@ -331,6 +428,45 @@ export class FixedTypecheckVerificationPortV1 implements TaskVerificationExecuti
 
     return passedResult(request, executionContext, passedChecks, inspectionChecks)
   }
+}
+
+function lstatIfPresent(targetPath: string): ReturnType<typeof lstatSync> | null {
+  try {
+    return lstatSync(targetPath)
+  } catch (error) {
+    if (isNodeErrorWithCode(error, 'ENOENT')) return null
+    throw error
+  }
+}
+
+function isOwnedDependencyLink(candidatePath: string, trustedPath: string): boolean {
+  try {
+    const candidate = lstatSync(candidatePath)
+    return candidate.isSymbolicLink() && samePath(realpathSync(candidatePath), trustedPath)
+  } catch {
+    return false
+  }
+}
+
+function removeOwnedDependencyLink(candidatePath: string, trustedPath: string): void {
+  if (!isOwnedDependencyLink(candidatePath, trustedPath)) return
+  try {
+    unlinkSync(candidatePath)
+  } catch {
+    // The caller will fail closed; never remove a path whose ownership changed.
+  }
+}
+
+function samePath(left: string, right: string): boolean {
+  const normalize = (value: string): string => {
+    const normalized = path.normalize(value)
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+  }
+  return normalize(left) === normalize(right)
+}
+
+function isNodeErrorWithCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code
 }
 
 function validateInvocation(

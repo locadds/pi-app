@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
@@ -24,6 +26,7 @@ import {
   type VerificationProcessInvocationV1,
   type VerificationProcessResultV1,
   type VerificationProcessRunnerV1,
+  type VerificationDependencyLinkPortV1,
 } from './verification-port'
 
 function request(): FrozenTaskVerificationRequestV1 {
@@ -82,6 +85,16 @@ class RecordingRunner implements VerificationProcessRunnerV1 {
   }
 }
 
+class StubDependencyLinks implements VerificationDependencyLinkPortV1 {
+  acquire() {
+    return { release: () => 'RELEASED' as const }
+  }
+}
+
+function fixedPort(runner: VerificationProcessRunnerV1): FixedTypecheckVerificationPortV1 {
+  return new FixedTypecheckVerificationPortV1(runner, new StubDependencyLinks())
+}
+
 function compileTimeRejectsFreeCommand(
   port: TaskVerificationExecutionPortV1,
   frozenRequest: FrozenTaskVerificationRequestV1,
@@ -101,7 +114,7 @@ describe('TASK fixed verification port', () => {
       exited(0, 'web typecheck passed'),
       exited(0, 'node typecheck passed'),
     ])
-    const port = new FixedTypecheckVerificationPortV1(runner)
+    const port = fixedPort(runner)
     const frozenRequest = request()
     const context = executionContext()
 
@@ -197,7 +210,7 @@ describe('TASK fixed verification port', () => {
       exited(0, 'web passed'),
       exited(2, '', 'node type error at a private path'),
     ])
-    const port = new FixedTypecheckVerificationPortV1(runner)
+    const port = fixedPort(runner)
 
     const result = await port.verify(request(), executionContext())
 
@@ -225,7 +238,7 @@ describe('TASK fixed verification port', () => {
 
   it('returns OUTCOME_UNKNOWN without PASS or FAIL fields when the fixed process times out', async () => {
     const runner = new RecordingRunner([processFailure('TIMED_OUT')])
-    const port = new FixedTypecheckVerificationPortV1(runner)
+    const port = fixedPort(runner)
 
     const result = await port.verify(request(), executionContext())
 
@@ -254,9 +267,51 @@ describe('TASK fixed verification port', () => {
     })
   })
 
+  it('links trusted dependencies only while checks run and refuses a pre-existing path', async () => {
+    const testRoot = mkdtempSync(path.join(tmpdir(), 'xiaogui-verification-'))
+    const worktreeRoot = path.join(testRoot, 'attempt')
+    const trustedToolchainRoot = path.join(testRoot, 'trusted')
+    const trustedNodeModules = path.join(trustedToolchainRoot, 'node_modules')
+    const candidateNodeModules = path.join(worktreeRoot, 'node_modules')
+    mkdirSync(worktreeRoot, { recursive: true })
+    mkdirSync(trustedNodeModules, { recursive: true })
+    const runner = new RecordingRunner([exited(0), exited(0)])
+    const observingRunner: VerificationProcessRunnerV1 = {
+      run: async (invocation) => {
+        expect(lstatSync(candidateNodeModules).isSymbolicLink()).toBe(true)
+        expect(realpathSync(candidateNodeModules)).toBe(realpathSync(trustedNodeModules))
+        return runner.run(invocation)
+      },
+    }
+    const port = new FixedTypecheckVerificationPortV1(observingRunner)
+    const context = Object.freeze({
+      ...executionContext(),
+      worktreeRoot,
+      trustedToolchainRoot,
+    })
+
+    try {
+      const result = await port.verify(request(), context)
+
+      expect(result.receipt.verdict).toBe('PASS')
+      expect(runner.invocations).toHaveLength(2)
+      expect(existsSync(candidateNodeModules)).toBe(false)
+
+      mkdirSync(candidateNodeModules)
+      const blocked = await port.verify(request(), context)
+      expect(blocked.receipt).toMatchObject({
+        verdict: 'OUTCOME_UNKNOWN',
+        reason: 'VERIFICATION_TOOLCHAIN_UNAVAILABLE',
+      })
+      expect(runner.invocations).toHaveLength(2)
+    } finally {
+      rmSync(testRoot, { force: true, recursive: true })
+    }
+  })
+
   it('rejects runtime-smuggled process controls before the runner is called', async () => {
     const runner = new RecordingRunner([exited(0), exited(0)])
-    const port = new FixedTypecheckVerificationPortV1(runner)
+    const port = fixedPort(runner)
     const injectedRequest = Object.freeze({
       ...request(),
       command: 'calc.exe',
