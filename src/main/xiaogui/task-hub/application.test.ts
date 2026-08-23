@@ -1273,9 +1273,28 @@ describe('M2A collaboration hub application', () => {
     store.close()
   })
 
-  it('records OUTCOME_UNKNOWN and reconcile without Verification or ChangeSet side effects', async () => {
+  it('records OUTCOME_UNKNOWN without side effects and releases it only after its flow is cancelled', async () => {
     const dbPath = await tempDb()
-    const app = appFor(dbPath, 'CODING', ['xhbf_flow', 'xhbr_rev', 'xhbts_scope', 'xhbts_journal', 'xhbts_projection', 'xhbtr_scope', 'xhbtr_journal', 'xhbtr_projection', 'xhba_attempt'], 'runtime-1')
+    const app = appFor(dbPath, 'CODING', [
+      'xhbf_flow',
+      'xhbr_rev',
+      'xhbts_scope',
+      'xhbts_journal',
+      'xhbts_projection',
+      'xhbtr_scope',
+      'xhbtr_journal',
+      'xhbtr_projection',
+      'xhba_attempt',
+      'xhbf_replacement',
+      'xhbr_replacement',
+      'xhbts_replacement_scope',
+      'xhbts_replacement_journal',
+      'xhbts_replacement_projection',
+      'xhbtr_replacement_scope',
+      'xhbtr_replacement_journal',
+      'xhbtr_replacement_projection',
+      'xhba_replacement',
+    ], 'runtime-1')
     await start(app)
     const draftProjection = await app.observe(ADDRESS)
     if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
@@ -1407,9 +1426,69 @@ describe('M2A collaboration hub application', () => {
     expect(journalPayloads(dbPath, 'system.agent.reconcile')).toMatchObject([
       { phase: 'outcome_unknown.reconciled', attemptId: 'xhba_attempt', expectedReceiptDigest: 'sha256:unknown-receipt', outcome: 'OUTCOME_UNKNOWN' },
     ])
+
+    const beforeCancel = await app.observe(ADDRESS)
+    if (!beforeCancel.ok || !beforeCancel.value.activeFlow) throw new Error('expected active unknown flow')
+    await expect(execute(app, {
+      requestId: 'req-cancel-unknown',
+      expectedSessionVersion: beforeCancel.value.sessionVersion,
+      intent: {
+        type: 'flow.cancel',
+        flowId: beforeCancel.value.activeFlow.flowId,
+        reason: 'replace abandoned outcome-unknown flow',
+      },
+    })).resolves.toMatchObject({ ok: true })
+
+    await expect(start(app, 'req-start-replacement')).resolves.toMatchObject({
+      ok: true,
+      value: { flowId: 'xhbf_replacement', revisionId: 'xhbr_replacement' },
+    })
+    const replacementDraft = await app.observe(ADDRESS)
+    if (!replacementDraft.ok || !replacementDraft.value.activeFlow || !replacementDraft.value.activeRevision) {
+      throw new Error('expected replacement draft flow')
+    }
+    await expect(execute(app, {
+      requestId: 'req-approve-replacement',
+      expectedSessionVersion: replacementDraft.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: replacementDraft.value.activeFlow.flowId,
+        baseRevisionId: replacementDraft.value.activeRevision.revisionId,
+        draft: replacementDraft.value.activeRevision.draft,
+      },
+    })).resolves.toMatchObject({ ok: true })
+
+    const replacementReady = await app.observeM2B(ADDRESS)
+    expect(replacementReady).toMatchObject({
+      ok: true,
+      value: {
+        availableActions: expect.arrayContaining(['execution.next.confirm']),
+        attempts: [],
+      },
+    })
+    await expect(executeSystem(app, {
+      requestId: 'sys-schedule-replacement',
+      expectedSessionVersion: replacementReady.ok ? replacementReady.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: replacementDraft.value.activeFlow.flowId },
+    })).resolves.toMatchObject({
+      ok: true,
+      value: { flowId: 'xhbf_replacement', attemptId: 'xhba_replacement' },
+    })
+    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        attempts: [expect.objectContaining({ attemptId: 'xhba_replacement', status: 'WORKSPACE_PREPARING' })],
+      },
+    })
     app.close()
     const store = new CollaborationHubSqliteStoreV1(dbPath)
-    expect(store.tableCounts()).toMatchObject({ agent_dispatch_outbox: 1, runtime_session_bindings: 1, workspace_receipts: 1 })
+    expect(store.tableCounts()).toMatchObject({
+      attempts: 2,
+      flow_execution_baselines: 2,
+      agent_dispatch_outbox: 1,
+      runtime_session_bindings: 1,
+      workspace_receipts: 1,
+    })
     store.close()
   })
 

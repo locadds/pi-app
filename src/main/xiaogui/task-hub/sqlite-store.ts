@@ -1571,7 +1571,11 @@ export class CollaborationHubSqliteStoreV1 {
   hasActiveExternalAttempt(): boolean {
     const row = this.db
       .prepare(
-        "select count(*) as count from attempts where status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')",
+        `select count(*) as count
+         from attempts a
+         join flows f on f.flow_id = a.flow_id
+         where a.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+           and not (a.status = 'OUTCOME_UNKNOWN' and f.status = 'CANCELLED')`,
       )
       .get() as { count: number }
     return row.count > 0
@@ -2536,7 +2540,7 @@ export class CollaborationHubSqliteStoreV1 {
       );
       create unique index if not exists attempts_one_active_external
         on attempts(project_id, session_key)
-        where status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN');
+        where status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'INTERRUPT_REQUESTED');
       insert or ignore into schema_migrations (version, applied_at) values (2, datetime('now'));
     `)
     this.addColumnIfMissing('workspace_receipts', 'conflict_digest', 'text')
@@ -2735,7 +2739,7 @@ export class CollaborationHubSqliteStoreV1 {
         drop index if exists attempts_one_active_external;
         create unique index attempts_one_active_external
           on attempts(project_id, session_key)
-          where status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN');
+          where status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED');
         insert or ignore into schema_migrations (version, applied_at) values (4, datetime('now'));
       `)
     })
@@ -2866,6 +2870,53 @@ export class CollaborationHubSqliteStoreV1 {
         create index if not exists delivery_apply_outbox_status
           on delivery_apply_outbox(status, apply_attempt_id);
         insert or ignore into schema_migrations (version, applied_at) values (5, datetime('now'));
+      `)
+    })
+    this.transaction(() => {
+      this.db.exec(`
+        drop index if exists attempts_one_active_external;
+        drop trigger if exists attempts_one_active_external_insert;
+        drop trigger if exists attempts_one_active_external_update;
+        create trigger attempts_one_active_external_insert
+          before insert on attempts
+          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+            and not (
+              new.status = 'OUTCOME_UNKNOWN'
+              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
+            )
+            and exists (
+              select 1
+              from attempts existing
+              join flows existing_flow on existing_flow.flow_id = existing.flow_id
+              where existing.project_id = new.project_id
+                and existing.session_key = new.session_key
+                and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+                and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+            )
+          begin
+            select raise(abort, 'ATTEMPT_ACTIVE_CONFLICT');
+          end;
+        create trigger attempts_one_active_external_update
+          before update of project_id, session_key, flow_id, status on attempts
+          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+            and not (
+              new.status = 'OUTCOME_UNKNOWN'
+              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
+            )
+            and exists (
+              select 1
+              from attempts existing
+              join flows existing_flow on existing_flow.flow_id = existing.flow_id
+              where existing.attempt_id <> old.attempt_id
+                and existing.project_id = new.project_id
+                and existing.session_key = new.session_key
+                and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+                and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+            )
+          begin
+            select raise(abort, 'ATTEMPT_ACTIVE_CONFLICT');
+          end;
+        insert or ignore into schema_migrations (version, applied_at) values (6, datetime('now'));
       `)
     })
   }
