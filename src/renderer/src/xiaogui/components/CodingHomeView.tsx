@@ -37,9 +37,9 @@ export function CodingHomeView() {
   return (
     <div className="flex h-full items-center justify-center px-6">
       <div className="max-w-md text-center">
-        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60">coding · pi native</p>
+        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60">coding · xiaogui</p>
         <h1 className="mt-3 text-xl font-semibold text-foreground">编程模式</h1>
-        <p className="mt-1 text-[12px] text-muted-foreground">Pi 原生编程执行环境</p>
+        <p className="mt-1 text-[12px] text-muted-foreground">小规编程执行环境</p>
         <p className="mt-1 text-[12px] text-muted-foreground">开始前会先确认任务和文件范围，完成后由你审阅，再决定是否应用到项目。</p>
 
         {currentWorkspace ? (

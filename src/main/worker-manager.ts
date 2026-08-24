@@ -391,7 +391,7 @@ export class WorkerManager {
         code,
         cwd: slot.cwd,
         sessionFile: slot.sessionFile,
-        message: 'Worker 已退出。请重新打开工作区；若界面空白请先结束任务管理器里多余的 pi Desktop 进程。',
+        message: 'Worker 已退出。请重新打开工作区；若界面空白请先结束任务管理器里多余的小规 Agent 进程。',
       })
     }
   }

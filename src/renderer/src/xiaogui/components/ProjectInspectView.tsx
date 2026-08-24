@@ -30,9 +30,9 @@ export function ProjectInspectView() {
   return (
     <div className="flex h-full items-center justify-center px-6">
       <div className="max-w-md text-center">
-        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60">design · pi runtime</p>
+        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60">design · xiaogui</p>
         <h1 className="mt-3 text-xl font-semibold text-foreground">规划设计</h1>
-        <p className="mt-1 text-[12px] text-muted-foreground">Pi Professional Runtime</p>
+        <p className="mt-1 text-[12px] text-muted-foreground">小规规划设计环境</p>
 
         {currentWorkspace ? (
           <p className="mt-8 text-[13px] leading-relaxed text-muted-foreground">

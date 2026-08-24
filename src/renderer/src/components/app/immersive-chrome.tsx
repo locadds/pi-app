@@ -41,7 +41,7 @@ export function ImmersiveChrome({
         </button>
         <div className="flex items-center gap-1.5 px-1 text-[12px] text-foreground-secondary select-none">
           <PiMark size={14} className="rounded-[3px]" />
-          <span className="font-medium text-foreground/90">pi</span>
+          <span className="font-medium text-foreground/90">小规</span>
           {projectName && (
             <>
               <span className="opacity-35">/</span>

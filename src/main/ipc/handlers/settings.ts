@@ -137,7 +137,7 @@ export function registerSettingsHandlers(): void {
     const kind = req.kind === 'run_idle' ? 'run_idle' : 'extension_ui'
     deliverDesktopAlert(win, {
       kind,
-      title: String(req.title || 'pi Desktop'),
+      title: String(req.title || '小规 Agent'),
       body: String(req.body || ''),
       background: req.background === true,
     })

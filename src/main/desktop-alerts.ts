@@ -80,7 +80,7 @@ export function deliverDesktopAlert(win: BrowserWindow | null, payload: DesktopA
         ...copy,
         title: payload.title || copy.title,
         body: payload.body || copy.body,
-        projectLabel: 'pi Desktop',
+        projectLabel: '小规 Agent',
         openLabel: language === 'zh' ? '返回应用' : 'Back to app',
       },
     },

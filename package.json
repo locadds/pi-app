@@ -1,7 +1,7 @@
 {
   "name": "pi-desktop",
   "version": "0.5.7",
-  "description": "pi Desktop - 桌面端 AI Agent GUI",
+  "description": "小规 Agent - 桌面端 AI Agent 应用",
   "main": "./out/main/index.js",
   "author": "pi-desktop",
   "license": "MIT",
