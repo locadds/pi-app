@@ -13,7 +13,7 @@ import { createDesktopWidgetHost } from './desktop-widget-host.js'
 import { applySkillsOverride } from './skill-override.js'
 import { decorateQuestionnaireTools } from './questionnaire-tool-decorator.js'
 import { addXiaoguiCollaborationTool } from './xiaogui-collaboration-tool.js'
-import { addXiaoguiWorkDocxTool } from './xiaogui-work-docx-tool.js'
+import { addXiaoguiWorkDocxTemplateDataTool } from './xiaogui-work-docx-template-data-tool.js'
 import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool.js'
 import {
   handleSessionEvent as dispatchSessionEvent,
@@ -179,7 +179,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
             getSourceTurnId: () => st.currentTurnId || undefined,
           }
           return addXiaoguiWorkDocumentSnapshotTool(
-            addXiaoguiWorkDocxTool(
+            addXiaoguiWorkDocxTemplateDataTool(
               addXiaoguiCollaborationTool(
                 decorateQuestionnaireTools(result, cwd),
                 collaborationToolOptions,

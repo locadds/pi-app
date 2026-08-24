@@ -21,8 +21,8 @@ const EXAMPLE_PROMPTS: { title: string; prompt: string }[] = [
     prompt: '帮我看看当前目录里有哪些文件，按类型归类列一份清单',
   },
   {
-    title: '撰写文本报告',
-    prompt: '根据本项目里的资料，帮我起草一份工作小结的文本初稿',
+    title: '按模板生成 Word',
+    prompt: '按我选择的 Word 模板，根据刚才的资料生成新文档，先把要填的内容列给我确认',
   },
   {
     title: '读写与汇总',
@@ -65,13 +65,13 @@ export function WorkHomeView() {
           界面会出现卡片或对话框，由你决定是否继续。
         </p>
         <p className="mt-2 text-[12px] leading-relaxed text-foreground/90">
-          当前已接入的专用文档能力：根据 DOCX 模板和 JSON 数据另存一份新文档；
-          生成前会请你确认，原文件不会被修改。
+          使用已经标好字段的 Word 模板时，小规会列出需要填写的内容，并根据当前对话起草；
+          你不需要自己准备 JSON，原模板也不会被修改。
         </p>
         <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
-          想用 DOCX 模板生成文档？直接在输入框里用大白话说明要用哪个模板、哪份 JSON
-          数据即可。需要选文件时，小规会打开系统文件选择器；生成前先给你看安全摘要，
-          等你下一条消息明确确认后才会生成。
+          直接在输入框里用大白话说明要按模板生成。需要选文件时，小规会打开系统文件选择器；
+          生成前先给你看字段对照和安全摘要，等你下一条消息明确确认后才会生成。
+          如果选择的是普通成品文档，小规会先提示需要整理成模板，不会直接套用旧内容。
         </p>
       </section>
 
