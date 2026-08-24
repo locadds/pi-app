@@ -33,10 +33,12 @@ describe('WorkHomeView', () => {
     expect(screen.getByText('试试这样说')).toBeInTheDocument()
   })
 
-  it('只把 DOCX 模板+JSON 另存新文档写成已接入能力', () => {
+  it('说明已标记 Word 模板可由对话填值且不需要 JSON', () => {
     render(<WorkHomeView />)
-    expect(screen.getByText(/根据 DOCX 模板和 JSON 数据另存一份新文档/)).toBeInTheDocument()
-    expect(screen.queryByText(/帮我用 DOCX 模板/)).toBeNull()
+    expect(screen.getByText(/已经标好字段的 Word 模板/)).toBeInTheDocument()
+    expect(screen.getByText(/不需要自己准备 JSON/)).toBeInTheDocument()
+    expect(screen.getByText(/普通成品文档/)).toBeInTheDocument()
+    expect(screen.getByText(/不会直接套用旧内容/)).toBeInTheDocument()
     // 不得宣传尚未接入的能力
     expect(screen.queryByText(/PDF/)).toBeNull()
     expect(screen.queryByText(/XLSX/)).toBeNull()
@@ -45,7 +47,7 @@ describe('WorkHomeView', () => {
 
   it('DOCX 生成走自然语言对话，本页不提供功能按钮', () => {
     render(<WorkHomeView />)
-    expect(screen.getByText(/直接在输入框里用大白话说明/)).toBeInTheDocument()
+    expect(screen.getByText(/直接在输入框里用大白话说明要按模板生成/)).toBeInTheDocument()
     expect(screen.getByText(/系统文件选择器/)).toBeInTheDocument()
     expect(screen.getByText(/安全摘要/)).toBeInTheDocument()
     expect(screen.getByText(/明确确认后才会生成/)).toBeInTheDocument()

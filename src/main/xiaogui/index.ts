@@ -22,6 +22,7 @@ import { sessionScopeResolverV1 } from './scope-service'
 import { createXiaoguiWorkerToolHandlerV1 } from './task-hub/worker-tool'
 import { getDefaultCollaborationHubApplication } from './task-hub/ipc'
 import { createXiaoguiWorkDocxWorkerToolHandlerV1 } from './work-docx-worker-tool'
+import { createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1 } from './work-docx-template-data-worker-tool'
 import { createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1 } from './work-document-snapshot-worker-tool'
 import { createXiaoguiWorkerHostToolRouterV1 } from './worker-host-tool-router'
 
@@ -41,6 +42,10 @@ export function initXiaogui(): void {
         scopeResolver: sessionScopeResolverV1,
       }),
       workDocx: createXiaoguiWorkDocxWorkerToolHandlerV1({
+        getService: getDefaultWorkDocxServiceV1,
+        scopeResolver: sessionScopeResolverV1,
+      }),
+      workDocxTemplateData: createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1({
         getService: getDefaultWorkDocxServiceV1,
         scopeResolver: sessionScopeResolverV1,
       }),

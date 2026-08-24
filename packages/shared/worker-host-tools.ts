@@ -4,15 +4,22 @@ import type {
   WorkDocumentSnapshotErrorCodeV1,
 } from './xiaogui-document-snapshot'
 import type { WorkDocxErrorCodeV1 } from './xiaogui-work-docx'
+import type {
+  WorkDocxTemplateFieldInputV1,
+  WorkDocxTemplateFieldV1,
+  WorkDocxTemplateProfileV1,
+} from './xiaogui-work-docx-template-data'
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
- * 当前开放“创建协作计划草稿”“WORK DOCX”和“WORK 文档快照”三个版本化方法；
+ * 当前开放“创建协作计划草稿”、两版“WORK DOCX”和“WORK 文档快照”四个版本化方法；
  * 后续能力必须显式扩充 method 联合类型。
  */
 export const XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1 =
   'xiaogui.collaboration.create-plan-draft' as const
 export const XIAOGUI_WORK_DOCX_METHOD_V1 = 'xiaogui.work.docx.v1' as const
+export const XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1 =
+  'xiaogui.work.docx-template-data.v1' as const
 export const XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 = 'xiaogui.work.document-snapshot.v1' as const
 
 export interface XiaoguiCreateCollaborationPlanPayloadV1 {
@@ -37,6 +44,22 @@ export interface XiaoguiWorkDocxPayloadV1 {
   toolCallId: string
 }
 
+export type XiaoguiWorkDocxTemplateDataActionV1 =
+  | 'SELECT_TEMPLATE'
+  | 'PREPARE'
+  | 'CONFIRM'
+  | 'CANCEL'
+  | 'OPEN'
+  | 'REVEAL'
+
+export interface XiaoguiWorkDocxTemplateDataPayloadV1 {
+  action: XiaoguiWorkDocxTemplateDataActionV1
+  fields?: readonly WorkDocxTemplateFieldInputV1[]
+  sourceSessionId: string
+  sourceRunId: string
+  toolCallId: string
+}
+
 export type WorkerHostToolRequestV1 =
   | {
       type: 'host-tool-request'
@@ -49,6 +72,12 @@ export type WorkerHostToolRequestV1 =
       requestId: string
       method: typeof XIAOGUI_WORK_DOCX_METHOD_V1
       payload: XiaoguiWorkDocxPayloadV1
+    }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: typeof XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1
+      payload: XiaoguiWorkDocxTemplateDataPayloadV1
     }
   | {
       type: 'host-tool-request'
@@ -85,9 +114,7 @@ export interface XiaoguiCollaborationPlanCreatedV1 {
 }
 
 export type XiaoguiWorkDocxResultV1 =
-  | {
-      kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED'
-    }
+  | { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' }
   | {
       kind: 'XIAOGUI_WORK_DOCX_PREPARED'
       templateDisplayName: string
@@ -96,14 +123,52 @@ export type XiaoguiWorkDocxResultV1 =
       templateSha256: string
       payloadSha256: string
     }
-  | {
-      kind: 'XIAOGUI_WORK_DOCX_CANCELLED'
-    }
+  | { kind: 'XIAOGUI_WORK_DOCX_CANCELLED' }
   | {
       kind: 'XIAOGUI_WORK_DOCX_PUBLISHED'
       outputSha256: string
       templateSha256: string
       payloadSha256: string
+      originalInputsUnchanged: true
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_ACCESSED'
+      action: 'OPEN' | 'REVEAL'
+    }
+
+export type XiaoguiWorkDocxTemplateDataResultV1 =
+  | { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_PREPARATION_REQUIRED'
+      templateDisplayName: string
+      templateSha256: string
+      profile: WorkDocxTemplateProfileV1
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_SELECTED'
+      templateDisplayName: string
+      templateSha256: string
+      fields: readonly WorkDocxTemplateFieldV1[]
+      profile: WorkDocxTemplateProfileV1
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_INPUT_REQUIRED'
+      unresolvedFields: readonly string[]
+    }
+  | { kind: 'XIAOGUI_WORK_DOCX_TARGET_SELECTION_CANCELLED' }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_PREPARED'
+      templateDisplayName: string
+      fields: readonly string[]
+      templateSha256: string
+      dataSha256: string
+    }
+  | { kind: 'XIAOGUI_WORK_DOCX_CANCELLED' }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_PUBLISHED'
+      outputSha256: string
+      templateSha256: string
+      dataSha256: string
       originalInputsUnchanged: true
     }
   | {
@@ -146,6 +211,7 @@ export type WorkerHostToolOutcomeV1 =
       value:
         | XiaoguiCollaborationPlanCreatedV1
         | XiaoguiWorkDocxResultV1
+        | XiaoguiWorkDocxTemplateDataResultV1
         | XiaoguiWorkDocumentSnapshotResultV1
     }
   | {

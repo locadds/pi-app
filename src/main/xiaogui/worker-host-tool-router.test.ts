@@ -13,12 +13,16 @@ const metadata = (request: WorkerHostToolRequestV1) => ({
 })
 
 describe('xiaogui Worker host-tool router', () => {
-  it('keeps collaboration, WORK DOCX, and WORK document snapshot on the same WorkerManager seam', async () => {
+  it('keeps collaboration, both WORK DOCX contracts, and document snapshot on one seam', async () => {
     const collaboration = vi.fn(async () => ({
       ok: true as const,
       value: { kind: 'XIAOGUI_COLLABORATION_DRAFT_CREATED' as const, taskCount: 1, sessionVersion: 1 },
     }))
     const workDocx = vi.fn(async () => ({
+      ok: true as const,
+      value: { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' as const },
+    }))
+    const workDocxTemplateData = vi.fn(async () => ({
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' as const },
     }))
@@ -29,6 +33,7 @@ describe('xiaogui Worker host-tool router', () => {
     const router = createXiaoguiWorkerHostToolRouterV1({
       collaboration,
       workDocx,
+      workDocxTemplateData,
       workDocumentSnapshot,
     })
     const collaborationRequest: WorkerHostToolRequestV1 = {
@@ -64,16 +69,30 @@ describe('xiaogui Worker host-tool router', () => {
         toolCallId: 'call-3',
       },
     }
+    const templateDataRequest: WorkerHostToolRequestV1 = {
+      type: 'host-tool-request',
+      requestId: 'template-data-1',
+      method: 'xiaogui.work.docx-template-data.v1',
+      payload: {
+        action: 'SELECT_TEMPLATE',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
+        toolCallId: 'call-4',
+      },
+    }
 
     await router(metadata(collaborationRequest))
     await router(metadata(workRequest))
+    await router(metadata(templateDataRequest))
     await router(metadata(snapshotRequest))
 
     expect(collaboration).toHaveBeenCalledOnce()
     expect(workDocx).toHaveBeenCalledOnce()
+    expect(workDocxTemplateData).toHaveBeenCalledOnce()
     expect(workDocumentSnapshot).toHaveBeenCalledOnce()
     expect(collaboration).toHaveBeenCalledWith(metadata(collaborationRequest))
     expect(workDocx).toHaveBeenCalledWith(metadata(workRequest))
+    expect(workDocxTemplateData).toHaveBeenCalledWith(metadata(templateDataRequest))
     expect(workDocumentSnapshot).toHaveBeenCalledWith(metadata(snapshotRequest))
   })
 })

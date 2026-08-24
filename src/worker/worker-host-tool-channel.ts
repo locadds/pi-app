@@ -46,7 +46,10 @@ function finish(requestId: string, outcome: WorkerHostToolOutcomeV1): boolean {
 }
 
 function requestTimeoutMs(request: WorkerHostToolRequestInputV1): number | null {
-  if (request.method === 'xiaogui.work.docx.v1') {
+  if (
+    request.method === 'xiaogui.work.docx.v1' ||
+    request.method === 'xiaogui.work.docx-template-data.v1'
+  ) {
     // CONFIRM 已越过独立的人类确认门，是不可取消的发布提交点。
     // 本地超时会造成“前端报失败、文件随后发布”的矛盾，因此必须等待真实回执。
     if (request.payload.action === 'CONFIRM') return null

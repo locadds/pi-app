@@ -1,6 +1,7 @@
 import {
   XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1,
   XIAOGUI_WORK_DOCX_METHOD_V1,
+  XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1,
   XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1,
 } from '@shared/worker-host-tools'
 
@@ -9,6 +10,7 @@ import type { WorkerHostToolRequestHandler } from '../worker-manager-types'
 export interface XiaoguiWorkerHostToolRouterOptionsV1 {
   collaboration: WorkerHostToolRequestHandler
   workDocx: WorkerHostToolRequestHandler
+  workDocxTemplateData: WorkerHostToolRequestHandler
   workDocumentSnapshot: WorkerHostToolRequestHandler
 }
 
@@ -22,6 +24,8 @@ export function createXiaoguiWorkerHostToolRouterV1(
         return options.collaboration(payload)
       case XIAOGUI_WORK_DOCX_METHOD_V1:
         return options.workDocx(payload)
+      case XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1:
+        return options.workDocxTemplateData(payload)
       case XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1:
         return options.workDocumentSnapshot(payload)
       default:

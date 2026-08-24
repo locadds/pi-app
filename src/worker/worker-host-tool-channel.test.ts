@@ -79,11 +79,13 @@ describe('worker host-tool response routing', () => {
     })
   })
 
-  it('does not locally time out a confirmed publication before the real host result', async () => {
+  it.each(['xiaogui.work.docx.v1', 'xiaogui.work.docx-template-data.v1'] as const)(
+    'does not locally time out a confirmed publication for %s',
+    async (method) => {
     vi.useFakeTimers()
     try {
       const pending = requestWorkerHostTool({
-        method: 'xiaogui.work.docx.v1',
+        method,
         payload: {
           action: 'CONFIRM',
           sourceSessionId: 'session-1',
@@ -106,7 +108,9 @@ describe('worker host-tool response routing', () => {
             kind: 'XIAOGUI_WORK_DOCX_PUBLISHED',
             outputSha256: 'c'.repeat(64),
             templateSha256: 'a'.repeat(64),
-            payloadSha256: 'b'.repeat(64),
+            ...(method === 'xiaogui.work.docx.v1'
+              ? { payloadSha256: 'b'.repeat(64) }
+              : { dataSha256: 'b'.repeat(64) }),
             originalInputsUnchanged: true,
           },
         },
@@ -119,7 +123,8 @@ describe('worker host-tool response routing', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
+    },
+  )
 
   it('gives the interactive PDF read an interactive timeout instead of the 30s default', async () => {
     vi.useFakeTimers()

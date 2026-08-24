@@ -33,6 +33,12 @@ import type {
   WorkDocxPrepareResultV1,
   WorkDocxPublishedResultV1,
 } from '@shared/xiaogui-work-docx'
+import type {
+  WorkDocxTemplateFieldInputV1,
+  WorkDocxTemplateFieldLocationV1,
+  WorkDocxTemplateFieldV1,
+  WorkDocxTemplateProfileV1,
+} from '@shared/xiaogui-work-docx-template-data'
 import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 
 const MAX_TEMPLATE_BYTES = 20 * 1024 * 1024
@@ -42,7 +48,9 @@ const MAX_ZIP_ENTRIES = 1_000
 const MAX_PLACEHOLDERS = 200
 const MAX_VALUE_CHARS = 20_000
 const MAX_DISPLAY_NAME_CHARS = 160
+const MAX_SOURCE_SUMMARY_CHARS = 500
 const PLACEHOLDER_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/
+const TEMPLATE_FIELD_KEY = /^[\p{L}][\p{L}\p{N}_.-]{0,63}$/u
 const UNSAFE_DISPLAY_NAME = /[\/\\\u0000-\u001f\u007f-\u009f]/
 
 type WorkDocxDialogPortV1 = {
@@ -64,18 +72,98 @@ type WorkDocxServiceOptionsV1 = {
 }
 
 type PreparedOperationV1 = {
+  inputKind: 'LEGACY_JSON' | 'TEMPLATE_DATA'
   addressKey: string
   operationId: WorkDocxOperationIdV1
   stageDir: string
   sourceTemplate: string
-  sourcePayload: string
+  sourcePayload?: string
   stagedTemplate: string
-  stagedPayload: string
+  stagedPayload?: string
   target: string
   placeholders: readonly string[]
   payload: Readonly<Record<string, string>>
   templateSha256: string
-  payloadSha256: string
+  payloadSha256?: string
+  dataSha256?: string
+}
+
+export type WorkDocxTemplateSelectionIdV1 = string & {
+  readonly __brand: 'WorkDocxTemplateSelectionIdV1'
+}
+
+type WorkDocxTemplateSelectRequestV1 = { address: SessionAddressV1 }
+type WorkDocxTemplateSelectResultV1 =
+  | { kind: 'CANCELLED' }
+  | {
+      kind: 'TEMPLATE_PREPARATION_REQUIRED'
+      templateDisplayName: string
+      templateSha256: string
+      profile: WorkDocxTemplateProfileV1
+    }
+  | {
+      kind: 'TEMPLATE_SELECTED'
+      selectionId: WorkDocxTemplateSelectionIdV1
+      templateDisplayName: string
+      templateSha256: string
+      fields: readonly WorkDocxTemplateFieldV1[]
+      profile: WorkDocxTemplateProfileV1
+    }
+
+type WorkDocxTemplateDataPrepareRequestV1 = {
+  address: SessionAddressV1
+  selectionId: WorkDocxTemplateSelectionIdV1
+  fields: readonly WorkDocxTemplateFieldInputV1[]
+}
+type WorkDocxTemplateDataPrepareResultV1 =
+  | { kind: 'INPUT_REQUIRED'; unresolvedFields: readonly string[] }
+  | { kind: 'CANCELLED' }
+  | {
+      kind: 'PREPARED'
+      operationId: WorkDocxOperationIdV1
+      templateDisplayName: string
+      fields: readonly string[]
+      templateSha256: string
+      dataSha256: string
+    }
+type WorkDocxTemplateSelectionCancelRequestV1 = {
+  address: SessionAddressV1
+  selectionId: WorkDocxTemplateSelectionIdV1
+}
+type WorkDocxTemplateSelectionCancelledResultV1 = { kind: 'CANCELLED' }
+type WorkDocxTemplateDataPublishedResultV1 = {
+  kind: 'PUBLISHED'
+  operationId: WorkDocxOperationIdV1
+  outputSha256: string
+  templateSha256: string
+  dataSha256: string
+  originalInputsUnchanged: true
+}
+
+type SelectedTemplateV1 = {
+  addressKey: string
+  selectionId: WorkDocxTemplateSelectionIdV1
+  stageDir: string
+  sourceTemplate: string
+  stagedTemplate: string
+  templateDisplayName: string
+  templateSha256: string
+  fields: readonly WorkDocxTemplateFieldV1[]
+  profile: WorkDocxTemplateProfileV1
+}
+
+type CompletedOperationV1 = {
+  addressKey: string
+  target: string
+  inputKind: PreparedOperationV1['inputKind']
+  operationId: WorkDocxOperationIdV1
+  outputSha256: string
+  templateSha256: string
+  inputSha256: string
+}
+
+type InternalPublishedResultV1 = Omit<CompletedOperationV1, 'addressKey' | 'target'> & {
+  originalInputsUnchanged: true
 }
 
 class WorkDocxError extends Error {
@@ -162,6 +250,104 @@ async function assertSafeDocx(content: Buffer): Promise<void> {
   }
 }
 
+function countMatches(text: string, pattern: RegExp): number {
+  return text.match(pattern)?.length ?? 0
+}
+
+function visibleXmlText(xml: string): string {
+  return xml
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+}
+
+function literalOccurrences(text: string, needle: string): number {
+  if (!needle) return 0
+  let count = 0
+  let offset = 0
+  while ((offset = text.indexOf(needle, offset)) !== -1) {
+    count += 1
+    offset += needle.length
+  }
+  return count
+}
+
+async function inspectTemplate(
+  content: Buffer,
+  placeholders: readonly string[],
+): Promise<{ fields: readonly WorkDocxTemplateFieldV1[]; profile: WorkDocxTemplateProfileV1 }> {
+  const zip = await JSZip.loadAsync(content, { checkCRC32: true, createFolders: false })
+  const documentXml = await zip.file('word/document.xml')!.async('string')
+  const headerNames = Object.keys(zip.files)
+    .filter((name) => /^word\/header[^/]*\.xml$/i.test(name))
+    .sort()
+  const footerNames = Object.keys(zip.files)
+    .filter((name) => /^word\/footer[^/]*\.xml$/i.test(name))
+    .sort()
+  const headers = await Promise.all(headerNames.map(async (name) => zip.file(name)!.async('string')))
+  const footers = await Promise.all(footerNames.map(async (name) => zip.file(name)!.async('string')))
+  const allWordXml = [documentXml, ...headers, ...footers]
+  const bodyText = visibleXmlText(documentXml)
+  const headerTexts = headers.map(visibleXmlText)
+  const footerTexts = footers.map(visibleXmlText)
+
+  const fields = placeholders.map((name) => {
+    const token = `{{${name}}}`
+    const bodyOccurrences = literalOccurrences(bodyText, token)
+    const headerOccurrences = headerTexts.reduce(
+      (total, text) => total + literalOccurrences(text, token),
+      0,
+    )
+    const footerOccurrences = footerTexts.reduce(
+      (total, text) => total + literalOccurrences(text, token),
+      0,
+    )
+    const occurrences = bodyOccurrences + headerOccurrences + footerOccurrences
+    const locations: WorkDocxTemplateFieldLocationV1[] = []
+    if (bodyOccurrences > 0) locations.push('正文')
+    if (headerOccurrences > 0) locations.push('页眉')
+    if (footerOccurrences > 0) locations.push('页脚')
+    if (locations.length === 0) locations.push('未知')
+    return {
+      name,
+      required: true as const,
+      occurrences: Math.max(1, occurrences),
+      locations,
+    }
+  })
+
+  return {
+    fields,
+    profile: {
+      bodyPartCount: 1,
+      sectionCount: Math.max(1, countMatches(documentXml, /<w:sectPr\b/g)),
+      headerPartCount: headerNames.length,
+      footerPartCount: footerNames.length,
+      inlineDrawingCount: allWordXml.reduce(
+        (total, xml) => total + countMatches(xml, /<wp:inline\b/g),
+        0,
+      ),
+      floatingDrawingCount: allWordXml.reduce(
+        (total, xml) => total + countMatches(xml, /<wp:anchor\b/g),
+        0,
+      ),
+      mediaCount: Object.keys(zip.files).filter(
+        (name) => /^word\/media\/[^/]+$/i.test(name) && !zip.files[name].dir,
+      ).length,
+      fieldCount: allWordXml.reduce(
+        (total, xml) =>
+          total +
+          countMatches(xml, /<w:fldSimple\b/g) +
+          countMatches(xml, /<w:fldChar\b[^>]*w:fldCharType=["']begin["']/g),
+        0,
+      ),
+    },
+  }
+}
+
 function normalizePayload(value: unknown, placeholders: readonly string[]): Readonly<Record<string, string>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new WorkDocxError('INPUT_INVALID')
   const source = value as Record<string, unknown>
@@ -179,6 +365,63 @@ function normalizePayload(value: unknown, placeholders: readonly string[]): Read
     normalized[placeholder] = text
   }
   return normalized
+}
+
+function normalizeTemplateData(
+  fields: WorkDocxTemplateDataPrepareRequestV1['fields'],
+  placeholders: readonly string[],
+):
+  | { kind: 'INPUT_REQUIRED'; unresolvedFields: readonly string[] }
+  | { kind: 'READY'; payload: Readonly<Record<string, string>>; dataSha256: string } {
+  if (!Array.isArray(fields) || fields.length !== placeholders.length || fields.length > MAX_PLACEHOLDERS) {
+    throw new WorkDocxError('PLACEHOLDER_MISSING')
+  }
+  const expected = new Set(placeholders)
+  const seen = new Set<string>()
+  const normalized: Record<string, string> = Object.create(null) as Record<string, string>
+  const canonical: { name: string; value: string | number | boolean }[] = []
+  const unresolved: string[] = []
+
+  for (const field of fields) {
+    if (
+      !field ||
+      typeof field !== 'object' ||
+      !TEMPLATE_FIELD_KEY.test(field.name) ||
+      ['__proto__', 'constructor', 'prototype'].includes(field.name) ||
+      !expected.has(field.name) ||
+      seen.has(field.name) ||
+      (field.sourceSummary !== undefined &&
+        (typeof field.sourceSummary !== 'string' || field.sourceSummary.length > MAX_SOURCE_SUMMARY_CHARS))
+    ) {
+      throw new WorkDocxError('INPUT_INVALID')
+    }
+    seen.add(field.name)
+    if (field.status === 'UNRESOLVED') {
+      unresolved.push(field.name)
+      continue
+    }
+    if (
+      field.status !== 'READY' ||
+      !['string', 'number', 'boolean'].includes(typeof field.value) ||
+      (typeof field.value === 'number' && !Number.isFinite(field.value))
+    ) {
+      throw new WorkDocxError('INPUT_INVALID')
+    }
+    const text = String(field.value)
+    if (text.length > MAX_VALUE_CHARS) throw new WorkDocxError('INPUT_TOO_LARGE')
+    normalized[field.name] = text
+    canonical.push({ name: field.name, value: field.value })
+  }
+  if (seen.size !== expected.size) throw new WorkDocxError('PLACEHOLDER_MISSING')
+  if (unresolved.length > 0) {
+    return { kind: 'INPUT_REQUIRED', unresolvedFields: unresolved.sort() }
+  }
+  canonical.sort((left, right) => left.name.localeCompare(right.name))
+  return {
+    kind: 'READY',
+    payload: normalized,
+    dataSha256: createHash('sha256').update(JSON.stringify(canonical)).digest('hex'),
+  }
 }
 
 async function assertNewTarget(path: string): Promise<void> {
@@ -223,11 +466,9 @@ async function publishNewTarget(target: string, content: Buffer, operationId: Wo
 }
 
 export class WorkDocxServiceV1 {
+  private readonly selected = new Map<WorkDocxTemplateSelectionIdV1, SelectedTemplateV1>()
   private readonly prepared = new Map<WorkDocxOperationIdV1, PreparedOperationV1>()
-  private readonly completed = new Map<
-    WorkDocxOperationIdV1,
-    { addressKey: string; receipt: WorkDocxPublishedResultV1; target: string }
-  >()
+  private readonly completed = new Map<WorkDocxOperationIdV1, CompletedOperationV1>()
   private readonly active = new Set<WorkDocxOperationIdV1>()
 
   constructor(private readonly options: WorkDocxServiceOptionsV1) {}
@@ -244,6 +485,161 @@ export class WorkDocxServiceV1 {
     const admitted = await this.admit(address)
     if (!admitted.ok) return admitted
     return { ok: true, value: { capabilities: [CAPABILITY] } }
+  }
+
+  private async discardSelection(selection: SelectedTemplateV1): Promise<void> {
+    this.selected.delete(selection.selectionId)
+    await rm(selection.stageDir, { recursive: true, force: true }).catch(() => {})
+  }
+
+  async selectTemplate(
+    request: WorkDocxTemplateSelectRequestV1,
+  ): Promise<WorkDocxOutcomeV1<WorkDocxTemplateSelectResultV1>> {
+    const admitted = await this.admit(request.address)
+    if (!admitted.ok) return admitted
+
+    let stageDir: string | null = null
+    try {
+      const sourceTemplate = await this.options.dialogs.chooseTemplate()
+      if (!sourceTemplate) return { ok: true, value: { kind: 'CANCELLED' } }
+      if (extname(sourceTemplate).toLowerCase() !== '.docx') throw new WorkDocxError('INPUT_INVALID')
+
+      const templateDisplayName = safeDisplayName(sourceTemplate)
+      const templateBefore = await readLimited(sourceTemplate, MAX_TEMPLATE_BYTES)
+      await assertSafeDocx(templateBefore)
+      const templateSha256 = createHash('sha256').update(templateBefore).digest('hex')
+      const placeholders = [...new Set(await patchDetector({ data: templateBefore }))].sort()
+      if (placeholders.length > MAX_PLACEHOLDERS) throw new WorkDocxError('INPUT_TOO_LARGE')
+      for (const placeholder of placeholders) {
+        if (!TEMPLATE_FIELD_KEY.test(placeholder) || ['__proto__', 'constructor', 'prototype'].includes(placeholder)) {
+          throw new WorkDocxError('INPUT_INVALID')
+        }
+      }
+      const inspection = await inspectTemplate(templateBefore, placeholders)
+
+      if (placeholders.length === 0) {
+        return {
+          ok: true,
+          value: {
+            kind: 'TEMPLATE_PREPARATION_REQUIRED',
+            templateDisplayName,
+            templateSha256,
+            profile: inspection.profile,
+          },
+        }
+      }
+
+      await mkdir(this.options.tempRoot, { recursive: true })
+      stageDir = await mkdtemp(join(this.options.tempRoot, 'selection-'))
+      const stagedTemplate = join(stageDir, 'template.docx')
+      await copyFile(sourceTemplate, stagedTemplate, fsConstants.COPYFILE_EXCL)
+      if ((await sha256(stagedTemplate)) !== templateSha256) throw new WorkDocxError('INPUT_INVALID')
+
+      const selectionId = `xgws1_${randomUUID()}` as WorkDocxTemplateSelectionIdV1
+      this.selected.set(selectionId, {
+        addressKey: addressKey(request.address),
+        selectionId,
+        stageDir,
+        sourceTemplate,
+        stagedTemplate,
+        templateDisplayName,
+        templateSha256,
+        fields: inspection.fields,
+        profile: inspection.profile,
+      })
+      stageDir = null
+      return {
+        ok: true,
+        value: {
+          kind: 'TEMPLATE_SELECTED',
+          selectionId,
+          templateDisplayName,
+          templateSha256,
+          fields: inspection.fields,
+          profile: inspection.profile,
+        },
+      }
+    } catch (error) {
+      if (error instanceof WorkDocxError) return failure(error.code)
+      return failure('GENERATION_FAILED')
+    } finally {
+      if (stageDir) await rm(stageDir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
+  async prepareTemplateData(
+    request: WorkDocxTemplateDataPrepareRequestV1,
+  ): Promise<WorkDocxOutcomeV1<WorkDocxTemplateDataPrepareResultV1>> {
+    const admitted = await this.admit(request.address)
+    if (!admitted.ok) return admitted
+    const selection = this.selected.get(request.selectionId)
+    if (!selection) return failure('OPERATION_NOT_FOUND')
+    if (selection.addressKey !== addressKey(request.address)) return failure('OPERATION_SCOPE_MISMATCH')
+
+    try {
+      if ((await sha256(selection.sourceTemplate)) !== selection.templateSha256) {
+        await this.discardSelection(selection)
+        return failure('SOURCE_CHANGED')
+      }
+      const normalized = normalizeTemplateData(
+        request.fields,
+        selection.fields.map((field) => field.name),
+      )
+      if (normalized.kind === 'INPUT_REQUIRED') {
+        return { ok: true, value: normalized }
+      }
+
+      const target = await this.options.dialogs.chooseNewTarget()
+      if (!target) return { ok: true, value: { kind: 'CANCELLED' } }
+      await assertNewTarget(target)
+      if ((await sha256(selection.sourceTemplate)) !== selection.templateSha256) {
+        await this.discardSelection(selection)
+        return failure('SOURCE_CHANGED')
+      }
+
+      const operationId = `xgw1_${randomUUID()}` as WorkDocxOperationIdV1
+      const fieldNames = selection.fields.map((field) => field.name)
+      this.prepared.set(operationId, {
+        inputKind: 'TEMPLATE_DATA',
+        addressKey: selection.addressKey,
+        operationId,
+        stageDir: selection.stageDir,
+        sourceTemplate: selection.sourceTemplate,
+        stagedTemplate: selection.stagedTemplate,
+        target,
+        placeholders: fieldNames,
+        payload: normalized.payload,
+        templateSha256: selection.templateSha256,
+        dataSha256: normalized.dataSha256,
+      })
+      this.selected.delete(selection.selectionId)
+      return {
+        ok: true,
+        value: {
+          kind: 'PREPARED',
+          operationId,
+          templateDisplayName: selection.templateDisplayName,
+          fields: fieldNames,
+          templateSha256: selection.templateSha256,
+          dataSha256: normalized.dataSha256,
+        },
+      }
+    } catch (error) {
+      if (error instanceof WorkDocxError) return failure(error.code)
+      return failure('GENERATION_FAILED')
+    }
+  }
+
+  async cancelTemplateSelection(
+    request: WorkDocxTemplateSelectionCancelRequestV1,
+  ): Promise<WorkDocxOutcomeV1<WorkDocxTemplateSelectionCancelledResultV1>> {
+    const admitted = await this.admit(request.address)
+    if (!admitted.ok) return admitted
+    const selection = this.selected.get(request.selectionId)
+    if (!selection) return failure('OPERATION_NOT_FOUND')
+    if (selection.addressKey !== addressKey(request.address)) return failure('OPERATION_SCOPE_MISMATCH')
+    await this.discardSelection(selection)
+    return { ok: true, value: { kind: 'CANCELLED' } }
   }
 
   async prepare(request: WorkDocxPrepareRequestV1): Promise<WorkDocxOutcomeV1<WorkDocxPrepareResultV1>> {
@@ -289,6 +685,7 @@ export class WorkDocxServiceV1 {
       const payload = normalizePayload(JSON.parse(payloadBefore.toString('utf8')) as unknown, placeholders)
       const operationId = `xgw1_${randomUUID()}` as WorkDocxOperationIdV1
       this.prepared.set(operationId, {
+        inputKind: 'LEGACY_JSON',
         addressKey: addressKey(request.address),
         operationId,
         stageDir,
@@ -324,26 +721,42 @@ export class WorkDocxServiceV1 {
     }
   }
 
-  async confirm(request: WorkDocxConfirmRequestV1): Promise<WorkDocxOutcomeV1<WorkDocxPublishedResultV1>> {
-    const admitted = await this.admit(request.address)
-    if (!admitted.ok) return admitted
-    const requestAddressKey = addressKey(request.address)
-    const previous = this.completed.get(request.operationId)
+  private async confirmOperation(
+    address: SessionAddressV1,
+    operationId: WorkDocxOperationIdV1,
+    inputKind: PreparedOperationV1['inputKind'],
+  ): Promise<WorkDocxOutcomeV1<InternalPublishedResultV1>> {
+    const requestAddressKey = addressKey(address)
+    const previous = this.completed.get(operationId)
     if (previous) {
       if (previous.addressKey !== requestAddressKey) return failure('OPERATION_SCOPE_MISMATCH')
-      return { ok: true, value: previous.receipt }
+      if (previous.inputKind !== inputKind) return failure('OPERATION_NOT_FOUND')
+      return {
+        ok: true,
+        value: {
+          inputKind: previous.inputKind,
+          operationId: previous.operationId,
+          outputSha256: previous.outputSha256,
+          templateSha256: previous.templateSha256,
+          inputSha256: previous.inputSha256,
+          originalInputsUnchanged: true,
+        },
+      }
     }
 
-    const operation = this.prepared.get(request.operationId)
+    const operation = this.prepared.get(operationId)
     if (!operation) return failure('OPERATION_NOT_FOUND')
     if (operation.addressKey !== requestAddressKey) return failure('OPERATION_SCOPE_MISMATCH')
-    if (this.active.has(request.operationId)) return failure('OPERATION_NOT_FOUND')
-    this.active.add(request.operationId)
+    if (operation.inputKind !== inputKind) return failure('OPERATION_NOT_FOUND')
+    if (this.active.has(operationId)) return failure('OPERATION_NOT_FOUND')
+    this.active.add(operationId)
 
     try {
       if (
         (await sha256(operation.sourceTemplate)) !== operation.templateSha256 ||
-        (await sha256(operation.sourcePayload)) !== operation.payloadSha256
+        (operation.sourcePayload !== undefined &&
+          operation.payloadSha256 !== undefined &&
+          (await sha256(operation.sourcePayload)) !== operation.payloadSha256)
       ) {
         throw new WorkDocxError('SOURCE_CHANGED')
       }
@@ -371,7 +784,9 @@ export class WorkDocxServiceV1 {
       if ((await patchDetector({ data: output })).length > 0) throw new WorkDocxError('PLACEHOLDER_MISSING')
       if (
         (await sha256(operation.sourceTemplate)) !== operation.templateSha256 ||
-        (await sha256(operation.sourcePayload)) !== operation.payloadSha256
+        (operation.sourcePayload !== undefined &&
+          operation.payloadSha256 !== undefined &&
+          (await sha256(operation.sourcePayload)) !== operation.payloadSha256)
       ) {
         throw new WorkDocxError('SOURCE_CHANGED')
       }
@@ -380,18 +795,25 @@ export class WorkDocxServiceV1 {
       const outputSha256 = createHash('sha256').update(output).digest('hex')
       if ((await sha256(operation.target)) !== outputSha256) throw new WorkDocxError('PUBLISH_FAILED')
 
-      const receipt: WorkDocxPublishedResultV1 = {
-        kind: 'PUBLISHED',
+      const inputSha256 =
+        operation.inputKind === 'LEGACY_JSON' ? operation.payloadSha256 : operation.dataSha256
+      if (!inputSha256) throw new WorkDocxError('GENERATION_FAILED')
+      const receipt: InternalPublishedResultV1 = {
+        inputKind: operation.inputKind,
         operationId: operation.operationId,
         outputSha256,
         templateSha256: operation.templateSha256,
-        payloadSha256: operation.payloadSha256,
+        inputSha256,
         originalInputsUnchanged: true,
       }
       this.completed.set(operation.operationId, {
         addressKey: operation.addressKey,
-        receipt,
         target: operation.target,
+        inputKind: operation.inputKind,
+        operationId: operation.operationId,
+        outputSha256,
+        templateSha256: operation.templateSha256,
+        inputSha256,
       })
       this.prepared.delete(operation.operationId)
       await rm(operation.stageDir, { recursive: true, force: true }).catch(() => {})
@@ -402,7 +824,45 @@ export class WorkDocxServiceV1 {
       if (error instanceof WorkDocxError) return failure(error.code)
       return failure('GENERATION_FAILED')
     } finally {
-      this.active.delete(request.operationId)
+      this.active.delete(operationId)
+    }
+  }
+
+  async confirm(request: WorkDocxConfirmRequestV1): Promise<WorkDocxOutcomeV1<WorkDocxPublishedResultV1>> {
+    const admitted = await this.admit(request.address)
+    if (!admitted.ok) return admitted
+    const outcome = await this.confirmOperation(request.address, request.operationId, 'LEGACY_JSON')
+    if (!outcome.ok) return outcome
+    return {
+      ok: true,
+      value: {
+        kind: 'PUBLISHED',
+        operationId: outcome.value.operationId,
+        outputSha256: outcome.value.outputSha256,
+        templateSha256: outcome.value.templateSha256,
+        payloadSha256: outcome.value.inputSha256,
+        originalInputsUnchanged: true,
+      },
+    }
+  }
+
+  async confirmTemplateData(
+    request: WorkDocxConfirmRequestV1,
+  ): Promise<WorkDocxOutcomeV1<WorkDocxTemplateDataPublishedResultV1>> {
+    const admitted = await this.admit(request.address)
+    if (!admitted.ok) return admitted
+    const outcome = await this.confirmOperation(request.address, request.operationId, 'TEMPLATE_DATA')
+    if (!outcome.ok) return outcome
+    return {
+      ok: true,
+      value: {
+        kind: 'PUBLISHED',
+        operationId: outcome.value.operationId,
+        outputSha256: outcome.value.outputSha256,
+        templateSha256: outcome.value.templateSha256,
+        dataSha256: outcome.value.inputSha256,
+        originalInputsUnchanged: true,
+      },
     }
   }
 
@@ -446,7 +906,7 @@ export class WorkDocxServiceV1 {
     if (!this.options.outputAccess) return failure('OUTPUT_ACCESS_FAILED')
 
     try {
-      if ((await sha256(operation.target)) !== operation.receipt.outputSha256) {
+      if ((await sha256(operation.target)) !== operation.outputSha256) {
         return failure('OUTPUT_ACCESS_FAILED')
       }
       if (request.action === 'OPEN') {

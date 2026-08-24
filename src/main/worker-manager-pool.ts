@@ -4,6 +4,7 @@ import type { WorkerResponsePayload } from '@shared/worker-rpc-types'
 import {
   XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1,
   XIAOGUI_WORK_DOCX_METHOD_V1,
+  XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1,
   type WorkerHostToolOutcomeV1,
   type WorkerHostToolRequestV1,
   type WorkerHostToolResponseV1,
@@ -34,7 +35,8 @@ const hostToolAbortControllers = new WeakMap<WorkerSlot, Map<string, AbortContro
 function requiresForegroundHostTool(request: WorkerHostToolRequestV1): boolean {
   return (
     request.method === XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 ||
-    request.method === XIAOGUI_WORK_DOCX_METHOD_V1
+    request.method === XIAOGUI_WORK_DOCX_METHOD_V1 ||
+    request.method === XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1
   )
 }
 
