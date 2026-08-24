@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ['@earendil-works/pi-ai'] })],
+    plugins: [externalizeDepsPlugin({ exclude: ['@earendil-works/pi-ai', 'officeparser'] })],
     resolve: {
       alias: {
         '@shared': resolve('packages/shared'),

@@ -23,6 +23,11 @@ import { createXiaoguiWorkerToolHandlerV1 } from './task-hub/worker-tool'
 import { getDefaultCollaborationHubApplication } from './task-hub/ipc'
 import { createXiaoguiWorkDocxWorkerToolHandlerV1 } from './work-docx-worker-tool'
 import { createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1 } from './work-docx-template-data-worker-tool'
+import {
+  closeDefaultWorkDocxTemplateIntakeServiceV1,
+  getDefaultWorkDocxTemplateIntakeServiceV1,
+} from './work-docx-template-intake-composition'
+import { createXiaoguiWorkDocxTemplateIntakeWorkerToolHandlerV1 } from './work-docx-template-intake-worker-tool'
 import { createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1 } from './work-document-snapshot-worker-tool'
 import { createXiaoguiWorkerHostToolRouterV1 } from './worker-host-tool-router'
 
@@ -49,6 +54,10 @@ export function initXiaogui(): void {
         getService: getDefaultWorkDocxServiceV1,
         scopeResolver: sessionScopeResolverV1,
       }),
+      workDocxTemplateIntake: createXiaoguiWorkDocxTemplateIntakeWorkerToolHandlerV1({
+        getService: getDefaultWorkDocxTemplateIntakeServiceV1,
+        scopeResolver: sessionScopeResolverV1,
+      }),
       workDocumentSnapshot: createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1({
         getService: getDefaultWorkDocumentSnapshotServiceV1,
         scopeResolver: sessionScopeResolverV1,
@@ -64,6 +73,7 @@ export async function shutdownXiaoguiSidecar(): Promise<void> {
   const results = await Promise.allSettled([
     Promise.resolve().then(() => xiaogui.shutdown()),
     Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),
+    Promise.resolve().then(() => closeDefaultWorkDocxTemplateIntakeServiceV1()),
   ])
   const firstFailure = results.find(
     (result): result is PromiseRejectedResult => result.status === 'rejected',

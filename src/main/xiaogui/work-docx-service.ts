@@ -16,7 +16,7 @@ import {
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 
 import { PatchType, TextRun, patchDetector, patchDocument } from 'docx'
-import JSZip, { type JSZipObject } from 'jszip'
+import JSZip from 'jszip'
 
 import type {
   WorkDocxCancelRequestV1,
@@ -40,11 +40,14 @@ import type {
   WorkDocxTemplateProfileV1,
 } from '@shared/xiaogui-work-docx-template-data'
 import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
+import {
+  DOCX_SAFETY_MAX_FILE_BYTES_V1,
+  DocxSafetyErrorV1,
+  inspectSafeDocxArchiveV1,
+} from './docx-safety'
 
-const MAX_TEMPLATE_BYTES = 20 * 1024 * 1024
+const MAX_TEMPLATE_BYTES = DOCX_SAFETY_MAX_FILE_BYTES_V1
 const MAX_PAYLOAD_BYTES = 1024 * 1024
-const MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
-const MAX_ZIP_ENTRIES = 1_000
 const MAX_PLACEHOLDERS = 200
 const MAX_VALUE_CHARS = 20_000
 const MAX_DISPLAY_NAME_CHARS = 160
@@ -152,6 +155,14 @@ type SelectedTemplateV1 = {
   profile: WorkDocxTemplateProfileV1
 }
 
+export type WorkDocxTemplateIntakeHandoffV1 = {
+  sourcePath: string
+  templateDisplayName: string
+  templateSha256: string
+  byteLength: number
+  profile: WorkDocxTemplateProfileV1
+}
+
 type CompletedOperationV1 = {
   addressKey: string
   target: string
@@ -207,46 +218,14 @@ async function readLimited(path: string, limit: number): Promise<Buffer> {
   return readFile(path)
 }
 
-function zipUncompressedSize(entry: JSZipObject): number {
-  if (entry.dir) return 0
-  const data = (entry as unknown as { _data?: { uncompressedSize?: number } })._data
-  const size = Number(data?.uncompressedSize)
-  if (!Number.isSafeInteger(size) || size < 0) throw new WorkDocxError('UNSAFE_DOCX')
-  return size
-}
-
 async function assertSafeDocx(content: Buffer): Promise<void> {
-  let zip: JSZip
   try {
-    zip = await JSZip.loadAsync(content, { checkCRC32: true, createFolders: false })
-  } catch {
-    throw new WorkDocxError('UNSAFE_DOCX')
-  }
-
-  const entries = Object.values(zip.files)
-  if (entries.length === 0 || entries.length > MAX_ZIP_ENTRIES) throw new WorkDocxError('UNSAFE_DOCX')
-
-  let expandedBytes = 0
-  for (const entry of entries) {
-    const name = entry.name.replace(/\\/g, '/')
-    if (name.startsWith('/') || name.split('/').includes('..')) throw new WorkDocxError('UNSAFE_DOCX')
-    expandedBytes += zipUncompressedSize(entry)
-    if (expandedBytes > MAX_UNCOMPRESSED_BYTES) throw new WorkDocxError('UNSAFE_DOCX')
-  }
-
-  const contentTypes = zip.file('[Content_Types].xml')
-  const documentXml = zip.file('word/document.xml')
-  if (!contentTypes || !documentXml) throw new WorkDocxError('UNSAFE_DOCX')
-
-  const typeText = (await contentTypes.async('string')).toLowerCase()
-  if (typeText.includes('macroenabled') || entries.some((entry) => entry.name.toLowerCase().includes('vbaproject'))) {
-    throw new WorkDocxError('UNSAFE_DOCX')
-  }
-
-  for (const entry of entries) {
-    if (!entry.name.toLowerCase().endsWith('.rels')) continue
-    const relationships = await entry.async('string')
-    if (/TargetMode\s*=\s*["']External["']/i.test(relationships)) throw new WorkDocxError('UNSAFE_DOCX')
+    await inspectSafeDocxArchiveV1(content)
+  } catch (error) {
+    if (error instanceof DocxSafetyErrorV1) {
+      throw new WorkDocxError(error.code === 'INPUT_TOO_LARGE' ? 'INPUT_TOO_LARGE' : 'UNSAFE_DOCX')
+    }
+    throw error
   }
 }
 
@@ -470,6 +449,7 @@ export class WorkDocxServiceV1 {
   private readonly prepared = new Map<WorkDocxOperationIdV1, PreparedOperationV1>()
   private readonly completed = new Map<WorkDocxOperationIdV1, CompletedOperationV1>()
   private readonly active = new Set<WorkDocxOperationIdV1>()
+  private readonly templateIntakeHandoffs = new Map<string, WorkDocxTemplateIntakeHandoffV1>()
 
   constructor(private readonly options: WorkDocxServiceOptionsV1) {}
 
@@ -518,6 +498,13 @@ export class WorkDocxServiceV1 {
       const inspection = await inspectTemplate(templateBefore, placeholders)
 
       if (placeholders.length === 0) {
+        this.templateIntakeHandoffs.set(addressKey(request.address), {
+          sourcePath: sourceTemplate,
+          templateDisplayName,
+          templateSha256,
+          byteLength: templateBefore.byteLength,
+          profile: inspection.profile,
+        })
         return {
           ok: true,
           value: {
@@ -565,6 +552,14 @@ export class WorkDocxServiceV1 {
     } finally {
       if (stageDir) await rm(stageDir, { recursive: true, force: true }).catch(() => {})
     }
+  }
+
+  /** 仅供同一主进程内的普通成品 Word 整理服务消费；不会进入 Worker 或渲染层。 */
+  consumeTemplateIntakeHandoff(address: SessionAddressV1): WorkDocxTemplateIntakeHandoffV1 | null {
+    const key = addressKey(address)
+    const handoff = this.templateIntakeHandoffs.get(key) ?? null
+    this.templateIntakeHandoffs.delete(key)
+    return handoff
   }
 
   async prepareTemplateData(

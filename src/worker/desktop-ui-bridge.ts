@@ -3,6 +3,10 @@
 import type { EventBus, Theme } from '@earendil-works/pi-coding-agent'
 import { randomUUID } from 'node:crypto'
 import type {
+  TemplateIntakeReviewRequestV1,
+  TemplateIntakeReviewResultV1,
+} from '@shared/xiaogui-work-docx-template-intake'
+import type {
   ExtensionUIQuestion,
   ExtensionUIQuestionnaireResult,
 } from './questionnaire-types.js'
@@ -29,6 +33,13 @@ export type ExtensionUIRequest =
       toolCallId?: string
     }
   | { id: string; method: 'custom'; kind: 'image_review'; image: string; title: string; question: string; context?: string; options: string[]; allowFeedback: boolean }
+  | {
+      id: string
+      method: 'custom'
+      kind: 'template_intake_review'
+      payload: TemplateIntakeReviewRequestV1
+      toolCallId: string
+    }
 
 type Pending = {
   resolve: (v: unknown) => void
@@ -45,6 +56,11 @@ export type DesktopUIBridge = {
     questions: ExtensionUIQuestion[],
     signal?: AbortSignal,
   ) => Promise<ExtensionUIQuestionnaireResult>
+  requestTemplateIntakeReview: (
+    toolCallId: string,
+    payload: TemplateIntakeReviewRequestV1,
+    signal?: AbortSignal,
+  ) => Promise<TemplateIntakeReviewResultV1>
   /** Cache interact args extracted by Worker (driven by adapter.json interact.fields). */
   setInteractArgs: (schema: 'questions' | 'review' | 'clarify', args: Record<string, unknown> | null) => void
   attachWidgetHost: (host: { setWidget: (key: string, content: unknown) => void; dispose: () => void } | null) => void
@@ -308,6 +324,26 @@ export function createDesktopUIBridge(
             ? { cancelled: true, answers: [] }
             : (response.result as ExtensionUIQuestionnaireResult),
         { cancelled: true, answers: [] },
+        { signal, ...dismissOpts },
+      )
+    },
+    requestTemplateIntakeReview(toolCallId, payload, signal) {
+      const id = randomUUID()
+      return createDialogPromise(
+        emitReq,
+        pending,
+        {
+          id,
+          method: 'custom',
+          kind: 'template_intake_review',
+          payload,
+          toolCallId,
+        },
+        (response) =>
+          response.cancelled
+            ? { cancelled: true, draftDecisions: payload.draftDecisions }
+            : (response.result as TemplateIntakeReviewResultV1),
+        { cancelled: true, draftDecisions: payload.draftDecisions },
         { signal, ...dismissOpts },
       )
     },

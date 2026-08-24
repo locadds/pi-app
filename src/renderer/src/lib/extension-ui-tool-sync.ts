@@ -1,7 +1,11 @@
 import { useUIStore } from '@renderer/stores/ui-store'
 import { useExtensionUIStore } from '@renderer/stores/extension-ui-store'
 
-export const INTERACTIVE_EXTENSION_TOOLS = new Set(['ask_user_question', 'image_review'])
+export const INTERACTIVE_EXTENSION_TOOLS = new Set([
+  'ask_user_question',
+  'image_review',
+  'xiaogui_work_docx_template_intake',
+])
 
 /** 弹窗打开时绑定到最近一条仍在运行的交互式工具行 */
 export function linkExtensionDialogToToolRow(requestId: string, toolName: string): void {

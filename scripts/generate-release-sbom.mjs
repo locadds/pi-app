@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * Generate a minimal CycloneDX-style SBOM from package-lock (production deps only).
+ * Generate a minimal CycloneDX-style SBOM from package-lock.
+ *
+ * Production dependencies and build-time dependencies explicitly bundled into
+ * the release are both runtime components and therefore belong in the SBOM.
  */
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -8,7 +11,10 @@ import { join } from 'node:path'
 export async function generateSbom(rootDir = process.cwd(), outputPath = join(rootDir, 'sbom.cdx.json')) {
   const pkg = JSON.parse(await readFile(join(rootDir, 'package.json'), 'utf8'))
   const lock = JSON.parse(await readFile(join(rootDir, 'package-lock.json'), 'utf8'))
-  const prodNames = new Set(Object.keys(pkg.dependencies || {}))
+  const bundledRuntimeNames = Array.isArray(pkg.xiaoguiBuild?.bundledRuntimeDependencies)
+    ? pkg.xiaoguiBuild.bundledRuntimeDependencies.filter((name) => typeof name === 'string')
+    : []
+  const prodNames = new Set([...Object.keys(pkg.dependencies || {}), ...bundledRuntimeNames])
   const components = []
   for (const [name, entry] of Object.entries(lock.packages || {})) {
     if (!name || name === '') continue
