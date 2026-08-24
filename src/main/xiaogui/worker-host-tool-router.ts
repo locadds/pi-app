@@ -3,6 +3,7 @@ import {
   XIAOGUI_WORK_DOCX_METHOD_V1,
   XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1,
   XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1,
+  XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1,
   XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1,
 } from '@shared/worker-host-tools'
 
@@ -13,6 +14,7 @@ export interface XiaoguiWorkerHostToolRouterOptionsV1 {
   workDocx: WorkerHostToolRequestHandler
   workDocxTemplateData: WorkerHostToolRequestHandler
   workDocxTemplateIntake: WorkerHostToolRequestHandler
+  workDocxTemplateMaterialize: WorkerHostToolRequestHandler
   workDocumentSnapshot: WorkerHostToolRequestHandler
 }
 
@@ -30,6 +32,8 @@ export function createXiaoguiWorkerHostToolRouterV1(
         return options.workDocxTemplateData(payload)
       case XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1:
         return options.workDocxTemplateIntake(payload)
+      case XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1:
+        return options.workDocxTemplateMaterialize(payload)
       case XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1:
         return options.workDocumentSnapshot(payload)
       default:
