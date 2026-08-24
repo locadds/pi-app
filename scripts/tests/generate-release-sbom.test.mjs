@@ -6,12 +6,18 @@ import { tmpdir } from 'node:os'
 import { generateSbom } from '../generate-release-sbom.mjs'
 
 describe('generate-release-sbom (F-10)', () => {
-  it('writes CycloneDX JSON with production components', async () => {
+  it('writes CycloneDX JSON with production and bundled runtime components', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pi-sbom-'))
     try {
       await writeFile(
         join(dir, 'package.json'),
-        JSON.stringify({ name: 't', version: '1.0.0', dependencies: { zod: '^3.0.0' } }),
+        JSON.stringify({
+          name: 't',
+          version: '1.0.0',
+          dependencies: { zod: '^3.0.0' },
+          devDependencies: { officeparser: '7.8.0' },
+          xiaoguiBuild: { bundledRuntimeDependencies: ['officeparser'] },
+        }),
       )
       await writeFile(
         join(dir, 'package-lock.json'),
@@ -21,6 +27,7 @@ describe('generate-release-sbom (F-10)', () => {
           packages: {
             '': { name: 't', version: '1.0.0' },
             'node_modules/zod': { version: '3.24.1' },
+            'node_modules/officeparser': { version: '7.8.0', dev: true },
           },
         }),
       )
@@ -30,6 +37,7 @@ describe('generate-release-sbom (F-10)', () => {
       assert.equal(bom.bomFormat, 'CycloneDX')
       assert.ok(r.componentCount >= 1)
       assert.ok(bom.components.some((c) => c.name === 'zod'))
+      assert.ok(bom.components.some((c) => c.name === 'officeparser'))
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

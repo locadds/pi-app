@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { QuestionnaireDialog, type AskQuestionPayload } from './questionnaire-dialog'
 import { ImageReviewDialog, type ImageReviewPayload } from './image-review-dialog'
+import { TemplateIntakeReviewDialog } from './template-intake-review-dialog'
 import { ExtensionDialogShell } from './extension-dialog-shell'
 import {
   useExtensionUIStore,
@@ -103,6 +104,27 @@ export function ExtensionUIHost() {
           onCancel={() => cancelWorker(pending.id)}
           onSubmit={(r) => {
             respond({ id: pending.id, result: r })
+            clearAfterRespond()
+          }}
+        />
+      ) : pending.method === 'template_intake_review' ? (
+        <TemplateIntakeReviewDialog
+          requestId={pending.id}
+          payload={pending.payload}
+          onSuspend={suspendActiveDialog}
+          onCancel={(result) => {
+            // 关闭只保存逐项草稿，不产生人工确认记录。
+            const tid = findToolContextForUi().timelineItemId
+            respond({ id: pending.id, result })
+            clearExtensionToolRowFlags(tid)
+            clearAfterRespond()
+            reconcileStaleInteractiveToolRows(pending.id)
+          }}
+          onSubmit={(r) => {
+            const s = useExtensionUIStore.getState().suspended
+            const tid = findToolContextForUi().timelineItemId || s?.timelineItemId
+            respond({ id: pending.id, result: r })
+            clearExtensionToolRowFlags(tid)
             clearAfterRespond()
           }}
         />

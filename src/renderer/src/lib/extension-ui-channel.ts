@@ -6,6 +6,7 @@ import { shouldShowExtensionNotify } from '@renderer/lib/extension-notify-policy
 import { signalDesktopAlert } from '@renderer/lib/desktop-alerts'
 import type { AskQuestionPayload } from '@renderer/features/extension-ui/questionnaire-dialog'
 import type { ImageReviewPayload } from '@renderer/features/extension-ui/image-review-dialog'
+import type { TemplateIntakeReviewRequestV1 } from '@shared/xiaogui-work-docx-template-intake'
 import { traceAudioRenderer } from '@renderer/lib/audio-trace'
 import { alertTrace } from '@renderer/lib/alert-trace'
 import {
@@ -16,7 +17,11 @@ import {
 
 let started = false
 const seenDialogIds = new Set<string>()
-const INTERACTIVE_TOOL_NAMES = new Set(['ask_user_question', 'image_review'])
+const INTERACTIVE_TOOL_NAMES = new Set(['ask_user_question', 'image_review', 'template_intake_review'])
+
+function timelineToolName(method: string): string {
+  return method === 'template_intake_review' ? 'xiaogui_work_docx_template_intake' : method
+}
 
 function pruneSeenIds(): void {
   if (seenDialogIds.size > 120) seenDialogIds.clear()
@@ -41,6 +46,12 @@ function rawToPending(raw: Record<string, unknown>): ExtensionUIPending | null {
         allowFeedback: raw.allowFeedback !== false,
       },
     }
+  }
+  if (method === 'custom' && raw.kind === 'template_intake_review') {
+    // WORK-P3C-A 冻结契约：payload 为 TemplateIntakeReviewRequestV1（无路径 report + draftDecisions + pageSize=20）
+    const payload = (raw.payload ?? raw) as unknown as TemplateIntakeReviewRequestV1
+    if (!payload.report || !Array.isArray(payload.draftDecisions)) return null
+    return { id, method: 'template_intake_review', payload }
   }
   if (method === 'select') {
     return { id, method: 'select', title: raw.title as string, options: (raw.options as string[]) || [] }
@@ -128,13 +139,15 @@ export function ensureExtensionUIChannel(): void {
     traceAudioRenderer('extension-ui.dialog', { method: p.method, id: p.id })
     useExtensionUIStore.getState().setActivePending(p)
     if (INTERACTIVE_TOOL_NAMES.has(p.method)) {
-      linkExtensionDialogToToolRow(p.id, p.method)
+      linkExtensionDialogToToolRow(p.id, timelineToolName(p.method))
     }
 
     const body =
       p.method === 'image_review'
         ? p.payload.title || '图片审查'
-        : p.method === 'ask_user_question'
+        : p.method === 'template_intake_review'
+          ? '模板候选复核'
+          : p.method === 'ask_user_question'
           ? '扩展问答'
           : p.method === 'confirm' || p.method === 'select' || p.method === 'input'
             ? p.title || '需要你的操作'

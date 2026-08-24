@@ -9,10 +9,20 @@ import type {
   WorkDocxTemplateFieldV1,
   WorkDocxTemplateProfileV1,
 } from './xiaogui-work-docx-template-data'
+import type {
+  TemplateIntakeDecisionV1,
+  TemplateIntakeDraftDecisionItemV1,
+  TemplateIntakeErrorCodeV1,
+  TemplateIntakeFinalDecisionItemV1,
+  TemplateIntakeReportV1,
+  TemplateIntakeSourceAnchorV1,
+  TemplateIntakeUpdateOperationV1,
+  TemplateIntakeWarningV1,
+} from './xiaogui-work-docx-template-intake'
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
- * 当前开放“创建协作计划草稿”、两版“WORK DOCX”和“WORK 文档快照”四个版本化方法；
+ * 当前开放“创建协作计划草稿”、三版“WORK DOCX”和“WORK 文档快照”五个版本化方法；
  * 后续能力必须显式扩充 method 联合类型。
  */
 export const XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1 =
@@ -20,6 +30,8 @@ export const XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1 =
 export const XIAOGUI_WORK_DOCX_METHOD_V1 = 'xiaogui.work.docx.v1' as const
 export const XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1 =
   'xiaogui.work.docx-template-data.v1' as const
+export const XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1 =
+  'xiaogui.work.docx-template-intake.v1' as const
 export const XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 = 'xiaogui.work.document-snapshot.v1' as const
 
 export interface XiaoguiCreateCollaborationPlanPayloadV1 {
@@ -60,6 +72,87 @@ export interface XiaoguiWorkDocxTemplateDataPayloadV1 {
   toolCallId: string
 }
 
+export type TemplateIntakeAnalysisFragmentKindV1 =
+  | 'PARAGRAPH'
+  | 'HEADING'
+  | 'TABLE_CELL'
+  | 'HEADER'
+  | 'FOOTER'
+
+/** 只在主进程与 Worker 之间短暂传递；不得进入公开工具结果或 Pi 会话历史。 */
+export interface TemplateIntakeAnalysisFragmentV1 {
+  fragmentId: string
+  kind: TemplateIntakeAnalysisFragmentKindV1
+  anchor: TemplateIntakeSourceAnchorV1
+  text: string
+}
+
+export interface TemplateIntakeAnalysisBatchV1 {
+  batchIndex: number
+  characterCount: number
+  fragments: readonly TemplateIntakeAnalysisFragmentV1[]
+}
+
+export interface TemplateIntakeModelSuggestionV1 {
+  fragmentIds: readonly string[]
+  kind: 'FIXED' | 'VARIABLE' | 'REPEAT' | 'CONDITIONAL' | 'EXCLUDE' | 'UNRESOLVED'
+  reason: string
+  confidence: number | null
+  suggestedName?: string
+}
+
+export type TemplateIntakeModelAnalysisV1 =
+  | {
+      status: 'COMPLETE'
+      modelVersion: string
+      suggestions: readonly TemplateIntakeModelSuggestionV1[]
+    }
+  | {
+      status: 'DEGRADED'
+      modelVersion: string | null
+      warning: Pick<TemplateIntakeWarningV1, 'code' | 'message'>
+    }
+
+export interface TemplateIntakeReviewSubmissionV1 {
+  decisions: readonly TemplateIntakeFinalDecisionItemV1[]
+}
+
+type XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 = {
+  sourceSessionId: string
+  sourceRunId: string
+  toolCallId: string
+}
+
+export type XiaoguiWorkDocxTemplateIntakePayloadV1 =
+  | (XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 & {
+      action: 'START'
+      /** 首次 START 省略；Worker 临时模型分析完成后仍以 START 回送。 */
+      analysis?: TemplateIntakeModelAnalysisV1
+      /** 回送分析时绑定主进程签发的报告编号，防止旧分析被用于新文档。 */
+      reportId?: string
+    })
+  | (XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 & {
+      action: 'UPDATE'
+      operations: readonly TemplateIntakeUpdateOperationV1[]
+    })
+  | (XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 & {
+      action: 'REVIEW'
+      /** 首次 REVIEW 省略；复核卡提交后仍以 REVIEW 回送。 */
+      submission?: TemplateIntakeReviewSubmissionV1
+    })
+  | (XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 & {
+      action: 'RESUME'
+      reportId?: string
+    })
+  | (XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 & {
+      action: 'DELETE'
+      reportId: string
+      confirmed: true
+    })
+  | (XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 & {
+      action: 'CANCEL'
+    })
+
 export type WorkerHostToolRequestV1 =
   | {
       type: 'host-tool-request'
@@ -78,6 +171,12 @@ export type WorkerHostToolRequestV1 =
       requestId: string
       method: typeof XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1
       payload: XiaoguiWorkDocxTemplateDataPayloadV1
+    }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: typeof XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1
+      payload: XiaoguiWorkDocxTemplateIntakePayloadV1
     }
   | {
       type: 'host-tool-request'
@@ -144,6 +243,7 @@ export type XiaoguiWorkDocxTemplateDataResultV1 =
       templateSha256: string
       profile: WorkDocxTemplateProfileV1
     }
+
   | {
       kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_SELECTED'
       templateDisplayName: string
@@ -176,6 +276,46 @@ export type XiaoguiWorkDocxTemplateDataResultV1 =
       action: 'OPEN' | 'REVEAL'
     }
 
+export type XiaoguiWorkDocxTemplateIntakeResultV1 =
+  | { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_SELECTION_CANCELLED' }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_ANALYSIS_REQUIRED'
+      reportId: string
+      fileDisplayName: string
+      analysisBatches: readonly TemplateIntakeAnalysisBatchV1[]
+      deterministicWarnings: readonly TemplateIntakeWarningV1[]
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY'
+      report: TemplateIntakeReportV1
+      draftDecisions: readonly TemplateIntakeDraftDecisionItemV1[]
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_UPDATED'
+      report: TemplateIntakeReportV1
+      draftDecisions: readonly TemplateIntakeDraftDecisionItemV1[]
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_REQUIRED'
+      report: TemplateIntakeReportV1
+      draftDecisions: readonly TemplateIntakeDraftDecisionItemV1[]
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CONFIRMED'
+      decision: TemplateIntakeDecisionV1
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_RESUMED'
+      report: TemplateIntakeReportV1
+      draftDecisions: readonly TemplateIntakeDraftDecisionItemV1[]
+      decision?: TemplateIntakeDecisionV1
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_DELETED'
+      reportId: string
+    }
+  | { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CANCELLED' }
+
 export type XiaoguiWorkDocumentSnapshotResultV1 =
   | {
       kind: 'XIAOGUI_WORK_DOCUMENT_SELECTION_CANCELLED'
@@ -203,6 +343,7 @@ export type WorkerHostToolErrorCodeV1 =
   | 'WORK_DOCX_NO_PUBLISHED_OUTPUT'
   | 'WORK_DOCUMENT_SNAPSHOT_ACTIVE'
   | WorkDocxErrorCodeV1
+  | TemplateIntakeErrorCodeV1
   | WorkDocumentSnapshotErrorCodeV1
 
 export type WorkerHostToolOutcomeV1 =
@@ -212,6 +353,7 @@ export type WorkerHostToolOutcomeV1 =
         | XiaoguiCollaborationPlanCreatedV1
         | XiaoguiWorkDocxResultV1
         | XiaoguiWorkDocxTemplateDataResultV1
+        | XiaoguiWorkDocxTemplateIntakeResultV1
         | XiaoguiWorkDocumentSnapshotResultV1
     }
   | {

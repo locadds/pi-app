@@ -13,7 +13,7 @@ const metadata = (request: WorkerHostToolRequestV1) => ({
 })
 
 describe('xiaogui Worker host-tool router', () => {
-  it('keeps collaboration, both WORK DOCX contracts, and document snapshot on one seam', async () => {
+  it('keeps collaboration, all WORK DOCX contracts, and document snapshot on one seam', async () => {
     const collaboration = vi.fn(async () => ({
       ok: true as const,
       value: { kind: 'XIAOGUI_COLLABORATION_DRAFT_CREATED' as const, taskCount: 1, sessionVersion: 1 },
@@ -26,6 +26,10 @@ describe('xiaogui Worker host-tool router', () => {
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' as const },
     }))
+    const workDocxTemplateIntake = vi.fn(async () => ({
+      ok: true as const,
+      value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_SELECTION_CANCELLED' as const },
+    }))
     const workDocumentSnapshot = vi.fn(async () => ({
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCUMENT_SELECTION_CANCELLED' as const },
@@ -34,6 +38,7 @@ describe('xiaogui Worker host-tool router', () => {
       collaboration,
       workDocx,
       workDocxTemplateData,
+      workDocxTemplateIntake,
       workDocumentSnapshot,
     })
     const collaborationRequest: WorkerHostToolRequestV1 = {
@@ -80,19 +85,33 @@ describe('xiaogui Worker host-tool router', () => {
         toolCallId: 'call-4',
       },
     }
+    const templateIntakeRequest: WorkerHostToolRequestV1 = {
+      type: 'host-tool-request',
+      requestId: 'template-intake-1',
+      method: 'xiaogui.work.docx-template-intake.v1',
+      payload: {
+        action: 'START',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
+        toolCallId: 'call-5',
+      },
+    }
 
     await router(metadata(collaborationRequest))
     await router(metadata(workRequest))
     await router(metadata(templateDataRequest))
+    await router(metadata(templateIntakeRequest))
     await router(metadata(snapshotRequest))
 
     expect(collaboration).toHaveBeenCalledOnce()
     expect(workDocx).toHaveBeenCalledOnce()
     expect(workDocxTemplateData).toHaveBeenCalledOnce()
+    expect(workDocxTemplateIntake).toHaveBeenCalledOnce()
     expect(workDocumentSnapshot).toHaveBeenCalledOnce()
     expect(collaboration).toHaveBeenCalledWith(metadata(collaborationRequest))
     expect(workDocx).toHaveBeenCalledWith(metadata(workRequest))
     expect(workDocxTemplateData).toHaveBeenCalledWith(metadata(templateDataRequest))
+    expect(workDocxTemplateIntake).toHaveBeenCalledWith(metadata(templateIntakeRequest))
     expect(workDocumentSnapshot).toHaveBeenCalledWith(metadata(snapshotRequest))
   })
 })

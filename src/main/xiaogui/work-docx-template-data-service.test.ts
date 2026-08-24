@@ -138,6 +138,11 @@ describe('WorkDocxServiceV1 template data flow', () => {
       ok: true,
       value: { kind: 'TEMPLATE_PREPARATION_REQUIRED', templateDisplayName: '成品.docx' },
     })
+    expect(service.consumeTemplateIntakeHandoff(ADDRESS)).toMatchObject({
+      sourcePath: template,
+      templateDisplayName: '成品.docx',
+    })
+    expect(service.consumeTemplateIntakeHandoff(ADDRESS)).toBeNull()
     expect(dialogs.chooseNewTarget).not.toHaveBeenCalled()
     await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' })
   })

@@ -14,6 +14,7 @@ import { applySkillsOverride } from './skill-override.js'
 import { decorateQuestionnaireTools } from './questionnaire-tool-decorator.js'
 import { addXiaoguiCollaborationTool } from './xiaogui-collaboration-tool.js'
 import { addXiaoguiWorkDocxTemplateDataTool } from './xiaogui-work-docx-template-data-tool.js'
+import { addXiaoguiWorkDocxTemplateIntakeTool } from './xiaogui-work-docx-template-intake-tool.js'
 import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool.js'
 import {
   handleSessionEvent as dispatchSessionEvent,
@@ -179,10 +180,16 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
             getSourceTurnId: () => st.currentTurnId || undefined,
           }
           return addXiaoguiWorkDocumentSnapshotTool(
-            addXiaoguiWorkDocxTemplateDataTool(
-              addXiaoguiCollaborationTool(
-                decorateQuestionnaireTools(result, cwd),
-                collaborationToolOptions,
+            addXiaoguiWorkDocxTemplateIntakeTool(
+              addXiaoguiWorkDocxTemplateDataTool(
+                addXiaoguiCollaborationTool(
+                  decorateQuestionnaireTools(result, cwd),
+                  collaborationToolOptions,
+                ),
+                {
+                  getSourceSessionId: collaborationToolOptions.getSourceSessionId,
+                  getSourceRunId: () => st.currentRunId || undefined,
+                },
               ),
               {
                 getSourceSessionId: collaborationToolOptions.getSourceSessionId,
