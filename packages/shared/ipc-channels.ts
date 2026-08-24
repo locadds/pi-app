@@ -128,6 +128,7 @@ export const IPC_INVOKE_CHANNELS = [
   // ipcClient.invoke('xiaogui.*') 调用，模式切换 / DESIGN Tool 调用 / sidecar 状态）
   'ipc:xiaogui.guard.status',
   'ipc:xiaogui.delivery.apply.reconcile',
+  'ipc:xiaogui.delivery.apply.recovery.prepare',
   'ipc:xiaogui.delivery.apply.retry',
   'ipc:xiaogui.delivery.batch.return',
   'ipc:xiaogui.delivery.gate.approve',
