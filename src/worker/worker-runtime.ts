@@ -16,6 +16,7 @@ import { addXiaoguiCollaborationTool } from './xiaogui-collaboration-tool.js'
 import { addXiaoguiWorkDocxTemplateDataTool } from './xiaogui-work-docx-template-data-tool.js'
 import { addXiaoguiWorkDocxTemplateIntakeTool } from './xiaogui-work-docx-template-intake-tool.js'
 import { addXiaoguiWorkDocxTemplateMaterializeTool } from './xiaogui-work-docx-template-materialize-tool.js'
+import { addXiaoguiWorkDocxAdvancedGenerationTool } from './xiaogui-work-docx-advanced-generation-tool.js'
 import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool.js'
 import {
   handleSessionEvent as dispatchSessionEvent,
@@ -180,8 +181,9 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
             getSourceSessionId: () => st.currentSessionId || undefined,
             getSourceTurnId: () => st.currentTurnId || undefined,
           }
-          return addXiaoguiWorkDocumentSnapshotTool(
-            addXiaoguiWorkDocxTemplateMaterializeTool(
+          return addXiaoguiWorkDocxAdvancedGenerationTool(
+            addXiaoguiWorkDocumentSnapshotTool(
+              addXiaoguiWorkDocxTemplateMaterializeTool(
               addXiaoguiWorkDocxTemplateIntakeTool(
                 addXiaoguiWorkDocxTemplateDataTool(
                   addXiaoguiCollaborationTool(
@@ -197,6 +199,11 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
                   getSourceSessionId: collaborationToolOptions.getSourceSessionId,
                   getSourceRunId: () => st.currentRunId || undefined,
                 },
+              ),
+              {
+                getSourceSessionId: collaborationToolOptions.getSourceSessionId,
+                getSourceRunId: () => st.currentRunId || undefined,
+              },
               ),
               {
                 getSourceSessionId: collaborationToolOptions.getSourceSessionId,

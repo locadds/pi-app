@@ -66,6 +66,12 @@
     },
     {
       "type": "library",
+      "name": "docxtemplater",
+      "version": "3.69.3",
+      "bom-ref": "pkg:npm/docxtemplater@3.69.3"
+    },
+    {
+      "type": "library",
       "name": "dompurify",
       "version": "3.4.11",
       "bom-ref": "pkg:npm/dompurify@3.4.11"
@@ -123,6 +129,24 @@
       "name": "officeparser",
       "version": "7.8.0",
       "bom-ref": "pkg:npm/officeparser@7.8.0"
+    },
+    {
+      "type": "library",
+      "name": "@xmldom/xmldom",
+      "version": "0.9.12",
+      "bom-ref": "pkg:npm/@xmldom/xmldom@0.9.12"
+    },
+    {
+      "type": "library",
+      "name": "pako",
+      "version": "2.2.0",
+      "bom-ref": "pkg:npm/pako@2.2.0"
+    },
+    {
+      "type": "library",
+      "name": "pizzip",
+      "version": "3.2.0",
+      "bom-ref": "pkg:npm/pizzip@3.2.0"
     },
     {
       "type": "library",

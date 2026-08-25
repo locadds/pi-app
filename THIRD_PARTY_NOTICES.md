@@ -14,3 +14,13 @@
 `officeparser/slim` 中的 OCR 实现已替换为不可调用的禁用桩；其预编译单文件所含第三方组件和许可证以 npm 包内 `dist/sbom.cdx.json` 为准，其中包括 MIT 许可的 `@xmldom/xmldom`、`fflate`、`file-type`，以及 Apache-2.0 许可的 `pdfjs-dist`。小规固定传入 `fileType: 'docx'`，不会进入 PDF 或 OCR 分支。
 
 MIT 许可证原文随 npm 包发布于 `officeparser/LICENSE`；版权声明为 `Copyright (c) 2019 Harsh Ankur`。
+
+## docxtemplater 3.69.3 与 PizZip 3.2.0
+
+- 来源：https://github.com/open-xml-templating/docxtemplater 与 https://github.com/open-xml-templating/pizzip
+- 许可证：均选择 MIT 许可路径；发布包内保留各自许可证文本。
+- 用途：只在小规 WORK 高级 Word 生成链中展开已经由小规内容控件明确标注的重复块、布尔条件块和普通字段。
+- 运行边界：输入必须先通过现有 JSZip DOCX 安全门；不启用表达式解析器、收费模块、脚本、OCR、PDF 或附件提取，也不让该组件读取本地路径。
+- 小规适配边界：小规只把 `xiaogui.repeat:*` 和 `xiaogui.conditional:*` 翻译为基础区段语义；生成后移除结构外壳，并再次通过 JSZip 安全门。
+
+直接运行依赖包括 MIT 许可的 `@xmldom/xmldom@0.9.12`，以及同时保留 MIT 与 zlib 许可声明的 `pako@2.2.0`。E 盘 Electron 43 依赖门及一次目录包实测通过，实际目录包增量为 3,735,987 B（约 3.56 MiB）。

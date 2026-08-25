@@ -34,6 +34,10 @@ describe('xiaogui Worker host-tool router', () => {
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_CANCELLED' as const },
     }))
+    const workDocxAdvancedGeneration = vi.fn(async () => ({
+      ok: true as const,
+      value: { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_CANCELLED' as const },
+    }))
     const workDocumentSnapshot = vi.fn(async () => ({
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCUMENT_SELECTION_CANCELLED' as const },
@@ -44,6 +48,7 @@ describe('xiaogui Worker host-tool router', () => {
       workDocxTemplateData,
       workDocxTemplateIntake,
       workDocxTemplateMaterialize,
+      workDocxAdvancedGeneration,
       workDocumentSnapshot,
     })
     const collaborationRequest: WorkerHostToolRequestV1 = {
@@ -112,12 +117,24 @@ describe('xiaogui Worker host-tool router', () => {
         toolCallId: 'call-6',
       },
     }
+    const advancedGenerationRequest: WorkerHostToolRequestV1 = {
+      type: 'host-tool-request',
+      requestId: 'advanced-generation-1',
+      method: 'xiaogui.work.docx-advanced-generation.v1',
+      payload: {
+        action: 'CANCEL',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-3',
+        toolCallId: 'call-7',
+      },
+    }
 
     await router(metadata(collaborationRequest))
     await router(metadata(workRequest))
     await router(metadata(templateDataRequest))
     await router(metadata(templateIntakeRequest))
     await router(metadata(templateMaterializeRequest))
+    await router(metadata(advancedGenerationRequest))
     await router(metadata(snapshotRequest))
 
     expect(collaboration).toHaveBeenCalledOnce()
@@ -125,12 +142,14 @@ describe('xiaogui Worker host-tool router', () => {
     expect(workDocxTemplateData).toHaveBeenCalledOnce()
     expect(workDocxTemplateIntake).toHaveBeenCalledOnce()
     expect(workDocxTemplateMaterialize).toHaveBeenCalledOnce()
+    expect(workDocxAdvancedGeneration).toHaveBeenCalledOnce()
     expect(workDocumentSnapshot).toHaveBeenCalledOnce()
     expect(collaboration).toHaveBeenCalledWith(metadata(collaborationRequest))
     expect(workDocx).toHaveBeenCalledWith(metadata(workRequest))
     expect(workDocxTemplateData).toHaveBeenCalledWith(metadata(templateDataRequest))
     expect(workDocxTemplateIntake).toHaveBeenCalledWith(metadata(templateIntakeRequest))
     expect(workDocxTemplateMaterialize).toHaveBeenCalledWith(metadata(templateMaterializeRequest))
+    expect(workDocxAdvancedGeneration).toHaveBeenCalledWith(metadata(advancedGenerationRequest))
     expect(workDocumentSnapshot).toHaveBeenCalledWith(metadata(snapshotRequest))
   })
 })
