@@ -24,6 +24,13 @@ import type {
   TemplateMaterializePlanV1,
   TemplateMaterializeReceiptV1,
 } from './xiaogui-work-docx-template-materialize'
+import type {
+  AdvancedGenerationErrorCodeV1,
+  AdvancedGenerationPlanV1,
+  AdvancedGenerationReceiptV1,
+  AdvancedTemplateDataV1,
+  AdvancedTemplateSchemaV1,
+} from './xiaogui-work-docx-advanced-generation'
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
@@ -39,6 +46,8 @@ export const XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1 =
   'xiaogui.work.docx-template-intake.v1' as const
 export const XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1 =
   'xiaogui.work.docx-template-materialize.v1' as const
+export const XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1 =
+  'xiaogui.work.docx-advanced-generation.v1' as const
 export const XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 = 'xiaogui.work.document-snapshot.v1' as const
 
 export interface XiaoguiCreateCollaborationPlanPayloadV1 {
@@ -176,6 +185,22 @@ export type XiaoguiWorkDocxTemplateMaterializePayloadV1 =
   | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'CANCEL' })
   | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'OPEN' | 'REVEAL' })
 
+type XiaoguiWorkDocxAdvancedGenerationCommonPayloadV1 = {
+  sourceSessionId: string
+  sourceRunId: string
+  toolCallId: string
+}
+
+export type XiaoguiWorkDocxAdvancedGenerationPayloadV1 =
+  | (XiaoguiWorkDocxAdvancedGenerationCommonPayloadV1 & { action: 'START' })
+  | (XiaoguiWorkDocxAdvancedGenerationCommonPayloadV1 & {
+      action: 'PREPARE'
+      data: AdvancedTemplateDataV1
+    })
+  | (XiaoguiWorkDocxAdvancedGenerationCommonPayloadV1 & {
+      action: 'CONFIRM' | 'RESUME' | 'CANCEL' | 'OPEN' | 'REVEAL'
+    })
+
 export type WorkerHostToolRequestV1 =
   | {
       type: 'host-tool-request'
@@ -206,6 +231,12 @@ export type WorkerHostToolRequestV1 =
       requestId: string
       method: typeof XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1
       payload: XiaoguiWorkDocxTemplateMaterializePayloadV1
+    }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: typeof XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1
+      payload: XiaoguiWorkDocxAdvancedGenerationPayloadV1
     }
   | {
       type: 'host-tool-request'
@@ -366,6 +397,21 @@ export type XiaoguiWorkDocxTemplateMaterializeResultV1 =
       action: 'OPEN' | 'REVEAL'
     }
 
+export type XiaoguiWorkDocxAdvancedGenerationResultV1 =
+  | { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_SELECTION_CANCELLED' }
+  | { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_SCHEMA_READY'; schema: AdvancedTemplateSchemaV1 }
+  | { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_PREPARED'; plan: AdvancedGenerationPlanV1 }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_RESUMED'
+      schema?: AdvancedTemplateSchemaV1
+      plan?: AdvancedGenerationPlanV1
+      receipt?: AdvancedGenerationReceiptV1
+    }
+  | { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_TARGET_SELECTION_CANCELLED' }
+  | { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_PUBLISHED'; receipt: AdvancedGenerationReceiptV1 }
+  | { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_CANCELLED' }
+  | { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_ACCESSED'; action: 'OPEN' | 'REVEAL' }
+
 export type XiaoguiWorkDocumentSnapshotResultV1 =
   | {
       kind: 'XIAOGUI_WORK_DOCUMENT_SELECTION_CANCELLED'
@@ -395,6 +441,7 @@ export type WorkerHostToolErrorCodeV1 =
   | WorkDocxErrorCodeV1
   | TemplateIntakeErrorCodeV1
   | TemplateMaterializeErrorCodeV1
+  | AdvancedGenerationErrorCodeV1
   | WorkDocumentSnapshotErrorCodeV1
 
 export type WorkerHostToolOutcomeV1 =
@@ -406,6 +453,7 @@ export type WorkerHostToolOutcomeV1 =
         | XiaoguiWorkDocxTemplateDataResultV1
         | XiaoguiWorkDocxTemplateIntakeResultV1
         | XiaoguiWorkDocxTemplateMaterializeResultV1
+        | XiaoguiWorkDocxAdvancedGenerationResultV1
         | XiaoguiWorkDocumentSnapshotResultV1
     }
   | {

@@ -22,6 +22,11 @@ import { sessionScopeResolverV1 } from './scope-service'
 import { createXiaoguiWorkerToolHandlerV1 } from './task-hub/worker-tool'
 import { getDefaultCollaborationHubApplication } from './task-hub/ipc'
 import { createXiaoguiWorkDocxWorkerToolHandlerV1 } from './work-docx-worker-tool'
+import {
+  closeDefaultWorkDocxAdvancedGenerationServiceV1,
+  getDefaultWorkDocxAdvancedGenerationServiceV1,
+} from './work-docx-advanced-generation-composition'
+import { createXiaoguiWorkDocxAdvancedGenerationWorkerToolHandlerV1 } from './work-docx-advanced-generation-worker-tool'
 import { createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1 } from './work-docx-template-data-worker-tool'
 import {
   closeDefaultWorkDocxTemplateIntakeServiceV1,
@@ -55,6 +60,10 @@ export function initXiaogui(): void {
         getService: getDefaultWorkDocxServiceV1,
         scopeResolver: sessionScopeResolverV1,
       }),
+      workDocxAdvancedGeneration: createXiaoguiWorkDocxAdvancedGenerationWorkerToolHandlerV1({
+        getService: getDefaultWorkDocxAdvancedGenerationServiceV1,
+        scopeResolver: sessionScopeResolverV1,
+      }),
       workDocxTemplateData: createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1({
         getService: getDefaultWorkDocxServiceV1,
         scopeResolver: sessionScopeResolverV1,
@@ -84,6 +93,7 @@ export async function shutdownXiaoguiSidecar(): Promise<void> {
     Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateIntakeServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateMaterializeServiceV1()),
+    Promise.resolve().then(() => closeDefaultWorkDocxAdvancedGenerationServiceV1()),
   ])
   const firstFailure = results.find(
     (result): result is PromiseRejectedResult => result.status === 'rejected',

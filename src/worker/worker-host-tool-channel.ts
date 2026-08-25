@@ -12,6 +12,7 @@ const REQUEST_TIMEOUT_MS = 30_000
 const INTERACTIVE_WORK_DOCX_TIMEOUT_MS = 15 * 60_000
 const INTERACTIVE_TEMPLATE_INTAKE_TIMEOUT_MS = 15 * 60_000
 const INTERACTIVE_TEMPLATE_MATERIALIZE_TIMEOUT_MS = 15 * 60_000
+const INTERACTIVE_ADVANCED_GENERATION_TIMEOUT_MS = 15 * 60_000
 const INTERACTIVE_DOCUMENT_SNAPSHOT_TIMEOUT_MS = 15 * 60_000
 
 interface PendingRequest {
@@ -70,6 +71,11 @@ function requestTimeoutMs(request: WorkerHostToolRequestInputV1): number | null 
     // CONFIRM 可能打开保存选择器并执行排他发布；越过二次确认门后必须等待真实回执。
     if (request.payload.action === 'CONFIRM') return null
     return INTERACTIVE_TEMPLATE_MATERIALIZE_TIMEOUT_MS
+  }
+  if (request.method === 'xiaogui.work.docx-advanced-generation.v1') {
+    // CONFIRM 打开保存选择器并排他发布；进入提交点后等待真实回执。
+    if (request.payload.action === 'CONFIRM') return null
+    return INTERACTIVE_ADVANCED_GENERATION_TIMEOUT_MS
   }
   return REQUEST_TIMEOUT_MS
 }

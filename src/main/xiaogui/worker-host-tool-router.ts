@@ -1,6 +1,7 @@
 import {
   XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1,
   XIAOGUI_WORK_DOCX_METHOD_V1,
+  XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1,
   XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1,
   XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1,
   XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1,
@@ -12,6 +13,7 @@ import type { WorkerHostToolRequestHandler } from '../worker-manager-types'
 export interface XiaoguiWorkerHostToolRouterOptionsV1 {
   collaboration: WorkerHostToolRequestHandler
   workDocx: WorkerHostToolRequestHandler
+  workDocxAdvancedGeneration: WorkerHostToolRequestHandler
   workDocxTemplateData: WorkerHostToolRequestHandler
   workDocxTemplateIntake: WorkerHostToolRequestHandler
   workDocxTemplateMaterialize: WorkerHostToolRequestHandler
@@ -28,6 +30,8 @@ export function createXiaoguiWorkerHostToolRouterV1(
         return options.collaboration(payload)
       case XIAOGUI_WORK_DOCX_METHOD_V1:
         return options.workDocx(payload)
+      case XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1:
+        return options.workDocxAdvancedGeneration(payload)
       case XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1:
         return options.workDocxTemplateData(payload)
       case XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1:
