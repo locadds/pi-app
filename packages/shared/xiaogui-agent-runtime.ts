@@ -93,9 +93,9 @@ export interface RuntimeRoutingPolicyV1 {
   mode: RuntimeWorkModeV1
   requiredCapabilities: readonly RuntimeTaskCapabilityV1[]
   /**
-   * Production routing requires all four operations when omitted. A caller may
-   * state a narrower task list for decision evidence, while baseline production
-   * selection still enforces the legacy stream/interrupt/inspect invariants.
+   * The list records task intent. The registry always merges it with the four
+   * baseline lifecycle operations, so an empty list cannot weaken production
+   * recovery, event, interrupt, or result-reconciliation gates.
    */
   requiredOperations?: readonly RuntimeRequiredOperationV1[]
   dataEgressPolicy: RuntimeDataEgressPolicyV1

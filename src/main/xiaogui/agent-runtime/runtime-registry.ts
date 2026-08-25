@@ -307,7 +307,7 @@ const DEFAULT_PRODUCTION_OPERATIONS: readonly RuntimeRequiredOperationV1[] = [
 ]
 
 function requiredOperations(policy: RuntimeRoutingPolicyV1): readonly RuntimeRequiredOperationV1[] {
-  return policy.requiredOperations ?? DEFAULT_PRODUCTION_OPERATIONS
+  return [...new Set([...DEFAULT_PRODUCTION_OPERATIONS, ...(policy.requiredOperations ?? [])])]
 }
 
 function supportsRequiredOperations(

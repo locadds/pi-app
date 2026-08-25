@@ -173,7 +173,7 @@ describe('AgentRuntimeRegistryV1', () => {
       priorityAdapterIds: ['scripted-local'],
     }))).resolves.toMatchObject({
       ok: true,
-      value: { reasons: expect.arrayContaining(['operations:RESUME,RESULT_RECONCILE']) },
+      value: { reasons: expect.arrayContaining(['operations:RESUME,EVENT_STREAM,INTERRUPT,RESULT_RECONCILE']) },
     })
   })
 
