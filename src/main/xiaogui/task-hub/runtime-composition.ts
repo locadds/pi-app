@@ -1,7 +1,7 @@
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 
-import type { RuntimeAdapterSelectionV1 } from '@shared/xiaogui-agent-runtime'
+import type { AgentRuntimeRegistryV1, RuntimeAdapterSelectionV1 } from '@shared/xiaogui-agent-runtime'
 import type { SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 
 import { KimiAttemptWorkspaceResolverV1 } from '../agent-runtime/kimi-attempt-workspace'
@@ -15,6 +15,7 @@ import { KIMI_ACP_APPROVED_VERSION_V1 } from '../agent-runtime/acp/kimi-tool-pol
 import type { AcpTransportFactoryV1 } from '../agent-runtime/acp/types'
 import { prepareKimiProductionHomeV1 } from '../agent-runtime/kimi-production-home'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
+import { createAgentRuntimeRegistryV1 } from '../agent-runtime/runtime-registry'
 import {
   createCollaborationHubApplicationV1,
   type CollaborationHubApplicationV1,
@@ -88,6 +89,7 @@ export function createXiaoguiRuntimeCompositionV1(
   let inputStore: AttemptExecutionInputStoreV1 | undefined
   let application: CollaborationHubApplicationV1 | undefined
   let kimiAdapter: KimiAcpRuntimeAdapterV1 | undefined
+  let runtimeRegistry: AgentRuntimeRegistryV1 | undefined
   let taskExecution: XiaoguiTaskExecutionOrchestratorV1 | undefined
   let runtimeMonitor: RuntimeOutcomeMonitorV1 | undefined
   let taskVerificationCoordinator: TaskVerificationCoordinatorV1 | undefined
@@ -133,7 +135,11 @@ export function createXiaoguiRuntimeCompositionV1(
         ? { enabled: true, selection: KIMI_PRODUCTION_SELECTION_V1 }
         : { enabled: false },
     })
-    const runtimeHost = createAgentRuntimeHostV1(kimiAdapter)
+    runtimeRegistry = createAgentRuntimeRegistryV1()
+    void runtimeRegistry.register(kimiAdapter)
+    const runtimeHost = Object.assign(createAgentRuntimeHostV1(runtimeRegistry), {
+      resolve: runtimeRegistry.resolve.bind(runtimeRegistry),
+    })
 
     const hubDbPath = join(userDataDir, 'xiaogui-task-hub-m2a.sqlite')
     const fixedVerificationPort = new FixedTypecheckVerificationPortV1()
@@ -151,7 +157,17 @@ export function createXiaoguiRuntimeCompositionV1(
       // composition does not make previously created plans disappear.
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
       ...(options.productionEnabled
-        ? { agentRuntime: runtimeHost, agentSelection: KIMI_PRODUCTION_SELECTION_V1 }
+        ? {
+            agentRuntime: runtimeHost,
+            agentSelection: KIMI_PRODUCTION_SELECTION_V1,
+            agentRoutingPolicy: {
+              mode: 'CODING' as const,
+              requiredCapabilities: ['CODING.GIT.CHANGESET' as const, 'CODING.TYPESCRIPT' as const],
+              dataEgressPolicy: 'EXTERNAL_ALLOWED' as const,
+              priorityAdapterIds: [KIMI_PRODUCTION_SELECTION_V1.adapterId],
+              requireProductionApproval: true as const,
+            },
+          }
         : {}),
       baselineProvider,
       workspaceBridge: inputStore.bridge,
@@ -166,6 +182,21 @@ export function createXiaoguiRuntimeCompositionV1(
       inputStage: { stageAttemptInput: (input) => inputStore!.stage(input) },
       fileScopeResolver: attemptWorkspaces,
       runtimeMonitor,
+      runtimeBindingRestorer: async ({ attemptId, runtimeSessionId }) => {
+        const store = new CollaborationHubSqliteStoreV1(hubDbPath)
+        try {
+          const outbox = store.agentDispatchOutbox(attemptId)
+          if (!outbox?.runtime_request_json) return { ok: false, reasonCode: 'RUNTIME_BINDING_MISSING' }
+          const request = JSON.parse(outbox.runtime_request_json) as { selection?: { adapterId?: unknown } }
+          return typeof request.selection?.adapterId === 'string'
+            ? runtimeRegistry!.restoreBinding(runtimeSessionId, request.selection.adapterId)
+            : { ok: false, reasonCode: 'RUNTIME_BINDING_INVALID' }
+        } catch {
+          return { ok: false, reasonCode: 'RUNTIME_BINDING_INVALID' }
+        } finally {
+          store.close()
+        }
+      },
       verificationCoordinator: taskVerificationCoordinator,
       now: options.now,
     })
@@ -189,7 +220,7 @@ export function createXiaoguiRuntimeCompositionV1(
       taskExecution,
       deliveryWorkflow,
       deliveryApplyRegistry,
-      kimiAdapter,
+      runtimeRegistry,
       inputStore,
       payloadVault,
       workspaceRegistry,
@@ -200,6 +231,7 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(taskVerificationCoordinator)
     closeQuietly(deliveryWorkflow)
     closeQuietly(deliveryApplyRegistry)
+    closeQuietly(runtimeRegistry)
     closeQuietly(kimiAdapter)
     closeQuietly(application)
     closeQuietly(inputStore)
@@ -214,7 +246,7 @@ function createCompositionInterface(
   taskExecution: XiaoguiTaskExecutionOrchestratorV1,
   delivery: XiaoguiDeliveryWorkflowV1,
   deliveryApplyRegistry: SqliteDeliveryApplyAttemptRegistryV1,
-  kimiAdapter: KimiAcpRuntimeAdapterV1,
+  runtimeRegistry: AgentRuntimeRegistryV1,
   inputStore: AttemptExecutionInputStoreV1,
   payloadVault: PrivateRuntimePayloadVaultV1,
   workspaceRegistry: SqliteAttemptWorkspaceRegistryV1,
@@ -237,7 +269,7 @@ function createCompositionInterface(
         await delivery.close()
         await closeAll([
           deliveryApplyRegistry,
-          kimiAdapter,
+          runtimeRegistry,
           application,
           inputStore,
           payloadVault,

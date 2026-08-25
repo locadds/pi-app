@@ -162,6 +162,38 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     await restarted.close()
   })
 
+  it('restores the persisted runtime binding before watching a cross-restart RUNNING Attempt', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    const dbPath = await tempDb()
+    const firstMonitor = fakeRuntimeMonitor()
+    const coordinator = fakeVerificationCoordinator()
+    const first = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      runtimeMonitor: firstMonitor,
+      verificationCoordinator: coordinator,
+    })
+    await expect(first.start(request())).resolves.toMatchObject({ ok: true })
+    await first.close()
+
+    const restored: Array<{ attemptId: AttemptId; runtimeSessionId: string }> = []
+    const restartedMonitor = fakeRuntimeMonitor()
+    const restarted = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      runtimeMonitor: restartedMonitor,
+      runtimeBindingRestorer: async (input) => {
+        restored.push(input)
+        return { ok: true }
+      },
+      verificationCoordinator: coordinator,
+    })
+    await restarted.recover()
+
+    expect(restored).toEqual([{ attemptId: ATTEMPT_ID, runtimeSessionId: 'runtime-1' }])
+    expect(restartedMonitor.watched()).toEqual(['runtime-1'])
+    expect(events.filter((event) => event === 'dispatch')).toHaveLength(1)
+    expect(events.filter((event) => event === 'outcome-unknown')).toHaveLength(0)
+    await restarted.close()
+  })
+
   it('registers runtime monitoring for RUNNING Attempts and routes SUCCEEDED to task verification', async () => {
     const events: string[] = []
     const hub = fakeHub(events)
@@ -296,6 +328,7 @@ async function createOrchestrator(
   existingDbPath?: string,
   runtime?: {
     runtimeMonitor?: RuntimeOutcomeMonitorV1
+    runtimeBindingRestorer?: ConstructorParameters<typeof XiaoguiTaskExecutionOrchestratorV1>[0]['runtimeBindingRestorer']
     verificationCoordinator?: TaskVerificationCoordinatorV1
   },
   inputStageOverride?: TaskExecutionInputStageV1,

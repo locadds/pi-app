@@ -49,6 +49,7 @@ describe('completion notification copy', () => {
       previewMode: 'response',
       isTest: true,
     })
+    expect(copy.projectLabel).toBe('小规')
     expect(copy.title).toBe('测试提醒')
     expect(copy.body).toBe('任务完成，可以返回查看')
     expect(copy.body).not.toContain('真实')
@@ -63,6 +64,7 @@ describe('completion notification copy', () => {
       previewMode: 'fixed',
       durationMs: 12_400,
     })
+    expect(copy.projectLabel).toBe('小规')
     expect(copy.title).toBe('Ship the patch')
     expect(copy.body).toBe('Task finished. You can return to the session.')
     expect(copy.meta).toContain('12s')
