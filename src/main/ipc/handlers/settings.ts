@@ -1,5 +1,6 @@
 import { shell, BrowserWindow } from 'electron'
 import type { AppUpdateAvailableInfo } from '@shared/app-update'
+import { XIAOGUI_GITHUB_REPOSITORY } from '@shared/xiaogui-product'
 import { configStore, type StoreSchema } from '../../config-store'
 import { asrConfigForSettingsResponse, loadAsrConfig, saveAsrConfig } from '../../asr-config-store'
 import { getMainWindow } from '../../window'
@@ -101,7 +102,11 @@ export function registerSettingsHandlers(): void {
   })
 
   registerHandler('ipc:app.openRelease', async (req) => {
-    const slug = (process.env.PI_DESKTOP_GITHUB_REPO || 'justhil/pi-app').trim()
+    const slug = (
+      process.env.XIAOGUI_GITHUB_REPO ||
+      process.env.PI_DESKTOP_GITHUB_REPO ||
+      XIAOGUI_GITHUB_REPOSITORY
+    ).trim()
     const url = (req.url && String(req.url).trim()) || `https://github.com/${slug}/releases`
     await shell.openExternal(url)
     return { ok: true }

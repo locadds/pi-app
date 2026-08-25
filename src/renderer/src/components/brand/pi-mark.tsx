@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { cn } from '@renderer/lib/utils'
 
-/** 与 resources/icon.svg 一致：黑底 + 衬线 π */
+/** 与 resources/icon.svg 一致：朱砂底 + 白色“规”。保留导出名以兼容既有引用。 */
 function PiMarkImpl({ className, size = 16 }: { className?: string; size?: number; inverted?: boolean }) {
   return (
     <svg
@@ -12,18 +12,19 @@ function PiMarkImpl({ className, size = 16 }: { className?: string; size?: numbe
       className={cn('shrink-0', className)}
       aria-hidden
     >
-      <rect width="1024" height="1024" rx="256" ry="256" className="fill-foreground" />
+      <rect width="1024" height="1024" rx="256" ry="256" fill="#c0392b" />
       <text
         x="512"
-        y="740"
+        y="715"
         textAnchor="middle"
-        className="fill-background"
+        fill="#ffffff"
         style={{
-          fontFamily: "'Times New Roman', Georgia, serif",
-          fontSize: 760,
+          fontFamily: "'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif",
+          fontSize: 620,
+          fontWeight: 700,
         }}
       >
-        π
+        规
       </text>
     </svg>
   )

@@ -222,8 +222,8 @@ export function registerSkillsResourceHandlers(): void {
     const isGlobalSystem = resolved.toLowerCase() === resolve(getGlobalSystemMd()).toLowerCase()
     if (isGlobalSystem && !existsSync(resolved)) {
       let seed =
-        '# pi 系统提示词\n\n' +
-        '保存本文件后将替换 pi 内置 harness 默认文案（与终端 pi 的 SYSTEM.md 一致）。\n\n'
+        '# 小规引擎系统提示词\n\n' +
+        '保存本文件后将替换小规底层运行时的默认文案（与兼容的 SYSTEM.md 一致）。\n\n'
       const cwd = configStore.get('currentProject') || workerManager.cwd || process.cwd()
       if (
         workerManager.isRunning &&

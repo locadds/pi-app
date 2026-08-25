@@ -1,5 +1,5 @@
 export type AdapterIdV1 = string & { readonly __brand: 'AdapterIdV1' }
-export type RuntimeKindV1 = 'KIMI' | 'QODER' | 'OTHER'
+export type RuntimeKindV1 = 'KIMI' | 'QODER' | 'CODEX' | 'OTHER'
 export type RuntimeProtocolV1 =
   | 'ACP'
   | 'HEADLESS'
@@ -54,7 +54,6 @@ export interface RuntimeCapabilityV2 extends RuntimeCapabilityV1 {
   supportsInterrupt: boolean
   supportsResultReconcile: boolean
 }
-
 export interface RuntimeAdapterSelectionV1 {
   adapterId: AdapterIdV1 | string
   runtimeKind: RuntimeKindV1
@@ -84,9 +83,21 @@ export interface RuntimeProductionPolicyV1 {
   rejectDiagnosticOnly: true
 }
 
+export type RuntimeRequiredOperationV1 =
+  | 'RESUME'
+  | 'EVENT_STREAM'
+  | 'INTERRUPT'
+  | 'RESULT_RECONCILE'
+
 export interface RuntimeRoutingPolicyV1 {
   mode: RuntimeWorkModeV1
   requiredCapabilities: readonly RuntimeTaskCapabilityV1[]
+  /**
+   * Production routing requires all four operations when omitted. A caller may
+   * state a narrower task list for decision evidence, while baseline production
+   * selection still enforces the legacy stream/interrupt/inspect invariants.
+   */
+  requiredOperations?: readonly RuntimeRequiredOperationV1[]
   dataEgressPolicy: RuntimeDataEgressPolicyV1
   preferredAdapterId?: AdapterIdV1 | string
   priorityAdapterIds: readonly (AdapterIdV1 | string)[]
@@ -97,6 +108,7 @@ export type RuntimeRouteFailureReasonV1 =
   | 'RUNTIME_REGISTRY_CLOSED'
   | 'RUNTIME_ADAPTER_ALREADY_REGISTERED'
   | 'RUNTIME_ADAPTER_NOT_REGISTERED'
+  | 'RUNTIME_SESSION_RESTORE_UNAVAILABLE'
   | 'RUNTIME_PREFERRED_NOT_AVAILABLE'
   | 'RUNTIME_DATA_EGRESS_FORBIDDEN'
   | 'RUNTIME_CAPABILITY_UNSUPPORTED'
@@ -119,7 +131,7 @@ export type RuntimeRouteResultV1 =
 export interface AgentRuntimeRegistryV1 extends AgentRuntimeAdapterV1 {
   register(adapter: AgentRuntimeAdapterV1): Promise<{ ok: true } | { ok: false; reasonCode: RuntimeRouteFailureReasonV1 }>
   unregister(adapterId: AdapterIdV1 | string): Promise<{ ok: true } | { ok: false; reasonCode: RuntimeRouteFailureReasonV1 }>
-  restoreBinding(runtimeSessionId: string, adapterId: AdapterIdV1 | string): Promise<{ ok: true } | { ok: false; reasonCode: RuntimeRouteFailureReasonV1 }>
+  restoreBinding(runtimeSessionId: string, selection: RuntimeAdapterSelectionV1): Promise<{ ok: true } | { ok: false; reasonCode: RuntimeRouteFailureReasonV1 }>
   resolve(policy: RuntimeRoutingPolicyV1): Promise<RuntimeRouteResultV1>
   close(): Promise<void>
 }
@@ -546,7 +558,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function isRuntimeKind(value: unknown): value is RuntimeKindV1 {
-  return value === 'KIMI' || value === 'QODER' || value === 'OTHER'
+  return value === 'KIMI' || value === 'QODER' || value === 'CODEX' || value === 'OTHER'
 }
 
 function isRuntimeProtocol(value: unknown): value is RuntimeProtocolV1 {

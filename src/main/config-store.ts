@@ -97,7 +97,8 @@ const store = new Store<StoreSchema>({
     rightPanelOrder: [],
     language: 'zh',
     autoOpenLastProject: true,
-    autoCheckRegistryUpdates: true,
+    // 内部试用版默认不主动查询公开更新；已有用户的显式设置不受影响。
+    autoCheckRegistryUpdates: false,
     ignoredUpdateVersion: '',
     alertSoundEnabled: true,
     alertNotificationEnabled: true,

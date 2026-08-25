@@ -1,7 +1,12 @@
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 
-import type { AgentRuntimeRegistryV1, RuntimeAdapterSelectionV1 } from '@shared/xiaogui-agent-runtime'
+import type {
+  AgentRuntimeAdapterV1,
+  AgentRuntimeRegistryV1,
+  RuntimeAdapterSelectionV1,
+  RuntimeRoutingPolicyV1,
+} from '@shared/xiaogui-agent-runtime'
 import type { SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 
 import { KimiAttemptWorkspaceResolverV1 } from '../agent-runtime/kimi-attempt-workspace'
@@ -49,6 +54,8 @@ export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly projectResolver?: ProjectWorkspaceResolverV1
   readonly kimiProbe?: KimiAcpProbeV1
   readonly kimiTransportFactory?: AcpTransportFactoryV1
+  readonly additionalRuntimeAdapters?: readonly AgentRuntimeAdapterV1[]
+  readonly runtimeRoutingPolicy?: RuntimeRoutingPolicyV1
   readonly now?: () => string
 }
 
@@ -137,6 +144,9 @@ export function createXiaoguiRuntimeCompositionV1(
     })
     runtimeRegistry = createAgentRuntimeRegistryV1()
     void runtimeRegistry.register(kimiAdapter)
+    for (const adapter of options.additionalRuntimeAdapters ?? []) {
+      void runtimeRegistry.register(adapter)
+    }
     const runtimeHost = Object.assign(createAgentRuntimeHostV1(runtimeRegistry), {
       resolve: runtimeRegistry.resolve.bind(runtimeRegistry),
     })
@@ -160,7 +170,7 @@ export function createXiaoguiRuntimeCompositionV1(
         ? {
             agentRuntime: runtimeHost,
             agentSelection: KIMI_PRODUCTION_SELECTION_V1,
-            agentRoutingPolicy: {
+            agentRoutingPolicy: options.runtimeRoutingPolicy ?? {
               mode: 'CODING' as const,
               requiredCapabilities: ['CODING.GIT.CHANGESET' as const, 'CODING.TYPESCRIPT' as const],
               dataEgressPolicy: 'EXTERNAL_ALLOWED' as const,
@@ -187,9 +197,9 @@ export function createXiaoguiRuntimeCompositionV1(
         try {
           const outbox = store.agentDispatchOutbox(attemptId)
           if (!outbox?.runtime_request_json) return { ok: false, reasonCode: 'RUNTIME_BINDING_MISSING' }
-          const request = JSON.parse(outbox.runtime_request_json) as { selection?: { adapterId?: unknown } }
-          return typeof request.selection?.adapterId === 'string'
-            ? runtimeRegistry!.restoreBinding(runtimeSessionId, request.selection.adapterId)
+          const request = JSON.parse(outbox.runtime_request_json) as { selection?: RuntimeAdapterSelectionV1 }
+          return request.selection && typeof request.selection.adapterId === 'string'
+            ? runtimeRegistry!.restoreBinding(runtimeSessionId, request.selection)
             : { ok: false, reasonCode: 'RUNTIME_BINDING_INVALID' }
         } catch {
           return { ok: false, reasonCode: 'RUNTIME_BINDING_INVALID' }
@@ -232,7 +242,6 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(deliveryWorkflow)
     closeQuietly(deliveryApplyRegistry)
     closeQuietly(runtimeRegistry)
-    closeQuietly(kimiAdapter)
     closeQuietly(application)
     closeQuietly(inputStore)
     closeQuietly(payloadVault)

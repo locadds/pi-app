@@ -122,7 +122,7 @@ describe('AgentRuntimeRegistryV1', () => {
       sendResult: { accepted: true, requestId: 'wrong-adapter' },
     }))
 
-    await expect(registry.restoreBinding('runtime-from-database', 'scripted-local')).resolves.toEqual({ ok: true })
+    await expect(registry.restoreBinding('runtime-from-database', selectionFor(scriptedCapability))).resolves.toEqual({ ok: true })
     await expect(registry.inspect('runtime-from-database')).resolves.toMatchObject({
       state: 'OUTCOME_UNKNOWN',
       reasonCode: 'RUNTIME_STILL_RUNNING',
@@ -137,6 +137,87 @@ describe('AgentRuntimeRegistryV1', () => {
         mediaType: 'application/vnd.xiaogui.runtime-message+json',
       },
     })).resolves.toEqual({ accepted: true, requestId: 'restored-first' })
+  })
+
+  it.each([
+    ['RESUME', 'supportsResume'],
+    ['EVENT_STREAM', 'supportsEventStream'],
+    ['INTERRUPT', 'supportsInterrupt'],
+    ['RESULT_RECONCILE', 'supportsResultReconcile'],
+  ] as const)('rejects a V2 runtime whose %s declaration contradicts its legacy fields', async (operation, field) => {
+    const registry = createAgentRuntimeRegistryV1()
+    await registry.register(new ScriptedAgentRuntimeAdapterV1({
+      capabilities: [capability({
+        ...scriptedCapability,
+        adapterId: `missing-${operation.toLowerCase()}`,
+        capabilityDigest: `sha256:missing-${operation.toLowerCase()}`,
+        [field]: false,
+      })],
+    }))
+
+    await expect(registry.resolve(policy({
+      requiredOperations: [operation],
+      priorityAdapterIds: [`missing-${operation.toLowerCase()}`],
+    }))).resolves.toMatchObject({
+      ok: false,
+      reasonCode: 'NO_APPROVED_RUNTIME',
+      rejectedAdapterIds: [`missing-${operation.toLowerCase()}`],
+    })
+  })
+
+  it('explains the operational requirements used by a successful route', async () => {
+    const registry = createAgentRuntimeRegistryV1()
+    await registry.register(new ScriptedAgentRuntimeAdapterV1({ capabilities: [scriptedCapability] }))
+    await expect(registry.resolve(policy({
+      requiredOperations: ['RESUME', 'RESULT_RECONCILE'],
+      priorityAdapterIds: ['scripted-local'],
+    }))).resolves.toMatchObject({
+      ok: true,
+      value: { reasons: expect.arrayContaining(['operations:RESUME,RESULT_RECONCILE']) },
+    })
+  })
+
+  it('rejects recovery when an adapter id now resolves to a different protocol or capability digest', async () => {
+    const registry = createAgentRuntimeRegistryV1()
+    await registry.register(new ScriptedAgentRuntimeAdapterV1({ capabilities: [scriptedCapability] }))
+    await expect(registry.restoreBinding('runtime-from-database', {
+      ...selectionFor(scriptedCapability),
+      capabilityDigest: 'sha256:replaced-runtime',
+    })).resolves.toEqual({ ok: false, reasonCode: 'RUNTIME_PREFERRED_NOT_AVAILABLE' })
+    await expect(registry.inspect('runtime-from-database')).resolves.toMatchObject({
+      state: 'OUTCOME_UNKNOWN',
+      reasonCode: 'RUNTIME_SESSION_NOT_FOUND',
+    })
+  })
+
+  it('stops new routing after unregister while preserving an in-flight session binding', async () => {
+    const registry = createAgentRuntimeRegistryV1()
+    const adapter = new ScriptedAgentRuntimeAdapterV1({
+      capabilities: [scriptedCapability],
+      createRuntimeSessionId: 'runtime-before-unregister',
+      outcomesBySession: {
+        'runtime-before-unregister': {
+          state: 'SUCCEEDED',
+          runtimeSessionId: 'runtime-before-unregister',
+          receiptDigest: 'sha256:fixed-adapter-result',
+          candidateDigest: 'sha256:fixed-adapter-candidate',
+        },
+      },
+    })
+    await registry.register(adapter)
+    const resolved = await registry.resolve(policy({ priorityAdapterIds: ['scripted-local'] }))
+    if (!resolved.ok) throw new Error('route failed')
+    await registry.createOrResume(request(resolved.value.selection))
+
+    await expect(registry.unregister('scripted-local')).resolves.toEqual({ ok: true })
+    await expect(registry.resolve(policy({ priorityAdapterIds: ['scripted-local'] }))).resolves.toMatchObject({
+      ok: false,
+      reasonCode: 'NO_APPROVED_RUNTIME',
+    })
+    await expect(registry.reconcile('runtime-before-unregister')).resolves.toMatchObject({
+      state: 'SUCCEEDED',
+      receiptDigest: 'sha256:fixed-adapter-result',
+    })
   })
 })
 

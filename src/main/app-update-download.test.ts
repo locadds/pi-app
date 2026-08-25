@@ -114,7 +114,7 @@ describe('downloadAndLaunchUpdate network wiring', () => {
     expect(globalFetch).not.toHaveBeenCalled()
     expect(electron.fetch).toHaveBeenCalledTimes(1)
     expect(electron.fetch).toHaveBeenCalledWith(url, {
-      headers: { 'User-Agent': 'pi-desktop', Accept: 'application/octet-stream' },
+      headers: { 'User-Agent': 'xiaogui-agent', Accept: 'application/octet-stream' },
       redirect: 'follow',
     })
     expect(electron.openPath).toHaveBeenCalledWith(result.path)

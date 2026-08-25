@@ -31,11 +31,11 @@ describe('checkGitHubReleaseUpdate network wiring', () => {
       new Response(
         JSON.stringify({
           tag_name: 'v0.4.21',
-          html_url: 'https://github.com/justhil/pi-app/releases/tag/v0.4.21',
+          html_url: 'https://github.com/locadds/pi-planning-agent/releases/tag/v0.4.21',
           body: '## Fixes',
           assets: [
             {
-              name: 'pi Desktop-Setup-0.4.21-x64.exe',
+              name: '小规 Agent-Setup-0.4.21-x64.exe',
               browser_download_url: 'https://example.test/setup.exe',
               size: 42,
             },
@@ -56,12 +56,12 @@ describe('checkGitHubReleaseUpdate network wiring', () => {
 
     expect(electron.fetch).toHaveBeenCalledTimes(1)
     expect(electron.fetch.mock.calls[0][0]).toBe(
-      'https://api.github.com/repos/justhil/pi-app/releases/latest',
+      'https://api.github.com/repos/locadds/pi-planning-agent/releases/latest',
     )
     expect(electron.fetch.mock.calls[0][1]).toMatchObject({
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'pi-desktop',
+        'User-Agent': 'xiaogui-agent',
       },
     })
     expect(electron.fetch.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
@@ -72,10 +72,10 @@ describe('checkGitHubReleaseUpdate network wiring', () => {
       hasUpdate: true,
       releaseNotes: '## Fixes',
       downloadUrl: 'https://example.test/setup.exe',
-      downloadName: 'pi Desktop-Setup-0.4.21-x64.exe',
+      downloadName: '小规 Agent-Setup-0.4.21-x64.exe',
       assets: [
         {
-          name: 'pi Desktop-Setup-0.4.21-x64.exe',
+          name: '小规 Agent-Setup-0.4.21-x64.exe',
           url: 'https://example.test/setup.exe',
           size: 42,
           kind: 'setup',

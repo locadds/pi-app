@@ -1,5 +1,6 @@
 import {
   isRuntimePublicSessionId,
+  runtimeSelectionKey,
   validateRuntimePublicDto,
   type AdapterIdV1,
   type AgentRuntimeAdapterV1,
@@ -13,6 +14,7 @@ import {
   type RuntimeInterruptRequestV1,
   type RuntimeOutcomeV1,
   type RuntimePermissionDecisionV1,
+  type RuntimeRequiredOperationV1,
   type RuntimeRouteFailureReasonV1,
   type RuntimeRouteResultV1,
   type RuntimeRoutingPolicyV1,
@@ -24,6 +26,12 @@ interface RegisteredAdapterV1 {
   adapterIds: Set<string>
 }
 
+interface RestorableRuntimeAdapterV1 {
+  restoreRuntimeSession(runtimeSessionId: string): Promise<
+    { ok: true } | { ok: false; reasonCode: RuntimeRouteFailureReasonV1 }
+  >
+}
+
 export function createAgentRuntimeRegistryV1(): AgentRuntimeRegistryV1 {
   return new InProcessAgentRuntimeRegistryV1()
 }
@@ -32,6 +40,7 @@ class InProcessAgentRuntimeRegistryV1 implements AgentRuntimeRegistryV1 {
   private readonly registrations: RegisteredAdapterV1[] = []
   private readonly adaptersById = new Map<string, AgentRuntimeAdapterV1>()
   private readonly sessionAdapters = new Map<string, AgentRuntimeAdapterV1>()
+  private readonly retiredAdapters = new Set<AgentRuntimeAdapterV1>()
   private closed = false
 
   async register(adapter: AgentRuntimeAdapterV1) {
@@ -54,16 +63,17 @@ class InProcessAgentRuntimeRegistryV1 implements AgentRuntimeRegistryV1 {
       const [registration] = this.registrations.splice(index, 1)
       for (const id of registration.adapterIds) this.adaptersById.delete(id)
     }
-    for (const [runtimeSessionId, sessionAdapter] of this.sessionAdapters) {
-      if (sessionAdapter === adapter) this.sessionAdapters.delete(runtimeSessionId)
-    }
-    await closeAdapterQuietly(adapter)
+    // Unregistering removes an adapter from new routing immediately, but an
+    // in-flight attempt stays pinned to the adapter it started with. Closing
+    // is therefore deferred until the registry itself closes.
+    this.retiredAdapters.add(adapter)
     return { ok: true as const }
   }
 
-  async restoreBinding(runtimeSessionId: string, adapterId: AdapterIdV1 | string) {
+  async restoreBinding(runtimeSessionId: string, selection: RuntimeAdapterSelectionV1) {
     if (this.closed) return { ok: false as const, reasonCode: 'RUNTIME_REGISTRY_CLOSED' as const }
     if (!isRuntimePublicSessionId(runtimeSessionId)) return { ok: false as const, reasonCode: 'PUBLIC_DTO_LEAK' as const }
+    const adapterId = selection.adapterId
     const adapter = this.adaptersById.get(String(adapterId)) ?? await this.findAdapterByHealth(adapterId)
     if (!adapter) return { ok: false as const, reasonCode: 'RUNTIME_ADAPTER_NOT_REGISTERED' as const }
     const capability = await this.health(adapterId)
@@ -75,6 +85,13 @@ class InProcessAgentRuntimeRegistryV1 implements AgentRuntimeRegistryV1 {
       requireProductionApproval: true,
     })
     if (reason) return { ok: false as const, reasonCode: reason }
+    if (runtimeSelectionKey(capability) !== runtimeSelectionKey(selection)) {
+      return { ok: false as const, reasonCode: 'RUNTIME_PREFERRED_NOT_AVAILABLE' as const }
+    }
+    if (hasRuntimeSessionRestorer(adapter)) {
+      const restored = await adapter.restoreRuntimeSession(runtimeSessionId)
+      if (!restored.ok) return restored
+    }
     this.sessionAdapters.set(runtimeSessionId, adapter)
     return { ok: true as const }
   }
@@ -195,8 +212,12 @@ class InProcessAgentRuntimeRegistryV1 implements AgentRuntimeRegistryV1 {
     this.closed = true
     this.adaptersById.clear()
     this.sessionAdapters.clear()
-    const adapters = this.registrations.splice(0).map((registration) => registration.adapter)
-    await Promise.all(adapters.map(closeAdapterQuietly))
+    const adapters = new Set([
+      ...this.registrations.splice(0).map((registration) => registration.adapter),
+      ...this.retiredAdapters,
+    ])
+    this.retiredAdapters.clear()
+    await Promise.all([...adapters].map(closeAdapterQuietly))
   }
 
   private async findAdapterByHealth(adapterId: AdapterIdV1 | string): Promise<AgentRuntimeAdapterV1 | undefined> {
@@ -248,6 +269,7 @@ function staticRejection(capability: RuntimeCapabilityV1, policy: RuntimeRouting
   if (!v2) return policy.requiredCapabilities.length ? 'RUNTIME_CAPABILITY_UNSUPPORTED' : null
   if (!v2.workModes.includes(policy.mode)) return 'RUNTIME_CAPABILITY_UNSUPPORTED'
   if (!policy.requiredCapabilities.every((required) => v2.taskCapabilities.includes(required))) return 'RUNTIME_CAPABILITY_UNSUPPORTED'
+  if (!supportsRequiredOperations(v2, requiredOperations(policy))) return 'RUNTIME_CAPABILITY_UNSUPPORTED'
   if (policy.dataEgressPolicy === 'LOCAL_ONLY' && v2.requiresDataEgress) return 'RUNTIME_DATA_EGRESS_FORBIDDEN'
   if (policy.dataEgressPolicy === 'LOCAL_ONLY' && v2.executionLocation !== 'LOCAL') return 'RUNTIME_DATA_EGRESS_FORBIDDEN'
   return null
@@ -273,7 +295,35 @@ function routeReasons(capability: RuntimeCapabilityV1, policy: RuntimeRoutingPol
     `approval:${capability.approvalStatus}`,
     `health:${capability.health}`,
     `data:${policy.dataEgressPolicy}`,
+    `operations:${requiredOperations(policy).join(',')}`,
   ]
+}
+
+const DEFAULT_PRODUCTION_OPERATIONS: readonly RuntimeRequiredOperationV1[] = [
+  'RESUME',
+  'EVENT_STREAM',
+  'INTERRUPT',
+  'RESULT_RECONCILE',
+]
+
+function requiredOperations(policy: RuntimeRoutingPolicyV1): readonly RuntimeRequiredOperationV1[] {
+  return policy.requiredOperations ?? DEFAULT_PRODUCTION_OPERATIONS
+}
+
+function supportsRequiredOperations(
+  capability: RuntimeCapabilityV2,
+  required: readonly RuntimeRequiredOperationV1[],
+): boolean {
+  return required.every((operation) => {
+    if (operation === 'RESUME') return capability.supportsResume && capability.canResumeSession
+    if (operation === 'EVENT_STREAM') return capability.supportsEventStream && capability.stream !== 'NONE'
+    if (operation === 'INTERRUPT') return capability.supportsInterrupt && capability.interrupt !== 'NONE'
+    return capability.supportsResultReconcile && capability.inspect === 'RECONCILE'
+  })
+}
+
+function hasRuntimeSessionRestorer(adapter: AgentRuntimeAdapterV1): adapter is AgentRuntimeAdapterV1 & RestorableRuntimeAdapterV1 {
+  return typeof (adapter as Partial<RestorableRuntimeAdapterV1>).restoreRuntimeSession === 'function'
 }
 
 function asCapabilityV2(capability: RuntimeCapabilityV1): RuntimeCapabilityV2 | null {

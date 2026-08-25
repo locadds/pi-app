@@ -1,3 +1,5 @@
+import { XIAOGUI_PRODUCT_NAME } from './xiaogui-product'
+
 export type CompletionOutcome = 'success' | 'failed' | 'cancelled'
 export type CompletionPreviewMode = 'response' | 'fixed'
 export type CompletionDeliveryMode = 'auto' | 'custom' | 'system'
@@ -85,7 +87,7 @@ export function buildCompletionNotificationCopy(input: CompletionCopyInput): Com
   const zh = input.language === 'zh'
   if (input.isTest) {
     return {
-      projectLabel: '小规',
+      projectLabel: XIAOGUI_PRODUCT_NAME,
       title: zh ? '测试提醒' : 'Test notification',
       body: zh ? '任务完成，可以返回查看' : 'Task finished. You can return to the session.',
       meta: zh ? '测试' : 'Test',
@@ -106,7 +108,7 @@ export function buildCompletionNotificationCopy(input: CompletionCopyInput): Com
   const meta = [outcomeLabel(input.language, input.outcome), duration].filter(Boolean).join(' · ')
 
   return {
-    projectLabel: input.projectLabel?.trim() || '小规',
+    projectLabel: input.projectLabel?.trim() || XIAOGUI_PRODUCT_NAME,
     title,
     body,
     meta,

@@ -57,7 +57,7 @@ function createMenu(): void {
         { role: 'appMenu' },
         { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
         { role: 'window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }] },
-        { role: 'help', submenu: [{ label: 'Documentation', click: () => shell.openExternal('https://pi.dev') }] },
+        { role: 'help', submenu: [{ label: '小规项目主页', click: () => shell.openExternal('https://github.com/locadds/pi-planning-agent') }] },
       ] as Electron.MenuItemConstructorOptions[]),
     )
     return

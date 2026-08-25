@@ -71,10 +71,10 @@ describe('github release update helpers', () => {
   })
 
   it('classifies installer assets', () => {
-    assert.equal(classifyAssetName('pi Desktop-Setup-0.4.18-x64.exe'), 'setup')
-    assert.equal(classifyAssetName('pi Desktop-Portable-0.4.18-x64.exe'), 'portable')
-    assert.equal(classifyAssetName('pi Desktop-0.4.18-x64.dmg'), 'dmg')
-    assert.equal(classifyAssetName('pi Desktop-0.4.18-x64.AppImage'), 'appimage')
+    assert.equal(classifyAssetName('小规 Agent-Setup-0.4.18-x64.exe'), 'setup')
+    assert.equal(classifyAssetName('小规 Agent-Portable-0.4.18-x64.exe'), 'portable')
+    assert.equal(classifyAssetName('小规 Agent-0.4.18-x64.dmg'), 'dmg')
+    assert.equal(classifyAssetName('小规 Agent-0.4.18-x64.AppImage'), 'appimage')
   })
 
   it('picks platform-preferred asset', () => {

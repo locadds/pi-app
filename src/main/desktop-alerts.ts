@@ -3,6 +3,7 @@ import { configStore } from './config-store'
 import { traceAudio } from './audio-trace'
 import { presentCompletionCard } from './completion-notification-delivery'
 import { buildCompletionNotificationCopy } from '@shared/completion-preview'
+import { XIAOGUI_WINDOWS_APP_USER_MODEL_ID } from '@shared/xiaogui-product'
 
 export type DesktopAlertKind = 'extension_ui' | 'run_idle'
 
@@ -38,7 +39,7 @@ function ensureNotificationIdentity(): void {
   if (appUserModelIdSet) return
   appUserModelIdSet = true
   if (process.platform === 'win32') {
-    app.setAppUserModelId('com.earendil.pi-desktop')
+    app.setAppUserModelId(XIAOGUI_WINDOWS_APP_USER_MODEL_ID)
   }
 }
 

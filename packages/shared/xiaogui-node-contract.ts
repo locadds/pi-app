@@ -1,16 +1,13 @@
-import { validateRuntimePublicDto } from './xiaogui-agent-runtime'
+import {
+  validateRuntimePublicDto,
+  type RuntimeDataEgressPolicyV1,
+  type RuntimeTaskCapabilityV1,
+} from './xiaogui-agent-runtime'
 
 export type XiaoguiNodeIdV1 = string & { readonly __brand: 'XiaoguiNodeIdV1' }
 export type XiaoguiNodeProtocolVersionV1 = 'xiaogui-node.v1'
-export type XiaoguiNodeCapabilityV1 =
-  | 'WORK.DOCX.TEMPLATE'
-  | 'WORK.PDF.READ'
-  | 'CODING.GIT.CHANGESET'
-  | 'CODING.TYPESCRIPT'
-  | 'EXECUTION.LOCAL_ONLY'
-  | 'EXECUTION.EXTERNAL_ALLOWED'
-  | 'DESIGN.RESERVED'
-export type XiaoguiNodeDataEgressPolicyV1 = 'LOCAL_ONLY' | 'EXTERNAL_ALLOWED'
+export type XiaoguiNodeCapabilityV1 = RuntimeTaskCapabilityV1
+export type XiaoguiNodeDataEgressPolicyV1 = RuntimeDataEgressPolicyV1
 export type XiaoguiNodeHealthV1 = 'ONLINE' | 'DEGRADED' | 'OFFLINE'
 export type XiaoguiAssignmentStatusV1 =
   | 'OFFERED'
@@ -19,6 +16,7 @@ export type XiaoguiAssignmentStatusV1 =
   | 'RUNNING'
   | 'COMPLETED'
   | 'FAILED'
+  | 'OUTCOME_UNKNOWN'
   | 'LEASE_EXPIRED'
 
 export interface XiaoguiNodeIdentityV1 {
@@ -68,6 +66,7 @@ export type XiaoguiNodeEventV1 =
   | { type: 'ASSIGNMENT_RUNNING'; nodeId: string; eventId: string; createdAt: string; assignmentId: string; leaseId: string }
   | { type: 'ASSIGNMENT_COMPLETED'; nodeId: string; eventId: string; createdAt: string; assignmentId: string; leaseId: string; resultDigest: string }
   | { type: 'ASSIGNMENT_FAILED'; nodeId: string; eventId: string; createdAt: string; assignmentId: string; leaseId: string; reasonCode: string }
+  | { type: 'ASSIGNMENT_OUTCOME_UNKNOWN'; nodeId: string; eventId: string; createdAt: string; assignmentId: string; leaseId: string; reasonCode: string }
   | { type: 'ASSIGNMENT_LEASE_EXPIRED'; nodeId: string; eventId: string; createdAt: string; assignmentId: string; leaseId: string }
 
 export interface XiaoguiNodePortV1 {
@@ -79,9 +78,16 @@ export interface XiaoguiNodePortV1 {
     dataEgressPolicy: XiaoguiNodeDataEgressPolicyV1
     payloadRef: XiaoguiAssignmentPayloadRefV1
   }): Promise<{ ok: true; envelope: XiaoguiAssignmentEnvelopeV1 } | { ok: false; reasonCode: string }>
+  claim(nodeId: XiaoguiNodeIdV1 | string): Promise<{ ok: true; envelope: XiaoguiAssignmentEnvelopeV1 } | { ok: false; reasonCode: string }>
   approveLocal(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string): Promise<{ ok: true } | { ok: false; reasonCode: string }>
   markRunning(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string): Promise<{ ok: true } | { ok: false; reasonCode: string }>
   complete(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string, resultDigest: string): Promise<{ ok: true } | { ok: false; reasonCode: string }>
+  fail(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string, reasonCode: string): Promise<{ ok: true } | { ok: false; reasonCode: string }>
+  outcomeUnknown(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string, reasonCode: string): Promise<{ ok: true } | { ok: false; reasonCode: string }>
+  reconcile(assignmentId: string, nodeId?: XiaoguiNodeIdV1 | string): Promise<
+    | { ok: true; status: XiaoguiAssignmentStatusV1; resultDigest?: string; reasonCode?: string }
+    | { ok: false; reasonCode: string }
+  >
   events(): readonly XiaoguiNodeEventV1[]
 }
 

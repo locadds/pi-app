@@ -1,5 +1,5 @@
 /**
- * 小规 Agent 执行方式切换器（ASK｜问答、PLAN｜规划、EXECUTE｜工作）。
+ * 小规 Agent 执行方式切换器（ASK｜问答、PLAN｜计划、EXECUTE｜工作）。
  *
  * 与一级工作模式（WORK/DESIGN/CODING）正交：模式决定"在哪个领域做事"，
  * 执行方式决定"以什么方式推进"（V0.1 仅状态标记与策略路由接口，
@@ -24,7 +24,7 @@ const ACCENT = '#c0392b'
 
 const PHASES: { id: ExecutionPhase; zhLabel: string; hint: string }[] = [
   { id: 'ASK', zhLabel: '问答', hint: '只回答，不主动执行操作' },
-  { id: 'PLAN', zhLabel: '规划', hint: '先输出计划，用户确认后再执行' },
+  { id: 'PLAN', zhLabel: '计划', hint: '先输出计划，用户确认后再执行' },
   { id: 'EXECUTE', zhLabel: '工作', hint: '直接执行操作' },
 ]
 

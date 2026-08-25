@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { FlowId, HubAddressV1, InitialPlanDraftInputV1 } from '@shared/xiaogui-collaboration-hub'
+import type { RuntimeCapabilityV2 } from '@shared/xiaogui-agent-runtime'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 
 import type { AcpTransportFactoryV1 } from '../agent-runtime/acp/types'
@@ -19,6 +20,7 @@ import {
 } from '../agent-runtime/acp/kimi-tool-policy'
 import { KIMI_PRODUCTION_CONFIG_CONTENT_V1 } from '../agent-runtime/kimi-production-home'
 import type { KimiAcpProbeV1 } from '../agent-runtime/kimi-adapter'
+import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
 import {
   createXiaoguiRuntimeCompositionV1,
@@ -198,6 +200,46 @@ describe('Xiaogui runtime composition v1', () => {
     expect(resolveProjectRoot).toHaveBeenCalledWith(ADDRESS.projectId)
     expect(transportFactory.create).not.toHaveBeenCalled()
   })
+
+  it('accepts an additional adapter and an explicit deterministic routing policy', async () => {
+    const adapter = new ScriptedAgentRuntimeAdapterV1({ capabilities: [localCapability()] })
+    const health = vi.spyOn(adapter, 'health')
+    const composition = track(createXiaoguiRuntimeCompositionV1({
+      userDataDir: tempUserData(),
+      productionEnabled: true,
+      lookup: lookup('CODING'),
+      projectResolver: { resolveProjectRoot: vi.fn(async () => { throw new Error('STOP_BEFORE_GIT') }) },
+      kimiProbe: fakeKimiProbe(),
+      kimiTransportFactory: rejectingTransportFactory(),
+      additionalRuntimeAdapters: [adapter],
+      runtimeRoutingPolicy: {
+        mode: 'CODING',
+        requiredCapabilities: ['CODING.TYPESCRIPT', 'EXECUTION.LOCAL_ONLY'],
+        dataEgressPolicy: 'LOCAL_ONLY',
+        priorityAdapterIds: ['scripted-local'],
+        requireProductionApproval: true,
+      },
+    }))
+    const start = await composition.application.execute({
+      contractVersion: 'm2a.v1', address: ADDRESS, trustedActor: { kind: 'main-process-user' }, requestId: 'route-start',
+      intent: { type: 'flow.start.with_draft', draft: draft() },
+    })
+    if (!start.ok || !start.value.flowId || !start.value.revisionId) throw new Error('start failed')
+    const projection = await composition.application.observe(ADDRESS)
+    if (!projection.ok || !projection.value.activeRevision) throw new Error('draft missing')
+    await composition.application.execute({
+      contractVersion: 'm2a.v1', address: ADDRESS, trustedActor: { kind: 'main-process-user' }, requestId: 'route-approve',
+      expectedSessionVersion: projection.value.sessionVersion,
+      intent: { type: 'plan.revision.submit', flowId: start.value.flowId, baseRevisionId: start.value.revisionId, draft: projection.value.activeRevision.draft },
+    })
+    const approved = await composition.application.observeM2B(ADDRESS)
+    await composition.application.executeSystem({
+      contractVersion: 'm2b.v1', address: ADDRESS, trustedActor: { kind: 'main-process-system' }, requestId: 'route-schedule',
+      expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: start.value.flowId },
+    })
+    expect(health).toHaveBeenCalledWith('scripted-local')
+  })
 })
 
 function tempUserData(): string {
@@ -250,5 +292,16 @@ function draft(): InitialPlanDraftInputV1 {
   return {
     objective: '验证固定 Kimi 生产选择',
     tasks: [{ taskKey: 'first', title: '执行首个任务' }],
+  }
+}
+
+function localCapability(): RuntimeCapabilityV2 {
+  return {
+    adapterId: 'scripted-local', runtimeKind: 'OTHER', protocol: 'HEADLESS', capabilityDigest: 'sha256:scripted-local',
+    approvalStatus: 'APPROVED_FOR_PRODUCTION', health: 'AVAILABLE', canCreateSession: true, canResumeSession: true,
+    stream: 'POLL', interrupt: 'BEST_EFFORT', inspect: 'RECONCILE', interactivePermission: 'HOST_MEDIATED', diagnosticOnly: false,
+    version: 2, runtimeVersion: '1.0.0', capabilitySummary: '本机测试运行时', workModes: ['CODING'],
+    taskCapabilities: ['CODING.TYPESCRIPT', 'EXECUTION.LOCAL_ONLY'], executionLocation: 'LOCAL', requiresDataEgress: false,
+    supportsResume: true, supportsEventStream: true, supportsInterrupt: true, supportsResultReconcile: true,
   }
 }

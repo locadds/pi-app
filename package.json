@@ -1,9 +1,9 @@
 {
-  "name": "pi-desktop",
-  "version": "0.5.7",
+  "name": "xiaogui-agent-desktop",
+  "version": "0.3.0-rc.1",
   "description": "小规 Agent - 桌面端 AI Agent 应用",
   "main": "./out/main/index.js",
-  "author": "pi-desktop",
+  "author": "xiaogui-agent",
   "license": "MIT",
   "type": "module",
   "xiaoguiBuild": {
