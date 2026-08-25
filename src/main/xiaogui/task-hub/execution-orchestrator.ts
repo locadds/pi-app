@@ -76,6 +76,7 @@ export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly inputStage: TaskExecutionInputStageV1
   readonly fileScopeResolver: AttemptFileScopeResolverV1
   readonly runtimeMonitor?: RuntimeOutcomeMonitorV1
+  readonly runtimeBindingRestorer?: (input: { attemptId: AttemptId; runtimeSessionId: string }) => Promise<{ ok: true } | { ok: false; reasonCode: string }>
   readonly verificationCoordinator?: TaskVerificationCoordinatorV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
@@ -243,7 +244,7 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
         return { ok: true, value: authority.result }
       }
       if (status === 'STARTING' || status === 'RUNNING') {
-        if (this.registerRuntimeWatcher(operation, authority.result)) {
+        if (await this.registerRuntimeWatcher(operation, authority.result)) {
           this.saga.advance(operation.operation_id, 'RUNTIME_ACTIVE')
           return { ok: true, value: authority.result }
         }
@@ -356,7 +357,7 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     if (!authority.ok) return authority.outcome
     switch (authority.result.attempt.status) {
       case 'RUNNING':
-        this.registerRuntimeWatcher(operation, authority.result)
+        await this.registerRuntimeWatcher(operation, authority.result)
         this.saga.advance(operation.operation_id, 'RUNTIME_ACTIVE')
         return { ok: true, value: authority.result }
       case 'VERIFYING':
@@ -456,12 +457,14 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     return this.options.idFactory?.(prefix) ?? `${prefix}_${randomUUID()}`
   }
 
-  private registerRuntimeWatcher(
+  private async registerRuntimeWatcher(
     operation: ExecutionSagaRowV1,
     current: XiaoguiTaskExecutionStartResultV1,
-  ): boolean {
+  ): Promise<boolean> {
     const runtimeSessionId = current.attempt.runtimeSessionId
     if (!runtimeSessionId || !this.options.runtimeMonitor) return false
+    const restored = await this.restoreRuntimeBinding(current.attempt.attemptId, runtimeSessionId)
+    if (!restored) return false
     const address = addressOf(operation)
     const flowId = operation.flow_id
     const taskRunId = current.taskRun.taskRunId
@@ -488,6 +491,16 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       await this.settleOperationFromAuthority(operation.operation_id)
     }, this.runtimePermissionDecisionFactory(operation, current, runtimeSessionId))
     return true
+  }
+
+  private async restoreRuntimeBinding(attemptId: AttemptId, runtimeSessionId: string): Promise<boolean> {
+    if (!this.options.runtimeBindingRestorer) return true
+    try {
+      const restored = await this.options.runtimeBindingRestorer({ attemptId, runtimeSessionId })
+      return restored.ok
+    } catch {
+      return false
+    }
   }
 
   private runtimePermissionDecisionFactory(

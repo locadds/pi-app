@@ -17,6 +17,7 @@ import type {
   AdapterIdV1,
   RuntimeAdapterSelectionV1,
   RuntimeCapabilityV1,
+  RuntimeCapabilityV2,
   RuntimeContractTestCreateOrResumeRequestV1,
   RuntimeCreateOrResumeOutcomeV1,
   RuntimeCreateOrResumeRequestV1,
@@ -492,7 +493,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     const probe = await this.probe.findExecutable()
     if (!probe.available) return unavailable(probe.reasonCode, approvalStatus)
     if (!isApprovedKimiVersion(probe.version)) return unavailable('KIMI_VERSION_UNAPPROVED', approvalStatus)
-    return {
+    const capability: RuntimeCapabilityV2 = {
       adapterId: ADAPTER_ID,
       runtimeKind: 'KIMI',
       protocol: 'ACP',
@@ -506,8 +507,20 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       inspect: 'RECONCILE',
       interactivePermission: 'HOST_MEDIATED',
       diagnosticOnly: false,
+      version: 2,
+      runtimeVersion: probe.version ?? 'unknown',
+      capabilitySummary: '小规 CODING 任务的 Kimi ACP 运行时',
+      workModes: ['CODING'],
+      taskCapabilities: ['CODING.GIT.CHANGESET', 'CODING.TYPESCRIPT'],
+      executionLocation: 'EXTERNAL',
+      requiresDataEgress: true,
+      supportsResume: true,
+      supportsEventStream: true,
+      supportsInterrupt: true,
+      supportsResultReconcile: true,
       reasonCode: probe.version ? `KIMI_${probe.version}` : undefined,
     }
+    return capability
   }
 
   private unavailableCapability(reasonCode: string): RuntimeCapabilityV1 {

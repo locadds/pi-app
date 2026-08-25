@@ -12,6 +12,17 @@ export type RuntimeApprovalStatusV1 = 'DISCOVERED' | 'APPROVED_FOR_TEST' | 'APPR
 export type RuntimeSessionStateV1 = 'READY' | 'RUNNING' | 'INTERRUPT_REQUESTED' | 'SETTLED' | 'OUTCOME_UNKNOWN'
 export type RuntimeRefIdV1 = string & { readonly __brand: 'RuntimeRefIdV1' }
 export type RuntimeDigestV1 = string & { readonly __brand: 'RuntimeDigestV1' }
+export type RuntimeExecutionLocationV1 = 'LOCAL' | 'EXTERNAL'
+export type RuntimeDataEgressPolicyV1 = 'LOCAL_ONLY' | 'EXTERNAL_ALLOWED'
+export type RuntimeWorkModeV1 = 'WORK' | 'CODING' | 'DESIGN'
+export type RuntimeTaskCapabilityV1 =
+  | 'WORK.DOCX.TEMPLATE'
+  | 'WORK.PDF.READ'
+  | 'CODING.GIT.CHANGESET'
+  | 'CODING.TYPESCRIPT'
+  | 'EXECUTION.LOCAL_ONLY'
+  | 'EXECUTION.EXTERNAL_ALLOWED'
+  | 'DESIGN.RESERVED'
 
 export interface RuntimeCapabilityV1 {
   adapterId: AdapterIdV1 | string
@@ -28,6 +39,20 @@ export interface RuntimeCapabilityV1 {
   interactivePermission: 'NONE' | 'HOST_MEDIATED' | 'RUNTIME_NATIVE'
   diagnosticOnly: boolean
   reasonCode?: string
+}
+
+export interface RuntimeCapabilityV2 extends RuntimeCapabilityV1 {
+  version: 2
+  runtimeVersion: string
+  capabilitySummary: string
+  workModes: readonly RuntimeWorkModeV1[]
+  taskCapabilities: readonly RuntimeTaskCapabilityV1[]
+  executionLocation: RuntimeExecutionLocationV1
+  requiresDataEgress: boolean
+  supportsResume: boolean
+  supportsEventStream: boolean
+  supportsInterrupt: boolean
+  supportsResultReconcile: boolean
 }
 
 export interface RuntimeAdapterSelectionV1 {
@@ -57,6 +82,46 @@ export interface RuntimeTestAdapterSelectionV1 {
 export interface RuntimeProductionPolicyV1 {
   allowedSelections: readonly RuntimeAdapterSelectionV1[]
   rejectDiagnosticOnly: true
+}
+
+export interface RuntimeRoutingPolicyV1 {
+  mode: RuntimeWorkModeV1
+  requiredCapabilities: readonly RuntimeTaskCapabilityV1[]
+  dataEgressPolicy: RuntimeDataEgressPolicyV1
+  preferredAdapterId?: AdapterIdV1 | string
+  priorityAdapterIds: readonly (AdapterIdV1 | string)[]
+  requireProductionApproval: true
+}
+
+export type RuntimeRouteFailureReasonV1 =
+  | 'RUNTIME_REGISTRY_CLOSED'
+  | 'RUNTIME_ADAPTER_ALREADY_REGISTERED'
+  | 'RUNTIME_ADAPTER_NOT_REGISTERED'
+  | 'RUNTIME_PREFERRED_NOT_AVAILABLE'
+  | 'RUNTIME_DATA_EGRESS_FORBIDDEN'
+  | 'RUNTIME_CAPABILITY_UNSUPPORTED'
+  | 'RUNTIME_HEALTH_UNAVAILABLE'
+  | 'NO_APPROVED_RUNTIME'
+  | 'RUNTIME_ADAPTER_ERROR'
+  | 'PUBLIC_DTO_LEAK'
+
+export interface RuntimeRouteDecisionV1 {
+  adapterId: AdapterIdV1 | string
+  selection: RuntimeAdapterSelectionV1
+  capability: RuntimeCapabilityV1 | RuntimeCapabilityV2
+  reasons: readonly string[]
+}
+
+export type RuntimeRouteResultV1 =
+  | { ok: true; value: RuntimeRouteDecisionV1 }
+  | { ok: false; reasonCode: RuntimeRouteFailureReasonV1; rejectedAdapterIds?: readonly string[] }
+
+export interface AgentRuntimeRegistryV1 extends AgentRuntimeAdapterV1 {
+  register(adapter: AgentRuntimeAdapterV1): Promise<{ ok: true } | { ok: false; reasonCode: RuntimeRouteFailureReasonV1 }>
+  unregister(adapterId: AdapterIdV1 | string): Promise<{ ok: true } | { ok: false; reasonCode: RuntimeRouteFailureReasonV1 }>
+  restoreBinding(runtimeSessionId: string, adapterId: AdapterIdV1 | string): Promise<{ ok: true } | { ok: false; reasonCode: RuntimeRouteFailureReasonV1 }>
+  resolve(policy: RuntimeRoutingPolicyV1): Promise<RuntimeRouteResultV1>
+  close(): Promise<void>
 }
 
 export interface RuntimeContractTestPolicyV1 {

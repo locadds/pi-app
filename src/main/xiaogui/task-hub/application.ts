@@ -3,11 +3,13 @@ import { randomUUID } from 'node:crypto'
 import {
   runtimeSelectionKey,
   type PromptEnvelopeRefV1,
+  type AgentRuntimeRegistryV1,
   type RuntimeAdapterSelectionV1,
   type RuntimeCapabilityV1,
   type RuntimeCreateOrResumeOutcomeV1,
   type RuntimeCreateOrResumeRequestV1,
   type RuntimeOutcomeV1,
+  type RuntimeRoutingPolicyV1,
   type RuntimeScopeBindingV1,
   type RuntimeWorkspaceBindingV1,
 } from '@shared/xiaogui-agent-runtime'
@@ -50,6 +52,7 @@ export interface CollaborationHubApplicationOptionsV1 {
   storeFactory: () => CollaborationHubSqliteStoreV1
   agentRuntime?: AgentRuntimeHostV1
   agentSelection?: RuntimeAdapterSelectionV1
+  agentRoutingPolicy?: RuntimeRoutingPolicyV1
   baselineProvider?: ExecutionBaselineProviderV1
   workspaceBridge?: ExecutionWorkspaceBridgeV1
   runtimePromptVault?: RuntimePromptVaultV1
@@ -883,6 +886,12 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     const runtime = this.options.agentRuntime
     if (!runtime) return { ok: false, reasonCode: 'NO_AGENT_RUNTIME' }
     try {
+      const routed = await this.resolveRoutedAgent(runtime)
+      if (routed) {
+        return routed.ok
+          ? { ok: true, runtime, selection: routed.selection }
+          : routed
+      }
       const capabilities = await runtime.discover()
       const candidate = this.options.agentSelection ?? capabilities.find(isProductionCapability)
       if (!candidate || !isProductionCapability(candidate)) return { ok: false, reasonCode: 'NO_APPROVED_RUNTIME' }
@@ -894,6 +903,18 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     } catch {
       return { ok: false, reasonCode: 'RUNTIME_ADAPTER_ERROR' }
     }
+  }
+
+  private async resolveRoutedAgent(
+    runtime: AgentRuntimeHostV1,
+  ): Promise<{ ok: true; selection: RuntimeAdapterSelectionV1 } | { ok: false; reasonCode: string } | null> {
+    const policy = this.options.agentRoutingPolicy
+    if (!policy) return null
+    if (!hasRuntimeResolver(runtime)) return { ok: false, reasonCode: 'RUNTIME_REGISTRY_REQUIRED' }
+    const decision = await runtime.resolve(policy)
+    return decision.ok
+      ? { ok: true, selection: decision.value.selection }
+      : { ok: false, reasonCode: decision.reasonCode }
   }
 
   private async captureBaseline(
@@ -1036,6 +1057,10 @@ function isProductionCapability(value: RuntimeCapabilityV1 | RuntimeAdapterSelec
     value.inspect !== 'NONE' &&
     ('health' in value ? value.health === 'AVAILABLE' && value.canCreateSession === true : true)
   )
+}
+
+function hasRuntimeResolver(runtime: AgentRuntimeHostV1): runtime is AgentRuntimeHostV1 & Pick<AgentRuntimeRegistryV1, 'resolve'> {
+  return typeof (runtime as { resolve?: unknown }).resolve === 'function'
 }
 
 function systemError(
