@@ -1,16 +1,49 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import type { XiaoguiNodeCapabilityManifestV1 } from '@shared/xiaogui-node-contract'
 import { createInMemoryXiaoguiNodeHubV1 } from './in-memory-node-hub'
 import { startXiaoguiLanHubHttpServerV1 } from './lan-hub-http'
 import { createXiaoguiLanWorkerV1 } from './lan-worker'
-import { createInMemoryWorkerAssignmentLedgerV1 } from './worker-assignment-ledger'
+import {
+  createInMemoryWorkerAssignmentLedgerV1,
+  createJsonFileWorkerAssignmentLedgerV1,
+} from './worker-assignment-ledger'
 
 const HUB_TOKEN = 'hub-control-token-0000000000000001'
 const NODE_A_TOKEN = 'node-a-control-token-000000000001'
 const NODE_B_TOKEN = 'node-b-control-token-000000000001'
 
 describe('Xiaogui outbound LAN worker', () => {
+  it('persists only the bounded worker ledger fields across process instances', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'xiaogui-node-ledger-'))
+    const filePath = join(directory, 'assignment-ledger.json')
+    try {
+      await createJsonFileWorkerAssignmentLedgerV1(filePath).upsert({
+        assignmentId: 'assignment-persisted',
+        leaseId: 'lease-persisted',
+        attemptId: 'attempt-persisted',
+        status: 'RUNNING',
+        summaryDigest: 'sha256:bounded-summary',
+        updatedAt: '2026-08-25T02:00:00.000Z',
+      })
+
+      await expect(createJsonFileWorkerAssignmentLedgerV1(filePath).get('assignment-persisted')).resolves.toEqual({
+        assignmentId: 'assignment-persisted',
+        leaseId: 'lease-persisted',
+        attemptId: 'attempt-persisted',
+        status: 'RUNNING',
+        summaryDigest: 'sha256:bounded-summary',
+        updatedAt: '2026-08-25T02:00:00.000Z',
+      })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('selects the capable node and executes only after local approval', async () => {
     const hub = createInMemoryXiaoguiNodeHubV1({ now: () => '2026-08-25T02:00:00.000Z' })
     const server = await startXiaoguiLanHubHttpServerV1({ hub, authorization: authorization() })
