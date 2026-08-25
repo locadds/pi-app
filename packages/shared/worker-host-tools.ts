@@ -19,10 +19,15 @@ import type {
   TemplateIntakeUpdateOperationV1,
   TemplateIntakeWarningV1,
 } from './xiaogui-work-docx-template-intake'
+import type {
+  TemplateMaterializeErrorCodeV1,
+  TemplateMaterializePlanV1,
+  TemplateMaterializeReceiptV1,
+} from './xiaogui-work-docx-template-materialize'
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
- * 当前开放“创建协作计划草稿”、三版“WORK DOCX”和“WORK 文档快照”五个版本化方法；
+ * 当前开放“创建协作计划草稿”、四版“WORK DOCX”和“WORK 文档快照”六个版本化方法；
  * 后续能力必须显式扩充 method 联合类型。
  */
 export const XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1 =
@@ -32,6 +37,8 @@ export const XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1 =
   'xiaogui.work.docx-template-data.v1' as const
 export const XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1 =
   'xiaogui.work.docx-template-intake.v1' as const
+export const XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1 =
+  'xiaogui.work.docx-template-materialize.v1' as const
 export const XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 = 'xiaogui.work.document-snapshot.v1' as const
 
 export interface XiaoguiCreateCollaborationPlanPayloadV1 {
@@ -153,6 +160,22 @@ export type XiaoguiWorkDocxTemplateIntakePayloadV1 =
       action: 'CANCEL'
     })
 
+type XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 = {
+  sourceSessionId: string
+  sourceRunId: string
+  toolCallId: string
+}
+
+export type XiaoguiWorkDocxTemplateMaterializePayloadV1 =
+  | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & {
+      action: 'PREPARE'
+      reportId?: string
+    })
+  | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'CONFIRM' })
+  | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'RESUME' })
+  | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'CANCEL' })
+  | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'OPEN' | 'REVEAL' })
+
 export type WorkerHostToolRequestV1 =
   | {
       type: 'host-tool-request'
@@ -177,6 +200,12 @@ export type WorkerHostToolRequestV1 =
       requestId: string
       method: typeof XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1
       payload: XiaoguiWorkDocxTemplateIntakePayloadV1
+    }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: typeof XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1
+      payload: XiaoguiWorkDocxTemplateMaterializePayloadV1
     }
   | {
       type: 'host-tool-request'
@@ -316,6 +345,27 @@ export type XiaoguiWorkDocxTemplateIntakeResultV1 =
     }
   | { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CANCELLED' }
 
+export type XiaoguiWorkDocxTemplateMaterializeResultV1 =
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PREPARED'
+      plan: TemplateMaterializePlanV1
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_RESUMED'
+      plan?: TemplateMaterializePlanV1
+      receipt?: TemplateMaterializeReceiptV1
+    }
+  | { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_TARGET_SELECTION_CANCELLED' }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PUBLISHED'
+      receipt: TemplateMaterializeReceiptV1
+    }
+  | { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_CANCELLED' }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_ACCESSED'
+      action: 'OPEN' | 'REVEAL'
+    }
+
 export type XiaoguiWorkDocumentSnapshotResultV1 =
   | {
       kind: 'XIAOGUI_WORK_DOCUMENT_SELECTION_CANCELLED'
@@ -344,6 +394,7 @@ export type WorkerHostToolErrorCodeV1 =
   | 'WORK_DOCUMENT_SNAPSHOT_ACTIVE'
   | WorkDocxErrorCodeV1
   | TemplateIntakeErrorCodeV1
+  | TemplateMaterializeErrorCodeV1
   | WorkDocumentSnapshotErrorCodeV1
 
 export type WorkerHostToolOutcomeV1 =
@@ -354,6 +405,7 @@ export type WorkerHostToolOutcomeV1 =
         | XiaoguiWorkDocxResultV1
         | XiaoguiWorkDocxTemplateDataResultV1
         | XiaoguiWorkDocxTemplateIntakeResultV1
+        | XiaoguiWorkDocxTemplateMaterializeResultV1
         | XiaoguiWorkDocumentSnapshotResultV1
     }
   | {

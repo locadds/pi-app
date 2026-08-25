@@ -147,6 +147,20 @@ export class WorkDocxTemplateIntakeStoreV1 {
     return row ? parseRow(row) : null
   }
 
+  latestConfirmed(address: SessionAddressV1): StoredTemplateIntakeRecordV1 | null {
+    const row = this.db
+      .prepare(
+        `SELECT project_id, session_key, source_path, source_sha256, source_display_name,
+                source_bytes, report_json, draft_json, decision_json
+           FROM template_intake_reports_v1
+          WHERE project_id = ? AND session_key = ? AND status = 'CONFIRMED'
+          ORDER BY updated_at DESC, created_at DESC
+          LIMIT 1`,
+      )
+      .get(address.projectId, address.sessionKey) as ReportRow | undefined
+    return row ? parseRow(row) : null
+  }
+
   save(record: StoredTemplateIntakeRecordV1): void {
     const result = this.db
       .prepare(

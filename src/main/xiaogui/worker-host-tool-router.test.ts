@@ -30,6 +30,10 @@ describe('xiaogui Worker host-tool router', () => {
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_SELECTION_CANCELLED' as const },
     }))
+    const workDocxTemplateMaterialize = vi.fn(async () => ({
+      ok: true as const,
+      value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_CANCELLED' as const },
+    }))
     const workDocumentSnapshot = vi.fn(async () => ({
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCUMENT_SELECTION_CANCELLED' as const },
@@ -39,6 +43,7 @@ describe('xiaogui Worker host-tool router', () => {
       workDocx,
       workDocxTemplateData,
       workDocxTemplateIntake,
+      workDocxTemplateMaterialize,
       workDocumentSnapshot,
     })
     const collaborationRequest: WorkerHostToolRequestV1 = {
@@ -96,22 +101,36 @@ describe('xiaogui Worker host-tool router', () => {
         toolCallId: 'call-5',
       },
     }
+    const templateMaterializeRequest: WorkerHostToolRequestV1 = {
+      type: 'host-tool-request',
+      requestId: 'template-materialize-1',
+      method: 'xiaogui.work.docx-template-materialize.v1',
+      payload: {
+        action: 'CANCEL',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-2',
+        toolCallId: 'call-6',
+      },
+    }
 
     await router(metadata(collaborationRequest))
     await router(metadata(workRequest))
     await router(metadata(templateDataRequest))
     await router(metadata(templateIntakeRequest))
+    await router(metadata(templateMaterializeRequest))
     await router(metadata(snapshotRequest))
 
     expect(collaboration).toHaveBeenCalledOnce()
     expect(workDocx).toHaveBeenCalledOnce()
     expect(workDocxTemplateData).toHaveBeenCalledOnce()
     expect(workDocxTemplateIntake).toHaveBeenCalledOnce()
+    expect(workDocxTemplateMaterialize).toHaveBeenCalledOnce()
     expect(workDocumentSnapshot).toHaveBeenCalledOnce()
     expect(collaboration).toHaveBeenCalledWith(metadata(collaborationRequest))
     expect(workDocx).toHaveBeenCalledWith(metadata(workRequest))
     expect(workDocxTemplateData).toHaveBeenCalledWith(metadata(templateDataRequest))
     expect(workDocxTemplateIntake).toHaveBeenCalledWith(metadata(templateIntakeRequest))
+    expect(workDocxTemplateMaterialize).toHaveBeenCalledWith(metadata(templateMaterializeRequest))
     expect(workDocumentSnapshot).toHaveBeenCalledWith(metadata(snapshotRequest))
   })
 })

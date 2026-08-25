@@ -28,6 +28,11 @@ import {
   getDefaultWorkDocxTemplateIntakeServiceV1,
 } from './work-docx-template-intake-composition'
 import { createXiaoguiWorkDocxTemplateIntakeWorkerToolHandlerV1 } from './work-docx-template-intake-worker-tool'
+import {
+  closeDefaultWorkDocxTemplateMaterializeServiceV1,
+  getDefaultWorkDocxTemplateMaterializeServiceV1,
+} from './work-docx-template-materialize-composition'
+import { createXiaoguiWorkDocxTemplateMaterializeWorkerToolHandlerV1 } from './work-docx-template-materialize-worker-tool'
 import { createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1 } from './work-document-snapshot-worker-tool'
 import { createXiaoguiWorkerHostToolRouterV1 } from './worker-host-tool-router'
 
@@ -58,6 +63,10 @@ export function initXiaogui(): void {
         getService: getDefaultWorkDocxTemplateIntakeServiceV1,
         scopeResolver: sessionScopeResolverV1,
       }),
+      workDocxTemplateMaterialize: createXiaoguiWorkDocxTemplateMaterializeWorkerToolHandlerV1({
+        getService: getDefaultWorkDocxTemplateMaterializeServiceV1,
+        scopeResolver: sessionScopeResolverV1,
+      }),
       workDocumentSnapshot: createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1({
         getService: getDefaultWorkDocumentSnapshotServiceV1,
         scopeResolver: sessionScopeResolverV1,
@@ -74,6 +83,7 @@ export async function shutdownXiaoguiSidecar(): Promise<void> {
     Promise.resolve().then(() => xiaogui.shutdown()),
     Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateIntakeServiceV1()),
+    Promise.resolve().then(() => closeDefaultWorkDocxTemplateMaterializeServiceV1()),
   ])
   const firstFailure = results.find(
     (result): result is PromiseRejectedResult => result.status === 'rejected',

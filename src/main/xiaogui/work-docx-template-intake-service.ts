@@ -78,6 +78,15 @@ export interface WorkDocxTemplateIntakeServiceOptionsV1 {
   parseTimeoutMs?: number
 }
 
+export interface ConfirmedTemplateIntakeMaterializationSourceV1 {
+  sourcePath: string
+  sourceSha256: string
+  sourceDisplayName: string
+  sourceBytes: number
+  report: TemplateIntakeReportV1
+  decision: TemplateIntakeDecisionV1
+}
+
 type PrivateSourceV1 = {
   path: string
   displayName: string
@@ -422,6 +431,25 @@ export class WorkDocxTemplateIntakeServiceV1 {
   close(): void {
     this.pending.clear()
     this.options.store.close()
+  }
+
+  /** 仅供同一主进程内的模板物化模块读取；路径和确认记录不会进入 Worker。 */
+  loadConfirmedForMaterialization(
+    address: SessionAddressV1,
+    reportId?: string,
+  ): ConfirmedTemplateIntakeMaterializationSourceV1 | null {
+    const record = reportId
+      ? this.options.store.get(address, reportId)
+      : this.options.store.latestConfirmed(address)
+    if (!record || record.report.status !== 'CONFIRMED' || !record.decision) return null
+    return {
+      sourcePath: record.sourcePath,
+      sourceSha256: record.sourceSha256,
+      sourceDisplayName: record.sourceDisplayName,
+      sourceBytes: record.sourceBytes,
+      report: record.report,
+      decision: record.decision,
+    }
   }
 
   private async admissionError(address: SessionAddressV1): Promise<TemplateIntakeErrorCodeV1 | null> {
