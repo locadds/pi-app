@@ -32,18 +32,21 @@ describe('WorkHomeView', () => {
     expect(screen.queryByText('试试这样说')).toBeNull()
   })
 
-  it('WORK 模式只保留一句引导和三个示例', () => {
+  it('WORK 模式保留三张完整示例卡片', () => {
     render(<WorkHomeView />)
-    expect(screen.getByText('直接告诉小规你想完成什么，或选择一个示例开始。')).toBeInTheDocument()
     expect(screen.getByText('试试这样说')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /填写示例提示词/ })).toHaveLength(3)
+    expect(
+      screen.getByText('把我选择的普通成品 Word 整理成可复用模板，先给我一份候选内容报告'),
+    ).toBeInTheDocument()
   })
 
-  it('主页面不堆放能力细则和实现说明', () => {
+  it('只移除长篇能力说明，保留简短边界提示', () => {
     render(<WorkHomeView />)
     expect(screen.queryByText(/保留原文件/)).toBeNull()
-    expect(screen.queryByText(/专用能力以实际接入状态为准/)).toBeNull()
+    expect(screen.getByText(/专用能力以实际接入状态为准/)).toBeInTheDocument()
     expect(screen.queryByText(/需要选择资料、确认范围或展示结果时/)).toBeNull()
+    expect(screen.queryByText(/直接告诉小规你想完成什么/)).toBeNull()
   })
 
   it('三个示例只填写提示词，不直接执行任务', async () => {
