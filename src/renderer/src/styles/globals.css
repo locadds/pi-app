@@ -2179,27 +2179,19 @@
   to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
 
-/* Session open: pixel PI loading (globals 保证 Electron 一定加载) */
+/* Session open: 小规 A 方案一次性过场（globals 保证 Electron 一定加载） */
 :root {
-  --session-pixel-size: 11px;
-  --session-pixel-gap: 4px;
-  --session-pixel-radius: 4px;
-  --session-pixel-ink: #1a1a1a;
-  --session-pixel-surface: #f3f3f3;
-  --session-pixel-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 40px rgba(0, 0, 0, 0.06);
-  --session-pixel-shadow: 0 2px 6px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --session-pixel-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.1);
-  --session-pixel-shadow-dim: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --xiaogui-loader-ink: #111318;
+  --xiaogui-loader-node: #e8463a;
+  --xiaogui-loader-surface: #f4f1e8;
+  --xiaogui-loader-card-shadow: 0 1px 2px rgba(17, 19, 24, 0.05), 0 12px 40px rgba(17, 19, 24, 0.08);
 }
 
-/* Dark Modern: soft mid-gray ink on elevated surface (not pure white on pure black) */
+/* Dark Modern: 使用品牌反白而非 CSS 滤镜反色，定位红保持不变。 */
 .dark {
-  --session-pixel-ink: #cccccc;
-  --session-pixel-surface: #252526;
-  --session-pixel-card-shadow: 0 0 0 1px #2b2b2b, 0 12px 36px rgba(0, 0, 0, 0.35);
-  --session-pixel-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
-  --session-pixel-shadow-hover: 0 4px 14px rgba(0, 0, 0, 0.38);
-  --session-pixel-shadow-dim: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --xiaogui-loader-ink: #f7f5ef;
+  --xiaogui-loader-surface: #252526;
+  --xiaogui-loader-card-shadow: 0 0 0 1px #2b2b2b, 0 12px 36px rgba(0, 0, 0, 0.35);
 }
 
 /* Sidebar: soft 3×3 running glyph (quiet, secondary-text tone) */
@@ -2240,49 +2232,99 @@
   }
 }
 
-.session-pixel-logo {
-  display: grid;
-  gap: var(--session-pixel-gap);
-  grid-template-columns: repeat(var(--session-pixel-cols, 13), var(--session-pixel-size));
-  grid-template-rows: repeat(var(--session-pixel-rows, 7), var(--session-pixel-size));
-  justify-content: center;
+.xiaogui-loader-card {
   padding: 20px 24px;
   border-radius: 16px;
-  background: var(--session-pixel-surface);
-  box-shadow: var(--session-pixel-card-shadow);
+  background: var(--xiaogui-loader-surface);
+  box-shadow: var(--xiaogui-loader-card-shadow);
 }
 
-.session-pixel {
-  width: var(--session-pixel-size);
-  height: var(--session-pixel-size);
-  border-radius: var(--session-pixel-radius);
-  pointer-events: none;
+.xiaogui-loader {
+  display: block;
+  width: min(260px, 64vw);
+  height: auto;
+  overflow: visible;
 }
 
-.session-pixel--off {
-  visibility: hidden;
+.xiaogui-loader__small,
+.xiaogui-loader__gui {
+  fill: var(--xiaogui-loader-ink);
 }
 
-/* Pixel assembly is driven by WAAPI in session-open-loading.tsx (finite + one parent pulse).
-   Do not add per-pixel CSS infinite animations here — they duplicate paint work. */
-.session-pixel--on {
-  background: var(--session-pixel-ink);
+.xiaogui-loader__node {
+  fill: var(--xiaogui-loader-node);
+  stroke: var(--xiaogui-loader-ink);
+  stroke-width: 1.8;
+  transform-box: fill-box;
+  transform-origin: center;
   opacity: 0;
-  transform: scale(0.72);
+  animation: xiaogui-loader-node-in 352ms var(--motion-ease) forwards;
 }
 
-.session-pixel-caption {
+.xiaogui-loader__path {
+  stroke: var(--xiaogui-loader-surface);
+  stroke-dasharray: 220;
+  stroke-dashoffset: 220;
+  animation: xiaogui-loader-path-draw 792ms var(--motion-ease) 264ms forwards;
+}
+
+.xiaogui-loader__gui {
+  transform-box: fill-box;
+  transform-origin: center;
   opacity: 0;
+  animation: xiaogui-loader-gui-in 880ms var(--motion-ease) 704ms forwards;
+}
+
+.xiaogui-loader__small {
+  transform-box: fill-box;
+  transform-origin: center;
+  opacity: 0;
+  animation: xiaogui-loader-small-in 748ms var(--motion-ease) 1364ms forwards;
+}
+
+.xiaogui-loader-caption {
+  opacity: 0;
+  animation: xiaogui-loader-caption-in 480ms var(--motion-ease) 400ms forwards;
+}
+
+@keyframes xiaogui-loader-node-in {
+  from { opacity: 0; transform: scale(0.5); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes xiaogui-loader-path-draw {
+  from { stroke-dashoffset: 220; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes xiaogui-loader-gui-in {
+  from { opacity: 0; transform: translateY(5px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes xiaogui-loader-small-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes xiaogui-loader-caption-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 0.75; transform: translateY(0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-pixel--on {
-    opacity: 0.85 !important;
-    transform: scale(1) !important;
-    box-shadow: var(--session-pixel-shadow);
+  .xiaogui-loader__node,
+  .xiaogui-loader__gui,
+  .xiaogui-loader__small,
+  .xiaogui-loader-caption {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
-  .session-pixel-caption {
-    opacity: 0.75 !important;
+
+  .xiaogui-loader__path {
+    animation: none !important;
+    stroke-dashoffset: 0 !important;
   }
 }
 

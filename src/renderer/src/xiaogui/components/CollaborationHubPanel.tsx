@@ -828,7 +828,22 @@ export function CollaborationHubPanel() {
   return (
     <div className="flex h-full flex-col overflow-y-auto p-3" data-testid="collaboration-hub-panel">
       <div className="mb-3 flex items-center justify-between">
-        <span className="text-[12px] font-medium text-foreground">协作计划</span>
+        <div className="min-w-0">
+          <div className="h-[35px] w-[120px]" aria-label="小规 Hub">
+            <img
+              src="./brand/production-v1.0/hub/xiaogui-hub-primary.svg"
+              alt="小规 Hub"
+              className="block h-full w-full object-contain object-left dark:hidden"
+            />
+            <img
+              src="./brand/production-v1.0/hub/xiaogui-hub-inverse.svg"
+              alt=""
+              aria-hidden="true"
+              className="hidden h-full w-full object-contain object-left dark:block"
+            />
+          </div>
+          <div className="mt-1 text-[11px] font-medium text-foreground-secondary">协作计划</div>
+        </div>
         <button
           type="button"
           aria-label="刷新协作计划"

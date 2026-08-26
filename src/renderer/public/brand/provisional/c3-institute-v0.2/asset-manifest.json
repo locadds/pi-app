@@ -1,0 +1,45 @@
+{
+  "name": "小规 C3 院标底纹临时扩展",
+  "version": "0.2.0",
+  "status": "provisional-raster-institute-mark",
+  "assets": [
+    {
+      "path": "院标源-来自院内PPT-160.png",
+      "role": "院内 PPT 原样提取的临时院标源",
+      "width": 160,
+      "height": 160,
+      "bytes": 4130,
+      "sha256": "4524E6D359576DF80A918BB5D37893FE1F96C0549E46122FB6423B192EA12205"
+    },
+    {
+      "path": "xiaogui-app-icon-c3-institute-provisional.svg",
+      "role": "C3 可编辑构图源；与同目录院标 PNG 配套使用",
+      "bytes": 3361,
+      "sha256": "6AAF9368E9F8653DACD8861AD2F29046575E0D82F3FFF654B3DC2AFD4AFC7C9D"
+    },
+    {
+      "path": "xiaogui-app-icon-c3-institute-provisional-1024.png",
+      "role": "C3 1024px 大尺寸预览与数字界面资产",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 64540,
+      "sha256": "4B900F9D94B3AC0E8D940723B682A53E9986F0249A561190AFC129D7752FF2CA"
+    },
+    {
+      "path": "xiaogui-app-icon-c3-institute-provisional-256.png",
+      "role": "C3 256px 大尺寸图标层",
+      "width": 256,
+      "height": 256,
+      "bytes": 21011,
+      "sha256": "68F28EF17930C4571D35F4BE4CEDA04B609E199A9648617918F7AEA1C2A99C92"
+    },
+    {
+      "path": "xiaogui-app-icon-c3-institute-provisional-128.png",
+      "role": "C3 128px 最小院标底纹层",
+      "width": 128,
+      "height": 128,
+      "bytes": 9885,
+      "sha256": "786CD67C8613A8FE8BA509EEE3A70EE62C73AE0FC9AADDA7A1EA919D191F807A"
+    }
+  ]
+}
