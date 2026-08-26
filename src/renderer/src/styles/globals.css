@@ -2183,15 +2183,11 @@
 :root {
   --xiaogui-loader-ink: #111318;
   --xiaogui-loader-node: #e8463a;
-  --xiaogui-loader-surface: #f4f1e8;
-  --xiaogui-loader-card-shadow: 0 1px 2px rgba(17, 19, 24, 0.05), 0 12px 40px rgba(17, 19, 24, 0.08);
 }
 
 /* Dark Modern: 使用品牌反白而非 CSS 滤镜反色，定位红保持不变。 */
 .dark {
   --xiaogui-loader-ink: #f7f5ef;
-  --xiaogui-loader-surface: #252526;
-  --xiaogui-loader-card-shadow: 0 0 0 1px #2b2b2b, 0 12px 36px rgba(0, 0, 0, 0.35);
 }
 
 /* Sidebar: soft 3×3 running glyph (quiet, secondary-text tone) */
@@ -2233,10 +2229,10 @@
 }
 
 .xiaogui-loader-card {
-  padding: 20px 24px;
-  border-radius: 16px;
-  background: var(--xiaogui-loader-surface);
-  box-shadow: var(--xiaogui-loader-card-shadow);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .xiaogui-loader {
@@ -2262,7 +2258,7 @@
 }
 
 .xiaogui-loader__path {
-  stroke: var(--xiaogui-loader-surface);
+  stroke: var(--xiaogui-loader-node);
   stroke-dasharray: 220;
   stroke-dashoffset: 220;
   animation: xiaogui-loader-path-draw 792ms var(--motion-ease) 264ms forwards;
@@ -2293,8 +2289,10 @@
 }
 
 @keyframes xiaogui-loader-path-draw {
-  from { stroke-dashoffset: 220; }
-  to { stroke-dashoffset: 0; }
+  0% { opacity: 0; stroke-dashoffset: 220; }
+  16% { opacity: 1; }
+  72% { opacity: 1; }
+  100% { opacity: 0; stroke-dashoffset: 0; }
 }
 
 @keyframes xiaogui-loader-gui-in {
@@ -2324,6 +2322,7 @@
 
   .xiaogui-loader__path {
     animation: none !important;
+    opacity: 0 !important;
     stroke-dashoffset: 0 !important;
   }
 }
