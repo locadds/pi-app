@@ -18,6 +18,10 @@ import { notifyForegroundChanged } from './completion-notification-events'
 import { focusCompletionNotificationHost } from './completion-notification-delivery'
 import { isCompletionNotificationShortcut } from './completion-notification-shortcut'
 import { initXiaogui, shutdownXiaoguiSidecar } from './xiaogui'
+import {
+  XIAOGUI_PRODUCT_NAME,
+  XIAOGUI_WINDOWS_APP_USER_MODEL_ID,
+} from '@shared/xiaogui-product'
 // Prevent EPIPE / write errors from crashing the main process
 process.stdout?.on?.('error', () => {})
 process.stderr?.on?.('error', () => {})
@@ -63,6 +67,14 @@ function createMenu(): void {
     return
   }
   Menu.setApplicationMenu(null)
+}
+
+// Windows uses the application identity to group taskbar windows and resolve
+// their branded icon. Apply it before creating the window; notification code
+// may repeat this call later, which is intentionally harmless.
+app.setName(XIAOGUI_PRODUCT_NAME)
+if (process.platform === 'win32') {
+  app.setAppUserModelId(XIAOGUI_WINDOWS_APP_USER_MODEL_ID)
 }
 
 const gotLock = app.requestSingleInstanceLock()
