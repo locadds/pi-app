@@ -3,12 +3,13 @@
  *
  * 定位：轻量引导面板——WORK 模式以自然语言对话为入口。用户在常驻对话框
  * 直接说明需求，由小规选择已接入的能力执行；需要选择资料、确认范围或
- * 展示结果时，界面才出现卡片或对话框。本页只说明用法，不提供功能按钮，
- * 也不宣称未接入的能力。
+ * 展示结果时，界面才出现卡片或对话框。本页只说明用法，不提供直接执行任务的
+ * 功能按钮，也不宣称未接入的能力。示例快捷项只把自然语言填入对话框。
  *
  * 仅在 WORK 模式下呈现；其他模式渲染占位提示（与 ProjectInspectView 一致）。
  */
 
+import { useUIStore } from '@renderer/stores/ui-store'
 import { useXiaoguiStore } from '../stores/xiaogui-store'
 
 /** 朱砂红——与 ModeSelector / ProjectInspectView 保持同一强调色。 */
@@ -32,6 +33,7 @@ const EXAMPLE_PROMPTS: { title: string; prompt: string }[] = [
 
 export function WorkHomeView() {
   const mode = useXiaoguiStore((s) => s.mode)
+  const setComposerPrefill = useUIStore((s) => s.setComposerPrefill)
 
   if (mode !== 'WORK') {
     return (
@@ -46,60 +48,32 @@ export function WorkHomeView() {
 
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
-      {/* ---- 标题 ---- */}
-      <header className="mb-5 flex items-baseline gap-3">
+      <header>
         <h1 className="text-lg font-semibold text-foreground">工作台</h1>
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-          work · 日常工作
-        </span>
+        <p className="mt-2 text-[13px] text-muted-foreground">
+          直接告诉小规你想完成什么，或选择一个示例开始。
+        </p>
       </header>
 
-      {/* ---- 用法说明（虚线测量框，与 DESIGN 视图同一观感） ---- */}
-      <section className="rounded-lg border border-dashed border-border bg-background/40 px-5 py-4">
-        <p className="text-[13px] leading-relaxed text-foreground">
-          <span className="font-medium">在下方对话框里直接说明需求</span>，
-          <span className="font-semibold" style={{ color: ACCENT }}>
-            小规
-          </span>
-          会围绕当前项目和会话协助整理、起草与分析。需要选择资料、确认范围或展示结果时，
-          界面会出现卡片或对话框，由你决定是否继续。
-        </p>
-        <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
-          你可以整理资料、按已标记模板生成文档，也可以把普通成品 Word 先整理成候选模板；
-          小规会在读取、生成或保存前让你确认，并保留原文件。
-        </p>
-      </section>
-
-      {/* ---- 示例提示词 ---- */}
-      <div className="mb-1 mt-6 flex items-baseline justify-between">
+      <div className="mb-2 mt-6">
         <h2 className="text-[12px] font-semibold text-foreground">试试这样说</h2>
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground/70">
-          examples
-        </span>
       </div>
-      <ul className="grid gap-2 sm:grid-cols-3">
+      <ul className="flex flex-wrap gap-x-6 gap-y-2">
         {EXAMPLE_PROMPTS.map((ex) => (
-          <li
-            key={ex.title}
-            className="flex flex-col gap-1.5 rounded-lg border border-border/70 bg-background/40 px-3 py-2.5"
-          >
-            <span
-              className="w-fit rounded border px-1.5 py-px font-mono text-[10px] font-bold tracking-wider"
-              style={{ color: ACCENT, borderColor: `${ACCENT}55` }}
+          <li key={ex.title}>
+            <button
+              type="button"
+              aria-label={`填写示例提示词：${ex.title}`}
+              title={ex.prompt}
+              onClick={() => setComposerPrefill(ex.prompt)}
+              className="text-[12px] font-medium underline decoration-current/35 underline-offset-4 transition-colors hover:decoration-current focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              style={{ color: ACCENT }}
             >
               {ex.title}
-            </span>
-            <span className="text-[12px] leading-relaxed text-muted-foreground">
-              {ex.prompt}
-            </span>
+            </button>
           </li>
         ))}
       </ul>
-
-      {/* ---- 尾注 ---- */}
-      <footer className="mt-6 border-t border-dashed border-border/70 pt-2 font-mono text-[10px] text-muted-foreground">
-        自然语言是主入口；专用能力以实际接入状态为准。
-      </footer>
     </div>
   )
 }
