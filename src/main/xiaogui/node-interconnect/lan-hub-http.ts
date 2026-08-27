@@ -25,10 +25,15 @@ export async function startXiaoguiLanHubHttpServerV1(options: {
   }
   port?: number
   bindHost?: string
+  exposureMode?: 'EXPLICIT_INTERFACE_TOKEN_AUTHENTICATED_HTTP_PILOT'
 }): Promise<XiaoguiLanHubHttpServerV1> {
   assertPrivateToken(options.authorization.hubToken)
   for (const token of options.authorization.nodeTokens.values()) assertPrivateToken(token)
   const bindHost = options.bindHost ?? '127.0.0.1'
+  if (bindHost === '0.0.0.0' || bindHost === '::') throw new Error('LAN_HUB_BIND_HOST_INVALID')
+  if (!isLoopbackHost(bindHost) && options.exposureMode !== 'EXPLICIT_INTERFACE_TOKEN_AUTHENTICATED_HTTP_PILOT') {
+    throw new Error('LAN_HUB_EXPOSURE_NOT_APPROVED')
+  }
   const server = createServer(async (request, response) => {
     try {
       if (!request.url || request.method !== 'POST') return write(response, 404, { ok: false, reasonCode: 'LAN_ROUTE_NOT_FOUND' })
@@ -53,8 +58,7 @@ export async function startXiaoguiLanHubHttpServerV1(options: {
   })
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('LAN_HUB_LISTEN_FAILED')
-  const clientHost = bindHost === '0.0.0.0' ? '127.0.0.1' : bindHost
-  return { port: address.port, origin: `http://${clientHost}:${address.port}`, close: () => closeServer(server) }
+  return { port: address.port, origin: `http://${bindHost}:${address.port}`, close: () => closeServer(server) }
 }
 
 async function route(url: string, body: unknown, hub: XiaoguiNodePortV1): Promise<unknown> {
@@ -173,4 +177,9 @@ function sameToken(left: string, right: string): boolean {
 
 function assertPrivateToken(token: string): void {
   if (token.length < 32 || /[\r\n\0]/.test(token)) throw new Error('LAN_PRIVATE_TOKEN_INVALID')
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.toLowerCase()
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1' || normalized === '[::1]'
 }

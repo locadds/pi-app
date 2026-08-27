@@ -21,6 +21,10 @@ export type XiaoguiLanWorkerPollResultV1 =
 export interface XiaoguiLanWorkerV1 {
   register(): Promise<{ ok: true } | { ok: false; reasonCode: string }>
   heartbeat(): Promise<{ ok: true } | { ok: false; reasonCode: string }>
+  reconcile(): Promise<
+    | { ok: true; value: XiaoguiLanWorkerPollResultV1 | null }
+    | { ok: false; reasonCode: string }
+  >
   pollOnce(): Promise<{ ok: true; value: XiaoguiLanWorkerPollResultV1 } | { ok: false; reasonCode: string }>
 }
 
@@ -47,12 +51,17 @@ export function createXiaoguiLanWorkerV1(options: {
   return {
     register: () => post(options.origin, '/register', { manifest: options.manifest }, options.nodeToken),
     heartbeat: () => post(options.origin, '/heartbeat', { nodeId, health: options.manifest.health }, options.nodeToken),
+    async reconcile() {
+      const replay = await reconcileActiveLedger(options.origin, options.nodeToken, nodeId, ledger)
+      return replay ?? { ok: true, value: null }
+    },
     async pollOnce() {
       const heartbeat = await this.heartbeat()
       if (!heartbeat.ok) return heartbeat
       if (!pending) {
-        const replay = await reconcileActiveLedger(options.origin, options.nodeToken, nodeId, ledger)
-        if (replay) return replay
+        const replay = await this.reconcile()
+        if (!replay.ok) return replay
+        if (replay.value) return { ok: true, value: replay.value }
         const claim = await post<{ ok: true; envelope: XiaoguiAssignmentEnvelopeV1 } | { ok: false; reasonCode: string }>(options.origin, '/claim', { nodeId }, options.nodeToken)
         if (!claim.ok) {
           return claim.reasonCode === 'NO_CLAIMABLE_ASSIGNMENT'

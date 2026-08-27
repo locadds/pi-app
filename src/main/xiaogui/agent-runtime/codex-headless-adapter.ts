@@ -105,12 +105,13 @@ class CodexHeadlessRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     if (!shape.ok) return failed('runtime-unbound', shape.reasonCode)
     const gate = this.options.productionGate
     if (!gate?.enabled) return failed('runtime-unbound', 'CODEX_PRODUCTION_DISABLED')
-    if (!this.productionLifecycleSupported()) return failed('runtime-unbound', 'CODEX_RECOVERY_UNAVAILABLE')
-    const allowed = isRuntimeSelectionAllowed(request.selection, request.productionPolicy)
-    if (!allowed.ok) return failed('runtime-unbound', allowed.reasonCode)
     const probe = await this.options.probe.findExecutable()
     if (!probe.available) return failed('runtime-unbound', probe.reasonCode)
     if (probe.version !== gate.approvedVersion) return failed('runtime-unbound', 'CODEX_VERSION_UNAPPROVED')
+    const lifecycleBlockReason = this.productionLifecycleBlockReason()
+    if (lifecycleBlockReason) return failed('runtime-unbound', lifecycleBlockReason)
+    const allowed = isRuntimeSelectionAllowed(request.selection, request.productionPolicy)
+    if (!allowed.ok) return failed('runtime-unbound', allowed.reasonCode)
     if (!sameSelection(request.selection, gate.selection, capabilityDigest(probe.version))) {
       return failed('runtime-unbound', 'CODEX_PRODUCTION_SELECTION_MISMATCH')
     }
@@ -268,10 +269,17 @@ class CodexHeadlessRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     const gate = this.options.productionGate
     const probe = await this.options.probe.findExecutable()
     const version = probe.available ? probe.version : 'unknown'
-    const approved = Boolean(
-      gate?.enabled && probe.available && this.productionLifecycleSupported() && gate.approvedVersion === version &&
-      runtimeSelectionKey(gate.selection) === runtimeSelectionKey(codexHeadlessSelectionV1(version)),
-    )
+    const blockReason = !probe.available
+      ? probe.reasonCode
+      : !gate?.enabled
+        ? 'CODEX_PRODUCTION_DISABLED'
+        : gate.approvedVersion !== version
+          ? 'CODEX_VERSION_UNAPPROVED'
+          : this.productionLifecycleBlockReason()
+            ?? (runtimeSelectionKey(gate.selection) === runtimeSelectionKey(codexHeadlessSelectionV1(version))
+              ? undefined
+              : 'CODEX_PRODUCTION_SELECTION_MISMATCH')
+    const approved = blockReason === undefined
     return {
       adapterId: CODEX_ADAPTER_ID,
       runtimeKind: 'CODEX',
@@ -286,10 +294,12 @@ class CodexHeadlessRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
       inspect: this.options.driver.supportsCrossProcessResultReconcile ? 'RECONCILE' : 'SNAPSHOT',
       interactivePermission: 'NONE',
       diagnosticOnly: false,
-      reasonCode: probe.available ? undefined : probe.reasonCode,
+      reasonCode: blockReason,
       version: 2,
       runtimeVersion: version,
-      capabilitySummary: '小规 CODING 任务的 Codex 无交互运行时（需显式批准）',
+      capabilitySummary: approved
+        ? '小规 CODING 任务的 Codex 无交互运行时'
+        : `小规 Codex 无交互运行时仅限测试；生产门关闭：${blockReason}`,
       workModes: ['CODING'],
       taskCapabilities: ['CODING.GIT.CHANGESET', 'CODING.TYPESCRIPT', 'EXECUTION.EXTERNAL_ALLOWED'],
       executionLocation: 'EXTERNAL',
@@ -311,8 +321,12 @@ class CodexHeadlessRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     )
   }
 
-  private productionLifecycleSupported(): boolean {
-    return this.recoverySupported() && this.options.driver.supportsCrossProcessResultReconcile
+  private productionLifecycleBlockReason(): string | undefined {
+    if (!this.recoverySupported()) return 'CODEX_DURABLE_BINDING_UNAVAILABLE'
+    if (!this.options.driver.supportsCrossProcessResultReconcile) {
+      return 'CODEX_CROSS_PROCESS_RESULT_RECONCILE_UNAVAILABLE'
+    }
+    return undefined
   }
 
   private captureDriverEvents(state: SessionStateV1): void {

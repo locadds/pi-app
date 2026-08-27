@@ -68,7 +68,7 @@ describe('external runtime admission gate', () => {
     }])
     await expect(adapter.createOrResume(request(selection, 'task'))).resolves.toMatchObject({
       state: 'FAILED',
-      reasonCode: 'CODEX_RECOVERY_UNAVAILABLE',
+      reasonCode: 'CODEX_DURABLE_BINDING_UNAVAILABLE',
     })
   })
 
@@ -88,7 +88,12 @@ describe('external runtime admission gate', () => {
       inspect: 'SNAPSHOT',
       supportsResume: true,
       supportsResultReconcile: false,
+      reasonCode: 'CODEX_CROSS_PROCESS_RESULT_RECONCILE_UNAVAILABLE',
     }])
+    await expect(adapter.createOrResume(request(selection, 'task'))).resolves.toMatchObject({
+      state: 'FAILED',
+      reasonCode: 'CODEX_CROSS_PROCESS_RESULT_RECONCILE_UNAVAILABLE',
+    })
     const registry = createAgentRuntimeRegistryV1()
     await registry.register(adapter)
     await expect(registry.resolve({
