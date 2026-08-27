@@ -12,18 +12,24 @@ import {
   type XiaoguiNodeIdV1,
   type XiaoguiNodePortV1,
 } from '@shared/xiaogui-node-contract'
+import {
+  createInMemoryHubAssignmentStoreV1,
+  createXiaoguiLanHubAssignmentStoreForUserDataV1,
+  xiaoguiTaskIdentityDigestV1,
+  type HubAssignmentLedgerRecordV1,
+  type HubAssignmentStoreV1,
+} from './hub-assignment-store'
 
 export interface InMemoryXiaoguiNodeHubOptionsV1 {
   hubId?: string
   now?: () => string
   idFactory?: (prefix: string) => string
-}
-
-interface StoredAssignmentV1 {
-  envelope: XiaoguiAssignmentEnvelopeV1
-  claimed: boolean
-  resultDigest?: string
-  reasonCode?: string
+  assignmentStore?: HubAssignmentStoreV1
+  /** Electron composition passes app.getPath('userData'); tests may inject a store. */
+  userDataDir?: string
+  /** Static capability and egress authority; registration may only report liveness fields. */
+  trustedManifests?: ReadonlyMap<string, XiaoguiNodeCapabilityManifestV1>
+  onDegraded?: (reasonCode: 'HUB_ASSIGNMENT_STORE_FAILED') => void
 }
 
 type XiaoguiNodeEventInputV1 = {
@@ -36,13 +42,22 @@ export function createInMemoryXiaoguiNodeHubV1(options: InMemoryXiaoguiNodeHubOp
 
 class InMemoryXiaoguiNodeHubV1 implements XiaoguiNodePortV1 {
   private readonly manifests = new Map<string, XiaoguiNodeCapabilityManifestV1>()
-  private readonly assignments = new Map<string, StoredAssignmentV1>()
+  private readonly assignments = new Map<string, HubAssignmentLedgerRecordV1>()
   private readonly taskAssignments = new Map<string, string>()
   private readonly eventLog: XiaoguiNodeEventV1[] = []
+  private readonly trustedManifests: ReadonlyMap<string, XiaoguiNodeCapabilityManifestV1>
   private readonly hubId: string
+  private readonly assignmentStore: HubAssignmentStoreV1
+  private loadPromise?: Promise<boolean>
+  private storeFailed = false
 
   constructor(private readonly options: InMemoryXiaoguiNodeHubOptionsV1) {
     this.hubId = options.hubId ?? 'xiaogui-local-hub'
+    this.trustedManifests = new Map(options.trustedManifests ?? [])
+    this.assignmentStore = options.assignmentStore
+      ?? (options.userDataDir
+        ? createXiaoguiLanHubAssignmentStoreForUserDataV1(options.userDataDir)
+        : createInMemoryHubAssignmentStoreV1())
   }
 
   async register(manifest: XiaoguiNodeCapabilityManifestV1) {
@@ -54,7 +69,17 @@ class InMemoryXiaoguiNodeHubV1 implements XiaoguiNodePortV1 {
     if (manifest.designReserved !== true || manifest.leaseTtlMs <= 0) {
       return { ok: false as const, reasonCode: 'NODE_MANIFEST_INVALID' }
     }
-    this.manifests.set(String(manifest.identity.nodeId), manifest)
+    const nodeId = String(manifest.identity.nodeId)
+    const trusted = this.trustedManifests.get(nodeId)
+    if (!trusted) return { ok: false as const, reasonCode: 'NODE_NOT_APPROVED' }
+    if (!sameApprovedManifest(trusted, manifest)) {
+      return { ok: false as const, reasonCode: 'NODE_MANIFEST_NOT_APPROVED' }
+    }
+    this.manifests.set(nodeId, {
+      ...trusted,
+      health: manifest.health,
+      updatedAt: manifest.updatedAt,
+    })
     this.push({ type: 'NODE_REGISTERED', nodeId: String(manifest.identity.nodeId) })
     return { ok: true as const }
   }
@@ -73,9 +98,12 @@ class InMemoryXiaoguiNodeHubV1 implements XiaoguiNodePortV1 {
     dataEgressPolicy: XiaoguiNodeDataEgressPolicyV1
     payloadRef: XiaoguiAssignmentPayloadRefV1
   }) {
-    this.expireLeases()
+    if (!await this.ensureLoaded() || !await this.expireLeases()) return this.storeFailure()
     const valid = validateXiaoguiNodePublicDtoV1(input)
     if (!valid.ok) return valid
+    if (!isSafeOpaqueId(input.taskId) || !isSafeOpaqueId(input.payloadRef.artifactId)) {
+      return { ok: false as const, reasonCode: 'ASSIGNMENT_OPAQUE_ID_INVALID' }
+    }
     if (this.taskAssignments.has(input.taskId)) return { ok: false as const, reasonCode: 'ASSIGNMENT_ALREADY_EXISTS' }
     const target = this.pickNode(input.requiredCapabilities, input.dataEgressPolicy)
     if (!target) return { ok: false as const, reasonCode: 'NO_NODE_CAPABILITY' }
@@ -96,86 +124,106 @@ class InMemoryXiaoguiNodeHubV1 implements XiaoguiNodePortV1 {
       issuedAt,
       leaseExpiresAt: new Date(Date.parse(issuedAt) + target.leaseTtlMs).toISOString(),
     }
-    this.assignments.set(assignmentId, { envelope, claimed: false })
+    this.assignments.set(assignmentId, {
+      taskIdentityDigest: xiaoguiTaskIdentityDigestV1(input.taskId),
+      envelope,
+      claimed: false,
+    })
     this.taskAssignments.set(input.taskId, assignmentId)
+    if (!await this.persist()) return this.storeFailure()
     this.push({ type: 'ASSIGNMENT_OFFERED', nodeId: String(target.identity.nodeId), assignmentId, leaseId })
     return { ok: true as const, envelope }
   }
 
   async claim(nodeId: XiaoguiNodeIdV1 | string) {
-    this.expireLeases()
+    if (!await this.ensureLoaded() || !await this.expireLeases()) return this.storeFailure()
     const assignment = [...this.assignments.values()]
       .filter((candidate) => String(candidate.envelope.targetNodeId) === String(nodeId))
       .filter((candidate) => candidate.envelope.status === 'AWAITING_LOCAL_APPROVAL' && !candidate.claimed)
       .sort((left, right) => left.envelope.issuedAt.localeCompare(right.envelope.issuedAt))[0]
     if (!assignment) return { ok: false as const, reasonCode: 'NO_CLAIMABLE_ASSIGNMENT' }
-    assignment.claimed = true
+    this.assignments.set(assignment.envelope.assignmentId, { ...assignment, claimed: true })
+    if (!await this.persist()) return this.storeFailure()
     return { ok: true as const, envelope: assignment.envelope }
   }
 
   async approveLocal(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string) {
-    this.expireLeases()
+    if (!await this.ensureLoaded() || !await this.expireLeases()) return this.storeFailure()
     const assignment = this.assignments.get(assignmentId)
     if (!assignment) return { ok: false as const, reasonCode: 'ASSIGNMENT_NOT_FOUND' }
     const checked = this.checkLease(assignment.envelope, nodeId, leaseId, ['AWAITING_LOCAL_APPROVAL'])
     if (!checked.ok) return checked
-    assignment.envelope = { ...assignment.envelope, status: 'LEASED' }
+    this.assignments.set(assignmentId, { ...assignment, envelope: { ...assignment.envelope, status: 'LEASED' } })
+    if (!await this.persist()) return this.storeFailure()
     this.push({ type: 'ASSIGNMENT_APPROVED', nodeId: String(nodeId), assignmentId, leaseId })
     return { ok: true as const }
   }
 
   async markRunning(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string) {
-    this.expireLeases()
+    if (!await this.ensureLoaded() || !await this.expireLeases()) return this.storeFailure()
     const assignment = this.assignments.get(assignmentId)
     if (!assignment) return { ok: false as const, reasonCode: 'ASSIGNMENT_NOT_FOUND' }
     const checked = this.checkLease(assignment.envelope, nodeId, leaseId, ['LEASED'])
     if (!checked.ok) return checked
-    assignment.envelope = { ...assignment.envelope, status: 'RUNNING' }
+    this.assignments.set(assignmentId, { ...assignment, envelope: { ...assignment.envelope, status: 'RUNNING' } })
+    if (!await this.persist()) return this.storeFailure()
     this.push({ type: 'ASSIGNMENT_RUNNING', nodeId: String(nodeId), assignmentId, leaseId })
     return { ok: true as const }
   }
 
   async complete(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string, resultDigest: string) {
-    this.expireLeases()
+    if (!await this.ensureLoaded() || !await this.expireLeases()) return this.storeFailure()
     const assignment = this.assignments.get(assignmentId)
     if (!assignment) return { ok: false as const, reasonCode: 'ASSIGNMENT_NOT_FOUND' }
     const checked = this.checkLease(assignment.envelope, nodeId, leaseId, ['RUNNING'])
     if (!checked.ok) return checked
     if (!/^sha256:[A-Za-z0-9._-]+$/.test(resultDigest)) return { ok: false as const, reasonCode: 'RESULT_DIGEST_INVALID' }
-    assignment.envelope = { ...assignment.envelope, status: 'COMPLETED' }
-    assignment.resultDigest = resultDigest
+    this.assignments.set(assignmentId, {
+      ...assignment,
+      envelope: { ...assignment.envelope, status: 'COMPLETED' },
+      resultDigest,
+    })
+    if (!await this.persist()) return this.storeFailure()
     this.push({ type: 'ASSIGNMENT_COMPLETED', nodeId: String(nodeId), assignmentId, leaseId, resultDigest })
     return { ok: true as const }
   }
 
   async fail(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string, reasonCode: string) {
-    this.expireLeases()
+    if (!await this.ensureLoaded() || !await this.expireLeases()) return this.storeFailure()
     const assignment = this.assignments.get(assignmentId)
     if (!assignment) return { ok: false as const, reasonCode: 'ASSIGNMENT_NOT_FOUND' }
     const checked = this.checkLease(assignment.envelope, nodeId, leaseId, ['RUNNING'])
     if (!checked.ok) return checked
     if (!/^[A-Z][A-Z0-9_]{2,63}$/.test(reasonCode)) return { ok: false as const, reasonCode: 'ASSIGNMENT_REASON_INVALID' }
-    assignment.envelope = { ...assignment.envelope, status: 'FAILED' }
-    assignment.reasonCode = reasonCode
+    this.assignments.set(assignmentId, {
+      ...assignment,
+      envelope: { ...assignment.envelope, status: 'FAILED' },
+      reasonCode,
+    })
+    if (!await this.persist()) return this.storeFailure()
     this.push({ type: 'ASSIGNMENT_FAILED', nodeId: String(nodeId), assignmentId, leaseId, reasonCode })
     return { ok: true as const }
   }
 
   async outcomeUnknown(nodeId: XiaoguiNodeIdV1 | string, assignmentId: string, leaseId: string, reasonCode: string) {
-    this.expireLeases()
+    if (!await this.ensureLoaded() || !await this.expireLeases()) return this.storeFailure()
     const assignment = this.assignments.get(assignmentId)
     if (!assignment) return { ok: false as const, reasonCode: 'ASSIGNMENT_NOT_FOUND' }
     const checked = this.checkLease(assignment.envelope, nodeId, leaseId, ['AWAITING_LOCAL_APPROVAL', 'LEASED', 'RUNNING'])
     if (!checked.ok) return checked
     if (!/^[A-Z][A-Z0-9_]{2,63}$/.test(reasonCode)) return { ok: false as const, reasonCode: 'ASSIGNMENT_REASON_INVALID' }
-    assignment.envelope = { ...assignment.envelope, status: 'OUTCOME_UNKNOWN' }
-    assignment.reasonCode = reasonCode
+    this.assignments.set(assignmentId, {
+      ...assignment,
+      envelope: { ...assignment.envelope, status: 'OUTCOME_UNKNOWN' },
+      reasonCode,
+    })
+    if (!await this.persist()) return this.storeFailure()
     this.push({ type: 'ASSIGNMENT_OUTCOME_UNKNOWN', nodeId: String(nodeId), assignmentId, leaseId, reasonCode })
     return { ok: true as const }
   }
 
   async reconcile(assignmentId: string, nodeId?: XiaoguiNodeIdV1 | string) {
-    this.expireLeases()
+    if (!await this.ensureLoaded() || !await this.expireLeases()) return this.storeFailure()
     const assignment = this.assignments.get(assignmentId)
     if (!assignment) return { ok: false as const, reasonCode: 'ASSIGNMENT_NOT_FOUND' }
     if (nodeId && String(assignment.envelope.targetNodeId) !== String(nodeId)) {
@@ -219,14 +267,19 @@ class InMemoryXiaoguiNodeHubV1 implements XiaoguiNodePortV1 {
     return { ok: true }
   }
 
-  private expireLeases(): void {
+  private async expireLeases(): Promise<boolean> {
     const nowMs = Date.parse(this.now())
-    for (const assignment of this.assignments.values()) {
+    let changed = false
+    for (const [assignmentId, assignment] of this.assignments) {
       if (
         ['AWAITING_LOCAL_APPROVAL', 'LEASED', 'RUNNING'].includes(assignment.envelope.status) &&
         Date.parse(assignment.envelope.leaseExpiresAt) <= nowMs
       ) {
-        assignment.envelope = { ...assignment.envelope, status: 'LEASE_EXPIRED' }
+        this.assignments.set(assignmentId, {
+          ...assignment,
+          envelope: { ...assignment.envelope, status: 'LEASE_EXPIRED' },
+        })
+        changed = true
         this.push({
           type: 'ASSIGNMENT_LEASE_EXPIRED',
           nodeId: String(assignment.envelope.targetNodeId),
@@ -235,6 +288,38 @@ class InMemoryXiaoguiNodeHubV1 implements XiaoguiNodePortV1 {
         })
       }
     }
+    return !changed || this.persist()
+  }
+
+  private ensureLoaded(): Promise<boolean> {
+    if (this.storeFailed) return Promise.resolve(false)
+    this.loadPromise ??= this.assignmentStore.load().then((records) => {
+      for (const record of records) {
+        this.assignments.set(record.envelope.assignmentId, record)
+        this.taskAssignments.set(record.envelope.taskId, record.envelope.assignmentId)
+      }
+      return true
+    }).catch(() => {
+      this.storeFailed = true
+      return false
+    })
+    return this.loadPromise
+  }
+
+  private async persist(): Promise<boolean> {
+    if (this.storeFailed) return false
+    try {
+      await this.assignmentStore.replace([...this.assignments.values()])
+      return true
+    } catch {
+      this.storeFailed = true
+      return false
+    }
+  }
+
+  private storeFailure(): { ok: false; reasonCode: 'HUB_ASSIGNMENT_STORE_FAILED' } {
+    this.options.onDegraded?.('HUB_ASSIGNMENT_STORE_FAILED')
+    return { ok: false, reasonCode: 'HUB_ASSIGNMENT_STORE_FAILED' }
   }
 
   private push(event: XiaoguiNodeEventInputV1): void {
@@ -256,6 +341,18 @@ class InMemoryXiaoguiNodeHubV1 implements XiaoguiNodePortV1 {
   private id(prefix: string): string {
     return this.options.idFactory?.(prefix) ?? `${prefix}_${randomUUID()}_${digest(prefix).slice(0, 8)}`
   }
+}
+
+function isSafeOpaqueId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)
+}
+
+function sameApprovedManifest(
+  trusted: XiaoguiNodeCapabilityManifestV1,
+  reported: XiaoguiNodeCapabilityManifestV1,
+): boolean {
+  return JSON.stringify({ ...trusted, health: undefined, updatedAt: undefined })
+    === JSON.stringify({ ...reported, health: undefined, updatedAt: undefined })
 }
 
 function digest(value: string): string {

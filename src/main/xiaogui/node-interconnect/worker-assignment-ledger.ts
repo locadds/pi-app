@@ -11,6 +11,7 @@ export type WorkerAssignmentLedgerStatusV1 =
 
 export interface WorkerAssignmentLedgerRecordV1 {
   assignmentId: string
+  taskIdentityDigest: string
   leaseId: string
   attemptId: string
   status: WorkerAssignmentLedgerStatusV1
@@ -21,6 +22,7 @@ export interface WorkerAssignmentLedgerRecordV1 {
 
 export interface WorkerAssignmentLedgerV1 {
   get(assignmentId: string): Promise<WorkerAssignmentLedgerRecordV1 | null>
+  getByTaskIdentity(taskIdentityDigest: string): Promise<WorkerAssignmentLedgerRecordV1 | null>
   listActive(): Promise<readonly WorkerAssignmentLedgerRecordV1[]>
   upsert(record: WorkerAssignmentLedgerRecordV1): Promise<void>
 }
@@ -32,6 +34,9 @@ export function createInMemoryWorkerAssignmentLedgerV1(
   return {
     async get(assignmentId) {
       return records.get(assignmentId) ?? null
+    },
+    async getByTaskIdentity(taskIdentityDigest) {
+      return [...records.values()].find((record) => record.taskIdentityDigest === taskIdentityDigest) ?? null
     },
     async listActive() {
       return [...records.values()].filter((record) => record.status === 'RUNNING' || record.status === 'AWAITING_LOCAL_APPROVAL')
@@ -48,6 +53,9 @@ export function createJsonFileWorkerAssignmentLedgerV1(filePath: string): Worker
     async get(assignmentId) {
       const records = await load(filePath)
       return records.find((record) => record.assignmentId === assignmentId) ?? null
+    },
+    async getByTaskIdentity(taskIdentityDigest) {
+      return (await load(filePath)).find((record) => record.taskIdentityDigest === taskIdentityDigest) ?? null
     },
     async listActive() {
       return (await load(filePath)).filter((record) => record.status === 'RUNNING' || record.status === 'AWAITING_LOCAL_APPROVAL')
@@ -68,6 +76,7 @@ export function createXiaoguiLanWorkerLedgerForUserDataV1(userDataDir: string): 
 }
 
 function assertLedgerRecord(record: WorkerAssignmentLedgerRecordV1): void {
+  if (!/^sha256:[a-f0-9]{64}$/.test(record.taskIdentityDigest)) throw new Error('WORKER_LEDGER_TASK_IDENTITY_INVALID')
   if (!record.summaryDigest.startsWith('sha256:')) throw new Error('WORKER_LEDGER_SUMMARY_DIGEST_INVALID')
   if (record.receiptDigest && !record.receiptDigest.startsWith('sha256:')) throw new Error('WORKER_LEDGER_RECEIPT_DIGEST_INVALID')
   if (!validateXiaoguiNodePublicDtoV1(record).ok) throw new Error('WORKER_LEDGER_PUBLIC_DTO_LEAK')
