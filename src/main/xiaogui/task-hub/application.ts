@@ -609,6 +609,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     try {
       const persistedReceipt = store.writeSchedule(address, this.idempotency(request), {
         flowId: request.intent.flowId,
+        expectedSessionVersion: request.expectedSessionVersion,
         taskRunId: task.task_run_id,
         attemptId,
         attemptDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, baselineDigest: taskBaseline.value.baselineDigest }),
@@ -638,6 +639,8 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       return { ok: true, value: persistedReceipt }
     } catch (error) {
       if (scheduleConflictCode(error) === 'IDEMPOTENCY_CONFLICT') return systemError('IDEMPOTENCY_CONFLICT')
+      if (scheduleConflictCode(error) === 'STALE_SESSION_VERSION') return systemError('STALE_SESSION_VERSION')
+      if (scheduleConflictCode(error) === 'FLOW_SCHEDULE_CONFLICT') return systemError('FLOW_NOT_FOUND')
       if (isBaselineConflictError(error)) return systemError('BASELINE_CONFLICT')
       if (isScheduleConflictError(error)) return systemError('ILLEGAL_TRANSITION', { reason: scheduleConflictCode(error) })
       throw error

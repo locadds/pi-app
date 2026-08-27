@@ -376,6 +376,7 @@ export interface CancelFlowRecordV1 {
 
 export interface ScheduleRecordM2BV1 {
   flowId: FlowId
+  expectedSessionVersion?: number
   taskRunId: TaskRunId
   attemptId: AttemptId
   attemptDigest: string
@@ -2269,8 +2270,31 @@ export class CollaborationHubSqliteStoreV1 {
 
   writeSchedule(address: HubAddressV1, idempotency: IdempotencyInput, record: ScheduleRecordM2BV1): PerformReceiptV1 {
     return this.transaction(() => {
+      // Every derived-baseline owner/waiter converges here. Replay, optimistic
+      // version, flow authority, capacity, and authorization scope are checked
+      // under the same BEGIN IMMEDIATE lock before any execution binding write.
       const replay = this.checkIdempotencyForWrite(address, idempotency)
       if (replay) return replay
+      const currentProjection = this.readProjection(address)
+      const currentVersion = currentProjection?.sessionVersion ?? 0
+      if (record.expectedSessionVersion !== undefined && record.expectedSessionVersion !== currentVersion) {
+        throw Object.assign(new Error('STALE_SESSION_VERSION'), { code: 'STALE_SESSION_VERSION' })
+      }
+      if (
+        !currentProjection?.activeFlow ||
+        currentProjection.activeFlow.flowId !== record.flowId ||
+        currentProjection.activeFlow.status !== 'PLAN_ACTIVE'
+      ) {
+        throw Object.assign(new Error('FLOW_SCHEDULE_CONFLICT'), { code: 'FLOW_SCHEDULE_CONFLICT' })
+      }
+      const currentFlow = this.db.prepare(`
+        select status
+          from flows
+         where flow_id = ? and project_id = ? and session_key = ?
+      `).get(record.flowId, address.projectId, address.sessionKey) as { status: string } | undefined
+      if (currentFlow?.status !== 'PLAN_ACTIVE') {
+        throw Object.assign(new Error('FLOW_SCHEDULE_CONFLICT'), { code: 'FLOW_SCHEDULE_CONFLICT' })
+      }
       const activeCount = (this.db.prepare(`
         select count(*) as count
           from attempts a
@@ -2295,8 +2319,8 @@ export class CollaborationHubSqliteStoreV1 {
       )) {
         throw Object.assign(new Error('ATTEMPT_SCOPE_CONFLICT'), { code: 'ATTEMPT_SCOPE_CONFLICT' })
       }
-      const version = this.currentVersion(address) + 1
-      const projection = { ...record.projection, sessionVersion: version }
+      const version = currentVersion + 1
+      const projection = { ...currentProjection, sessionVersion: version }
       const receipt = { ...record.receipt, sessionVersion: version }
       const insertBaseline = this.db.prepare(
         'insert or ignore into flow_execution_baselines (flow_id, baseline_id, base_revision, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)',

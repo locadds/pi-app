@@ -31,7 +31,11 @@ import {
 } from '@shared/xiaogui-task-verification'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
-import { createCollaborationHubApplicationV1 } from './application'
+import {
+  createCollaborationHubApplicationV1,
+  type DerivedExecutionBaselineProviderV1,
+  type DerivedTaskExecutionBaselineV1,
+} from './application'
 import { digestBytes } from './attempt-workspace'
 import { digestJson } from './digest'
 import {
@@ -133,6 +137,120 @@ describe('cross-application derived baseline scheduling', () => {
       second.close()
     }
   })
+
+  it('does not revive a cancelled flow when verified-ancestor derivation finishes late', async () => {
+    const fixture = await fixtureRoot()
+    const setup = applicationFor(fixture, [
+      'xhbf_cancel_race',
+      'xhbr_cancel_race',
+      'xhbts_cancel_parent',
+      'xhbts_cancel_child',
+      'xhbtr_cancel_parent',
+      'xhbtr_cancel_child',
+    ], new Map())
+    await setup.execute(userRequest('req-cancel-race-start', {
+      type: 'flow.start.with_draft',
+      draft: parentChildDraft(),
+    }))
+    const draft = await setup.observeM2B(ADDRESS)
+    if (!draft.ok || !draft.value.activeFlow || !draft.value.activeRevision) throw new Error('expected draft flow')
+    await setup.execute(userRequest('req-cancel-race-approve', {
+      type: 'plan.revision.submit',
+      flowId: draft.value.activeFlow.flowId,
+      baseRevisionId: draft.value.activeRevision.revisionId,
+      draft: draft.value.activeRevision.draft,
+    }))
+    const approved = await setup.observeM2B(ADDRESS)
+    if (!approved.ok || !approved.value.activeFlow || !approved.value.activeRevision) throw new Error('expected active plan')
+    const parent = approved.value.taskRuns.find((task) => task.taskKey === 'parent')
+    if (!parent) throw new Error('expected parent task')
+    const material = taskMaterial(
+      approved.value.activeFlow.flowId,
+      approved.value.activeRevision.revisionId,
+      parent.taskRunId,
+    )
+    seedVerifiedAncestor(fixture.dbPath, material)
+    setup.close()
+
+    let signalDerivationStarted!: () => void
+    let releaseDerivation!: () => void
+    const derivationStarted = new Promise<void>((resolve) => { signalDerivationStarted = resolve })
+    const derivationGate = new Promise<void>((resolve) => { releaseDerivation = resolve })
+    const slowProvider: DerivedExecutionBaselineProviderV1 = {
+      derive: async (input) => {
+        signalDerivationStarted()
+        await derivationGate
+        return derivedBaseline(input)
+      },
+    }
+    const app = applicationFor(
+      fixture,
+      ['xhba_cancel_race_late'],
+      new Map([[material.changeSet.taskChangeSetId, material]]),
+      slowProvider,
+    )
+    const beforeSchedule = await app.observeM2B(ADDRESS)
+    if (!beforeSchedule.ok || !beforeSchedule.value.activeFlow) throw new Error('expected schedulable flow')
+    const flowId = beforeSchedule.value.activeFlow.flowId
+    const request = systemScheduleRequest(flowId, beforeSchedule.value.sessionVersion)
+    const schedule = app.executeSystem(request)
+
+    try {
+      await derivationStarted
+      await expect(app.execute(userRequest('req-cancel-race-cancel', {
+        type: 'flow.cancel',
+        flowId,
+        reason: 'cancel while derived baseline is pending',
+      }, beforeSchedule.value.sessionVersion))).resolves.toMatchObject({ ok: true })
+      releaseDerivation()
+
+      await expect(schedule).resolves.toMatchObject({ ok: false, error: { code: 'STALE_SESSION_VERSION' } })
+      await expect(app.executeSystem(request)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'STALE_SESSION_VERSION' },
+      })
+      await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+        ok: true,
+        value: {
+          activeFlow: null,
+          attempts: [],
+          history: expect.arrayContaining([expect.objectContaining({ flowId, status: 'CANCELLED' })]),
+        },
+      })
+    } finally {
+      releaseDerivation()
+      app.close()
+    }
+
+    const store = new CollaborationHubSqliteStoreV1(fixture.dbPath)
+    try {
+      expect(store.tableCounts()).toMatchObject({
+        attempts: 0,
+        execution_waves: 0,
+        flow_execution_baselines: 0,
+        task_execution_baselines: 0,
+      })
+    } finally {
+      store.close()
+    }
+    const restarted = applicationFor(fixture, [], new Map())
+    try {
+      await expect(restarted.executeSystem(request)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'STALE_SESSION_VERSION' },
+      })
+      await expect(restarted.observeM2B(ADDRESS)).resolves.toMatchObject({
+        ok: true,
+        value: {
+          activeFlow: null,
+          attempts: [],
+          history: expect.arrayContaining([expect.objectContaining({ flowId, status: 'CANCELLED' })]),
+        },
+      })
+    } finally {
+      restarted.close()
+    }
+  })
 })
 
 async function fixtureRoot() {
@@ -158,6 +276,7 @@ function applicationFor(
   fixture: Awaited<ReturnType<typeof fixtureRoot>>,
   ids: string[],
   materials: ReadonlyMap<TaskChangeSetId, VerifiedTaskChangeSetMaterialV1>,
+  derivedBaselineProvider?: DerivedExecutionBaselineProviderV1,
 ) {
   let index = 0
   const projectResolver = { resolveProjectRoot: () => fixture.repo }
@@ -169,7 +288,7 @@ function applicationFor(
       createRuntimeSessionId: 'runtime-concurrent',
     })),
     baselineProvider: new GitExecutionBaselineProviderV1(projectResolver),
-    derivedBaselineProvider: new GitDerivedExecutionBaselineProviderV1({
+    derivedBaselineProvider: derivedBaselineProvider ?? new GitDerivedExecutionBaselineProviderV1({
       storeFactory: () => new CollaborationHubSqliteStoreV1(fixture.dbPath),
       projectResolver,
       managedRoot: fixture.managedRoot,
@@ -200,17 +319,22 @@ function parentChildDraft(): InitialPlanDraftInputV1 {
   }
 }
 
-function userRequest(requestId: string, intent: Parameters<ReturnType<typeof applicationFor>['execute']>[0]['intent']) {
+function userRequest(
+  requestId: string,
+  intent: Parameters<ReturnType<typeof applicationFor>['execute']>[0]['intent'],
+  expectedSessionVersion?: number,
+) {
   return {
     contractVersion: 'm2a.v1' as const,
     address: ADDRESS,
     trustedActor: { kind: 'main-process-user' as const },
     requestId,
+    ...(expectedSessionVersion === undefined ? {} : { expectedSessionVersion }),
     intent,
   }
 }
 
-function systemScheduleRequest(flowId: FlowId): HubSystemCommandRequestM2BV1 {
+function systemScheduleRequest(flowId: FlowId, expectedSessionVersion?: number): HubSystemCommandRequestM2BV1 {
   const pathTokens = [`sha256:${digestJson({ role: 'derived-concurrency-scope' })}` as Sha256Digest]
   const scopeBase = { version: 1 as const, pathTokens }
   const authorizationScope = {
@@ -222,6 +346,7 @@ function systemScheduleRequest(flowId: FlowId): HubSystemCommandRequestM2BV1 {
     address: ADDRESS,
     trustedActor: { kind: 'main-process-system' },
     requestId: 'sys-derived-concurrent',
+    ...(expectedSessionVersion === undefined ? {} : { expectedSessionVersion }),
     intent: {
       type: 'system.schedule',
       flowId,
@@ -229,6 +354,28 @@ function systemScheduleRequest(flowId: FlowId): HubSystemCommandRequestM2BV1 {
       executionInputDigest: `sha256:${'9'.repeat(64)}` as Sha256Digest,
     },
   }
+}
+
+function derivedBaseline(
+  input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0],
+): DerivedTaskExecutionBaselineV1 {
+  const baselineDigest = digestJson({
+    baselineId: input.flowBaseline.baselineId,
+    ...(input.flowBaseline.baseRevision ? { baseRevision: input.flowBaseline.baseRevision } : {}),
+    baselineTreeHash: input.flowBaseline.baselineTreeHash,
+    initialTargetFingerprint: input.flowBaseline.initialTargetFingerprint,
+  })
+  const value = {
+    version: 1 as const,
+    taskRunId: input.taskRunId,
+    ancestorTaskChangeSetIds: input.ancestorTaskChangeSetIds,
+    baselineId: input.flowBaseline.baselineId,
+    ...(input.flowBaseline.baseRevision ? { baseRevision: input.flowBaseline.baseRevision } : {}),
+    baselineTreeHash: input.flowBaseline.baselineTreeHash,
+    initialTargetFingerprint: input.flowBaseline.initialTargetFingerprint,
+    baselineDigest,
+  }
+  return { ...value, derivationDigest: digestJson(value) }
 }
 
 function taskMaterial(

@@ -78,7 +78,7 @@ const ADDRESS = {
 } as SessionAddressV1
 
 const roots: string[] = []
-const TEST_TEMP_ROOT = 'E:\\CodexTemp\\m4f-c-store'
+const TEST_TEMP_ROOT = 'D:\\CodexTemp\\xiaogui-hub-m2c-m4g\\sqlite-store'
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -1413,6 +1413,62 @@ describe('M2B sqlite store migration', () => {
     expect(store.tableCounts()).toEqual(beforeCounts)
     store.close()
     expect(flowBaselineRow(dbPath, flowId as FlowId)).toEqual(oldRow)
+  })
+
+  it('rejects a stale schedule at the SQLite boundary after its flow is cancelled', async () => {
+    const dbPath = await tempDb('schedule-cancel-race.sqlite')
+    const { app, flowId } = await activePlan(dbPath)
+    const beforeCancel = await app.observe(ADDRESS)
+    if (!beforeCancel.ok) throw new Error('missing active plan projection')
+    const snapshotStore = new CollaborationHubSqliteStoreV1(dbPath)
+    const projection = snapshotStore.readProjection(ADDRESS)
+    const taskRun = snapshotStore.taskRuns(flowId as FlowId)[0]
+    snapshotStore.close()
+    if (!projection || !taskRun) throw new Error('missing active plan rows')
+    const record = {
+      ...scheduleRecord({
+        flowId: flowId as FlowId,
+        taskRunId: taskRun.task_run_id,
+        attemptId: 'xhba_cancelled_late' as AttemptId,
+        suffix: 'cancelled-late',
+        projection,
+      }),
+      expectedSessionVersion: beforeCancel.value.sessionVersion,
+    }
+    await expect(app.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'req-cancel-before-schedule-write',
+      expectedSessionVersion: beforeCancel.value.sessionVersion,
+      intent: { type: 'flow.cancel', flowId: flowId as FlowId, reason: 'cancel before delayed write' },
+    })).resolves.toMatchObject({ ok: true })
+    app.close()
+
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    const idempotency = {
+      requestId: 'sys-cancelled-late',
+      commandType: 'system.schedule',
+      payloadHash: 'sha256:cancelled-late-payload',
+    }
+    try {
+      expect(() => store.writeSchedule(ADDRESS, idempotency, record)).toThrow('STALE_SESSION_VERSION')
+      expect(() => store.writeSchedule(ADDRESS, idempotency, {
+        ...record,
+        expectedSessionVersion: undefined,
+      })).toThrow('FLOW_SCHEDULE_CONFLICT')
+      expect(() => store.writeSchedule(ADDRESS, idempotency, record)).toThrow('STALE_SESSION_VERSION')
+      expect(store.readProjection(ADDRESS)).toMatchObject({ activeFlow: null })
+      expect(store.idempotency(ADDRESS, idempotency.requestId)).toBeNull()
+      expect(store.tableCounts()).toMatchObject({
+        attempts: 0,
+        execution_waves: 0,
+        flow_execution_baselines: 0,
+        task_execution_baselines: 0,
+      })
+    } finally {
+      store.close()
+    }
   })
 
   it('upgrades legacy v2 tables to schema v3 with private M2B2 tables and claim columns', async () => {
