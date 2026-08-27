@@ -310,19 +310,13 @@ function normalizeWorkerRequest(
   | { ok: true; request: XiaoguiLanRouteRequestV1; body: Record<string, unknown> }
   | { ok: false; reasonCode: 'NODE_PUBLIC_DTO_LEAK' | 'LAN_WORKER_REQUEST_INVALID' } {
   try {
-    if (!validateXiaoguiNodePublicDtoV1(value).ok) {
-      return { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' }
-    }
     const parsed = parseXiaoguiLanRouteRequestV1(route, value)
     if (!parsed) return { ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' }
-    const canonicalBody = routeRequestBody(parsed)
-    const normalized = parseXiaoguiLanRouteRequestV1(route, canonicalBody)
-    if (!normalized) return { ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' }
-    const body = routeRequestBody(normalized)
+    const body = routeRequestBody(parsed)
     if (!validateXiaoguiNodePublicDtoV1(body).ok) {
       return { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' }
     }
-    return { ok: true, request: normalized, body }
+    return { ok: true, request: parsed, body }
   } catch {
     return { ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' }
   }
