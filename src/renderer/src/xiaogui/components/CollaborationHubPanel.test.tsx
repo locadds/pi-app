@@ -235,8 +235,9 @@ function runtimeBindingFixture(attemptId: AttemptId, taskRunId: TaskRunId): Atte
 
 /**
  * 满槽分组场景（生产可达）：t1 执行中（IN_FLIGHT，attempt 含 runtimeBinding）、
- * t5 验证中（IN_FLIGHT + attempt VERIFYING）、t6 父任务失败（TERMINAL）、
- * t2 等待 t1、t3 因 t6 失败被阻断、t4 未派发根任务（raw TaskRun=BLOCKED，readiness=READY）。
+ * t4 验证中（本批新调度：规划时 t4/t5 均 READY，确定性调度按任务顺序选中第一个 READY 的 t4，
+ * 调度后 readiness 转 IN_FLIGHT + attempt VERIFYING）、t6 父任务失败（TERMINAL）、
+ * t2 等待 t1、t3 因 t6 失败被阻断、t5 未派发根任务（raw TaskRun=BLOCKED，readiness=READY）。
  * activeAttemptCount=2 占满并行上限 → availableSlots=0，主进程不会授予 execution.next.confirm。
  */
 function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
@@ -276,15 +277,16 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
       depState(1, 'IN_FLIGHT'),
       depState(2, 'WAITING_FOR_DEPENDENCIES', [1]),
       depState(3, 'BLOCKED_BY_FAILED_DEPENDENCY', [6]),
-      depState(4, 'READY'),
-      depState(5, 'IN_FLIGHT'),
+      depState(4, 'IN_FLIGHT'),
+      depState(5, 'READY'),
       depState(6, 'TERMINAL'),
     ],
-    readyTaskRunIds: ['xhbtr_4' as TaskRunId],
+    readyTaskRunIds: ['xhbtr_5' as TaskRunId],
     capturedAt: '2026-08-18T00:00:01.000Z',
   }
-  // lastExecutionWave 仅作历史证据：t1 是批前既有 active，t5 是本批新调度，两集合不相交；
-  // 真实 planExecutionWaveV1 会保存规划时点全部任务状态（t5 规划时仍为 READY，调度后才 IN_FLIGHT），
+  // lastExecutionWave 仅作历史证据：t1 是批前既有 active，t4 是本批新调度，两集合不相交；
+  // 真实 planExecutionWaveV1 保存规划时点全部任务状态（t4/t5 规划时均为 READY，
+  // 确定性调度按任务顺序选中第一个 READY 的 t4，调度后 readiness 才转 IN_FLIGHT），
   // 与调度后的 executionReadiness 是两个不同时点的快照，不能复用同一数组
   const lastExecutionWave: ExecutionWaveV1 = {
     version: 1,
@@ -292,7 +294,7 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
     flowId: 'xhbf_flow1' as FlowId,
     maxParallelism: 2,
     activeAttemptIds: ['xhba_1' as AttemptId],
-    scheduled: [{ taskRunId: 'xhbtr_5' as TaskRunId, attemptId: 'xhba_5' as AttemptId }],
+    scheduled: [{ taskRunId: 'xhbtr_4' as TaskRunId, attemptId: 'xhba_4' as AttemptId }],
     dependencyStates: [
       depState(1, 'IN_FLIGHT'),
       depState(2, 'WAITING_FOR_DEPENDENCIES', [1]),
@@ -324,9 +326,9 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
       { ...run(1, 'RUNNING'), attemptId: 'xhba_1' as AttemptId },
       run(2, 'BLOCKED'),
       run(3, 'BLOCKED'),
+      { ...run(4, 'VERIFYING'), attemptId: 'xhba_4' as AttemptId },
       // 真实 observeM2B：未派发根任务的 raw TaskRun 仍为 BLOCKED，readiness 才是 READY
-      run(4, 'BLOCKED'),
-      { ...run(5, 'VERIFYING'), attemptId: 'xhba_5' as AttemptId },
+      run(5, 'BLOCKED'),
       { ...run(6, 'FAILED'), attemptId: 'xhba_6' as AttemptId },
     ],
     attempts: [
@@ -338,7 +340,7 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
         workspaceReceiptId: 'xhbwr_receipt-secret' as never,
         runtimeBinding: runtimeBindingFixture('xhba_1' as AttemptId, 'xhbtr_1' as TaskRunId),
       },
-      { attemptId: 'xhba_5' as AttemptId, taskRunId: 'xhbtr_5' as TaskRunId, status: 'VERIFYING' },
+      { attemptId: 'xhba_4' as AttemptId, taskRunId: 'xhbtr_4' as TaskRunId, status: 'VERIFYING' },
       { attemptId: 'xhba_6' as AttemptId, taskRunId: 'xhbtr_6' as TaskRunId, status: 'FAILED' },
     ],
     executionReadiness,
@@ -970,16 +972,17 @@ describe('CollaborationHubPanel', () => {
     await screen.findByTestId('hub-active-plan')
     // 未派发根任务（raw TaskRun=BLOCKED，readiness=READY）进入可执行组，徽标显示「就绪」而非「阻塞」
     const executable = screen.getByTestId('hub-task-group-executable')
-    expect(executable).toHaveTextContent('投影任务四')
-    expect(screen.getByTestId('hub-taskrun-status-t4')).toHaveTextContent('就绪')
-    expect(screen.getByTestId('hub-taskrun-status-t4')).not.toHaveTextContent('阻塞')
+    expect(executable).toHaveTextContent('投影任务五')
+    expect(executable).not.toHaveTextContent('投影任务四')
+    expect(screen.getByTestId('hub-taskrun-status-t5')).toHaveTextContent('就绪')
+    expect(screen.getByTestId('hub-taskrun-status-t5')).not.toHaveTextContent('阻塞')
     expect(executable).not.toHaveTextContent('执行尝试')
     // IN_FLIGHT + attempt RUNNING → 执行中；IN_FLIGHT + attempt VERIFYING → 验证中
     expect(screen.getByTestId('hub-task-group-running')).toHaveTextContent('投影任务一')
-    expect(screen.getByTestId('hub-task-group-running')).not.toHaveTextContent('投影任务五')
-    expect(screen.getByTestId('hub-task-group-verifying')).toHaveTextContent('投影任务五')
+    expect(screen.getByTestId('hub-task-group-running')).not.toHaveTextContent('投影任务四')
+    expect(screen.getByTestId('hub-task-group-verifying')).toHaveTextContent('投影任务四')
     expect(screen.getByTestId('hub-taskrun-status-t1')).toHaveTextContent('执行中')
-    expect(screen.getByTestId('hub-taskrun-status-t5')).toHaveTextContent('验证中')
+    expect(screen.getByTestId('hub-taskrun-status-t4')).toHaveTextContent('验证中')
     // 等待依赖 / 前置失败的徽标与 readiness 一致，不显示 raw 的「阻塞」
     expect(screen.getByTestId('hub-taskrun-status-t2')).toHaveTextContent('等待依赖')
     expect(screen.getByTestId('hub-taskrun-status-t3')).toHaveTextContent('前置失败')
@@ -1118,6 +1121,11 @@ describe('CollaborationHubPanel', () => {
     for (const item of wave!.scheduled) {
       expect(stateByRunId.get(item.taskRunId)).toBe('READY')
     }
+
+    // 确定性调度：scheduled 是按 fixture 任务顺序找到的第一个 READY
+    const firstReady = projection.taskRuns.find((run) => stateByRunId.get(run.taskRunId) === 'READY')
+    expect(firstReady).toBeDefined()
+    expect(wave!.scheduled[0]!.taskRunId).toBe(firstReady!.taskRunId)
 
     // 既有 active 与本批新调度不相交
     const activeAttemptIds = new Set<string>(wave!.activeAttemptIds)
