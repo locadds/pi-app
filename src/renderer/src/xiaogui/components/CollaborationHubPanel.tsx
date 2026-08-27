@@ -11,13 +11,17 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import type {
+  AttemptProjectionM2BV1,
   AttemptStatusM2BV1,
   CollaborationFlowSummaryV1,
   HubSafeErrorV1,
   SessionCollaborationProjectionM2BV1,
+  TaskDependencyStateV1,
+  TaskRunProjectionM2BV1,
   TaskRunStatusM2BV1,
   TaskSpecProjectionV1,
 } from '@shared/xiaogui-collaboration-hub'
+import type { RuntimeAdapterSelectionV1 } from '@shared/xiaogui-agent-runtime'
 import type { DeliveryApplyAttemptV1, DeliveryBatchProjectionV1, DeliveryBatchStateV1 } from '@shared/xiaogui-delivery'
 import type { TaskVerificationFailureSourceV1, TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
@@ -112,6 +116,44 @@ const DELIVERY_APPLY_INTEGRITY_TEXT: Record<string, string> = {
 
 const DELIVERY_NON_RETRYABLE_SAFE_CODES = new Set(Object.keys(DELIVERY_APPLY_INTEGRITY_TEXT))
 const DELIVERY_FAILED_APPLY_STATES = new Set<DeliveryApplyAttemptV1['state']>(['FAILED', 'FAILED_ROLLED_BACK'])
+
+/** runtimeBinding 只向用户暴露 Agent 类型；OTHER 时退回 adapter 名称。 */
+const AGENT_KIND_TEXT: Record<RuntimeAdapterSelectionV1['runtimeKind'], string> = {
+  KIMI: 'Kimi Agent',
+  QODER: 'Qoder Agent',
+  CODEX: 'Codex Agent',
+  OTHER: '',
+}
+
+function agentDisplayName(selection: RuntimeAdapterSelectionV1): string {
+  return AGENT_KIND_TEXT[selection.runtimeKind] || selection.adapterId
+}
+
+/** 任务运行分组：同组为空就不显示。 */
+const TASK_GROUP_DEFS: readonly { key: string; title: string; statuses: readonly TaskRunStatusM2BV1[] }[] = [
+  { key: 'executable', title: '可执行', statuses: ['READY', 'DEPENDENCY_ELIGIBLE'] },
+  { key: 'running', title: '执行中', statuses: ['RUNNING', 'APPLYING', 'INTERRUPT_REQUESTED', 'CANCEL_REQUESTED'] },
+  { key: 'waiting', title: '等待依赖', statuses: ['BLOCKED'] },
+  { key: 'verifying', title: '验证中', statuses: ['VERIFYING'] },
+  { key: 'failed', title: '失败', statuses: ['FAILED', 'OUTCOME_UNKNOWN', 'CANCELLED', 'INVALIDATED', 'SUPERSEDED'] },
+  { key: 'done', title: '待交付 / 已完成', statuses: ['VERIFIED', 'DELIVERY_PENDING', 'DONE'] },
+]
+
+/** 依赖/阻断原因：优先用 lastExecutionWave.dependencyStates，只显示任务标题。 */
+function dependencyReasonText(
+  depState: TaskDependencyStateV1 | undefined,
+  titleByRunId: ReadonlyMap<string, string>,
+): string | null {
+  if (!depState) return null
+  const titlesOf = (ids: readonly string[]) =>
+    ids.map((id) => titleByRunId.get(id)).filter((title): title is string => Boolean(title))
+  const blockingTitles = titlesOf(depState.blockingTaskRunIds)
+  const titles = blockingTitles.length > 0 ? blockingTitles : titlesOf(depState.dependencyTaskRunIds)
+  const suffix = titles.length > 0 ? `：${titles.join('、')}` : ''
+  if (depState.state === 'WAITING_FOR_DEPENDENCIES') return `等待前置任务完成${suffix}`
+  if (depState.state === 'BLOCKED_BY_FAILED_DEPENDENCY') return `前置任务失败，暂不能继续${suffix}`
+  return null
+}
 
 function isFailedApplyAttempt(applyAttempt: DeliveryApplyAttemptV1 | undefined): applyAttempt is DeliveryApplyAttemptV1 {
   return Boolean(applyAttempt && DELIVERY_FAILED_APPLY_STATES.has(applyAttempt.state))
@@ -317,6 +359,10 @@ function TaskExecutionSection({ projection }: { projection: SessionCollaboration
 
   if (!projection.availableActions.includes('execution.next.confirm')) return null
 
+  const wave = projection.lastExecutionWave
+  const waitingCount = wave?.dependencyStates.filter((s) => s.state === 'WAITING_FOR_DEPENDENCIES').length ?? 0
+  const blockedCount = wave?.dependencyStates.filter((s) => s.state === 'BLOCKED_BY_FAILED_DEPENDENCY').length ?? 0
+
   const modifyPaths = parseTaskExecutionPaths(executionForm.modifyPathsText)
   const createPaths = parseTaskExecutionPaths(executionForm.createPathsText)
   const inputCls =
@@ -324,8 +370,20 @@ function TaskExecutionSection({ projection }: { projection: SessionCollaboration
 
   return (
     <div className="mt-3 rounded-lg border border-border/50 p-2.5" data-testid="hub-task-execution">
-      <div className="mb-1 text-[12px] font-medium text-foreground">执行当前可执行任务</div>
-      <div className="mb-2 text-[11px] text-muted-foreground">主进程会在最终确认后选择当前可执行任务。</div>
+      <div className="mb-1 text-[12px] font-medium text-foreground">执行本批可执行任务</div>
+      <div className="mb-2 text-[11px] text-muted-foreground">
+        同一项目最多并行执行 2 个任务；文件范围重叠的任务会串行排队；具体执行哪些任务由主进程按确定性规则选择。
+      </div>
+      {wave && (
+        <div
+          className="mb-2 rounded-md bg-muted/40 px-2 py-1.5 text-[11px] text-foreground-secondary"
+          data-testid="hub-execution-wave-summary"
+        >
+          本批计划 {wave.scheduled.length} 个任务 · 已调度 {wave.activeAttemptIds.length} 个 · 并行上限 {wave.maxParallelism}
+          {waitingCount > 0 && ` · 等待依赖 ${waitingCount} 个`}
+          {blockedCount > 0 && ` · 前置失败 ${blockedCount} 个`}
+        </div>
+      )}
 
       {executionError && (
         <div className="mb-2 rounded-md border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
@@ -706,6 +764,46 @@ function AwaitingApprovalView({ projection }: { projection: SessionCollaboration
   )
 }
 
+function TaskRunCard({
+  run,
+  title,
+  attempts,
+  reason,
+}: {
+  run: TaskRunProjectionM2BV1
+  title: string
+  attempts: readonly AttemptProjectionM2BV1[]
+  reason: string | null
+}) {
+  return (
+    <li className="rounded-md border border-border/30 px-2 py-1 text-[11px]">
+      <div className="flex items-center justify-between">
+        <span className="text-foreground-secondary">{title}</span>
+        <span
+          className="rounded bg-muted px-1.5 py-0.5 text-[10px]"
+          data-testid={`hub-taskrun-status-${run.taskKey}`}
+        >
+          {TASK_RUN_STATUS_TEXT[run.status]}
+        </span>
+      </div>
+      {reason && <div className="mt-1 text-[10px] text-muted-foreground">{reason}</div>}
+      {attempts.map((attempt, attemptIndex) => (
+        <div key={attempt.attemptId} className="mt-1 text-[10px] text-muted-foreground">
+          {/* 不展示 attemptId、runtimeSessionId、路径或摘要；有绑定时只显示 Agent 类型 + 状态 */}
+          <span data-testid={`hub-attempt-agent-${run.taskKey}-${attemptIndex + 1}`}>
+            {attempt.runtimeBinding
+              ? `${agentDisplayName(attempt.runtimeBinding.selection)} · ${ATTEMPT_STATUS_TEXT[attempt.status]}`
+              : `执行尝试 · ${ATTEMPT_STATUS_TEXT[attempt.status]}`}
+          </span>
+          {attempt.verificationSummary && (
+            <TaskVerificationSummaryCard attemptId={attempt.attemptId} summary={attempt.verificationSummary} />
+          )}
+        </div>
+      ))}
+    </li>
+  )
+}
+
 function ActivePlanView({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
   const flow = projection.activeFlow
   if (!flow) return null
@@ -716,6 +814,17 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
     attemptsByRun.set(attempt.taskRunId, list)
   }
   const titleByKey = new Map(projection.taskSpecs.map((spec) => [spec.taskKey, spec.title]))
+  const specByKey = new Map(projection.taskSpecs.map((spec) => [spec.taskKey, spec]))
+  const titleByRunId = new Map(
+    projection.taskRuns.map((run) => [run.taskRunId, titleByKey.get(run.taskKey) ?? '协作任务']),
+  )
+  const depStateByRunId = new Map(
+    (projection.lastExecutionWave?.dependencyStates ?? []).map((state) => [state.taskRunId, state]),
+  )
+  const groups = TASK_GROUP_DEFS.map((def) => ({
+    ...def,
+    runs: projection.taskRuns.filter((run) => def.statuses.includes(run.status)),
+  })).filter((group) => group.runs.length > 0)
   return (
     <div data-testid="hub-active-plan">
       <div className="mb-1 text-[12px] font-medium text-foreground">{flow.objective}</div>
@@ -724,35 +833,32 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
           <ReadonlyTaskSpec key={spec.taskSpecId} spec={spec} titleByKey={titleByKey} />
         ))}
       </ul>
-      {projection.taskRuns.length > 0 && (
-        <div className="mt-2">
-          <div className="mb-1 text-[11px] font-medium text-muted-foreground">任务运行（只读）</div>
-          <ul className="flex flex-col gap-1">
-            {projection.taskRuns.map((run) => (
-              <li key={run.taskRunId} className="rounded-md border border-border/30 px-2 py-1 text-[11px]">
-                <div className="flex items-center justify-between">
-                  <span className="text-foreground-secondary">{titleByKey.get(run.taskKey) ?? '协作任务'}</span>
-                  <span
-                    className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
-                    data-testid={`hub-taskrun-status-${run.taskKey}`}
-                  >
-                    {TASK_RUN_STATUS_TEXT[run.status]}
-                  </span>
-                </div>
-                {(attemptsByRun.get(run.taskRunId) ?? []).map((attempt) => (
-                  <div key={attempt.attemptId} className="mt-1 text-[10px] text-muted-foreground">
-                    <div className="flex items-center justify-between">
-                      <span className="min-w-0 truncate font-mono">尝试 {attempt.attemptId}</span>
-                      <span className="ml-2 shrink-0">{ATTEMPT_STATUS_TEXT[attempt.status]}</span>
-                    </div>
-                    {attempt.verificationSummary && (
-                      <TaskVerificationSummaryCard attemptId={attempt.attemptId} summary={attempt.verificationSummary} />
-                    )}
-                  </div>
-                ))}
-              </li>
-            ))}
-          </ul>
+      {groups.length > 0 && (
+        <div className="mt-2 flex flex-col gap-2">
+          {groups.map((group) => (
+            <div key={group.key} data-testid={`hub-task-group-${group.key}`}>
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">{group.title}</div>
+              <ul className="flex flex-col gap-1">
+                {group.runs.map((run) => {
+                  const spec = specByKey.get(run.taskKey)
+                  const reason =
+                    dependencyReasonText(depStateByRunId.get(run.taskRunId), titleByRunId) ??
+                    (run.status === 'BLOCKED' && spec && spec.dependsOn.length > 0
+                      ? `需先完成：${dependencyTitles(spec.dependsOn, titleByKey).join('、')}`
+                      : null)
+                  return (
+                    <TaskRunCard
+                      key={run.taskRunId}
+                      run={run}
+                      title={titleByRunId.get(run.taskRunId) ?? '协作任务'}
+                      attempts={attemptsByRun.get(run.taskRunId) ?? []}
+                      reason={reason}
+                    />
+                  )
+                })}
+              </ul>
+            </div>
+          ))}
         </div>
       )}
       <DeliverySelectionSection projection={projection} />

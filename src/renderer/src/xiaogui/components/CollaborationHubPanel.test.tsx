@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   AttemptId,
+  AttemptRuntimeBindingV1,
+  ExecutionWaveId,
+  ExecutionWaveV1,
   FlowId,
   HubAddressV1,
   PlanRevisionId,
@@ -200,6 +203,121 @@ function executableProjection(address: HubAddressV1): SessionCollaborationProjec
     ...activeProjection(address),
     taskRuns: [],
     attempts: [],
+    availableActions: ['flow.cancel', 'execution.next.confirm'],
+  }
+}
+
+function runtimeBindingFixture(attemptId: AttemptId, taskRunId: TaskRunId): AttemptRuntimeBindingV1 {
+  return {
+    version: 1,
+    attemptId,
+    taskRunId,
+    executionInputDigest: `sha256:${'e'.repeat(64)}` as AttemptRuntimeBindingV1['executionInputDigest'],
+    authorizationScopeDigest: `sha256:${'f'.repeat(64)}` as AttemptRuntimeBindingV1['authorizationScopeDigest'],
+    selection: {
+      adapterId: 'codex-cli-internal-adapter',
+      runtimeKind: 'CODEX',
+      protocol: 'HEADLESS',
+      capabilityDigest: `sha256:${'7'.repeat(64)}`,
+      approvalStatus: 'APPROVED_FOR_PRODUCTION',
+      diagnosticOnly: false,
+      stream: 'PUSH',
+      interrupt: 'ACKED',
+      inspect: 'RECONCILE',
+    },
+    selectionDigest: `sha256:${'8'.repeat(64)}` as AttemptRuntimeBindingV1['selectionDigest'],
+    bindingDigest: `sha256:${'9'.repeat(64)}` as AttemptRuntimeBindingV1['bindingDigest'],
+    boundAt: '2026-08-18T00:00:00.000Z',
+  }
+}
+
+/** 覆盖全部分组的投影：t1 执行中（含 runtimeBinding），t2/t3 等待依赖，t4 可执行，t5 验证中，t6 失败。 */
+function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
+  const base = activeProjection(address)
+  const spec = (n: number, dependsOn: string[] = []) => ({
+    taskSpecId: `xhbts_${n}` as TaskSpecId,
+    taskKey: `t${n}`,
+    title: `投影任务${['一', '二', '三', '四', '五', '六'][n - 1]}`,
+    dependsOn,
+    unavailableReason: 'AGENT_DISABLED_M2A' as const,
+  })
+  const run = (n: number, status: SessionCollaborationProjectionM2BV1['taskRuns'][number]['status']) => ({
+    taskRunId: `xhbtr_${n}` as TaskRunId,
+    taskSpecId: `xhbts_${n}` as TaskSpecId,
+    taskKey: `t${n}`,
+    status,
+  })
+  const lastExecutionWave: ExecutionWaveV1 = {
+    version: 1,
+    waveId: 'xhbev_wave1' as ExecutionWaveId,
+    flowId: 'xhbf_flow1' as FlowId,
+    maxParallelism: 2,
+    activeAttemptIds: ['xhba_1' as AttemptId],
+    scheduled: [{ taskRunId: 'xhbtr_1' as TaskRunId, attemptId: 'xhba_1' as AttemptId }],
+    dependencyStates: [
+      {
+        version: 1,
+        taskRunId: 'xhbtr_1' as TaskRunId,
+        state: 'IN_FLIGHT',
+        dependencyTaskRunIds: [],
+        blockingTaskRunIds: [],
+        verifiedAncestorTaskChangeSetIds: [],
+      },
+      {
+        version: 1,
+        taskRunId: 'xhbtr_2' as TaskRunId,
+        state: 'WAITING_FOR_DEPENDENCIES',
+        dependencyTaskRunIds: ['xhbtr_1' as TaskRunId],
+        blockingTaskRunIds: ['xhbtr_1' as TaskRunId],
+        verifiedAncestorTaskChangeSetIds: [],
+      },
+      {
+        version: 1,
+        taskRunId: 'xhbtr_3' as TaskRunId,
+        state: 'BLOCKED_BY_FAILED_DEPENDENCY',
+        dependencyTaskRunIds: ['xhbtr_1' as TaskRunId],
+        blockingTaskRunIds: ['xhbtr_1' as TaskRunId],
+        verifiedAncestorTaskChangeSetIds: [],
+      },
+    ],
+    createdAt: '2026-08-18T00:00:00.000Z',
+  }
+  return {
+    ...base,
+    activeRevision: {
+      ...base.activeRevision!,
+      draft: {
+        objective: '目标X',
+        tasks: [
+          { taskKey: 't1', title: '投影任务一' },
+          { taskKey: 't2', title: '投影任务二', dependsOn: ['t1'] },
+          { taskKey: 't3', title: '投影任务三', dependsOn: ['t1'] },
+          { taskKey: 't4', title: '投影任务四' },
+          { taskKey: 't5', title: '投影任务五' },
+          { taskKey: 't6', title: '投影任务六' },
+        ],
+      },
+    },
+    taskSpecs: [spec(1), spec(2, ['t1']), spec(3, ['t1']), spec(4), spec(5), spec(6)],
+    taskRuns: [
+      { ...run(1, 'RUNNING'), attemptId: 'xhba_1' as AttemptId },
+      run(2, 'BLOCKED'),
+      run(3, 'BLOCKED'),
+      run(4, 'READY'),
+      run(5, 'VERIFYING'),
+      run(6, 'FAILED'),
+    ],
+    attempts: [
+      {
+        attemptId: 'xhba_1' as AttemptId,
+        taskRunId: 'xhbtr_1' as TaskRunId,
+        status: 'RUNNING',
+        runtimeSessionId: 'runtime-secret-session',
+        workspaceReceiptId: 'xhbwr_receipt-secret' as never,
+        runtimeBinding: runtimeBindingFixture('xhba_1' as AttemptId, 'xhbtr_1' as TaskRunId),
+      },
+    ],
+    lastExecutionWave,
     availableActions: ['flow.cancel', 'execution.next.confirm'],
   }
 }
@@ -550,13 +668,21 @@ describe('CollaborationHubPanel', () => {
     const view = await screen.findByTestId('hub-active-plan')
     // 旧契约遗留的 unavailableReason 徽标不得再出现（与真实运行状态矛盾）
     expect(view.textContent).not.toContain('AGENT_DISABLED_M2A')
+    // 按状态分组展示：t1 在「执行中」，t2 在「等待依赖」，空组不出现
+    expect(screen.getByTestId('hub-task-group-running')).toHaveTextContent('投影任务一')
+    expect(screen.getByTestId('hub-task-group-waiting')).toHaveTextContent('投影任务二')
+    expect(screen.queryByTestId('hub-task-group-executable')).toBeNull()
+    expect(screen.queryByTestId('hub-task-group-verifying')).toBeNull()
     // TaskRun 真实状态（中文短文案）仍正常展示
     expect(screen.getByTestId('hub-taskrun-status-t1')).toHaveTextContent('运行中')
     expect(screen.getByTestId('hub-taskrun-status-t2')).toHaveTextContent('阻塞')
-    // attempts 归属到对应 taskRun 下
-    expect(view).toHaveTextContent('xhba_0')
-    expect(view).toHaveTextContent('失败')
-    expect(view).toHaveTextContent('xhba_1')
+    // attempts 归属到对应 taskRun 下，但不展示 attemptId / runtimeSessionId 等内部标识
+    expect(view).toHaveTextContent('执行尝试 · 失败')
+    expect(view).toHaveTextContent('执行尝试 · 运行中')
+    expect(view.textContent).not.toContain('尝试 xhba')
+    expect(view.textContent).not.toContain('xhba_0')
+    expect(view.textContent).not.toContain('xhba_1')
+    expect(view.textContent).not.toContain('rs-1')
     // 不出现任何执行/领取/交付类按钮
     expect(screen.queryByRole('button', { name: '批准计划' })).toBeNull()
     expect(performMock).not.toHaveBeenCalled()
@@ -661,6 +787,88 @@ describe('CollaborationHubPanel', () => {
       },
     })
     await waitFor(() => expect(observeMock).toHaveBeenCalledTimes(2))
+  })
+
+  it('任务按状态分组展示，空组不出现', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    observeMock.mockResolvedValue({ ok: true, value: groupedWaveProjection(address) })
+    showSession(sessionWith('s-grouped', scopeCoding))
+    render(<CollaborationHubPanel />)
+
+    await screen.findByTestId('hub-active-plan')
+    expect(screen.getByTestId('hub-task-group-executable')).toHaveTextContent('投影任务四')
+    expect(screen.getByTestId('hub-task-group-running')).toHaveTextContent('投影任务一')
+    const waiting = screen.getByTestId('hub-task-group-waiting')
+    expect(waiting).toHaveTextContent('投影任务二')
+    expect(waiting).toHaveTextContent('投影任务三')
+    expect(screen.getByTestId('hub-task-group-verifying')).toHaveTextContent('投影任务五')
+    expect(screen.getByTestId('hub-task-group-failed')).toHaveTextContent('投影任务六')
+    // 没有「待交付 / 已完成」任务时该组不渲染
+    expect(screen.queryByTestId('hub-task-group-done')).toBeNull()
+  })
+
+  it('等待/阻断原因使用任务标题，不显示内部 ID', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    observeMock.mockResolvedValue({ ok: true, value: groupedWaveProjection(address) })
+    showSession(sessionWith('s-reasons', scopeCoding))
+    render(<CollaborationHubPanel />)
+
+    const waiting = (await screen.findByTestId('hub-task-group-waiting')).textContent ?? ''
+    expect(waiting).toContain('等待前置任务完成：投影任务一')
+    expect(waiting).toContain('前置任务失败，暂不能继续：投影任务一')
+    expect(waiting).not.toContain('xhbtr_')
+    expect(waiting).not.toContain('WAITING_FOR_DEPENDENCIES')
+    expect(waiting).not.toContain('BLOCKED_BY_FAILED_DEPENDENCY')
+  })
+
+  it('有 runtimeBinding 的尝试只显示 Agent 类型与状态，不暴露内部标识', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    observeMock.mockResolvedValue({ ok: true, value: groupedWaveProjection(address) })
+    showSession(sessionWith('s-binding', scopeCoding))
+    render(<CollaborationHubPanel />)
+
+    const view = await screen.findByTestId('hub-active-plan')
+    expect(view).toHaveTextContent('Codex Agent · 运行中')
+    expect(view.textContent).not.toContain('尝试')
+    expect(view.textContent).not.toContain('xhba_1')
+    expect(view.textContent).not.toContain('runtime-secret-session')
+    expect(view.textContent).not.toContain('xhbwr_receipt-secret')
+    expect(view.textContent).not.toContain('codex-cli-internal-adapter')
+    expect(view.textContent).not.toContain(`sha256:${'9'.repeat(64)}`)
+    expect(view.textContent).not.toContain(`sha256:${'e'.repeat(64)}`)
+  })
+
+  it('执行确认区说明本批并行上限与调度摘要，不显示内部 ID', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    observeMock.mockResolvedValue({ ok: true, value: groupedWaveProjection(address) })
+    showSession(sessionWith('s-wave', scopeCoding))
+    render(<CollaborationHubPanel />)
+
+    const section = await screen.findByTestId('hub-task-execution')
+    expect(section).toHaveTextContent('执行本批可执行任务')
+    expect(section).toHaveTextContent('同一项目最多并行执行 2 个任务')
+    expect(section).toHaveTextContent('文件范围重叠的任务会串行排队')
+    expect(section).toHaveTextContent('由主进程按确定性规则选择')
+
+    const summary = screen.getByTestId('hub-execution-wave-summary')
+    expect(summary).toHaveTextContent('本批计划 1 个任务 · 已调度 1 个 · 并行上限 2')
+    expect(summary).toHaveTextContent('等待依赖 1 个')
+    expect(summary).toHaveTextContent('前置失败 1 个')
+    expect(summary.textContent).not.toContain('xhbev_wave1')
+    expect(summary.textContent).not.toContain('xhba_1')
+    expect(summary.textContent).not.toContain('xhbtr_')
   })
 
   it('交付右栏展示公开摘要；审阅零 IPC，确认应用只调用一次 approve', async () => {
