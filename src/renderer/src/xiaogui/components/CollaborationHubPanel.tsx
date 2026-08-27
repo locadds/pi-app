@@ -3,7 +3,9 @@
  *
  * 呈现主进程 SESSION_COLLABORATION_PROJECTION（m2b.v1），所有可用动作
  * 完全由 projection.availableActions 决定；Renderer 不自行推导。
- * execution.next.confirm 只开放本地两阶段确认，最终只调用一次窄执行 IPC。
+ * execution.next.confirm 只开放本地两阶段确认，本批任务取自
+ * projection.executionReadiness（readyTaskRunIds + availableSlots，最多 2 个），
+ * 最终只调用一次批量执行 IPC（xiaogui.task-execution.batch.v1）。
  * DESIGN 模式只显示预留说明，不出现任何动作按钮。
  * 不展示绝对路径、异常栈或原始对象；错误只显示安全码 + 中文短文案 + traceId。
  */
@@ -34,6 +36,8 @@ import {
   DELIVERY_ERROR_TEXT,
   HUB_ERROR_TEXT,
   TASK_EXECUTION_ERROR_TEXT,
+  eligibleExecutionTaskRunIds,
+  emptyTaskExecutionForm,
   parseTaskExecutionPaths,
   useCollaborationHubStore,
 } from '../stores/collaboration-hub-store'
@@ -415,15 +419,18 @@ function CancelFlowSection() {
 }
 
 function TaskExecutionSection({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
-  const executionForm = useCollaborationHubStore((s) => s.executionForm)
+  const executionForms = useCollaborationHubStore((s) => s.executionForms)
+  const selectedTaskRunIds = useCollaborationHubStore((s) => s.selectedExecutionTaskRunIds)
   const executionFormErrors = useCollaborationHubStore((s) => s.executionFormErrors)
   const executionReviewing = useCollaborationHubStore((s) => s.executionReviewing)
   const executionError = useCollaborationHubStore((s) => s.executionError)
+  const executionItemErrors = useCollaborationHubStore((s) => s.executionItemErrors)
   const submitting = useCollaborationHubStore((s) => s.submitting)
   const setExecutionForm = useCollaborationHubStore((s) => s.setExecutionForm)
-  const reviewTaskExecution = useCollaborationHubStore((s) => s.reviewTaskExecution)
-  const returnToTaskExecutionEdit = useCollaborationHubStore((s) => s.returnToTaskExecutionEdit)
-  const startNextTaskExecution = useCollaborationHubStore((s) => s.startNextTaskExecution)
+  const toggleExecutionTaskSelection = useCollaborationHubStore((s) => s.toggleExecutionTaskSelection)
+  const reviewExecutionBatch = useCollaborationHubStore((s) => s.reviewExecutionBatch)
+  const returnToExecutionBatchEdit = useCollaborationHubStore((s) => s.returnToExecutionBatchEdit)
+  const startExecutionBatch = useCollaborationHubStore((s) => s.startExecutionBatch)
   const clearExecutionError = useCollaborationHubStore((s) => s.clearExecutionError)
 
   if (!projection.availableActions.includes('execution.next.confirm')) return null
@@ -445,8 +452,19 @@ function TaskExecutionSection({ projection }: { projection: SessionCollaboration
   if (waitingCount > 0) summaryParts.push(`等待依赖 ${waitingCount} 个`)
   if (blockedCount > 0) summaryParts.push(`前置失败 ${blockedCount} 个`)
 
-  const modifyPaths = parseTaskExecutionPaths(executionForm.modifyPathsText)
-  const createPaths = parseTaskExecutionPaths(executionForm.createPathsText)
+  // 本批可执行任务完全由 readiness.readyTaskRunIds + availableSlots 决定（最多 2 个）；
+  // 规则与 store 收敛共用同一份实现，没有可用槽位或没有 READY 任务时不显示确认区。
+  const eligibleIds = eligibleExecutionTaskRunIds(projection)
+  if (eligibleIds.length === 0) return null
+
+  const titleByKey = new Map(projection.taskSpecs.map((spec) => [spec.taskKey, spec.title]))
+  const runById = new Map(projection.taskRuns.map((run) => [run.taskRunId, run]))
+  const depStateByRunId = new Map(currentDepStates.map((state) => [state.taskRunId, state]))
+  const titleOf = (taskRunId: string) => {
+    const run = runById.get(taskRunId as TaskRunProjectionM2BV1['taskRunId'])
+    return (run && titleByKey.get(run.taskKey)) || '协作任务'
+  }
+  const selectedIds = selectedTaskRunIds.filter((id) => eligibleIds.includes(id))
   const inputCls =
     'w-full resize-y rounded-md border border-border/60 bg-transparent px-2 py-1 text-[12px] outline-none focus:border-primary/60 disabled:opacity-50'
 
@@ -454,7 +472,7 @@ function TaskExecutionSection({ projection }: { projection: SessionCollaboration
     <div className="mt-3 rounded-lg border border-border/50 p-2.5" data-testid="hub-task-execution">
       <div className="mb-1 text-[12px] font-medium text-foreground">执行本批可执行任务</div>
       <div className="mb-2 text-[11px] text-muted-foreground">
-        同一项目最多并行执行 2 个任务；文件范围重叠的任务会串行排队；具体执行哪些任务由主进程按确定性规则选择。
+        同一项目最多并行执行 2 个任务；勾选本批要执行的就绪任务，并分别确认任务说明与文件范围。
       </div>
       {summaryParts.length > 0 && (
         <div
@@ -481,30 +499,67 @@ function TaskExecutionSection({ projection }: { projection: SessionCollaboration
 
       {!executionReviewing ? (
         <div data-testid="hub-task-execution-edit">
-          <textarea
-            aria-label="本次任务说明"
-            placeholder="说明本次任务要完成什么"
-            value={executionForm.prompt}
-            onChange={(event) => setExecutionForm({ ...executionForm, prompt: event.target.value })}
-            rows={3}
-            className={`${inputCls} mb-2`}
-          />
-          <textarea
-            aria-label="允许修改的已有文件"
-            placeholder={'允许修改的已有文件（每行一条项目内相对路径）\nsrc/example.ts'}
-            value={executionForm.modifyPathsText}
-            onChange={(event) => setExecutionForm({ ...executionForm, modifyPathsText: event.target.value })}
-            rows={3}
-            className={`${inputCls} mb-2`}
-          />
-          <textarea
-            aria-label="允许新建的文件"
-            placeholder={'允许新建的文件（每行一条项目内相对路径）\nsrc/new-file.ts'}
-            value={executionForm.createPathsText}
-            onChange={(event) => setExecutionForm({ ...executionForm, createPathsText: event.target.value })}
-            rows={3}
-            className={inputCls}
-          />
+          <ul className="flex flex-col gap-2">
+            {eligibleIds.map((taskRunId) => {
+              const title = titleOf(taskRunId)
+              const selected = selectedIds.includes(taskRunId)
+              const form = executionForms[taskRunId] ?? emptyTaskExecutionForm()
+              const itemError = executionItemErrors[taskRunId]
+              const depState = depStateByRunId.get(taskRunId)
+              const depSummary =
+                depState && depState.dependencyTaskRunIds.length > 0
+                  ? `前置任务已完成：${depState.dependencyTaskRunIds.map((id) => titleOf(id)).join('、')}`
+                  : '无前置依赖'
+              return (
+                <li key={taskRunId} className="rounded-md border border-border/40 p-2" data-testid={`hub-execution-task-${taskRunId}`}>
+                  <label className="flex items-center gap-2 text-[12px]">
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      disabled={submitting}
+                      onChange={() => toggleExecutionTaskSelection(taskRunId)}
+                    />
+                    <span className="font-medium text-foreground">{title}</span>
+                    <span className="text-[10px] text-muted-foreground">{depSummary}</span>
+                  </label>
+                  {itemError && (
+                    <div className="mt-1.5 rounded-md border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
+                      错误 {itemError.code}：{TASK_EXECUTION_ERROR_TEXT[itemError.code]}
+                      {itemError.traceId && <div className="mt-1 font-mono text-[10px] opacity-70">traceId: {itemError.traceId}</div>}
+                    </div>
+                  )}
+                  {selected && (
+                    <div className="mt-2">
+                      <textarea
+                        aria-label={`任务说明：${title}`}
+                        placeholder="说明本次任务要完成什么"
+                        value={form.prompt}
+                        onChange={(event) => setExecutionForm(taskRunId, { ...form, prompt: event.target.value })}
+                        rows={2}
+                        className={`${inputCls} mb-2`}
+                      />
+                      <textarea
+                        aria-label={`允许修改的已有文件：${title}`}
+                        placeholder={'允许修改的已有文件（每行一条项目内相对路径）\nsrc/example.ts'}
+                        value={form.modifyPathsText}
+                        onChange={(event) => setExecutionForm(taskRunId, { ...form, modifyPathsText: event.target.value })}
+                        rows={2}
+                        className={`${inputCls} mb-2`}
+                      />
+                      <textarea
+                        aria-label={`允许新建的文件：${title}`}
+                        placeholder={'允许新建的文件（每行一条项目内相对路径）\nsrc/new-file.ts'}
+                        value={form.createPathsText}
+                        onChange={(event) => setExecutionForm(taskRunId, { ...form, createPathsText: event.target.value })}
+                        rows={2}
+                        className={inputCls}
+                      />
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
           <div className="mt-1.5 text-[11px] text-muted-foreground">只允许项目内相对路径；本次不允许删除文件。</div>
           {executionFormErrors.length > 0 && (
             <ul className="mt-2 list-disc pl-4 text-[11px] text-amber-700 dark:text-amber-300">
@@ -515,30 +570,40 @@ function TaskExecutionSection({ projection }: { projection: SessionCollaboration
           )}
           <button
             type="button"
-            onClick={reviewTaskExecution}
+            onClick={reviewExecutionBatch}
             className="mt-2 rounded-md bg-primary px-3 py-1 text-[12px] text-primary-foreground hover:bg-primary/90"
           >
-            核对执行范围
+            核对本批执行范围
           </button>
         </div>
       ) : (
         <div data-testid="hub-task-execution-review">
-          <div className="rounded-md bg-muted/50 p-2">
-            <div className="text-[11px] font-medium text-muted-foreground">任务说明</div>
-            <div className="mt-1 whitespace-pre-wrap break-words text-[12px] text-foreground">{executionForm.prompt.trim()}</div>
-          </div>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <ReadonlyExecutionPaths title="允许修改" paths={modifyPaths} />
-            <ReadonlyExecutionPaths title="允许新建" paths={createPaths} />
-          </div>
+          {selectedIds.map((taskRunId) => {
+            const title = titleOf(taskRunId)
+            const form = executionForms[taskRunId] ?? emptyTaskExecutionForm()
+            return (
+              <div key={taskRunId} className="mb-2" data-testid={`hub-execution-review-${taskRunId}`}>
+                <div className="mb-1 text-[12px] font-medium text-foreground">{title}</div>
+                <div className="rounded-md bg-muted/50 p-2">
+                  <div className="text-[11px] font-medium text-muted-foreground">任务说明</div>
+                  <div className="mt-1 whitespace-pre-wrap break-words text-[12px] text-foreground">{form.prompt.trim()}</div>
+                </div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <ReadonlyExecutionPaths title="允许修改" paths={parseTaskExecutionPaths(form.modifyPathsText)} />
+                  <ReadonlyExecutionPaths title="允许新建" paths={parseTaskExecutionPaths(form.createPathsText)} />
+                </div>
+              </div>
+            )
+          })}
           <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
-            最终确认后，智能体不能删除文件，也不能操作清单之外的文件。
+            本批 {selectedIds.length} 个任务，最多并行 {readiness?.maxParallelism ?? 2}{' '}
+            个；最终确认后，智能体不能删除文件，也不能操作清单之外的文件。
           </div>
           <div className="mt-2 flex items-center gap-2">
             <button
               type="button"
               disabled={submitting}
-              onClick={returnToTaskExecutionEdit}
+              onClick={returnToExecutionBatchEdit}
               className="rounded-md border border-border/60 px-2 py-1 text-[12px] text-foreground-secondary hover:bg-accent disabled:opacity-40"
             >
               返回修改
@@ -546,10 +611,10 @@ function TaskExecutionSection({ projection }: { projection: SessionCollaboration
             <button
               type="button"
               disabled={submitting}
-              onClick={() => void startNextTaskExecution()}
+              onClick={() => void startExecutionBatch()}
               className="rounded-md bg-primary px-3 py-1 text-[12px] text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
             >
-              {submitting ? '正在提交…' : '确认并执行'}
+              {submitting ? '正在提交…' : '确认并执行本批'}
             </button>
           </div>
         </div>

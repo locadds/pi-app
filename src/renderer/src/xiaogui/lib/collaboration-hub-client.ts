@@ -12,6 +12,7 @@
 
 import type {
   AttemptProjectionM2BV1,
+  AttemptRuntimeBindingV1,
   AttemptStatusM2BV1,
   CollaborationHubActionM2BV1,
   CollaborationHubActionV1,
@@ -25,6 +26,7 @@ import type {
   TaskRunStatusM2BV1,
   UserIntentRequestV1,
 } from '@shared/xiaogui-collaboration-hub'
+import type { RuntimeAdapterSelectionV1 } from '@shared/xiaogui-agent-runtime'
 import type {
   DeliveryApplyAttemptV1,
   DeliveryApplySafeCodeV1,
@@ -48,10 +50,14 @@ import type {
 import type {
   XiaoguiTaskExecutionErrorCodeV1,
   XiaoguiTaskExecutionSafeErrorV1,
+  XiaoguiTaskExecutionStartBatchOutcomeV1,
+  XiaoguiTaskExecutionStartBatchRequestV1,
+  XiaoguiTaskExecutionStartBatchResultV1,
   XiaoguiTaskExecutionStartOutcomeV1,
   XiaoguiTaskExecutionStartRequestV1,
   XiaoguiTaskExecutionStartResultV1,
 } from '@shared/xiaogui-task-execution'
+import { XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 } from '@shared/xiaogui-task-execution'
 import type { TaskArtifactRefV1, TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 import { ipcClient } from '@renderer/lib/ipc-client'
@@ -93,6 +99,8 @@ const HUB_TRACE_ID = /^xhbt_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 const DELIVERY_TRACE_ID = /^xhbd_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const TASK_EXECUTION_TRACE_ID = /^xhbet_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/
+/** 裸 64 位小写 hex（主进程 payloadDigest 实际 wire 形态，无 sha256: 前缀）。 */
+const RAW_SHA256_HEX = /^[0-9a-f]{64}$/
 
 const TASK_EXECUTION_ERROR_CODES = new Set<XiaoguiTaskExecutionErrorCodeV1>([
   'SESSION_SCOPE_MISMATCH',
@@ -428,18 +436,90 @@ function isTaskRunM2B(value: unknown): value is TaskRunProjectionM2BV1 {
   )
 }
 
+const RUNTIME_SELECTION_KEYS = [
+  'adapterId',
+  'runtimeKind',
+  'protocol',
+  'capabilityDigest',
+  'approvalStatus',
+  'diagnosticOnly',
+  'stream',
+  'interrupt',
+  'inspect',
+] as const
+const RUNTIME_KINDS = new Set(['KIMI', 'QODER', 'CODEX', 'OTHER'])
+const RUNTIME_PROTOCOLS = new Set(['ACP', 'HEADLESS', 'SDK', 'REMOTE_CONTROL', 'CLOUD_REMOTE', 'NON_INTERACTIVE_CLI_DIAGNOSTIC'])
+
+/** 共享 RuntimeAdapterSelectionV1 公开字段的 exact-key 严格校验，不放行任何额外字段。 */
+function isRuntimeAdapterSelection(value: unknown): value is RuntimeAdapterSelectionV1 {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, RUNTIME_SELECTION_KEYS) &&
+    isNonEmptyString(value.adapterId) &&
+    RUNTIME_KINDS.has(String(value.runtimeKind)) &&
+    RUNTIME_PROTOCOLS.has(String(value.protocol)) &&
+    isNonEmptyString(value.capabilityDigest) &&
+    value.approvalStatus === 'APPROVED_FOR_PRODUCTION' &&
+    value.diagnosticOnly === false &&
+    (value.stream === 'POLL' || value.stream === 'PUSH') &&
+    (value.interrupt === 'BEST_EFFORT' || value.interrupt === 'ACKED') &&
+    (value.inspect === 'SNAPSHOT' || value.inspect === 'RECONCILE')
+  )
+}
+
+const ATTEMPT_RUNTIME_BINDING_KEYS = [
+  'version',
+  'attemptId',
+  'taskRunId',
+  'executionInputDigest',
+  'authorizationScopeDigest',
+  'selection',
+  'selectionDigest',
+  'bindingDigest',
+  'boundAt',
+] as const
+
+/**
+ * AttemptRuntimeBindingV1 严格校验：exact keys + version=1 +
+ * executionInputDigest/authorizationScopeDigest 为带 sha256: 前缀摘要，
+ * selectionDigest/bindingDigest 为裸 64 hex（主进程 payloadDigest 真实 wire 形态）+
+ * selection exact-key 校验；任何额外/缺失/畸形字段整体判非法，绝不放行任意对象。
+ */
+function isAttemptRuntimeBinding(value: unknown): value is AttemptRuntimeBindingV1 {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ATTEMPT_RUNTIME_BINDING_KEYS) &&
+    value.version === 1 &&
+    isNonEmptyString(value.attemptId) &&
+    isNonEmptyString(value.taskRunId) &&
+    typeof value.executionInputDigest === 'string' &&
+    SHA256_DIGEST.test(value.executionInputDigest) &&
+    typeof value.authorizationScopeDigest === 'string' &&
+    SHA256_DIGEST.test(value.authorizationScopeDigest) &&
+    isRuntimeAdapterSelection(value.selection) &&
+    typeof value.selectionDigest === 'string' &&
+    RAW_SHA256_HEX.test(value.selectionDigest) &&
+    typeof value.bindingDigest === 'string' &&
+    RAW_SHA256_HEX.test(value.bindingDigest) &&
+    typeof value.boundAt === 'string'
+  )
+}
+
 function isAttemptM2B(value: unknown): value is AttemptProjectionM2BV1 {
   return (
     isRecord(value) &&
     Object.keys(value).every((key) =>
-      ['attemptId', 'taskRunId', 'status', 'runtimeSessionId', 'workspaceReceiptId', 'verificationSummary'].includes(key),
+      ['attemptId', 'taskRunId', 'status', 'workspaceReceiptId', 'verificationSummary', 'runtimeBinding'].includes(key),
     ) &&
     typeof value.attemptId === 'string' &&
     typeof value.taskRunId === 'string' &&
     ATTEMPT_STATUSES_M2B.has(value.status as AttemptStatusM2BV1) &&
-    (value.runtimeSessionId === undefined || typeof value.runtimeSessionId === 'string') &&
     (value.workspaceReceiptId === undefined || typeof value.workspaceReceiptId === 'string') &&
-    (value.verificationSummary === undefined || isTaskVerificationSummary(value.verificationSummary))
+    (value.verificationSummary === undefined || isTaskVerificationSummary(value.verificationSummary)) &&
+    (value.runtimeBinding === undefined ||
+      (isAttemptRuntimeBinding(value.runtimeBinding) &&
+        value.runtimeBinding.attemptId === value.attemptId &&
+        value.runtimeBinding.taskRunId === value.taskRunId))
   )
 }
 
@@ -759,6 +839,93 @@ export async function startTaskExecution(
     return { ok: false, error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' } }
   } catch {
     return { ok: false, error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' } }
+  }
+}
+
+function taskExecutionIpcFailureError(): XiaoguiTaskExecutionSafeErrorV1 {
+  return { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' }
+}
+
+const TASK_RUN_M2B_KEYS = ['taskRunId', 'taskSpecId', 'taskKey', 'status', 'unavailableReason', 'attemptId']
+
+/**
+ * batch 专用严格 taskRun 校验：契约键集精确匹配 + 字段类型。
+ * 旧单任务路径沿用宽松的 isTaskRunM2B（非精确键），保持兼容不变。
+ */
+function isTaskRunM2BExact(value: unknown): value is TaskRunProjectionM2BV1 {
+  return isRecord(value) && Object.keys(value).every((key) => TASK_RUN_M2B_KEYS.includes(key)) && isTaskRunM2B(value)
+}
+
+/** batch 专用严格安全错误：仅 code/messageKey/traceId 三个键。 */
+function isTaskExecutionSafeErrorExact(value: unknown): value is XiaoguiTaskExecutionSafeErrorV1 {
+  return isRecord(value) && hasExactKeys(value, ['code', 'messageKey', 'traceId']) && isTaskExecutionSafeError(value)
+}
+
+/** batch 成功项载荷：仅 taskRun/attempt 精确键；attempt 复用现有精确校验，并校验二者归属一致。 */
+function isTaskExecutionBatchItemResult(value: unknown): value is XiaoguiTaskExecutionStartResultV1 {
+  if (!isRecord(value) || !hasExactKeys(value, ['taskRun', 'attempt'])) return false
+  if (!isTaskRunM2BExact(value.taskRun) || !isAttemptM2B(value.attempt)) return false
+  return (
+    value.attempt.taskRunId === value.taskRun.taskRunId &&
+    (value.taskRun.attemptId === undefined || value.taskRun.attemptId === value.attempt.attemptId)
+  )
+}
+
+/**
+ * 批量结果逐项校验（fail closed）：
+ * - 外层只接受 contractVersion + items 精确键集；
+ * - 逐项顺序与请求一致，成功项只允许 ok/taskRunId/value，失败项只允许 ok/taskRunId/error；
+ * - 成功载荷经 isTaskExecutionBatchItemResult 严格校验（taskRun/attempt 精确键、严格 taskRun、
+ *   精确 attempt）；失败载荷经 isTaskExecutionSafeErrorExact 严格校验；
+ * - 三层绑定：value.taskRun.taskRunId === item.taskRunId === request.items[index].taskRunId。
+ */
+function isTaskExecutionBatchResult(
+  value: unknown,
+  request: XiaoguiTaskExecutionStartBatchRequestV1,
+): value is XiaoguiTaskExecutionStartBatchResultV1 {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['contractVersion', 'items']) ||
+    value.contractVersion !== XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 ||
+    !Array.isArray(value.items) ||
+    value.items.length !== request.items.length
+  )
+    return false
+  return value.items.every((item, index) => {
+    if (!isRecord(item) || item.taskRunId !== request.items[index]!.taskRunId) return false
+    if (item.ok === true) {
+      return (
+        hasExactKeys(item, ['ok', 'taskRunId', 'value']) &&
+        isTaskExecutionBatchItemResult(item.value) &&
+        item.value.taskRun.taskRunId === item.taskRunId
+      )
+    }
+    if (item.ok === false) {
+      return hasExactKeys(item, ['ok', 'taskRunId', 'error']) && isTaskExecutionSafeErrorExact(item.error)
+    }
+    return false
+  })
+}
+
+/**
+ * 一次用户确认启动一批（1..2 个）READY 任务；逐项返回成功或安全错误。
+ * 请求只含公共 address/flowId 与明确的 taskRunId/prompt/files，不含内部版本或 actor。
+ * 顶层响应 fail closed：成功仅 ok/value 精确键，失败仅 ok/error 精确键。
+ */
+export async function startTaskExecutionBatch(
+  request: XiaoguiTaskExecutionStartBatchRequestV1,
+): Promise<XiaoguiTaskExecutionStartBatchOutcomeV1> {
+  try {
+    const res: unknown = await ipcClient.invoke('xiaogui.hub.execution.startBatch', request)
+    if (isRecord(res) && res.ok === true && hasExactKeys(res, ['ok', 'value']) && isTaskExecutionBatchResult(res.value, request)) {
+      return { ok: true, value: res.value }
+    }
+    if (isRecord(res) && res.ok === false && hasExactKeys(res, ['ok', 'error']) && isTaskExecutionSafeErrorExact(res.error)) {
+      return { ok: false, error: res.error }
+    }
+    return { ok: false, error: taskExecutionIpcFailureError() }
+  } catch {
+    return { ok: false, error: taskExecutionIpcFailureError() }
   }
 }
 

@@ -44,6 +44,7 @@ export interface PlanExecutionWaveInputV1 {
   readonly tasks: readonly SchedulerTaskV1[]
   readonly attempts: readonly SchedulerAttemptV1[]
   readonly requestedAuthorizationPathTokens: readonly string[]
+  readonly requestedTaskRunId?: TaskRunId
   readonly maxParallelism?: number
   readonly now: string
 }
@@ -90,7 +91,10 @@ export function planExecutionWaveV1(input: PlanExecutionWaveInputV1): PlannedExe
     attempt.authorizationPathTokens.some((token) => requestedTokens.has(token)),
   )
   const selectedTask = activeAttempts.length < maxParallelism && !scopeConflicts
-    ? input.tasks.find((task) => statesByTaskRunId.get(task.taskRunId)?.state === 'READY')
+    ? input.tasks.find((task) =>
+        (!input.requestedTaskRunId || task.taskRunId === input.requestedTaskRunId) &&
+        statesByTaskRunId.get(task.taskRunId)?.state === 'READY',
+      )
     : undefined
   const scheduled = selectedTask
     ? [{ taskRunId: selectedTask.taskRunId, attemptId: '' as AttemptId }]

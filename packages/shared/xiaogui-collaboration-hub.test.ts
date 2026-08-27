@@ -184,5 +184,14 @@ describe('xiaogui collaboration hub shared contract', () => {
     expect(projection.verificationSummary.taskChangeSetId).toBe('changeset-1')
 
     expect(projection.verificationSummary).not.toHaveProperty('stdout')
+
+    const leakedProjection: AttemptProjectionM2BV1 = {
+      attemptId,
+      taskRunId,
+      status: 'RUNNING',
+      // @ts-expect-error A public attempt projection must not expose the private runtime session identity.
+      runtimeSessionId: 'runtime-private',
+    }
+    expect(leakedProjection).toHaveProperty('runtimeSessionId', 'runtime-private')
   })
 })

@@ -135,6 +135,7 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.delivery.selection.submit',
   'ipc:xiaogui.hub.observe',
   'ipc:xiaogui.hub.execution.start',
+  'ipc:xiaogui.hub.execution.startBatch',
   'ipc:xiaogui.hub.perform',
   'ipc:xiaogui.hub.read',
   'ipc:xiaogui.hub.readEvents',

@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -18,13 +18,14 @@ import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (payload: unknown) => Promise<unknown>>(),
   getElectronPath: vi.fn(() => 'D:/fake-xiaogui-user-data'),
+  isPackaged: false,
   kimiProductionEnabled: false,
   scopeLookup: { lookup: vi.fn() },
   runtimeCompositions: [] as Array<{
     application: { generation: number }
     close: ReturnType<typeof vi.fn>
     stageAttemptInput: ReturnType<typeof vi.fn>
-    taskExecution: { start: ReturnType<typeof vi.fn> }
+    taskExecution: { start: ReturnType<typeof vi.fn>; startBatch: ReturnType<typeof vi.fn> }
     delivery: {
       selectTasks: ReturnType<typeof vi.fn>
       approveGate: ReturnType<typeof vi.fn>
@@ -56,6 +57,20 @@ mocks.createRuntimeComposition.mockImplementation(() => {
           attempt: { attemptId: 'xhba_attempt', taskRunId: 'xhbtr_task', status: 'RUNNING' },
         },
       })),
+      startBatch: vi.fn(async (request) => ({
+        ok: true,
+        value: {
+          contractVersion: 'xiaogui.task-execution.batch.v1',
+          items: request.items.map((item: { taskRunId: string }, index: number) => ({
+            ok: true,
+            taskRunId: item.taskRunId,
+            value: {
+              taskRun: { taskRunId: item.taskRunId, taskSpecId: `xhbts_${index}`, taskKey: `task-${index}`, status: 'RUNNING' },
+              attempt: { attemptId: `xhba_${index}`, taskRunId: item.taskRunId, status: 'RUNNING' },
+            },
+          })),
+        },
+      })),
     },
     delivery: {
       selectTasks: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
@@ -71,7 +86,10 @@ mocks.createRuntimeComposition.mockImplementation(() => {
 })
 
 vi.mock('electron', () => ({
-  app: { getPath: mocks.getElectronPath },
+  app: {
+    getPath: mocks.getElectronPath,
+    get isPackaged() { return mocks.isPackaged },
+  },
 }))
 
 vi.mock('../../ipc/registry', () => ({
@@ -121,6 +139,7 @@ const ADDRESS = {
 } as SessionAddressV1
 
 const roots: string[] = []
+const CONTROLLED_EVIDENCE_ROOT = 'D:\\CodexTemp\\xiaogui-hub-m4g-real-journey-v1\\evidence'
 
 afterEach(async () => {
   await closeDefaultCollaborationHubRuntimeComposition()
@@ -128,6 +147,7 @@ afterEach(async () => {
   mocks.runtimeCompositions.splice(0)
   mocks.loginCoordinators.splice(0)
   mocks.kimiProductionEnabled = false
+  mocks.isPackaged = false
   vi.clearAllMocks()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
@@ -136,6 +156,20 @@ async function tempDb(name = 'hub.sqlite') {
   const root = await mkdtemp(join(tmpdir(), 'xiaogui-hub-m2a-ipc-'))
   roots.push(root)
   return join(root, name)
+}
+
+async function tempControlledRuntimeFixture(): Promise<{ scenarioPath: string; eventLogPath: string }> {
+  await mkdir(CONTROLLED_EVIDENCE_ROOT, { recursive: true })
+  const root = await mkdtemp(join(CONTROLLED_EVIDENCE_ROOT, 'ipc-launch-'))
+  roots.push(root)
+  const scenarioPath = join(root, 'scenario.json')
+  const eventLogPath = join(root, 'events.jsonl')
+  await writeFile(scenarioPath, `${JSON.stringify({
+    version: 1,
+    eventLog: 'events.jsonl',
+    tasks: [{ label: 'A', allowedPath: 'src/a.ts', releaseFile: 'release-a', content: 'A' }],
+  })}\n`, 'utf8')
+  return { scenarioPath, eventLogPath }
 }
 
 function lookup(mode: SessionMode): SessionScopeLookupV1 {
@@ -168,6 +202,102 @@ async function appFor(dbPath: string) {
 }
 
 describe('M2A collaboration hub IPC adapter', () => {
+  it('keeps PI_E2E alone from registering the Scripted adapter in a packaged application', async () => {
+    const previousPiE2e = process.env.PI_E2E
+    const previousScenario = process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO
+    try {
+      mocks.isPackaged = true
+      process.env.PI_E2E = '1'
+      process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO =
+        'D:\\CodexTemp\\xiaogui-hub-m4g-real-journey-v1\\evidence\\packaged-attempt.json'
+
+      getDefaultCollaborationHubApplication()
+
+      expect(mocks.createRuntimeComposition).toHaveBeenCalledWith({
+        userDataDir: 'D:/fake-xiaogui-user-data',
+        productionEnabled: false,
+        lookup: mocks.scopeLookup,
+      })
+    } finally {
+      if (previousPiE2e === undefined) delete process.env.PI_E2E
+      else process.env.PI_E2E = previousPiE2e
+      if (previousScenario === undefined) delete process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO
+      else process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO = previousScenario
+    }
+  })
+
+  it('requires matching per-run Scripted runtime tokens from environment and argv', async () => {
+    const previousPiE2e = process.env.PI_E2E
+    const previousScenario = process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO
+    const previousToken = process.env.PI_E2E_SCRIPTED_RUNTIME_TOKEN
+    const previousArgv = [...process.argv]
+    try {
+      process.env.PI_E2E = '1'
+      process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO =
+        'D:\\CodexTemp\\xiaogui-hub-m4g-real-journey-v1\\evidence\\token-mismatch.json'
+      process.env.PI_E2E_SCRIPTED_RUNTIME_TOKEN = 'a'.repeat(64)
+      process.argv = [...previousArgv, `--pi-e2e-scripted-runtime-token=${'b'.repeat(64)}`]
+
+      getDefaultCollaborationHubApplication()
+
+      expect(mocks.createRuntimeComposition).toHaveBeenCalledWith({
+        userDataDir: 'D:/fake-xiaogui-user-data',
+        productionEnabled: false,
+        lookup: mocks.scopeLookup,
+      })
+    } finally {
+      process.argv = previousArgv
+      if (previousPiE2e === undefined) delete process.env.PI_E2E
+      else process.env.PI_E2E = previousPiE2e
+      if (previousScenario === undefined) delete process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO
+      else process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO = previousScenario
+      if (previousToken === undefined) delete process.env.PI_E2E_SCRIPTED_RUNTIME_TOKEN
+      else process.env.PI_E2E_SCRIPTED_RUNTIME_TOKEN = previousToken
+    }
+  })
+
+  it('passes an opaque Scripted launch only when the development token gates and controlled paths match', async () => {
+    const { scenarioPath, eventLogPath } = await tempControlledRuntimeFixture()
+    const token = 'c'.repeat(64)
+    const previous = {
+      piE2e: process.env.PI_E2E,
+      scenario: process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO,
+      eventLog: process.env.PI_E2E_EVENT_LOG,
+      token: process.env.PI_E2E_SCRIPTED_RUNTIME_TOKEN,
+      argv: [...process.argv],
+    }
+    try {
+      process.env.PI_E2E = '1'
+      process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO = scenarioPath
+      process.env.PI_E2E_EVENT_LOG = eventLogPath
+      process.env.PI_E2E_SCRIPTED_RUNTIME_TOKEN = token
+      process.argv = [...previous.argv, `--pi-e2e-scripted-runtime-token=${token}`]
+
+      getDefaultCollaborationHubApplication()
+
+      expect(mocks.createRuntimeComposition).toHaveBeenCalledWith({
+        userDataDir: 'D:/fake-xiaogui-user-data',
+        productionEnabled: false,
+        lookup: mocks.scopeLookup,
+        piE2eScriptedRuntimeLaunch: { scenarioPath, eventLogPath },
+        runtimeRoutingPolicy: expect.objectContaining({
+          priorityAdapterIds: ['pi-e2e-scripted-local'],
+        }),
+      })
+    } finally {
+      process.argv = previous.argv
+      for (const [key, value] of [
+        ['PI_E2E', previous.piE2e],
+        ['PI_E2E_SCRIPTED_RUNTIME_SCENARIO', previous.scenario],
+        ['PI_E2E_EVENT_LOG', previous.eventLog],
+        ['PI_E2E_SCRIPTED_RUNTIME_TOKEN', previous.token],
+      ] as const) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  })
+
   it('snapshots the trusted enablement setting when lazily creating each runtime composition', async () => {
     expect(mocks.getElectronPath).not.toHaveBeenCalled()
     expect(mocks.createRuntimeComposition).not.toHaveBeenCalled()
@@ -282,6 +412,69 @@ describe('M2A collaboration hub IPC adapter', () => {
       })
     }
     expect(taskExecution.start).toHaveBeenCalledOnce()
+  })
+
+  it('registers a versioned batch execution IPC method and forwards only its narrow 1..2 item shape', async () => {
+    registerCollaborationHubHandlers()
+    const startBatch = mocks.handlers.get('ipc:xiaogui.hub.execution.startBatch')!
+    const taskExecution = mocks.runtimeCompositions[0]!.taskExecution
+    const valid = {
+      contractVersion: 'xiaogui.task-execution.batch.v1',
+      address: ADDRESS,
+      flowId: 'xhbf_flow',
+      items: [
+        { taskRunId: 'xhbtr_a', prompt: '完成 A', files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }] },
+        { taskRunId: 'xhbtr_b', prompt: '完成 B', files: [{ operation: 'CREATE', relativePath: 'src/b.ts' }] },
+      ],
+    }
+
+    await expect(startBatch(valid)).resolves.toMatchObject({
+      ok: true,
+      value: { contractVersion: 'xiaogui.task-execution.batch.v1', items: [{ taskRunId: 'xhbtr_a' }, { taskRunId: 'xhbtr_b' }] },
+    })
+    expect(taskExecution.startBatch).toHaveBeenCalledOnce()
+
+    for (const payload of [
+      { ...valid, contractVersion: 'xiaogui.task-execution.batch.v2' },
+      { ...valid, items: [] },
+      { ...valid, items: [...valid.items, valid.items[0]] },
+      { ...valid, items: [{ ...valid.items[0], adapterId: 'kimi-acp' }] },
+      { ...valid, items: [{ ...valid.items[0], files: [{ operation: 'MODIFY', relativePath: '../outside.ts' }] }] },
+    ]) {
+      await expect(startBatch(payload)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'EXECUTION_INPUT_INVALID' },
+      })
+    }
+    expect(taskExecution.startBatch).toHaveBeenCalledOnce()
+  })
+
+  it('does not accept an ambient event-log host path when the Scripted launch gate is closed', async () => {
+    const eventLogPath = await tempDb('ambient-events.jsonl')
+    const previousPiE2e = process.env.PI_E2E
+    const previousEventLog = process.env.PI_E2E_EVENT_LOG
+    try {
+      process.env.PI_E2E = '1'
+      process.env.PI_E2E_EVENT_LOG = eventLogPath
+      registerCollaborationHubHandlers()
+      const startBatch = mocks.handlers.get('ipc:xiaogui.hub.execution.startBatch')!
+
+      await startBatch({
+        contractVersion: 'xiaogui.task-execution.batch.v1',
+        address: ADDRESS,
+        flowId: 'xhbf_flow',
+        items: [
+          { taskRunId: 'xhbtr_a', prompt: '完成 A', files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }] },
+        ],
+      })
+
+      expect(existsSync(eventLogPath)).toBe(false)
+    } finally {
+      if (previousPiE2e === undefined) delete process.env.PI_E2E
+      else process.env.PI_E2E = previousPiE2e
+      if (previousEventLog === undefined) delete process.env.PI_E2E_EVENT_LOG
+      else process.env.PI_E2E_EVENT_LOG = previousEventLog
+    }
   })
 
   it('matches Direct outputs for the same observe/perform/readEvents fixture', async () => {

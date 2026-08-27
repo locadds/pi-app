@@ -13,6 +13,7 @@ import type {
   XiaoguiDeliverySelectTasksIpcRequestV1,
 } from '@shared/xiaogui-delivery-ipc'
 import { registerHandler } from '../../ipc/registry'
+import { recordPiE2eRendererEventV1 } from './pi-e2e-scripted-runtime'
 
 const AddressSchema = z
   .object({
@@ -104,6 +105,11 @@ export function registerXiaoguiDeliveryHandlers(coordinator: XiaoguiDeliveryCoor
     const parsed = ApproveGateSchema.safeParse(payload)
     if (!parsed.success || containsUnsafeRendererValue(payload)) return invalidDeliveryInput()
     const typed = parsed.data as unknown as XiaoguiDeliveryApproveGateIpcRequestV1
+    recordPiE2eRendererEventV1('renderer.ipc.delivery.approve', {
+      requestId: typed.request.requestId,
+      gateId: typed.request.gateId,
+      deliveryChangeSetId: typed.request.subject.deliveryChangeSetId,
+    })
     return coordinator.approveGate(typed.address, typed.request)
   })
 

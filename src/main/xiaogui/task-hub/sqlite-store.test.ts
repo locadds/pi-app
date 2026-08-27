@@ -12,6 +12,7 @@ import type {
   HubAddressV1,
   HubCommandRequestV1,
   InitialPlanDraftInputV1,
+  RawSha256HexV1,
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
 import {
@@ -256,8 +257,8 @@ function m2cScheduleFields(
       executionInputDigest: asDigest(`sha256:input-${attemptId}`),
       authorizationScopeDigest: authorizationScope.scopeDigest,
       selection,
-      selectionDigest: asDigest(`sha256:selection-${attemptId}`),
-      bindingDigest: asDigest(`sha256:binding-${attemptId}`),
+      selectionDigest: asRawDigest(`selection-${attemptId}`),
+      bindingDigest: asRawDigest(`binding-${attemptId}`),
       boundAt: '2026-08-17T00:00:00.000Z',
     },
     authorizationScope,
@@ -266,6 +267,10 @@ function m2cScheduleFields(
 
 function asDigest(value: string): Sha256Digest {
   return value as Sha256Digest
+}
+
+function asRawDigest(value: string): RawSha256HexV1 {
+  return createHash('sha256').update(value).digest('hex') as RawSha256HexV1
 }
 
 function contentDigest(content: Uint8Array): string {
@@ -1313,6 +1318,43 @@ describe('M2B sqlite store migration', () => {
     })
     store.close()
     app.close()
+  })
+
+  it('keeps runtime session identity private while retaining it for recovery', async () => {
+    const dbPath = await tempDb('private-runtime-session.sqlite')
+    const { app, flowId } = await activePlan(dbPath)
+    app.close()
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    const projection = store.readProjection(ADDRESS)
+    const taskRun = store.taskRuns(flowId as FlowId)[0]
+    if (!projection || !taskRun) throw new Error('missing active plan')
+    const attemptId = 'xhba_private_runtime' as AttemptId
+    store.writeSchedule(
+      ADDRESS,
+      {
+        requestId: 'sys-schedule-private-runtime',
+        commandType: 'system.schedule',
+        payloadHash: 'sha256:schedule-private-runtime',
+      },
+      scheduleRecord({
+        flowId: flowId as FlowId,
+        taskRunId: taskRun.task_run_id,
+        attemptId,
+        suffix: 'private-runtime',
+        projection,
+      }),
+    )
+    setAttemptRunning(dbPath, attemptId, taskRun.task_run_id, 'runtime-private')
+
+    expect(store.attempt(attemptId)).toMatchObject({
+      attempt_id: attemptId,
+      runtime_session_id: 'runtime-private',
+    })
+    const publicAttempt = store.readProjectionM2B(ADDRESS)?.attempts.find((attempt) => attempt.attemptId === attemptId)
+    expect(publicAttempt).toMatchObject({ attemptId, status: 'RUNNING' })
+    expect(publicAttempt).not.toHaveProperty('runtimeSessionId')
+    expect(JSON.stringify(store.readProjectionM2B(ADDRESS))).not.toContain('runtime-private')
+    store.close()
   })
 
   it('allows a new flow after CANCELLED while a running flow remains unique', async () => {

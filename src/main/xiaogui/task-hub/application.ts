@@ -531,6 +531,9 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       tasks: store.schedulerTasks(request.intent.flowId),
       attempts: store.schedulerAttempts(address.projectId),
       requestedAuthorizationPathTokens: authorizationScope.pathTokens,
+      ...(request.intent.targetTaskRunId
+        ? { requestedTaskRunId: request.intent.targetTaskRunId }
+        : {}),
       now,
     })
     if (!planned.selectedTaskRunId) return systemError('ILLEGAL_TRANSITION', { reason: 'NO_ELIGIBLE_WAVE_TASK' })
@@ -581,12 +584,12 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       })}` as import('@shared/xiaogui-task-verification').Sha256Digest,
       authorizationScopeDigest: authorizationScope.scopeDigest,
       selection: agent.selection,
-      selectionDigest: payloadDigest(agent.selection) as import('@shared/xiaogui-task-verification').Sha256Digest,
+      selectionDigest: payloadDigest(agent.selection) as AttemptRuntimeBindingV1['selectionDigest'],
       boundAt: now,
     }
     const runtimeBinding: AttemptRuntimeBindingV1 = {
       ...runtimeBindingBase,
-      bindingDigest: payloadDigest(runtimeBindingBase) as import('@shared/xiaogui-task-verification').Sha256Digest,
+      bindingDigest: payloadDigest(runtimeBindingBase) as AttemptRuntimeBindingV1['bindingDigest'],
     }
     const executionWave = bindExecutionWaveAttemptV1(planned.wave, task.task_run_id, attemptId)
     const receipt = {

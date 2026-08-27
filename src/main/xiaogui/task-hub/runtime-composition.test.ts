@@ -1,8 +1,11 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,6 +31,7 @@ import type { KimiAcpProbeV1 } from '../agent-runtime/kimi-adapter'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
 import { digestJson } from './digest'
+import { resolvePiE2eScriptedRuntimeLaunchV1 } from './pi-e2e-scripted-runtime'
 import {
   createXiaoguiRuntimeCompositionV1,
   type XiaoguiRuntimeCompositionV1,
@@ -48,6 +52,7 @@ function authorizationScope(label: string): TaskFileAuthorizationScopeV1 {
 
 const roots: string[] = []
 const compositions: XiaoguiRuntimeCompositionV1[] = []
+const CONTROLLED_EVIDENCE_ROOT = 'D:\\CodexTemp\\xiaogui-hub-m4g-real-journey-v1\\evidence'
 
 afterEach(async () => {
   for (const composition of compositions.splice(0)) {
@@ -61,6 +66,105 @@ afterEach(async () => {
 })
 
 describe('Xiaogui runtime composition v1', () => {
+  it('rejects a Scripted runtime scenario and event log outside the controlled journey roots', () => {
+    const token = 'a'.repeat(64)
+
+    expect(resolvePiE2eScriptedRuntimeLaunchV1({
+      isPackaged: false,
+      argv: ['electron', `--pi-e2e-scripted-runtime-token=${token}`],
+      env: {
+        PI_E2E: '1',
+        PI_E2E_SCRIPTED_RUNTIME_TOKEN: token,
+        PI_E2E_SCRIPTED_RUNTIME_SCENARIO: join(tempUserData(), 'scenario.json'),
+        PI_E2E_EVENT_LOG: join(tempUserData(), 'events.jsonl'),
+      },
+    })).toBeUndefined()
+  })
+
+  it('rejects an event log whose controlled path traverses a directory link', () => {
+    const controlledDir = tempControlledEvidenceDir()
+    const outsideDir = tempUserData()
+    const linkedDir = join(controlledDir, 'linked-output')
+    symlinkSync(outsideDir, linkedDir, 'junction')
+    const scenarioPath = join(controlledDir, 'scenario.json')
+    writeFileSync(scenarioPath, `${JSON.stringify({
+      version: 1,
+      eventLog: 'linked-output/events.jsonl',
+      tasks: [{ label: 'A', allowedPath: 'src/a.ts', releaseFile: 'release-a', content: 'A' }],
+    })}\n`, 'utf8')
+    const token = 'b'.repeat(64)
+
+    expect(resolvePiE2eScriptedRuntimeLaunchV1({
+      isPackaged: false,
+      argv: ['electron', `--pi-e2e-scripted-runtime-token=${token}`],
+      env: {
+        PI_E2E: '1',
+        PI_E2E_SCRIPTED_RUNTIME_TOKEN: token,
+        PI_E2E_SCRIPTED_RUNTIME_SCENARIO: scenarioPath,
+        PI_E2E_EVENT_LOG: join(linkedDir, 'events.jsonl'),
+      },
+    })).toBeUndefined()
+  })
+
+  it('rejects a forged Scripted launch object at the runtime composition seam', async () => {
+    const controlledDir = tempControlledEvidenceDir()
+    const scenarioPath = join(controlledDir, 'scenario.json')
+    const eventLogPath = join(controlledDir, 'events.jsonl')
+    writeFileSync(scenarioPath, `${JSON.stringify({
+      version: 1,
+      eventLog: 'events.jsonl',
+      tasks: [{ label: 'A', allowedPath: 'src/a.ts', releaseFile: 'release-a', content: 'A' }],
+    })}\n`, 'utf8')
+
+    let unexpectedComposition: XiaoguiRuntimeCompositionV1 | undefined
+    try {
+      expect(() => {
+        unexpectedComposition = createXiaoguiRuntimeCompositionV1({
+          userDataDir: tempUserData(),
+          productionEnabled: false,
+          lookup: lookup('CODING'),
+          projectResolver: unusedProjectResolver(),
+          piE2eScriptedRuntimeLaunch: { scenarioPath, eventLogPath },
+        } as unknown as Parameters<typeof createXiaoguiRuntimeCompositionV1>[0])
+      }).toThrow('PI_E2E_SCRIPTED_RUNTIME_FORBIDDEN')
+    } finally {
+      await unexpectedComposition?.close()
+    }
+  })
+
+  it('accepts a gate-issued controlled Scripted launch without enabling the Kimi production composition', () => {
+    const controlledDir = tempControlledEvidenceDir()
+    const scenarioPath = join(controlledDir, 'scenario.json')
+    const eventLogPath = join(controlledDir, 'events.jsonl')
+    writeFileSync(scenarioPath, `${JSON.stringify({
+      version: 1,
+      eventLog: 'events.jsonl',
+      tasks: [{ label: 'A', allowedPath: 'src/a.ts', releaseFile: 'release-a', content: 'A' }],
+    })}\n`, 'utf8')
+    const token = 'd'.repeat(64)
+    const launch = resolvePiE2eScriptedRuntimeLaunchV1({
+      isPackaged: false,
+      argv: ['electron', `--pi-e2e-scripted-runtime-token=${token}`],
+      env: {
+        PI_E2E: '1',
+        PI_E2E_SCRIPTED_RUNTIME_TOKEN: token,
+        PI_E2E_SCRIPTED_RUNTIME_SCENARIO: scenarioPath,
+        PI_E2E_EVENT_LOG: eventLogPath,
+      },
+    })
+    if (!launch) throw new Error('expected controlled Scripted launch')
+
+    track(createXiaoguiRuntimeCompositionV1({
+      userDataDir: tempUserData(),
+      productionEnabled: false,
+      lookup: lookup('CODING'),
+      projectResolver: unusedProjectResolver(),
+      piE2eScriptedRuntimeLaunch: launch,
+    }))
+
+    expect(readFileSync(eventLogPath, 'utf8')).toContain('runtime.adapter.ready')
+  })
+
   it('maps one explicit staging seam to private stores and closes idempotently without provisioning Kimi', async () => {
     const userDataDir = tempUserData()
     const probe = fakeKimiProbe()
@@ -270,6 +374,13 @@ describe('Xiaogui runtime composition v1', () => {
 
 function tempUserData(): string {
   const root = mkdtempSync(join(tmpdir(), 'xiaogui-runtime-composition-'))
+  roots.push(root)
+  return root
+}
+
+function tempControlledEvidenceDir(): string {
+  mkdirSync(CONTROLLED_EVIDENCE_ROOT, { recursive: true })
+  const root = mkdtempSync(join(CONTROLLED_EVIDENCE_ROOT, 'runtime-composition-'))
   roots.push(root)
   return root
 }

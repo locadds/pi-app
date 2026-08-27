@@ -1485,6 +1485,42 @@ describe('M2A collaboration hub application', () => {
     reopened.close()
   })
 
+  it('schedules the requested READY TaskRun instead of silently substituting the first READY task', async () => {
+    const dbPath = await tempDb()
+    const baseline = scriptedBaseline()
+    const app = appForBaselines(dbPath, [baseline])
+    await start(app, 'req-start-targeted', twoIndependentTasksDraft())
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) {
+      throw new Error('expected draft flow')
+    }
+    await execute(app, {
+      requestId: 'req-approve-targeted',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const approved = await app.observeM2B(ADDRESS)
+    if (!approved.ok) throw new Error('expected approved projection')
+    const targetTaskRunId = approved.value.taskRuns.find((task) => task.taskKey === 'second')?.taskRunId
+    if (!targetTaskRunId) throw new Error('expected second TaskRun')
+
+    await expect(executeSystem(app, {
+      requestId: 'sys-target-second',
+      intent: {
+        type: 'system.schedule',
+        flowId: draftProjection.value.activeFlow.flowId,
+        authorizationScope: authorizationScope('src/second.ts'),
+        targetTaskRunId,
+      },
+    })).resolves.toMatchObject({ ok: true, value: { taskRunId: targetTaskRunId } })
+    app.close()
+  })
+
   it('serializes an overlapping file authorization scope without blocking disjoint work', async () => {
     const dbPath = await tempDb()
     const baseline = scriptedBaseline()
@@ -1869,13 +1905,16 @@ describe('M2A collaboration hub application', () => {
       },
     })).resolves.toMatchObject({ ok: true })
 
-    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+    const publicRunning = await app.observeM2B(ADDRESS)
+    expect(publicRunning).toMatchObject({
       ok: true,
       value: {
         taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'RUNNING' })]),
-        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'RUNNING', runtimeSessionId: 'runtime-1' })],
+        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'RUNNING' })],
       },
     })
+    if (!publicRunning.ok) throw new Error('missing public running projection')
+    expect(publicRunning.value.attempts[0]).not.toHaveProperty('runtimeSessionId')
     expect(journalPayloads(dbPath, 'system.agent.report.record')).toMatchObject([
       { phase: 'dispatch.outbox_persisted', attemptId: 'xhba_attempt' },
       { phase: 'attempt.transition', from: 'READY', to: 'STARTING' },
@@ -1884,6 +1923,7 @@ describe('M2A collaboration hub application', () => {
     app.close()
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({ agent_dispatch_outbox: 1, runtime_session_bindings: 1, workspace_receipts: 1 })
+    expect(store.attempt('xhba_attempt' as AttemptId)).toMatchObject({ runtime_session_id: 'runtime-1' })
     store.close()
   })
 
@@ -2004,13 +2044,22 @@ describe('M2A collaboration hub application', () => {
       },
     })
 
-    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
+    const publicUnknown = await app.observeM2B(ADDRESS)
+    expect(publicUnknown).toMatchObject({
       ok: true,
       value: {
         taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'OUTCOME_UNKNOWN' })]),
-        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1' })],
+        attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'OUTCOME_UNKNOWN' })],
       },
     })
+    if (!publicUnknown.ok) throw new Error('missing public unknown projection')
+    expect(publicUnknown.value.attempts[0]).not.toHaveProperty('runtimeSessionId')
+    const privateUnknownStore = new CollaborationHubSqliteStoreV1(dbPath)
+    try {
+      expect(privateUnknownStore.attempt('xhba_attempt' as AttemptId)).toMatchObject({ runtime_session_id: 'runtime-1' })
+    } finally {
+      privateUnknownStore.close()
+    }
     expect(journalPayloads(dbPath, 'system.agent.outcome.record')).toMatchObject([
       { phase: 'attempt.transition', to: 'OUTCOME_UNKNOWN', receiptDigest: 'sha256:unknown-receipt' },
     ])

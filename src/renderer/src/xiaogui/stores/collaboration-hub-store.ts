@@ -21,8 +21,9 @@ import type { DeliveryApplyAttemptV1, DeliveryBatchProjectionV1 } from '@shared/
 import type { XiaoguiDeliveryOutcomeV1, XiaoguiDeliverySafeErrorV1 } from '@shared/xiaogui-delivery-ipc'
 import type {
   XiaoguiTaskExecutionSafeErrorV1,
-  XiaoguiTaskExecutionStartRequestV1,
+  XiaoguiTaskExecutionStartBatchRequestV1,
 } from '@shared/xiaogui-task-execution'
+import { XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 } from '@shared/xiaogui-task-execution'
 
 import {
   approveDeliveryGate,
@@ -33,7 +34,7 @@ import {
   reconcileDeliveryApply,
   retryDeliveryApply,
   returnDeliveryBatch,
-  startTaskExecution,
+  startTaskExecutionBatch,
   submitDeliverySelection,
 } from '../lib/collaboration-hub-client'
 
@@ -109,19 +110,70 @@ export function validateTaskExecutionForm(form: TaskExecutionFormV1): string[] {
   return errors
 }
 
-export function toTaskExecutionStartRequest(
-  address: HubAddressV1,
-  flowId: FlowId,
+/** 单个任务的执行载荷：trim 后的 prompt + MODIFY/CREATE 文件清单。 */
+export function toTaskExecutionItemPayload(
   form: TaskExecutionFormV1,
-): XiaoguiTaskExecutionStartRequestV1 {
+): { prompt: string; files: XiaoguiTaskExecutionStartBatchRequestV1['items'][number]['files'] } {
   return {
-    address,
-    flowId,
     prompt: form.prompt.trim(),
     files: [
       ...parseTaskExecutionPaths(form.modifyPathsText).map((relativePath) => ({ operation: 'MODIFY' as const, relativePath })),
       ...parseTaskExecutionPaths(form.createPathsText).map((relativePath) => ({ operation: 'CREATE' as const, relativePath })),
     ],
+  }
+}
+
+/** 当前投影中本批可执行任务：readiness 的 READY 列表按可用槽位截断，最多 2 个。 */
+export function eligibleExecutionTaskRunIds(projection: SessionCollaborationProjectionM2BV1): TaskRunId[] {
+  const readiness = projection.executionReadiness
+  if (!readiness || readiness.availableSlots <= 0) return []
+  return readiness.readyTaskRunIds.slice(0, Math.min(2, readiness.availableSlots))
+}
+
+/**
+ * 批量执行的前端友好校验（主进程仍是最终判定者）：
+ * 未选任务、空 prompt、空文件范围、同一任务重复路径，以及两个任务之间的
+ * 路径大小写/斜杠别名重叠。冲突归属按 taskRunId 判定（标题允许重复，仅用于文案）。
+ */
+export function validateTaskExecutionBatch(
+  items: readonly { taskRunId: TaskRunId; title: string; form: TaskExecutionFormV1 }[],
+): string[] {
+  const errors: string[] = []
+  if (items.length === 0) {
+    errors.push('请至少选择一个要执行的任务')
+    return errors
+  }
+  const ownerByCanonicalPath = new Map<string, TaskRunId>()
+  for (const { taskRunId, title, form } of items) {
+    const prefix = items.length > 1 ? `「${title}」` : ''
+    for (const message of validateTaskExecutionForm(form)) errors.push(`${prefix}${message}`)
+    const paths = [...parseTaskExecutionPaths(form.modifyPathsText), ...parseTaskExecutionPaths(form.createPathsText)]
+    for (const relativePath of paths) {
+      const canonical = relativePath.replaceAll('\\', '/').toLowerCase()
+      const owner = ownerByCanonicalPath.get(canonical)
+      if (owner !== undefined && owner !== taskRunId) {
+        errors.push(`两个任务的文件范围重叠：${relativePath}`)
+      } else {
+        ownerByCanonicalPath.set(canonical, taskRunId)
+      }
+    }
+  }
+  return errors
+}
+
+/** 表单 → 批量执行请求：公共 address/flowId + 逐项明确的 taskRunId/prompt/files。 */
+export function toTaskExecutionStartBatchRequest(
+  address: HubAddressV1,
+  flowId: FlowId,
+  items: readonly { taskRunId: TaskRunId; form: TaskExecutionFormV1 }[],
+): XiaoguiTaskExecutionStartBatchRequestV1 {
+  const mapped = items.map(({ taskRunId, form }) => ({ taskRunId, ...toTaskExecutionItemPayload(form) }))
+  return {
+    contractVersion: XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1,
+    address,
+    flowId,
+    // 调用方保证 1..2 项（校验先于构造）；显式构组避免把数组断言成元组
+    items: mapped.length > 1 ? [mapped[0]!, mapped[1]!] : [mapped[0]!],
   }
 }
 
@@ -272,10 +324,15 @@ interface CollaborationHubState {
   form: PlanDraftForm
   formErrors: string[]
   executionFlowId: FlowId | null
-  executionForm: TaskExecutionFormV1
+  /** 按 taskRunId 保存的逐任务临时输入（仅内存；成功项提交后即清除）。 */
+  executionForms: Record<string, TaskExecutionFormV1>
+  /** 本批勾选的任务（默认当前最多可执行项；仅保留仍为 READY 的任务）。 */
+  selectedExecutionTaskRunIds: TaskRunId[]
   executionFormErrors: string[]
   executionReviewing: boolean
   executionError: XiaoguiTaskExecutionSafeErrorV1 | null
+  /** 批量结果中失败项的安全错误，按 taskRunId 挂到对应任务卡片。 */
+  executionItemErrors: Record<string, XiaoguiTaskExecutionSafeErrorV1>
   selectedDeliveryTaskRunIds: TaskRunId[]
   deliveryReviewSubjectKey: string | null
   deliveryError: XiaoguiDeliverySafeErrorV1 | null
@@ -289,10 +346,11 @@ interface CollaborationHubState {
   /** 原样批准投影携带的 canonical draft（不使用内存表单内容）。 */
   approveActiveRevision: () => Promise<void>
   cancelActiveFlow: (reason?: string) => Promise<boolean>
-  setExecutionForm: (form: TaskExecutionFormV1) => void
-  reviewTaskExecution: () => boolean
-  returnToTaskExecutionEdit: () => void
-  startNextTaskExecution: () => Promise<boolean>
+  setExecutionForm: (taskRunId: TaskRunId, form: TaskExecutionFormV1) => void
+  toggleExecutionTaskSelection: (taskRunId: TaskRunId) => void
+  reviewExecutionBatch: () => boolean
+  returnToExecutionBatchEdit: () => void
+  startExecutionBatch: () => Promise<boolean>
   reviewActiveDelivery: () => boolean
   toggleDeliveryTaskSelection: (taskRunId: TaskRunId) => void
   createDeliveryFromSelection: () => Promise<boolean>
@@ -372,10 +430,12 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
     form: emptyPlanDraftForm(),
     formErrors: [],
     executionFlowId: null,
-    executionForm: emptyTaskExecutionForm(),
+    executionForms: {},
+    selectedExecutionTaskRunIds: [],
     executionFormErrors: [],
     executionReviewing: false,
     executionError: null,
+    executionItemErrors: {},
     selectedDeliveryTaskRunIds: [],
     deliveryReviewSubjectKey: null,
     deliveryError: null,
@@ -393,10 +453,12 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
         form: emptyPlanDraftForm(),
         formErrors: [],
         executionFlowId: null,
-        executionForm: emptyTaskExecutionForm(),
+        executionForms: {},
+        selectedExecutionTaskRunIds: [],
         executionFormErrors: [],
         executionReviewing: false,
         executionError: null,
+        executionItemErrors: {},
         selectedDeliveryTaskRunIds: [],
         deliveryReviewSubjectKey: null,
         deliveryError: null,
@@ -416,19 +478,40 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
         const nextDeliverySubjectKey = deliverySubjectKey(outcome.value.activeDelivery ?? null)
         const keepDeliveryReview = get().deliveryReviewSubjectKey === nextDeliverySubjectKey
         if (flowChanged) executionSeq += 1
+        // READY/槽位收敛：表单与选择只保留仍为 READY 且落在可用槽位内的任务；
+        // 新 Flow 默认勾选当前最多可执行项；availableSlots=0 时选择清空并退出复核。
+        const eligible = eligibleExecutionTaskRunIds(outcome.value)
+        const keptSelected = flowChanged
+          ? []
+          : get().selectedExecutionTaskRunIds.filter((taskRunId) => eligible.includes(taskRunId))
+        const nextSelected = flowChanged ? [...eligible] : keptSelected
+        const nextForms: Record<string, TaskExecutionFormV1> = {}
+        if (!flowChanged) {
+          for (const [taskRunId, form] of Object.entries(get().executionForms)) {
+            if (eligible.includes(taskRunId as TaskRunId)) nextForms[taskRunId] = form
+          }
+        }
+        const nextItemErrors: Record<string, XiaoguiTaskExecutionSafeErrorV1> = {}
+        if (!flowChanged) {
+          for (const [taskRunId, itemError] of Object.entries(get().executionItemErrors)) {
+            if (eligible.includes(taskRunId as TaskRunId)) nextItemErrors[taskRunId] = itemError
+          }
+        }
         set({
           loading: false,
           projection: outcome.value,
           error: null,
           executionFlowId: nextFlowId,
+          executionForms: nextForms,
+          selectedExecutionTaskRunIds: nextSelected,
+          executionReviewing: !flowChanged && get().executionReviewing && nextSelected.length > 0,
+          executionItemErrors: nextItemErrors,
           selectedDeliveryTaskRunIds: flowChanged || outcome.value.activeDelivery ? [] : get().selectedDeliveryTaskRunIds,
           deliveryReviewSubjectKey: keepDeliveryReview ? get().deliveryReviewSubjectKey : null,
           ...(flowChanged ? { submitting: false } : {}),
           ...(flowChanged
             ? {
-                executionForm: emptyTaskExecutionForm(),
                 executionFormErrors: [],
-                executionReviewing: false,
                 executionError: null,
                 deliveryError: null,
               }
@@ -496,30 +579,48 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
       })
     },
 
-    setExecutionForm: (executionForm) => {
+    setExecutionForm: (taskRunId, form) => {
       if (get().submitting) return
-      set({ executionForm, executionFormErrors: [], executionError: null })
+      set({
+        executionForms: { ...get().executionForms, [taskRunId]: form },
+        executionFormErrors: [],
+        executionError: null,
+      })
     },
 
-    reviewTaskExecution: () => {
-      const { projection, executionForm } = get()
+    toggleExecutionTaskSelection: (taskRunId) => {
+      const { projection, submitting, executionReviewing, selectedExecutionTaskRunIds } = get()
+      if (submitting || executionReviewing || !projection) return
+      if (!eligibleExecutionTaskRunIds(projection).includes(taskRunId)) return
+      set({
+        selectedExecutionTaskRunIds: selectedExecutionTaskRunIds.includes(taskRunId)
+          ? selectedExecutionTaskRunIds.filter((item) => item !== taskRunId)
+          : [...selectedExecutionTaskRunIds, taskRunId],
+        executionFormErrors: [],
+        executionError: null,
+      })
+    },
+
+    reviewExecutionBatch: () => {
+      const { projection, executionForms, selectedExecutionTaskRunIds } = get()
       if (!projection?.availableActions.includes('execution.next.confirm')) return false
-      const executionFormErrors = validateTaskExecutionForm(executionForm)
+      const items = batchExecutionItems(projection, selectedExecutionTaskRunIds, executionForms)
+      const executionFormErrors = validateTaskExecutionBatch(items)
       if (executionFormErrors.length > 0) {
         set({ executionFormErrors, executionReviewing: false })
         return false
       }
-      set({ executionFormErrors: [], executionReviewing: true, executionError: null })
+      set({ executionFormErrors: [], executionReviewing: true, executionError: null, executionItemErrors: {} })
       return true
     },
 
-    returnToTaskExecutionEdit: () => {
+    returnToExecutionBatchEdit: () => {
       if (get().submitting) return
       set({ executionReviewing: false, executionError: null })
     },
 
-    startNextTaskExecution: async () => {
-      const { address, projection, executionForm, executionReviewing, submitting } = get()
+    startExecutionBatch: async () => {
+      const { address, projection, executionForms, selectedExecutionTaskRunIds, executionReviewing, submitting } = get()
       const flow = projection?.activeFlow
       if (
         submitting ||
@@ -530,17 +631,18 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
       )
         return false
 
-      const executionFormErrors = validateTaskExecutionForm(executionForm)
+      const items = batchExecutionItems(projection, selectedExecutionTaskRunIds, executionForms)
+      const executionFormErrors = validateTaskExecutionBatch(items)
       if (executionFormErrors.length > 0) {
         set({ executionFormErrors, executionReviewing: false })
         return false
       }
 
       const flowId = flow.flowId
-      const request = toTaskExecutionStartRequest(address, flowId, executionForm)
+      const request = toTaskExecutionStartBatchRequest(address, flowId, items)
       const executionRequestSeq = ++executionSeq
-      set({ submitting: true, executionError: null })
-      const outcome = await startTaskExecution(request)
+      set({ submitting: true, executionError: null, executionItemErrors: {} })
+      const outcome = await startTaskExecutionBatch(request)
       if (
         executionRequestSeq !== executionSeq ||
         !sameAddress(get().address, address) ||
@@ -554,12 +656,23 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
         return false
       }
 
+      // 逐项收敛：成功项清空表单并移出选择；失败项保留输入并挂对应安全错误
+      const succeededIds = new Set<string>()
+      const itemErrors: Record<string, XiaoguiTaskExecutionSafeErrorV1> = {}
+      for (const item of outcome.value.items) {
+        if (item.ok) succeededIds.add(item.taskRunId)
+        else itemErrors[item.taskRunId] = item.error
+      }
+      const nextForms = { ...get().executionForms }
+      for (const taskRunId of succeededIds) delete nextForms[taskRunId]
       set({
         submitting: false,
-        executionForm: emptyTaskExecutionForm(),
+        executionForms: nextForms,
+        selectedExecutionTaskRunIds: get().selectedExecutionTaskRunIds.filter((id) => !succeededIds.has(id)),
         executionFormErrors: [],
-        executionReviewing: false,
+        executionItemErrors: itemErrors,
         executionError: null,
+        executionReviewing: false,
       })
       await get().refresh()
       return sameAddress(get().address, address) && get().executionFlowId === flowId
@@ -684,6 +797,27 @@ export const useCollaborationHubStore = create<CollaborationHubState>((set, get)
     clearDeliveryError: () => set({ deliveryError: null }),
   }
 })
+
+/**
+ * 当前勾选且仍可执行的任务 → {taskRunId, title, form}。
+ * title 只用于本地校验报错提示，不进入执行请求；未填写的表单按空表单参与校验。
+ */
+function batchExecutionItems(
+  projection: SessionCollaborationProjectionM2BV1,
+  selectedTaskRunIds: readonly TaskRunId[],
+  forms: Record<string, TaskExecutionFormV1>,
+): { taskRunId: TaskRunId; title: string; form: TaskExecutionFormV1 }[] {
+  const eligible = eligibleExecutionTaskRunIds(projection)
+  const titleByKey = new Map(projection.taskSpecs.map((spec) => [spec.taskKey, spec.title]))
+  const titleByRunId = new Map(projection.taskRuns.map((run) => [run.taskRunId, titleByKey.get(run.taskKey) ?? '协作任务']))
+  return selectedTaskRunIds
+    .filter((taskRunId) => eligible.includes(taskRunId))
+    .map((taskRunId) => ({
+      taskRunId,
+      title: titleByRunId.get(taskRunId) ?? '协作任务',
+      form: forms[taskRunId] ?? emptyTaskExecutionForm(),
+    }))
+}
 
 function deliverySubjectKey(delivery: DeliveryBatchProjectionV1 | null): string | null {
   if (!delivery?.gate) return null

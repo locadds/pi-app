@@ -135,6 +135,7 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
     const projection = store.readProjectionM2B(input.address)
     const planRevisionId = projection?.activeFlow?.activeRevisionId
     const attempt = projection?.attempts.find((candidate) => candidate.attemptId === input.attemptId)
+    const privateAttempt = store.attempt(input.attemptId)
     const taskRun = projection?.taskRuns.find((candidate) => candidate.taskRunId === input.taskRunId)
     const sourceStatus = input.reconcileStart ? 'OUTCOME_UNKNOWN' : 'RUNNING'
     if (
@@ -143,7 +144,9 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
       projection.activeFlow?.flowId !== input.flowId ||
       attempt?.taskRunId !== input.taskRunId ||
       attempt.status !== sourceStatus ||
-      attempt.runtimeSessionId !== input.outcome.runtimeSessionId ||
+      privateAttempt?.task_run_id !== input.taskRunId ||
+      privateAttempt.status !== sourceStatus ||
+      privateAttempt.runtime_session_id !== input.outcome.runtimeSessionId ||
       taskRun?.attemptId !== input.attemptId ||
       taskRun.status !== sourceStatus
     ) {

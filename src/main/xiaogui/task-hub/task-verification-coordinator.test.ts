@@ -94,6 +94,32 @@ describe('SqliteTaskVerificationCoordinatorV1', () => {
     expect(Buffer.from(completed[0]!.evidenceArtifacts![0]!.content).toString('utf8')).not.toContain(process.cwd())
   })
 
+  it('rejects a forged public runtime session when the private attempt binding differs', async () => {
+    const store = fakeStore([], 'runtime-private-other')
+    const publicProjection = projection()
+    Object.assign(publicProjection.attempts[0]!, {
+      runtimeSessionId: RUNTIME_OUTCOME.runtimeSessionId,
+    })
+    store.readProjectionM2B.mockReturnValue(publicProjection)
+    const captureTaskCandidate = vi.fn()
+    const coordinator = createTaskVerificationCoordinatorV1({
+      storeFactory: () => store as never,
+      candidateAudit: { captureTaskCandidate } as never,
+      verificationPort: { verify: vi.fn() },
+      projectResolver: { resolveProjectRoot: vi.fn(async () => process.cwd()) },
+    })
+
+    await expect(coordinator.handleSucceeded({
+      address: ADDRESS,
+      flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID,
+      outcome: RUNTIME_OUTCOME,
+      createdAt: '2026-08-17T00:00:01.000Z',
+    })).resolves.toEqual({ ok: false, reasonCode: 'TASK_VERIFICATION_BINDING_MISMATCH' })
+    expect(captureTaskCandidate).not.toHaveBeenCalled()
+  })
+
   it('returns ok UNKNOWN when project resolution fails after begin', async () => {
     const completed: CompleteTaskVerificationRecordV1[] = []
     const candidate = candidateFixture([])
@@ -233,17 +259,29 @@ function projection(): SessionCollaborationProjectionM2BV1 {
       attemptId: ATTEMPT_ID,
       taskRunId: TASK_RUN_ID,
       status: 'RUNNING',
-      runtimeSessionId: RUNTIME_OUTCOME.runtimeSessionId,
     }],
     history: [],
     availableActions: ['flow.cancel'],
   }
 }
 
-function fakeStore(completed: CompleteTaskVerificationRecordV1[]) {
+function fakeStore(
+  completed: CompleteTaskVerificationRecordV1[],
+  privateRuntimeSessionId = RUNTIME_OUTCOME.runtimeSessionId,
+) {
   let outbox: VerificationOutboxRecordV1 | null = null
   return {
     readProjectionM2B: vi.fn(() => projection()),
+    attempt: vi.fn(() => ({
+      attempt_id: ATTEMPT_ID,
+      task_run_id: TASK_RUN_ID,
+      flow_id: FLOW_ID,
+      status: 'RUNNING',
+      attempt_digest: 'sha256:attempt',
+      workspace_receipt_id: 'xhbw_workspace',
+      runtime_session_id: privateRuntimeSessionId,
+      outcome_receipt_digest: null,
+    })),
     activeFlow: vi.fn(() => ({
       flow_id: FLOW_ID,
       status: 'PLAN_ACTIVE',
