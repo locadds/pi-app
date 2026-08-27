@@ -399,6 +399,16 @@ describe('Worker host-tool bridge', () => {
         toolCallId: 'call-docx-template-data',
       },
     },
+    {
+      label: '标准报告 DOCX',
+      method: 'xiaogui.work.report-docx.v1',
+      payload: {
+        action: 'CANCEL',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
+        toolCallId: 'call-report-docx',
+      },
+    },
   ])('rejects a background $label host-tool before invoking the main-process handler', async ({ method, payload }) => {
     const transport = makeFakeTransport()
     const slot = fakeSlot('/sessions/background.jsonl', '/workspace', true)

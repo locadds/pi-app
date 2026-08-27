@@ -5,6 +5,7 @@ import type { LoadExtensionsResult } from '@earendil-works/pi-coding-agent'
 import { addXiaoguiCollaborationTool } from './xiaogui-collaboration-tool'
 import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool'
 import { addXiaoguiWorkDocxAdvancedGenerationTool } from './xiaogui-work-docx-advanced-generation-tool'
+import { addXiaoguiWorkReportDocxTool } from './xiaogui-work-report-docx-tool'
 import { addXiaoguiWorkDocxTemplateDataTool } from './xiaogui-work-docx-template-data-tool'
 import { addXiaoguiWorkDocxTemplateIntakeTool } from './xiaogui-work-docx-template-intake-tool'
 import { addXiaoguiWorkDocxTemplateMaterializeTool } from './xiaogui-work-docx-template-materialize-tool'
@@ -20,25 +21,16 @@ function loadXiaoguiModelTools(): LoadExtensionsResult {
     getSourceRunId: () => 'run-1',
   }
 
-  return addXiaoguiWorkDocxAdvancedGenerationTool(
-    addXiaoguiWorkDocumentSnapshotTool(
-      addXiaoguiWorkDocxTemplateMaterializeTool(
-        addXiaoguiWorkDocxTemplateIntakeTool(
-          addXiaoguiWorkDocxTemplateDataTool(
-            addXiaoguiCollaborationTool(base, {
-              getSourceSessionId: sessionOptions.getSourceSessionId,
-              getSourceTurnId: () => 'turn-1',
-            }),
-            sessionOptions,
-          ),
-          sessionOptions,
-        ),
-        sessionOptions,
-      ),
-      sessionOptions,
-    ),
-    sessionOptions,
-  )
+  let loaded = addXiaoguiCollaborationTool(base, {
+    getSourceSessionId: sessionOptions.getSourceSessionId,
+    getSourceTurnId: () => 'turn-1',
+  })
+  loaded = addXiaoguiWorkDocxTemplateDataTool(loaded, sessionOptions)
+  loaded = addXiaoguiWorkDocxTemplateIntakeTool(loaded, sessionOptions)
+  loaded = addXiaoguiWorkDocxTemplateMaterializeTool(loaded, sessionOptions)
+  loaded = addXiaoguiWorkDocumentSnapshotTool(loaded, sessionOptions)
+  loaded = addXiaoguiWorkDocxAdvancedGenerationTool(loaded, sessionOptions)
+  return addXiaoguiWorkReportDocxTool(loaded, sessionOptions)
 }
 
 describe('小规模型工具结构兼容性', () => {
@@ -52,6 +44,9 @@ describe('小规模型工具结构兼容性', () => {
     )
 
     expect(invalidTools).toEqual([])
+    expect(
+      loaded.extensions.flatMap((extension) => [...extension.tools.keys()]),
+    ).toContain('xiaogui_work_report_docx')
     expect(assertXiaoguiModelToolSchemasCompatible(loaded)).toBe(loaded)
   })
 

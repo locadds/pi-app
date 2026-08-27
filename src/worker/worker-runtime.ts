@@ -17,6 +17,7 @@ import { addXiaoguiWorkDocxTemplateDataTool } from './xiaogui-work-docx-template
 import { addXiaoguiWorkDocxTemplateIntakeTool } from './xiaogui-work-docx-template-intake-tool.js'
 import { addXiaoguiWorkDocxTemplateMaterializeTool } from './xiaogui-work-docx-template-materialize-tool.js'
 import { addXiaoguiWorkDocxAdvancedGenerationTool } from './xiaogui-work-docx-advanced-generation-tool.js'
+import { addXiaoguiWorkReportDocxTool } from './xiaogui-work-report-docx-tool.js'
 import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool.js'
 import { assertXiaoguiModelToolSchemasCompatible } from './xiaogui-model-tool-schema-compatibility.js'
 import {
@@ -182,40 +183,19 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
             getSourceSessionId: () => st.currentSessionId || undefined,
             getSourceTurnId: () => st.currentTurnId || undefined,
           }
-          return assertXiaoguiModelToolSchemasCompatible(addXiaoguiWorkDocxAdvancedGenerationTool(
-            addXiaoguiWorkDocumentSnapshotTool(
-              addXiaoguiWorkDocxTemplateMaterializeTool(
-              addXiaoguiWorkDocxTemplateIntakeTool(
-                addXiaoguiWorkDocxTemplateDataTool(
-                  addXiaoguiCollaborationTool(
-                    decorateQuestionnaireTools(result, cwd),
-                    collaborationToolOptions,
-                  ),
-                  {
-                    getSourceSessionId: collaborationToolOptions.getSourceSessionId,
-                    getSourceRunId: () => st.currentRunId || undefined,
-                  },
-                ),
-                {
-                  getSourceSessionId: collaborationToolOptions.getSourceSessionId,
-                  getSourceRunId: () => st.currentRunId || undefined,
-                },
-              ),
-              {
-                getSourceSessionId: collaborationToolOptions.getSourceSessionId,
-                getSourceRunId: () => st.currentRunId || undefined,
-              },
-              ),
-              {
-                getSourceSessionId: collaborationToolOptions.getSourceSessionId,
-                getSourceRunId: () => st.currentRunId || undefined,
-              },
-            ),
-            {
-              getSourceSessionId: collaborationToolOptions.getSourceSessionId,
-              getSourceRunId: () => st.currentRunId || undefined,
-            },
-          ))
+          const sessionToolOptions = {
+            getSourceSessionId: collaborationToolOptions.getSourceSessionId,
+            getSourceRunId: () => st.currentRunId || undefined,
+          }
+          let loaded = decorateQuestionnaireTools(result, cwd)
+          loaded = addXiaoguiCollaborationTool(loaded, collaborationToolOptions)
+          loaded = addXiaoguiWorkDocxTemplateDataTool(loaded, sessionToolOptions)
+          loaded = addXiaoguiWorkDocxTemplateIntakeTool(loaded, sessionToolOptions)
+          loaded = addXiaoguiWorkDocxTemplateMaterializeTool(loaded, sessionToolOptions)
+          loaded = addXiaoguiWorkDocumentSnapshotTool(loaded, sessionToolOptions)
+          loaded = addXiaoguiWorkDocxAdvancedGenerationTool(loaded, sessionToolOptions)
+          loaded = addXiaoguiWorkReportDocxTool(loaded, sessionToolOptions)
+          return assertXiaoguiModelToolSchemasCompatible(loaded)
         },
         skillsOverride: applySkillsOverride as never,
       },
