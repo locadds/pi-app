@@ -8,6 +8,7 @@ import type {
   HubAddressV1,
   HubSystemErrorCodeM2BV1,
   SessionCollaborationProjectionM2BV1,
+  TaskFileAuthorizationScopeV1,
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
 import type {
@@ -110,7 +111,7 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     await this.recover()
     if (this.closed) return executionError('INTERNAL')
 
-    const key = flowKey(canonical.value.address, canonical.value.flowId)
+    const key = operationKey(canonical.value)
     const running = this.inFlight.get(key)
     if (running) {
       return running.inputDigest === canonical.value.inputDigest
@@ -154,17 +155,18 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       projection.value.activeFlow.status !== 'PLAN_ACTIVE'
     ) return executionError('FLOW_NOT_READY')
 
-    let existing = this.saga.active(input.address, input.flowId)
-    if (existing && existing.input_digest !== input.inputDigest) {
+    let existing = this.saga.activeByInput(input.address, input.flowId, input.inputDigest)
+    if (existing) {
       this.settleFromAuthoritativeTerminal(existing, projection.value)
-      existing = this.saga.active(input.address, input.flowId)
+      existing = this.saga.activeByInput(input.address, input.flowId, input.inputDigest)
     }
     if (existing) {
-      if (existing.input_digest !== input.inputDigest) return executionError('EXECUTION_IN_PROGRESS')
       return this.run(existing, false)
     }
     if (!projection.value.availableActions.includes('execution.next.confirm')) {
-      return executionError('FLOW_NOT_READY')
+      return executionError(this.saga.hasActiveFlow(input.address, input.flowId)
+        ? 'EXECUTION_IN_PROGRESS'
+        : 'FLOW_NOT_READY')
     }
 
     let grants: readonly AttemptFileGrantV1[]
@@ -266,10 +268,15 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
         address: addressOf(operation),
         trustedActor: { kind: 'main-process-system' },
         requestId: stageRequestId(operation.operation_id, 'schedule'),
-        intent: { type: 'system.schedule', flowId: operation.flow_id },
+        intent: {
+          type: 'system.schedule',
+          flowId: operation.flow_id,
+          authorizationScope: authorizationScope(privateGrants(operation)),
+          executionInputDigest: operation.input_digest as TaskFileAuthorizationScopeV1['scopeDigest'],
+        },
       })
       if (!scheduled.ok) {
-        this.saga.noteFailure(operation.operation_id, scheduled.error.code)
+        this.saga.advance(operation.operation_id, 'FAILED', { lastSafeCode: scheduled.error.code })
         return executionError(mapSystemError(scheduled.error.code))
       }
       if (!scheduled.value.taskRunId || !scheduled.value.attemptId) return executionError('INTERNAL')
@@ -657,17 +664,17 @@ class SqliteTaskExecutionSagaStoreV1 {
     this.db.close()
   }
 
-  active(address: HubAddressV1, flowId: FlowId): ExecutionSagaRowV1 | undefined {
+  activeByInput(address: HubAddressV1, flowId: FlowId, inputDigest: string): ExecutionSagaRowV1 | undefined {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, input_digest,
                prompt_blob, grants_json, phase, task_run_id, attempt_id, last_safe_code
           from task_execution_sagas
-         where project_id = ? and session_key = ? and flow_id = ?
+         where project_id = ? and session_key = ? and flow_id = ? and input_digest = ?
            and phase not in ('FAILED', 'SETTLED')
          order by rowid desc limit 1
       `)
-      .get(address.projectId, address.sessionKey, flowId) as ExecutionSagaRowV1 | undefined
+      .get(address.projectId, address.sessionKey, flowId, inputDigest) as ExecutionSagaRowV1 | undefined
   }
 
   activeOperations(): ExecutionSagaRowV1[] {
@@ -680,6 +687,17 @@ class SqliteTaskExecutionSagaStoreV1 {
          order by rowid
       `)
       .all() as unknown as ExecutionSagaRowV1[]
+  }
+
+  hasActiveFlow(address: HubAddressV1, flowId: FlowId): boolean {
+    const row = this.db.prepare(`
+      select 1 as present
+        from task_execution_sagas
+       where project_id = ? and session_key = ? and flow_id = ?
+         and phase not in ('FAILED', 'SETTLED')
+       limit 1
+    `).get(address.projectId, address.sessionKey, flowId) as { present: number } | undefined
+    return row !== undefined
   }
 
   byId(operationId: string): ExecutionSagaRowV1 | undefined {
@@ -699,10 +717,9 @@ class SqliteTaskExecutionSagaStoreV1 {
   ): ExecutionSagaRowV1 {
     this.db.exec('begin immediate')
     try {
-      const existing = this.active(input.address, input.flowId)
+      const existing = this.activeByInput(input.address, input.flowId, input.inputDigest)
       if (existing) {
         this.db.exec('commit')
-        if (existing.input_digest !== input.inputDigest) throw new ActiveExecutionConflict()
         return existing
       }
       const now = this.now()
@@ -786,8 +803,9 @@ class SqliteTaskExecutionSagaStoreV1 {
         created_at text not null,
         updated_at text not null
       );
-      create unique index if not exists task_execution_sagas_one_active_flow
-        on task_execution_sagas(project_id, session_key, flow_id)
+      drop index if exists task_execution_sagas_one_active_flow;
+      create unique index if not exists task_execution_sagas_one_active_input
+        on task_execution_sagas(project_id, session_key, flow_id, input_digest)
         where phase not in ('FAILED', 'SETTLED');
     `)
   }
@@ -1012,6 +1030,18 @@ function stageRequestId(operationId: string, stage: string): string {
 
 function flowKey(address: HubAddressV1, flowId: FlowId): string {
   return `${address.projectId}:${address.sessionKey}:${flowId}`
+}
+
+function operationKey(input: CanonicalExecutionInputV1): string {
+  return `${flowKey(input.address, input.flowId)}:${input.inputDigest}`
+}
+
+function authorizationScope(grants: readonly AttemptFileGrantV1[]): TaskFileAuthorizationScopeV1 {
+  const pathTokens = grants
+    .map((grant) => `sha256:${hashHex(`task-file-scope-v1:${grant.relativePath.toLowerCase()}`)}` as TaskFileAuthorizationScopeV1['pathTokens'][number])
+    .sort()
+  const base = { version: 1 as const, pathTokens }
+  return { ...base, scopeDigest: digestJson(base) as TaskFileAuthorizationScopeV1['scopeDigest'] }
 }
 
 function digestJson(value: unknown): string {

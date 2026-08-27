@@ -119,6 +119,23 @@ function twoIndependentTasksDraft(): InitialPlanDraftInputV1 {
   }
 }
 
+function threeIndependentTasksDraft(): InitialPlanDraftInputV1 {
+  return {
+    objective: '验证项目并行上限与波次调度',
+    tasks: [
+      { taskKey: 'first', title: '第一项无依赖任务' },
+      { taskKey: 'second', title: '第二项无依赖任务' },
+      { taskKey: 'third', title: '第三项无依赖任务' },
+    ],
+  }
+}
+
+function authorizationScope(label: string) {
+  const pathTokens = [`sha256:${digestJson({ label, role: 'authorization-path' })}` as never]
+  const base = { version: 1 as const, pathTokens }
+  return { ...base, scopeDigest: `sha256:${digestJson(base)}` as never }
+}
+
 function appFor(
   dbPath: string,
   mode: SessionMode = 'WORK',
@@ -517,6 +534,10 @@ describe('M2A collaboration hub application', () => {
       task_specs: 0,
       task_runs: 0,
       attempts: 0,
+      execution_waves: 0,
+      attempt_runtime_bindings: 0,
+      attempt_authorization_scopes: 0,
+      task_execution_baselines: 0,
       flow_execution_baselines: 0,
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
@@ -817,7 +838,7 @@ describe('M2A collaboration hub application', () => {
     const migration = unchangedDb.prepare('select max(version) as version from schema_migrations').get() as { version: number }
     unchangedDb.close()
     expect(JSON.parse(stored.projection_json).activeRevision).not.toHaveProperty('draft')
-    expect(migration.version).toBe(9)
+    expect(migration.version).toBe(10)
   })
 
   it('keeps public projection actions user-only and persisted event payload sanitized', async () => {
@@ -1071,6 +1092,129 @@ describe('M2A collaboration hub application', () => {
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({ flow_execution_baselines: 1, attempts: 2, composition_attempts: 2, workspace_prepare_outbox: 2 })
     store.close()
+    app.close()
+  })
+
+  it('schedules independent work in parallel waves up to two and freezes each Attempt runtime binding', async () => {
+    const dbPath = await tempDb()
+    const baseline = scriptedBaseline()
+    const app = appForBaselines(dbPath, [baseline, baseline, baseline])
+    await start(app, 'req-start-wave', threeIndependentTasksDraft())
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve-wave',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const approved = await app.observeM2B(ADDRESS)
+    if (!approved.ok) throw new Error('expected approved projection')
+    const [first, second] = await Promise.all([
+      executeSystem(app, {
+        requestId: 'sys-wave-first',
+        intent: {
+          type: 'system.schedule',
+          flowId: draftProjection.value.activeFlow.flowId,
+          authorizationScope: authorizationScope('src/first.ts'),
+          executionInputDigest: `sha256:${'1'.repeat(64)}` as never,
+        },
+      }),
+      executeSystem(app, {
+        requestId: 'sys-wave-second',
+        intent: {
+          type: 'system.schedule',
+          flowId: draftProjection.value.activeFlow.flowId,
+          authorizationScope: authorizationScope('src/second.ts'),
+          executionInputDigest: `sha256:${'2'.repeat(64)}` as never,
+        },
+      }),
+    ])
+    if (!first.ok) throw new Error(`first wave failed: ${JSON.stringify(first.error)}`)
+    if (!second.ok) throw new Error(`second wave failed: ${JSON.stringify(second.error)}`)
+    expect(first.value.taskRunId).not.toBe(second.value.taskRunId)
+    expect(first).toMatchObject({ ok: true, value: { executionWave: { version: 1, maxParallelism: 2 } } })
+    const afterSecond = await app.observeM2B(ADDRESS)
+    if (!afterSecond.ok) throw new Error(`expected parallel projection: ${JSON.stringify(afterSecond.error)}`)
+    expect(afterSecond.value.attempts.find((attempt) => attempt.taskRunId === first.value.taskRunId)?.runtimeBinding).toMatchObject({
+      version: 1,
+      taskRunId: first.value.taskRunId,
+      executionInputDigest: `sha256:${'1'.repeat(64)}`,
+      selection: { adapterId: 'fake-approved' },
+    })
+    expect(afterSecond.value.attempts.find((attempt) => attempt.taskRunId === second.value.taskRunId)?.runtimeBinding).toMatchObject({
+      version: 1,
+      taskRunId: second.value.taskRunId,
+      executionInputDigest: `sha256:${'2'.repeat(64)}`,
+      selection: { adapterId: 'fake-approved' },
+    })
+    await expect(executeSystem(app, {
+      requestId: 'sys-wave-third',
+      expectedSessionVersion: afterSecond.ok ? afterSecond.value.sessionVersion : 0,
+      intent: {
+        type: 'system.schedule',
+        flowId: draftProjection.value.activeFlow.flowId,
+        authorizationScope: authorizationScope('src/third.ts'),
+      },
+    })).resolves.toMatchObject({ ok: false, error: { code: 'ILLEGAL_TRANSITION' } })
+    app.close()
+
+    const restartedStore = new CollaborationHubSqliteStoreV1(dbPath)
+    restartedStore.readProjectionM2B(ADDRESS)
+    restartedStore.close()
+    const reopened = appForBaselines(dbPath, [baseline])
+    const restored = await reopened.observeM2B(ADDRESS)
+    if (!restored.ok) throw new Error(`reopen failed: ${JSON.stringify(restored.error)}`)
+    expect(restored.value.attempts).toHaveLength(2)
+    expect(restored.value.attempts.every((attempt) => attempt.runtimeBinding?.selection.adapterId === 'fake-approved')).toBe(true)
+    reopened.close()
+  })
+
+  it('serializes an overlapping file authorization scope without blocking disjoint work', async () => {
+    const dbPath = await tempDb()
+    const baseline = scriptedBaseline()
+    const app = appForBaselines(dbPath, [baseline, baseline, baseline])
+    await start(app, 'req-start-scope', twoIndependentTasksDraft())
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) throw new Error('expected draft flow')
+    await execute(app, {
+      requestId: 'req-approve-scope',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const approved = await app.observeM2B(ADDRESS)
+    const sharedScope = authorizationScope('src/shared.ts')
+    await executeSystem(app, {
+      requestId: 'sys-scope-first',
+      expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId, authorizationScope: sharedScope },
+    })
+    const afterFirst = await app.observeM2B(ADDRESS)
+    await expect(executeSystem(app, {
+      requestId: 'sys-scope-overlap',
+      expectedSessionVersion: afterFirst.ok ? afterFirst.value.sessionVersion : 0,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId, authorizationScope: sharedScope },
+    })).resolves.toMatchObject({ ok: false, error: { code: 'ILLEGAL_TRANSITION' } })
+    const disjoint = await executeSystem(app, {
+      requestId: 'sys-scope-disjoint',
+      expectedSessionVersion: afterFirst.ok ? afterFirst.value.sessionVersion : 0,
+      intent: {
+        type: 'system.schedule',
+        flowId: draftProjection.value.activeFlow.flowId,
+        authorizationScope: authorizationScope('src/disjoint.ts'),
+      },
+    })
+    if (!disjoint.ok) throw new Error(`disjoint wave failed: ${JSON.stringify(disjoint.error)}`)
+    expect(disjoint).toMatchObject({ ok: true })
     app.close()
   })
 

@@ -193,6 +193,7 @@ function scheduleRecord(input: {
     attemptDigest: `sha256:${input.suffix}-attempt`,
     compositionDigest: `sha256:${input.suffix}-composition`,
     ...baseline,
+    ...m2cScheduleFields(input.flowId, input.taskRunId, input.attemptId, baseline),
     workspacePrepareRequestDigest: `sha256:${input.suffix}-workspace-prepare`,
     projection: input.projection,
     receipt: {
@@ -204,6 +205,62 @@ function scheduleRecord(input: {
       attemptId: input.attemptId,
     },
     now: '2026-08-17T00:00:00.000Z',
+  }
+}
+
+function m2cScheduleFields(
+  flowId: FlowId,
+  taskRunId: TaskRunId,
+  attemptId: AttemptId,
+  baseline: ReturnType<typeof baselineRecord>,
+) {
+  const selection = {
+    adapterId: 'test-runtime',
+    runtimeKind: 'OTHER' as const,
+    protocol: 'SDK' as const,
+    capabilityDigest: 'sha256:test-capability',
+    approvalStatus: 'APPROVED_FOR_PRODUCTION' as const,
+    diagnosticOnly: false as const,
+    stream: 'POLL' as const,
+    interrupt: 'BEST_EFFORT' as const,
+    inspect: 'RECONCILE' as const,
+  }
+  const authorizationScope = {
+    version: 1 as const,
+    pathTokens: [] as Sha256Digest[],
+    scopeDigest: asDigest('sha256:empty-scope'),
+  }
+  return {
+    flowBaselineBindingDigest: baseline.baselineBindingDigest,
+    taskBaselineId: baseline.baselineId,
+    taskBaseRevision: baseline.baseRevision,
+    taskBaselineTreeHash: baseline.baselineTreeHash,
+    taskInitialTargetFingerprint: baseline.initialTargetFingerprint,
+    taskBaselineDigest: baseline.baselineDigest,
+    taskBaselineDerivationDigest: `sha256:derivation-${attemptId}`,
+    ancestorTaskChangeSetIds: [] as string[],
+    executionWave: {
+      version: 1 as const,
+      waveId: `xhbwave_${attemptId}` as never,
+      flowId,
+      maxParallelism: 2,
+      activeAttemptIds: [] as AttemptId[],
+      scheduled: [{ taskRunId, attemptId }],
+      dependencyStates: [],
+      createdAt: '2026-08-17T00:00:00.000Z',
+    },
+    runtimeBinding: {
+      version: 1 as const,
+      attemptId,
+      taskRunId,
+      executionInputDigest: asDigest(`sha256:input-${attemptId}`),
+      authorizationScopeDigest: authorizationScope.scopeDigest,
+      selection,
+      selectionDigest: asDigest(`sha256:selection-${attemptId}`),
+      bindingDigest: asDigest(`sha256:binding-${attemptId}`),
+      boundAt: '2026-08-17T00:00:00.000Z',
+    },
+    authorizationScope,
   }
 }
 
@@ -1061,6 +1118,10 @@ describe('M2B sqlite store migration', () => {
       task_specs: 0,
       task_runs: 0,
       attempts: 0,
+      execution_waves: 0,
+      attempt_runtime_bindings: 0,
+      attempt_authorization_scopes: 0,
+      task_execution_baselines: 0,
       flow_execution_baselines: 0,
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
@@ -1110,14 +1171,17 @@ describe('M2B sqlite store migration', () => {
       { version: 7 },
       { version: 8 },
       { version: 9 },
+      { version: 10 },
     ])
-    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
+    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'execution_waves', 'attempt_runtime_bindings', 'attempt_authorization_scopes', 'task_execution_baselines', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
       { name: 'agent_dispatch_outbox' },
       { name: 'agent_failures' },
       { name: 'agent_reconcile_results' },
       { name: 'agent_succeeded_audits' },
       { name: 'artifacts' },
+      { name: 'attempt_authorization_scopes' },
       { name: 'attempt_file_manifests' },
+      { name: 'attempt_runtime_bindings' },
       { name: 'attempt_workspace_leases' },
       { name: 'attempt_workspace_prepared' },
       { name: 'attempts' },
@@ -1133,12 +1197,14 @@ describe('M2B sqlite store migration', () => {
       { name: 'delivery_verification_attempts' },
       { name: 'delivery_verification_outbox' },
       { name: 'delivery_verification_receipts' },
+      { name: 'execution_waves' },
       { name: 'flow_execution_baselines' },
       { name: 'private_runtime_payloads' },
       { name: 'runtime_session_bindings' },
       { name: 'scope_expansion_requests' },
       { name: 'task_change_sets' },
       { name: 'task_evidence_bundles' },
+      { name: 'task_execution_baselines' },
       { name: 'task_qa_results' },
       { name: 'verification_attempts' },
       { name: 'verification_outbox' },
@@ -1250,6 +1316,7 @@ describe('M2B sqlite store migration', () => {
         attemptDigest: 'sha256:first-attempt',
         compositionDigest: 'sha256:first-composition',
         ...firstBaseline,
+        ...m2cScheduleFields(flowId as FlowId, taskRun.task_run_id, 'xhba_first' as AttemptId, firstBaseline),
         workspacePrepareRequestDigest: 'sha256:first-workspace-prepare',
         projection,
         receipt: {
@@ -1276,6 +1343,7 @@ describe('M2B sqlite store migration', () => {
           attemptDigest: 'sha256:drift-attempt',
           compositionDigest: 'sha256:drift-composition',
           ...baselineRecord('2'),
+          ...m2cScheduleFields(flowId as FlowId, taskRun.task_run_id as TaskRunId, 'xhba_drift' as AttemptId, baselineRecord('2')),
           workspacePrepareRequestDigest: 'sha256:drift-workspace-prepare',
           projection,
           receipt: {
@@ -1337,6 +1405,7 @@ describe('M2B sqlite store migration', () => {
         { version: 7 },
         { version: 8 },
         { version: 9 },
+        { version: 10 },
       ])
       expect(migrated.prepare('pragma table_info(flow_execution_baselines)').all()).toEqual(
         expect.arrayContaining([expect.objectContaining({ name: 'base_revision' })]),
