@@ -407,7 +407,7 @@ export interface AgentSucceededAuditV1 {
 export interface SystemScheduleIntentM2BV1 {
   type: 'system.schedule'
   flowId: FlowId
-  authorizationScope?: TaskFileAuthorizationScopeV1
+  authorizationScope: TaskFileAuthorizationScopeV1
   executionInputDigest?: Sha256Digest
 }
 

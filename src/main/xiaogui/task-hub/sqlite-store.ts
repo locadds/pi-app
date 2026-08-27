@@ -165,6 +165,15 @@ export interface TaskExecutionBaselineRecordV1 extends FlowExecutionBaselineReco
   derivation_digest: string
 }
 
+export interface DerivedExecutionBaselineCacheRecordV1 {
+  readonly derivation_input_digest: string
+  readonly project_id: string
+  readonly flow_id: string
+  readonly task_run_id: string
+  readonly baseline_json: string
+  readonly created_at: string
+}
+
 interface VerificationAttemptRecord {
   verification_attempt_id: string
   verification_request_id: string
@@ -1877,6 +1886,48 @@ export class CollaborationHubSqliteStoreV1 {
     return row ?? null
   }
 
+  derivedExecutionBaseline(derivationInputDigest: string): DerivedExecutionBaselineCacheRecordV1 | null {
+    const row = this.db
+      .prepare(`
+        select derivation_input_digest, project_id, flow_id, task_run_id,
+               baseline_json, created_at
+          from derived_execution_baselines
+         where derivation_input_digest = ?
+      `)
+      .get(derivationInputDigest) as DerivedExecutionBaselineCacheRecordV1 | undefined
+    return row ?? null
+  }
+
+  writeDerivedExecutionBaseline(record: DerivedExecutionBaselineCacheRecordV1): void {
+    this.transaction(() => {
+      this.db.prepare(`
+        insert or ignore into derived_execution_baselines (
+          derivation_input_digest, project_id, flow_id, task_run_id,
+          baseline_json, created_at
+        ) values (?, ?, ?, ?, ?, ?)
+      `).run(
+        record.derivation_input_digest,
+        record.project_id,
+        record.flow_id,
+        record.task_run_id,
+        record.baseline_json,
+        record.created_at,
+      )
+      const persisted = this.derivedExecutionBaseline(record.derivation_input_digest)
+      if (
+        !persisted ||
+        persisted.project_id !== record.project_id ||
+        persisted.flow_id !== record.flow_id ||
+        persisted.task_run_id !== record.task_run_id ||
+        persisted.baseline_json !== record.baseline_json
+      ) {
+        throw Object.assign(new Error('DERIVED_BASELINE_IDEMPOTENCY_CONFLICT'), {
+          code: 'DERIVED_BASELINE_IDEMPOTENCY_CONFLICT',
+        })
+      }
+    })
+  }
+
   attemptRuntimeBinding(attemptId: AttemptId): AttemptRuntimeBindingV1 | null {
     const row = this.db
       .prepare('select binding_json from attempt_runtime_bindings where attempt_id = ?')
@@ -2852,6 +2903,7 @@ export class CollaborationHubSqliteStoreV1 {
       'attempt_runtime_bindings',
       'attempt_authorization_scopes',
       'task_execution_baselines',
+      'derived_execution_baselines',
       'flow_execution_baselines',
       'composition_attempts',
       'workspace_prepare_outbox',
@@ -3547,6 +3599,21 @@ export class CollaborationHubSqliteStoreV1 {
             select raise(abort, 'ATTEMPT_PROJECT_CAPACITY_CONFLICT');
           end;
         insert or ignore into schema_migrations (version, applied_at) values (10, datetime('now'));
+      `)
+    })
+    this.transaction(() => {
+      this.db.exec(`
+        create table if not exists derived_execution_baselines (
+          derivation_input_digest text primary key,
+          project_id text not null,
+          flow_id text not null,
+          task_run_id text not null,
+          baseline_json text not null,
+          created_at text not null
+        );
+        create index if not exists derived_execution_baselines_task
+          on derived_execution_baselines(project_id, flow_id, task_run_id);
+        insert or ignore into schema_migrations (version, applied_at) values (11, datetime('now'));
       `)
     })
   }

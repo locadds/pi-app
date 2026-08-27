@@ -11,6 +11,7 @@ import type {
   FlowId,
   HubAddressV1,
   InitialPlanDraftInputV1,
+  TaskFileAuthorizationScopeV1,
   TaskRunId,
   WorkspaceReceiptId,
 } from '@shared/xiaogui-collaboration-hub'
@@ -37,6 +38,12 @@ const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
   sessionKey: `xgs1_${'2'.repeat(64)}`,
 } as SessionAddressV1
+
+function authorizationScope(label: string): TaskFileAuthorizationScopeV1 {
+  const pathTokens = [`sha256:${digestJson({ label, role: 'authorization-path' })}` as TaskFileAuthorizationScopeV1['pathTokens'][number]]
+  const base = { version: 1 as const, pathTokens }
+  return { ...base, scopeDigest: `sha256:${digestJson(base)}` as TaskFileAuthorizationScopeV1['scopeDigest'] }
+}
 
 const approvedSelection: RuntimeAdapterSelectionV1 = {
   adapterId: 'fake-approved',
@@ -184,7 +191,11 @@ async function readyAttempt(
     trustedActor: { kind: 'main-process-system' },
     requestId: 'sys-schedule',
     expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
-    intent: { type: 'system.schedule', flowId: start.value.flowId as FlowId },
+    intent: {
+      type: 'system.schedule',
+      flowId: start.value.flowId as FlowId,
+      authorizationScope: authorizationScope('src/value.txt'),
+    },
   })
   if (!scheduled.ok || !scheduled.value.taskRunId || !scheduled.value.attemptId) throw new Error('schedule failed')
   const afterSchedule = await app.observeM2B(ADDRESS)
@@ -460,7 +471,11 @@ describe('M2B fake agent runtime integration', () => {
       trustedActor: { kind: 'main-process-system' },
       requestId: 'sys-real-schedule',
       expectedSessionVersion: beforeSchedule.ok ? beforeSchedule.value.sessionVersion : 0,
-      intent: { type: 'system.schedule', flowId: start.value.flowId as FlowId },
+      intent: {
+        type: 'system.schedule',
+        flowId: start.value.flowId as FlowId,
+        authorizationScope: authorizationScope('src/value.txt'),
+      },
     })
     if (!scheduled.ok || !scheduled.value.attemptId || !scheduled.value.taskRunId) throw new Error('schedule failed')
     promptVault.putPrompt({ attemptId: scheduled.value.attemptId, payloadBytes: '{"task":"edit existing and create file"}' })
@@ -825,7 +840,11 @@ describe('M2B fake agent runtime integration', () => {
         trustedActor: { kind: 'main-process-system' },
         requestId: 'sys-schedule-diagnostic',
         expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
-        intent: { type: 'system.schedule', flowId: start.value.flowId as FlowId },
+        intent: {
+          type: 'system.schedule',
+          flowId: start.value.flowId as FlowId,
+          authorizationScope: authorizationScope('src/value.txt'),
+        },
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'AGENT_UNAVAILABLE' } })
     const store = new CollaborationHubSqliteStoreV1(dbPath)

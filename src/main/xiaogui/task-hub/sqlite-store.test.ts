@@ -1122,6 +1122,7 @@ describe('M2B sqlite store migration', () => {
       attempt_runtime_bindings: 0,
       attempt_authorization_scopes: 0,
       task_execution_baselines: 0,
+      derived_execution_baselines: 0,
       flow_execution_baselines: 0,
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
@@ -1172,8 +1173,9 @@ describe('M2B sqlite store migration', () => {
       { version: 8 },
       { version: 9 },
       { version: 10 },
+      { version: 11 },
     ])
-    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'execution_waves', 'attempt_runtime_bindings', 'attempt_authorization_scopes', 'task_execution_baselines', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
+    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'execution_waves', 'attempt_runtime_bindings', 'attempt_authorization_scopes', 'task_execution_baselines', 'derived_execution_baselines', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
       { name: 'agent_dispatch_outbox' },
       { name: 'agent_failures' },
       { name: 'agent_reconcile_results' },
@@ -1197,6 +1199,7 @@ describe('M2B sqlite store migration', () => {
       { name: 'delivery_verification_attempts' },
       { name: 'delivery_verification_outbox' },
       { name: 'delivery_verification_receipts' },
+      { name: 'derived_execution_baselines' },
       { name: 'execution_waves' },
       { name: 'flow_execution_baselines' },
       { name: 'private_runtime_payloads' },
@@ -1406,6 +1409,7 @@ describe('M2B sqlite store migration', () => {
         { version: 8 },
         { version: 9 },
         { version: 10 },
+        { version: 11 },
       ])
       expect(migrated.prepare('pragma table_info(flow_execution_baselines)').all()).toEqual(
         expect.arrayContaining([expect.objectContaining({ name: 'base_revision' })]),

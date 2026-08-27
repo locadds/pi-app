@@ -475,7 +475,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
   }
 
-  private async schedule(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: { type: 'system.schedule'; flowId: FlowId } }): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
+  private async schedule(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.schedule' }> }): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
     const key = address.projectId
     const previous = this.scheduleQueue.get(key) ?? Promise.resolve()
     let release!: () => void
@@ -491,7 +491,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     }
   }
 
-  private async scheduleOnce(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: { type: 'system.schedule'; flowId: FlowId } }): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
+  private async scheduleOnce(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.schedule' }> }): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
     const store = this.getStore()
     const replay = this.checkSystemIdempotency(store, address, request)
     if (replay) return replay
@@ -1115,8 +1115,13 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
         value.derivationDigest === expectedDerivationDigest
         ? { ok: true, value }
         : { ok: false, reasonCode: 'DEPENDENCY_BASELINE_BINDING_MISMATCH' }
-    } catch {
-      return { ok: false, reasonCode: 'DEPENDENCY_BASELINE_PROVIDER_ERROR' }
+    } catch (error) {
+      const reasonCode = typeof error === 'object' && error !== null && 'reasonCode' in error &&
+        typeof (error as { reasonCode?: unknown }).reasonCode === 'string' &&
+        /^[A-Z][A-Z0-9_]{0,63}$/.test((error as { reasonCode: string }).reasonCode)
+        ? (error as { reasonCode: string }).reasonCode
+        : 'DEPENDENCY_BASELINE_PROVIDER_ERROR'
+      return { ok: false, reasonCode }
     }
   }
 
@@ -1449,13 +1454,11 @@ function scheduleConflictCode(error: unknown): string {
 function canonicalAuthorizationScope(
   value: TaskFileAuthorizationScopeV1 | undefined,
 ): TaskFileAuthorizationScopeV1 | null {
-  if (!value) {
-    const base = { version: 1 as const, pathTokens: [] as import('@shared/xiaogui-task-verification').Sha256Digest[] }
-    return { ...base, scopeDigest: `sha256:${payloadDigest(base)}` as import('@shared/xiaogui-task-verification').Sha256Digest }
-  }
+  if (!value) return null
   const pathTokens = [...value.pathTokens]
   if (
     value.version !== 1 ||
+    pathTokens.length === 0 ||
     pathTokens.some((token) => !/^sha256:[0-9a-f]{64}$/.test(token)) ||
     new Set(pathTokens).size !== pathTokens.length ||
     pathTokens.some((token, index) => index > 0 && pathTokens[index - 1].localeCompare(token) >= 0)

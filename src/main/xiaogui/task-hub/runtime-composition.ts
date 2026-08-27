@@ -36,6 +36,7 @@ import {
   type ProjectWorkspaceResolverV1,
 } from './attempt-workspace'
 import { GitExecutionBaselineProviderV1 } from './git-execution-baseline'
+import { GitDerivedExecutionBaselineProviderV1 } from './git-derived-execution-baseline'
 import { PrivateRuntimePayloadVaultV1 } from './private-payload-vault'
 import { MainProjectWorkspaceResolverV1 } from './project-workspace-resolver'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
@@ -89,6 +90,7 @@ export function createXiaoguiRuntimeCompositionV1(
   const userDataDir = resolveUserDataDirectory(options.userDataDir)
   const xiaoguiDir = join(userDataDir, 'xiaogui')
   const taskHubDir = join(xiaoguiDir, 'task-hub')
+  const hubDbPath = join(userDataDir, 'xiaogui-task-hub-m2a.sqlite')
   mkdirSync(taskHubDir, { recursive: true })
 
   let workspaceRegistry: SqliteAttemptWorkspaceRegistryV1 | undefined
@@ -111,6 +113,12 @@ export function createXiaoguiRuntimeCompositionV1(
     })
     const attemptWorkspaces = new GitAttemptWorkspaceServiceV1(workspaceRegistry, projectResolver, {
       managedRoot: join(xiaoguiDir, 'attempt-worktrees'),
+    })
+    const derivedBaselineProvider = new GitDerivedExecutionBaselineProviderV1({
+      storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
+      projectResolver,
+      managedRoot: join(xiaoguiDir, 'derived-baseline-worktrees'),
+      now: options.now,
     })
     payloadVault = new PrivateRuntimePayloadVaultV1({
       dbPath: join(taskHubDir, 'private-runtime-payloads.sqlite'),
@@ -151,7 +159,6 @@ export function createXiaoguiRuntimeCompositionV1(
       resolve: runtimeRegistry.resolve.bind(runtimeRegistry),
     })
 
-    const hubDbPath = join(userDataDir, 'xiaogui-task-hub-m2a.sqlite')
     const fixedVerificationPort = new FixedTypecheckVerificationPortV1()
     taskVerificationCoordinator = createTaskVerificationCoordinatorV1({
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
@@ -180,6 +187,7 @@ export function createXiaoguiRuntimeCompositionV1(
           }
         : {}),
       baselineProvider,
+      derivedBaselineProvider,
       workspaceBridge: inputStore.bridge,
       runtimePromptVault: inputStore,
       taskVerificationCoordinator,

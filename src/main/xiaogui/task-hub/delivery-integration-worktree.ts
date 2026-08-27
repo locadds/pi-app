@@ -60,6 +60,12 @@ export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryInt
         },
       }
     } catch (error) {
+      try {
+        await cleanupDeliveryIntegrationWorktreeRootV1(repositoryRoot, worktreeRoot)
+      } catch {
+        // Preserve the original closed failure code; the derived-baseline
+        // caller also performs a final cleanup attempt.
+      }
       if (error instanceof DeliveryIntegrationWorktreeErrorV1) throw error
       throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_WRITE_FAILED')
     }

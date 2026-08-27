@@ -9,7 +9,12 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { FlowId, HubAddressV1, InitialPlanDraftInputV1 } from '@shared/xiaogui-collaboration-hub'
+import type {
+  FlowId,
+  HubAddressV1,
+  InitialPlanDraftInputV1,
+  TaskFileAuthorizationScopeV1,
+} from '@shared/xiaogui-collaboration-hub'
 import type { RuntimeCapabilityV2 } from '@shared/xiaogui-agent-runtime'
 import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 
@@ -22,6 +27,7 @@ import { KIMI_PRODUCTION_CONFIG_CONTENT_V1 } from '../agent-runtime/kimi-product
 import type { KimiAcpProbeV1 } from '../agent-runtime/kimi-adapter'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
+import { digestJson } from './digest'
 import {
   createXiaoguiRuntimeCompositionV1,
   type XiaoguiRuntimeCompositionV1,
@@ -31,6 +37,14 @@ const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
   sessionKey: `xgs1_${'2'.repeat(64)}`,
 } as SessionAddressV1
+
+function authorizationScope(label: string): TaskFileAuthorizationScopeV1 {
+  const digit = label.length % 10
+  const token = `sha256:${String(digit).repeat(64)}` as TaskFileAuthorizationScopeV1['pathTokens'][number]
+  const pathTokens = [token]
+  const base = { version: 1 as const, pathTokens }
+  return { ...base, scopeDigest: `sha256:${digestJson(base)}` as TaskFileAuthorizationScopeV1['scopeDigest'] }
+}
 
 const roots: string[] = []
 const compositions: XiaoguiRuntimeCompositionV1[] = []
@@ -89,7 +103,11 @@ describe('Xiaogui runtime composition v1', () => {
       address: ADDRESS as HubAddressV1,
       trustedActor: { kind: 'main-process-system' },
       requestId: 'sys-disabled',
-      intent: { type: 'system.schedule', flowId: 'xhbf_disabled' as FlowId },
+      intent: {
+        type: 'system.schedule',
+        flowId: 'xhbf_disabled' as FlowId,
+        authorizationScope: authorizationScope('disabled'),
+      },
     })).resolves.toMatchObject({
       ok: false,
       error: { code: 'AGENT_UNAVAILABLE', safeArgs: { reason: 'NO_AGENT_RUNTIME' } },
@@ -188,7 +206,11 @@ describe('Xiaogui runtime composition v1', () => {
       trustedActor: { kind: 'main-process-system' },
       requestId: 'sys-schedule',
       expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
-      intent: { type: 'system.schedule', flowId: start.value.flowId as FlowId },
+      intent: {
+        type: 'system.schedule',
+        flowId: start.value.flowId as FlowId,
+        authorizationScope: authorizationScope('first'),
+      },
     })).resolves.toMatchObject({
       ok: false,
       error: {
@@ -236,7 +258,11 @@ describe('Xiaogui runtime composition v1', () => {
     await composition.application.executeSystem({
       contractVersion: 'm2b.v1', address: ADDRESS, trustedActor: { kind: 'main-process-system' }, requestId: 'route-schedule',
       expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
-      intent: { type: 'system.schedule', flowId: start.value.flowId },
+      intent: {
+        type: 'system.schedule',
+        flowId: start.value.flowId,
+        authorizationScope: authorizationScope('second'),
+      },
     })
     expect(health).toHaveBeenCalledWith('scripted-local')
   })
