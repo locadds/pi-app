@@ -420,6 +420,8 @@ export interface AgentSucceededAuditV1 {
 export interface SystemScheduleIntentM2BV1 {
   type: 'system.schedule'
   flowId: FlowId
+  /** Fail-closed binding for user-selected execution; absent preserves legacy scheduling. */
+  targetTaskRunId?: TaskRunId
   authorizationScope: TaskFileAuthorizationScopeV1
   executionInputDigest?: Sha256Digest
 }

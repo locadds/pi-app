@@ -1485,6 +1485,42 @@ describe('M2A collaboration hub application', () => {
     reopened.close()
   })
 
+  it('schedules the requested READY TaskRun instead of silently substituting the first READY task', async () => {
+    const dbPath = await tempDb()
+    const baseline = scriptedBaseline()
+    const app = appForBaselines(dbPath, [baseline])
+    await start(app, 'req-start-targeted', twoIndependentTasksDraft())
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) {
+      throw new Error('expected draft flow')
+    }
+    await execute(app, {
+      requestId: 'req-approve-targeted',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const approved = await app.observeM2B(ADDRESS)
+    if (!approved.ok) throw new Error('expected approved projection')
+    const targetTaskRunId = approved.value.taskRuns.find((task) => task.taskKey === 'second')?.taskRunId
+    if (!targetTaskRunId) throw new Error('expected second TaskRun')
+
+    await expect(executeSystem(app, {
+      requestId: 'sys-target-second',
+      intent: {
+        type: 'system.schedule',
+        flowId: draftProjection.value.activeFlow.flowId,
+        authorizationScope: authorizationScope('src/second.ts'),
+        targetTaskRunId,
+      },
+    })).resolves.toMatchObject({ ok: true, value: { taskRunId: targetTaskRunId } })
+    app.close()
+  })
+
   it('serializes an overlapping file authorization scope without blocking disjoint work', async () => {
     const dbPath = await tempDb()
     const baseline = scriptedBaseline()

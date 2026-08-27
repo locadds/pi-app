@@ -13,7 +13,11 @@ import type {
   HubReadIpcRequestV1,
 } from '@shared/xiaogui-collaboration-hub'
 import type { XiaoguiDeliveryCoordinatorPortV1 } from '@shared/xiaogui-delivery-ipc'
-import type { XiaoguiTaskExecutionStartRequestV1 } from '@shared/xiaogui-task-execution'
+import { XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 } from '@shared/xiaogui-task-execution'
+import type {
+  XiaoguiTaskExecutionStartBatchRequestV1,
+  XiaoguiTaskExecutionStartRequestV1,
+} from '@shared/xiaogui-task-execution'
 import { configStore } from '../../config-store'
 import { registerHandler } from '../../ipc/registry'
 import { KimiLoginCoordinatorV1 } from '../agent-runtime/kimi-login'
@@ -123,14 +127,36 @@ const ExecutionFileSchema = z
     relativePath: z.string().min(1).max(1024).refine(isSafeExecutionRelativePath),
   })
   .strict()
+const ExecutionFlowIdSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((value) => value === value.trim())
+const ExecutionTaskRunIdSchema = ExecutionFlowIdSchema
+const ExecutionPromptSchema = z
+  .string()
+  .refine((value) =>
+    value.trim().length > 0 && Buffer.byteLength(value, 'utf8') <= 1024 * 1024,
+  )
 const ExecutionStartSchema = z
   .object({
     address: AddressSchema,
-    flowId: z.string().min(1).max(256).refine((value) => value === value.trim()),
-    prompt: z
-      .string()
-      .refine((value) => value.trim().length > 0 && Buffer.byteLength(value, 'utf8') <= 1024 * 1024),
+    flowId: ExecutionFlowIdSchema,
+    targetTaskRunId: ExecutionTaskRunIdSchema.optional(),
+    prompt: ExecutionPromptSchema,
     files: z.array(ExecutionFileSchema).min(1).max(256),
+  })
+  .strict()
+const ExecutionStartBatchSchema = z
+  .object({
+    contractVersion: z.literal(XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1),
+    address: AddressSchema,
+    flowId: ExecutionFlowIdSchema,
+    items: z.array(z.object({
+      taskRunId: ExecutionTaskRunIdSchema,
+      prompt: ExecutionPromptSchema,
+      files: z.array(ExecutionFileSchema).min(1).max(256),
+    }).strict()).min(1).max(2),
   })
   .strict()
 
@@ -192,6 +218,13 @@ export function registerCollaborationHubHandlers(
     const parsed = ExecutionStartSchema.safeParse(payload)
     if (!parsed.success) return invalidExecutionInput()
     return resolveTaskExecution().start(parsed.data as unknown as XiaoguiTaskExecutionStartRequestV1)
+  })
+  registerHandler('ipc:xiaogui.hub.execution.startBatch', async (payload) => {
+    const parsed = ExecutionStartBatchSchema.safeParse(payload)
+    if (!parsed.success) return invalidExecutionInput()
+    return resolveTaskExecution().startBatch(
+      parsed.data as unknown as XiaoguiTaskExecutionStartBatchRequestV1,
+    )
   })
   registerHandler('ipc:xiaogui.hub.perform', async (payload) => {
     const parsed = parseIpc(PerformSchema, payload)

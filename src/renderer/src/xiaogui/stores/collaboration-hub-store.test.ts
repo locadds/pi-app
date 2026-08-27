@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   AttemptId,
+  ExecutionReadinessSnapshotV1,
   FlowId,
   HubAddressV1,
   PlanRevisionId,
@@ -14,7 +15,7 @@ import type { TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verificatio
 
 const observeMock = vi.fn()
 const performMock = vi.fn()
-const executeMock = vi.fn()
+const batchExecuteMock = vi.fn()
 const submitDeliveryMock = vi.fn()
 const approveDeliveryMock = vi.fn()
 const returnDeliveryMock = vi.fn()
@@ -28,7 +29,7 @@ vi.mock('../lib/collaboration-hub-client', () => ({
   DELIVERY_CONTRACT_VERSION: 'm4d.v1',
   observeCollaborationHub: (address: HubAddressV1) => observeMock(address),
   performHubIntent: (address: HubAddressV1, request: unknown) => performMock(address, request),
-  startTaskExecution: (request: unknown) => executeMock(request),
+  startTaskExecutionBatch: (request: unknown) => batchExecuteMock(request),
   submitDeliverySelection: (address: HubAddressV1, request: unknown) => submitDeliveryMock(address, request),
   approveDeliveryGate: (address: HubAddressV1, request: unknown) => approveDeliveryMock(address, request),
   returnDeliveryBatch: (address: HubAddressV1, request: unknown) => returnDeliveryMock(address, request),
@@ -39,14 +40,16 @@ vi.mock('../lib/collaboration-hub-client', () => ({
 }))
 
 import {
+  eligibleExecutionTaskRunIds,
   emptyPlanDraftForm,
-  emptyTaskExecutionForm,
   parseDependsOnText,
   parseTaskExecutionPaths,
-  toTaskExecutionStartRequest,
   toInitialPlanDraft,
+  toTaskExecutionItemPayload,
+  toTaskExecutionStartBatchRequest,
   useCollaborationHubStore,
   validatePlanDraftForm,
+  validateTaskExecutionBatch,
   validateTaskExecutionForm,
 } from './collaboration-hub-store'
 
@@ -104,6 +107,14 @@ function awaitingProjection(): SessionCollaborationProjectionM2BV1 {
 }
 
 function executableProjection(flowId = 'xhbf_flow1' as FlowId): SessionCollaborationProjectionM2BV1 {
+  const readyDepState = (taskRunId: TaskRunId): ExecutionReadinessSnapshotV1['dependencyStates'][number] => ({
+    version: 1,
+    taskRunId,
+    state: 'READY',
+    dependencyTaskRunIds: [],
+    blockingTaskRunIds: [],
+    verifiedAncestorTaskChangeSetIds: [],
+  })
   return projectionFixture({
     sessionMode: 'CODING',
     authoritativeMode: 'CODING',
@@ -112,6 +123,36 @@ function executableProjection(flowId = 'xhbf_flow1' as FlowId): SessionCollabora
       status: 'PLAN_ACTIVE',
       activeRevisionId: null,
       objective: '目标X',
+    },
+    taskSpecs: [
+      {
+        taskSpecId: 'xhbts_1' as TaskSpecId,
+        taskKey: 't1',
+        title: '投影任务一',
+        dependsOn: [],
+        unavailableReason: 'AGENT_DISABLED_M2A',
+      },
+      {
+        taskSpecId: 'xhbts_2' as TaskSpecId,
+        taskKey: 't2',
+        title: '投影任务二',
+        dependsOn: [],
+        unavailableReason: 'AGENT_DISABLED_M2A',
+      },
+    ],
+    taskRuns: [
+      { taskRunId: 'xhbtr_1' as TaskRunId, taskSpecId: 'xhbts_1' as TaskSpecId, taskKey: 't1', status: 'READY' },
+      { taskRunId: 'xhbtr_2' as TaskRunId, taskSpecId: 'xhbts_2' as TaskSpecId, taskKey: 't2', status: 'READY' },
+    ],
+    executionReadiness: {
+      version: 1,
+      flowId,
+      maxParallelism: 2,
+      activeAttemptCount: 0,
+      availableSlots: 2,
+      dependencyStates: [readyDepState('xhbtr_1' as TaskRunId), readyDepState('xhbtr_2' as TaskRunId)],
+      readyTaskRunIds: ['xhbtr_1' as TaskRunId, 'xhbtr_2' as TaskRunId],
+      capturedAt: '2026-08-27T00:00:00.000Z',
     },
     availableActions: ['flow.cancel', 'execution.next.confirm'],
   })
@@ -153,10 +194,23 @@ function deliveryProjection(): DeliveryBatchProjectionV1 {
   }
 }
 
+function batchExecutionValue(n: number) {
+  return {
+    taskRun: {
+      taskRunId: `xhbtr_${n}` as TaskRunId,
+      taskSpecId: `xhbts_${n}` as TaskSpecId,
+      taskKey: `t${n}`,
+      status: 'RUNNING',
+      attemptId: `xhba_${n}` as AttemptId,
+    },
+    attempt: { attemptId: `xhba_${n}` as AttemptId, taskRunId: `xhbtr_${n}` as TaskRunId, status: 'RUNNING' },
+  }
+}
+
 beforeEach(() => {
   observeMock.mockReset()
   performMock.mockReset()
-  executeMock.mockReset()
+  batchExecuteMock.mockReset()
   submitDeliveryMock.mockReset()
   approveDeliveryMock.mockReset()
   returnDeliveryMock.mockReset()
@@ -238,7 +292,7 @@ describe('validatePlanDraftForm', () => {
 })
 
 describe('task execution form', () => {
-  it('按行生成最小执行请求，不产生内部字段', () => {
+  it('按行生成最小执行载荷，不产生内部字段', () => {
     const form = {
       prompt: '  完成任务  ',
       modifyPathsText: 'src/a.ts\r\nsrc/b.ts',
@@ -246,9 +300,7 @@ describe('task execution form', () => {
     }
     expect(validateTaskExecutionForm(form)).toEqual([])
     expect(parseTaskExecutionPaths(form.modifyPathsText)).toEqual(['src/a.ts', 'src/b.ts'])
-    expect(toTaskExecutionStartRequest(addressA, 'xhbf_flow1' as FlowId, form)).toEqual({
-      address: addressA,
-      flowId: 'xhbf_flow1',
+    expect(toTaskExecutionItemPayload(form)).toEqual({
       prompt: '完成任务',
       files: [
         { operation: 'MODIFY', relativePath: 'src/a.ts' },
@@ -278,10 +330,80 @@ describe('task execution form', () => {
     }
     expect(parseTaskExecutionPaths(form.modifyPathsText)).toEqual([' src/a.ts ', 'src/b.ts'])
     expect(validateTaskExecutionForm(form)).toContain('修改文件路径不能带首尾空白：src/a.ts')
-    expect(toTaskExecutionStartRequest(addressA, 'xhbf_flow1' as FlowId, form).files[0]).toEqual({
+    expect(toTaskExecutionItemPayload(form).files[0]).toEqual({
       operation: 'MODIFY',
       relativePath: ' src/a.ts ',
     })
+  })
+})
+
+describe('task execution batch', () => {
+  it('未选任务被拦截', () => {
+    expect(validateTaskExecutionBatch([])).toEqual(['请至少选择一个要执行的任务'])
+  })
+
+  it('两个任务之间路径大小写或斜杠别名重叠被拦截', () => {
+    const errors = validateTaskExecutionBatch([
+      { taskRunId: 'xhbtr_1' as TaskRunId, title: '任务一', form: { prompt: '一', modifyPathsText: 'SRC/a.ts', createPathsText: '' } },
+      { taskRunId: 'xhbtr_2' as TaskRunId, title: '任务二', form: { prompt: '二', modifyPathsText: 'src\\a.ts', createPathsText: 'src/b.ts' } },
+    ])
+    expect(errors).toContain('两个任务的文件范围重叠：src\\a.ts')
+  })
+
+  it('不同 taskRunId 但同标题的任务冲突仍被拦截（标题仅用于文案）', () => {
+    const errors = validateTaskExecutionBatch([
+      { taskRunId: 'xhbtr_1' as TaskRunId, title: '同名任务', form: { prompt: '一', modifyPathsText: 'SRC/a.ts', createPathsText: '' } },
+      { taskRunId: 'xhbtr_2' as TaskRunId, title: '同名任务', form: { prompt: '二', modifyPathsText: 'src\\a.ts', createPathsText: '' } },
+    ])
+    expect(errors).toContain('两个任务的文件范围重叠：src\\a.ts')
+  })
+
+  it('逐任务校验错误带任务标题前缀', () => {
+    const errors = validateTaskExecutionBatch([
+      { taskRunId: 'xhbtr_1' as TaskRunId, title: '任务一', form: { prompt: '', modifyPathsText: 'src/a.ts', createPathsText: '' } },
+      { taskRunId: 'xhbtr_2' as TaskRunId, title: '任务二', form: { prompt: '二', modifyPathsText: 'src/b.ts', createPathsText: '' } },
+    ])
+    expect(errors).toContain('「任务一」任务说明不能为空')
+  })
+
+  it('批量请求只含契约版本、公共 address/flowId 与逐项明确内容', () => {
+    const request = toTaskExecutionStartBatchRequest(addressA, 'xhbf_flow1' as FlowId, [
+      {
+        taskRunId: 'xhbtr_1' as TaskRunId,
+        form: { prompt: ' 一 ', modifyPathsText: 'src/a.ts', createPathsText: '' },
+      },
+      {
+        taskRunId: 'xhbtr_2' as TaskRunId,
+        form: { prompt: '二', modifyPathsText: '', createPathsText: 'src/new.ts' },
+      },
+    ])
+    expect(request).toEqual({
+      contractVersion: 'xiaogui.task-execution.batch.v1',
+      address: addressA,
+      flowId: 'xhbf_flow1',
+      items: [
+        { taskRunId: 'xhbtr_1', prompt: '一', files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }] },
+        { taskRunId: 'xhbtr_2', prompt: '二', files: [{ operation: 'CREATE', relativePath: 'src/new.ts' }] },
+      ],
+    })
+  })
+
+  it('可执行任务取自 readyTaskRunIds 并按 availableSlots 截断', () => {
+    const projection = executableProjection()
+    expect(eligibleExecutionTaskRunIds(projection)).toEqual(['xhbtr_1', 'xhbtr_2'])
+    expect(
+      eligibleExecutionTaskRunIds({
+        ...projection,
+        executionReadiness: { ...projection.executionReadiness!, availableSlots: 1 },
+      }),
+    ).toEqual(['xhbtr_1'])
+    expect(
+      eligibleExecutionTaskRunIds({
+        ...projection,
+        executionReadiness: { ...projection.executionReadiness!, availableSlots: 0 },
+      }),
+    ).toEqual([])
+    expect(eligibleExecutionTaskRunIds({ ...projection, executionReadiness: undefined })).toEqual([])
   })
 })
 
@@ -552,93 +674,257 @@ describe('collaboration-hub-store', () => {
     expect(error?.traceId).toBe('tr-1')
   })
 
-  it('核对执行范围不调用 IPC，最终确认提交一次并刷新投影', async () => {
+  it('批量核对零 IPC，一次确认真实调用 startBatch 一次且含两个明确 taskRunId', async () => {
     let resolveExecution!: (value: unknown) => void
     observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
-    executeMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
+    batchExecuteMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
     useCollaborationHubStore.getState().setAddress(addressA)
     await useCollaborationHubStore.getState().refresh()
 
-    const executionForm = {
-      prompt: '完成当前任务',
-      modifyPathsText: 'src/a.ts',
-      createPathsText: 'src/new.ts',
-    }
-    useCollaborationHubStore.getState().setExecutionForm(executionForm)
-    expect(useCollaborationHubStore.getState().reviewTaskExecution()).toBe(true)
-    expect(executeMock).not.toHaveBeenCalled()
+    // 默认勾选当前最多可执行项
+    expect(useCollaborationHubStore.getState().selectedExecutionTaskRunIds).toEqual(['xhbtr_1', 'xhbtr_2'])
 
-    const first = useCollaborationHubStore.getState().startNextTaskExecution()
-    const duplicate = useCollaborationHubStore.getState().startNextTaskExecution()
-    await vi.waitFor(() => expect(executeMock).toHaveBeenCalledTimes(1))
-    expect(executeMock.mock.calls[0]![0]).toEqual({
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, {
+      prompt: '完成任务一',
+      modifyPathsText: 'src/a.ts',
+      createPathsText: '',
+    })
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_2' as TaskRunId, {
+      prompt: '完成任务二',
+      modifyPathsText: '',
+      createPathsText: 'src/new.ts',
+    })
+    expect(useCollaborationHubStore.getState().reviewExecutionBatch()).toBe(true)
+    expect(batchExecuteMock).not.toHaveBeenCalled()
+
+    const first = useCollaborationHubStore.getState().startExecutionBatch()
+    const duplicate = useCollaborationHubStore.getState().startExecutionBatch()
+    await vi.waitFor(() => expect(batchExecuteMock).toHaveBeenCalledTimes(1))
+    expect(batchExecuteMock.mock.calls[0]![0]).toEqual({
+      contractVersion: 'xiaogui.task-execution.batch.v1',
       address: addressA,
       flowId: 'xhbf_flow1',
-      prompt: '完成当前任务',
-      files: [
-        { operation: 'MODIFY', relativePath: 'src/a.ts' },
-        { operation: 'CREATE', relativePath: 'src/new.ts' },
+      items: [
+        { taskRunId: 'xhbtr_1', prompt: '完成任务一', files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }] },
+        { taskRunId: 'xhbtr_2', prompt: '完成任务二', files: [{ operation: 'CREATE', relativePath: 'src/new.ts' }] },
       ],
     })
 
     resolveExecution({
       ok: true,
       value: {
-        taskRun: {
-          taskRunId: 'xhbtr_1' as TaskRunId,
-          taskSpecId: 'xhbts_1' as TaskSpecId,
-          taskKey: 't1',
-          status: 'RUNNING',
-          attemptId: 'xhba_1' as AttemptId,
-        },
-        attempt: { attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING' },
+        contractVersion: 'xiaogui.task-execution.batch.v1',
+        items: [
+          { ok: true, taskRunId: 'xhbtr_1', value: batchExecutionValue(1) },
+          { ok: true, taskRunId: 'xhbtr_2', value: batchExecutionValue(2) },
+        ],
       },
     })
     await Promise.all([first, duplicate])
 
     expect(observeMock).toHaveBeenCalledTimes(2)
-    expect(useCollaborationHubStore.getState().executionForm).toEqual(emptyTaskExecutionForm())
+    expect(useCollaborationHubStore.getState().executionForms).toEqual({})
+    expect(useCollaborationHubStore.getState().selectedExecutionTaskRunIds).toEqual([])
     expect(useCollaborationHubStore.getState().executionReviewing).toBe(false)
   })
 
-  it('执行失败保留核对内容；结果未知仍刷新投影', async () => {
+  it('部分成功只清空成功项表单，失败项保留输入并记录对应安全错误', async () => {
     observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
-    executeMock.mockResolvedValueOnce({
+    batchExecuteMock.mockResolvedValue({
+      ok: true,
+      value: {
+        contractVersion: 'xiaogui.task-execution.batch.v1',
+        items: [
+          { ok: true, taskRunId: 'xhbtr_1', value: batchExecutionValue(1) },
+          {
+            ok: false,
+            taskRunId: 'xhbtr_2',
+            error: { code: 'EXECUTION_IN_PROGRESS', messageKey: 'xiaogui.execution.in_progress', traceId: '' },
+          },
+        ],
+      },
+    })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, {
+      prompt: '完成任务一',
+      modifyPathsText: 'src/a.ts',
+      createPathsText: '',
+    })
+    const formTwo = { prompt: '保留输入二', modifyPathsText: 'src/b.ts', createPathsText: '' }
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_2' as TaskRunId, formTwo)
+    expect(useCollaborationHubStore.getState().reviewExecutionBatch()).toBe(true)
+
+    await useCollaborationHubStore.getState().startExecutionBatch()
+
+    expect(useCollaborationHubStore.getState().executionForms).toEqual({ xhbtr_2: formTwo })
+    expect(useCollaborationHubStore.getState().selectedExecutionTaskRunIds).toEqual(['xhbtr_2'])
+    expect(useCollaborationHubStore.getState().executionItemErrors.xhbtr_2?.code).toBe('EXECUTION_IN_PROGRESS')
+    expect(useCollaborationHubStore.getState().executionError).toBeNull()
+    expect(useCollaborationHubStore.getState().executionReviewing).toBe(false)
+  })
+
+  it('两个任务路径大小写/斜杠别名重叠时阻止提交', async () => {
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, {
+      prompt: '一',
+      modifyPathsText: 'SRC/a.ts',
+      createPathsText: '',
+    })
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_2' as TaskRunId, {
+      prompt: '二',
+      modifyPathsText: 'src\\a.ts',
+      createPathsText: '',
+    })
+
+    expect(useCollaborationHubStore.getState().reviewExecutionBatch()).toBe(false)
+    expect(useCollaborationHubStore.getState().executionFormErrors).toContain('两个任务的文件范围重叠：src\\a.ts')
+    await useCollaborationHubStore.getState().startExecutionBatch()
+    expect(batchExecuteMock).not.toHaveBeenCalled()
+  })
+
+  it('不同 taskRunId 但同标题的任务路径冲突同样阻止 review 与 startBatch', async () => {
+    const base = executableProjection()
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: { ...base, taskSpecs: base.taskSpecs.map((spec) => ({ ...spec, title: '同名任务' })) },
+    })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, {
+      prompt: '一',
+      modifyPathsText: 'SRC/a.ts',
+      createPathsText: '',
+    })
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_2' as TaskRunId, {
+      prompt: '二',
+      modifyPathsText: 'src\\a.ts',
+      createPathsText: '',
+    })
+
+    expect(useCollaborationHubStore.getState().reviewExecutionBatch()).toBe(false)
+    expect(useCollaborationHubStore.getState().executionFormErrors).toContain('两个任务的文件范围重叠：src\\a.ts')
+    await useCollaborationHubStore.getState().startExecutionBatch()
+    expect(batchExecuteMock).not.toHaveBeenCalled()
+  })
+
+  it('批量结果被客户端拒绝为安全 INTERNAL 时保留全部表单与复核内容', async () => {
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    // client 对错配 envelope fail closed 后只返回安全 INTERNAL（此处直接模拟该结果）
+    batchExecuteMock.mockResolvedValue({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' },
+    })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    const formOne = { prompt: '一', modifyPathsText: 'src/a.ts', createPathsText: '' }
+    const formTwo = { prompt: '二', modifyPathsText: 'src/b.ts', createPathsText: '' }
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, formOne)
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_2' as TaskRunId, formTwo)
+    useCollaborationHubStore.getState().reviewExecutionBatch()
+
+    await useCollaborationHubStore.getState().startExecutionBatch()
+
+    expect(useCollaborationHubStore.getState().executionForms).toEqual({ xhbtr_1: formOne, xhbtr_2: formTwo })
+    expect(useCollaborationHubStore.getState().executionReviewing).toBe(true)
+    expect(useCollaborationHubStore.getState().executionError?.code).toBe('INTERNAL')
+    // INTERNAL 不触发投影刷新，不得按错误 envelope 清理任何表单
+    expect(observeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('READY/槽位变化时对选择与表单安全收敛', async () => {
+    const full = executableProjection()
+    observeMock.mockResolvedValueOnce({ ok: true, value: full })
+    useCollaborationHubStore.getState().setAddress(addressA)
+    await useCollaborationHubStore.getState().refresh()
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, {
+      prompt: '一',
+      modifyPathsText: 'src/a.ts',
+      createPathsText: '',
+    })
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_2' as TaskRunId, {
+      prompt: '二',
+      modifyPathsText: 'src/b.ts',
+      createPathsText: '',
+    })
+    expect(useCollaborationHubStore.getState().reviewExecutionBatch()).toBe(true)
+
+    // t2 不再 READY 且只剩 1 个槽位：t2 的表单与选择被移除，复核继续
+    observeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...full,
+        executionReadiness: {
+          ...full.executionReadiness!,
+          availableSlots: 1,
+          readyTaskRunIds: ['xhbtr_1' as TaskRunId],
+        },
+      },
+    })
+    await useCollaborationHubStore.getState().refresh()
+    expect(useCollaborationHubStore.getState().selectedExecutionTaskRunIds).toEqual(['xhbtr_1'])
+    expect(Object.keys(useCollaborationHubStore.getState().executionForms)).toEqual(['xhbtr_1'])
+    expect(useCollaborationHubStore.getState().executionReviewing).toBe(true)
+
+    // 槽位归零：清空选择并退出复核
+    observeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...full,
+        executionReadiness: { ...full.executionReadiness!, availableSlots: 0, readyTaskRunIds: [] },
+      },
+    })
+    await useCollaborationHubStore.getState().refresh()
+    expect(useCollaborationHubStore.getState().selectedExecutionTaskRunIds).toEqual([])
+    expect(useCollaborationHubStore.getState().executionForms).toEqual({})
+    expect(useCollaborationHubStore.getState().executionReviewing).toBe(false)
+  })
+
+  it('批量整体失败保留核对内容；结果未知仍刷新投影', async () => {
+    observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
+    batchExecuteMock.mockResolvedValueOnce({
       ok: false,
       error: { code: 'OUTCOME_UNKNOWN', messageKey: 'xiaogui.execution.outcome_unknown', traceId: '' },
     })
     useCollaborationHubStore.getState().setAddress(addressA)
     await useCollaborationHubStore.getState().refresh()
     const executionForm = { prompt: '保留我', modifyPathsText: 'src/a.ts', createPathsText: '' }
-    useCollaborationHubStore.getState().setExecutionForm(executionForm)
-    useCollaborationHubStore.getState().reviewTaskExecution()
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, executionForm)
+    useCollaborationHubStore.getState().toggleExecutionTaskSelection('xhbtr_2' as TaskRunId)
+    useCollaborationHubStore.getState().reviewExecutionBatch()
 
-    await useCollaborationHubStore.getState().startNextTaskExecution()
+    await useCollaborationHubStore.getState().startExecutionBatch()
 
     expect(observeMock).toHaveBeenCalledTimes(2)
-    expect(useCollaborationHubStore.getState().executionForm).toEqual(executionForm)
+    expect(useCollaborationHubStore.getState().executionForms).toEqual({ xhbtr_1: executionForm })
     expect(useCollaborationHubStore.getState().executionReviewing).toBe(true)
     expect(useCollaborationHubStore.getState().executionError?.code).toBe('OUTCOME_UNKNOWN')
   })
 
-  it('权威 flow 变化时清空旧执行表单', async () => {
+  it('权威 flow 变化时清空旧执行表单并重新默认勾选', async () => {
     observeMock
       .mockResolvedValueOnce({ ok: true, value: executableProjection('xhbf_flow1' as FlowId) })
       .mockResolvedValueOnce({ ok: true, value: executableProjection('xhbf_flow2' as FlowId) })
     useCollaborationHubStore.getState().setAddress(addressA)
     await useCollaborationHubStore.getState().refresh()
-    useCollaborationHubStore.getState().setExecutionForm({
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, {
       prompt: '旧任务',
       modifyPathsText: 'src/old.ts',
       createPathsText: '',
     })
-    useCollaborationHubStore.getState().reviewTaskExecution()
+    useCollaborationHubStore.getState().reviewExecutionBatch()
 
     await useCollaborationHubStore.getState().refresh()
 
     expect(useCollaborationHubStore.getState().executionFlowId).toBe('xhbf_flow2')
-    expect(useCollaborationHubStore.getState().executionForm).toEqual(emptyTaskExecutionForm())
+    expect(useCollaborationHubStore.getState().executionForms).toEqual({})
     expect(useCollaborationHubStore.getState().executionReviewing).toBe(false)
+    expect(useCollaborationHubStore.getState().selectedExecutionTaskRunIds).toEqual(['xhbtr_1', 'xhbtr_2'])
   })
 
   it('执行等待中切换 flow 会解除提交锁并丢弃晚到响应', async () => {
@@ -646,16 +932,17 @@ describe('collaboration-hub-store', () => {
     observeMock
       .mockResolvedValueOnce({ ok: true, value: executableProjection('xhbf_flow1' as FlowId) })
       .mockResolvedValueOnce({ ok: true, value: executableProjection('xhbf_flow2' as FlowId) })
-    executeMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
+    batchExecuteMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
     useCollaborationHubStore.getState().setAddress(addressA)
     await useCollaborationHubStore.getState().refresh()
-    useCollaborationHubStore.getState().setExecutionForm({
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, {
       prompt: '旧任务',
       modifyPathsText: 'src/old.ts',
       createPathsText: '',
     })
-    useCollaborationHubStore.getState().reviewTaskExecution()
-    const pending = useCollaborationHubStore.getState().startNextTaskExecution()
+    useCollaborationHubStore.getState().toggleExecutionTaskSelection('xhbtr_2' as TaskRunId)
+    useCollaborationHubStore.getState().reviewExecutionBatch()
+    const pending = useCollaborationHubStore.getState().startExecutionBatch()
     await vi.waitFor(() => expect(useCollaborationHubStore.getState().submitting).toBe(true))
 
     await useCollaborationHubStore.getState().refresh()
@@ -669,22 +956,23 @@ describe('collaboration-hub-store', () => {
     await pending
     expect(useCollaborationHubStore.getState().submitting).toBe(false)
     expect(useCollaborationHubStore.getState().executionError).toBeNull()
-    expect(useCollaborationHubStore.getState().executionForm).toEqual(emptyTaskExecutionForm())
+    expect(useCollaborationHubStore.getState().executionForms).toEqual({})
   })
 
   it('执行等待中切换 address 会解除提交锁并丢弃晚到响应', async () => {
     let resolveExecution!: (value: unknown) => void
     observeMock.mockResolvedValue({ ok: true, value: executableProjection() })
-    executeMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
+    batchExecuteMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
     useCollaborationHubStore.getState().setAddress(addressA)
     await useCollaborationHubStore.getState().refresh()
-    useCollaborationHubStore.getState().setExecutionForm({
+    useCollaborationHubStore.getState().setExecutionForm('xhbtr_1' as TaskRunId, {
       prompt: '旧会话任务',
       modifyPathsText: 'src/old.ts',
       createPathsText: '',
     })
-    useCollaborationHubStore.getState().reviewTaskExecution()
-    const pending = useCollaborationHubStore.getState().startNextTaskExecution()
+    useCollaborationHubStore.getState().toggleExecutionTaskSelection('xhbtr_2' as TaskRunId)
+    useCollaborationHubStore.getState().reviewExecutionBatch()
+    const pending = useCollaborationHubStore.getState().startExecutionBatch()
     await vi.waitFor(() => expect(useCollaborationHubStore.getState().submitting).toBe(true))
 
     useCollaborationHubStore.getState().setAddress(addressB)

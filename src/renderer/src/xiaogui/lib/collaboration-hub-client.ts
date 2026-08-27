@@ -48,10 +48,14 @@ import type {
 import type {
   XiaoguiTaskExecutionErrorCodeV1,
   XiaoguiTaskExecutionSafeErrorV1,
+  XiaoguiTaskExecutionStartBatchOutcomeV1,
+  XiaoguiTaskExecutionStartBatchRequestV1,
+  XiaoguiTaskExecutionStartBatchResultV1,
   XiaoguiTaskExecutionStartOutcomeV1,
   XiaoguiTaskExecutionStartRequestV1,
   XiaoguiTaskExecutionStartResultV1,
 } from '@shared/xiaogui-task-execution'
+import { XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 } from '@shared/xiaogui-task-execution'
 import type { TaskArtifactRefV1, TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 import { ipcClient } from '@renderer/lib/ipc-client'
@@ -759,6 +763,93 @@ export async function startTaskExecution(
     return { ok: false, error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' } }
   } catch {
     return { ok: false, error: { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' } }
+  }
+}
+
+function taskExecutionIpcFailureError(): XiaoguiTaskExecutionSafeErrorV1 {
+  return { code: 'INTERNAL', messageKey: 'xiaogui.execution.error.ipc', traceId: '' }
+}
+
+const TASK_RUN_M2B_KEYS = ['taskRunId', 'taskSpecId', 'taskKey', 'status', 'unavailableReason', 'attemptId']
+
+/**
+ * batch 专用严格 taskRun 校验：契约键集精确匹配 + 字段类型。
+ * 旧单任务路径沿用宽松的 isTaskRunM2B（非精确键），保持兼容不变。
+ */
+function isTaskRunM2BExact(value: unknown): value is TaskRunProjectionM2BV1 {
+  return isRecord(value) && Object.keys(value).every((key) => TASK_RUN_M2B_KEYS.includes(key)) && isTaskRunM2B(value)
+}
+
+/** batch 专用严格安全错误：仅 code/messageKey/traceId 三个键。 */
+function isTaskExecutionSafeErrorExact(value: unknown): value is XiaoguiTaskExecutionSafeErrorV1 {
+  return isRecord(value) && hasExactKeys(value, ['code', 'messageKey', 'traceId']) && isTaskExecutionSafeError(value)
+}
+
+/** batch 成功项载荷：仅 taskRun/attempt 精确键；attempt 复用现有精确校验，并校验二者归属一致。 */
+function isTaskExecutionBatchItemResult(value: unknown): value is XiaoguiTaskExecutionStartResultV1 {
+  if (!isRecord(value) || !hasExactKeys(value, ['taskRun', 'attempt'])) return false
+  if (!isTaskRunM2BExact(value.taskRun) || !isAttemptM2B(value.attempt)) return false
+  return (
+    value.attempt.taskRunId === value.taskRun.taskRunId &&
+    (value.taskRun.attemptId === undefined || value.taskRun.attemptId === value.attempt.attemptId)
+  )
+}
+
+/**
+ * 批量结果逐项校验（fail closed）：
+ * - 外层只接受 contractVersion + items 精确键集；
+ * - 逐项顺序与请求一致，成功项只允许 ok/taskRunId/value，失败项只允许 ok/taskRunId/error；
+ * - 成功载荷经 isTaskExecutionBatchItemResult 严格校验（taskRun/attempt 精确键、严格 taskRun、
+ *   精确 attempt）；失败载荷经 isTaskExecutionSafeErrorExact 严格校验；
+ * - 三层绑定：value.taskRun.taskRunId === item.taskRunId === request.items[index].taskRunId。
+ */
+function isTaskExecutionBatchResult(
+  value: unknown,
+  request: XiaoguiTaskExecutionStartBatchRequestV1,
+): value is XiaoguiTaskExecutionStartBatchResultV1 {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['contractVersion', 'items']) ||
+    value.contractVersion !== XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 ||
+    !Array.isArray(value.items) ||
+    value.items.length !== request.items.length
+  )
+    return false
+  return value.items.every((item, index) => {
+    if (!isRecord(item) || item.taskRunId !== request.items[index]!.taskRunId) return false
+    if (item.ok === true) {
+      return (
+        hasExactKeys(item, ['ok', 'taskRunId', 'value']) &&
+        isTaskExecutionBatchItemResult(item.value) &&
+        item.value.taskRun.taskRunId === item.taskRunId
+      )
+    }
+    if (item.ok === false) {
+      return hasExactKeys(item, ['ok', 'taskRunId', 'error']) && isTaskExecutionSafeErrorExact(item.error)
+    }
+    return false
+  })
+}
+
+/**
+ * 一次用户确认启动一批（1..2 个）READY 任务；逐项返回成功或安全错误。
+ * 请求只含公共 address/flowId 与明确的 taskRunId/prompt/files，不含内部版本或 actor。
+ * 顶层响应 fail closed：成功仅 ok/value 精确键，失败仅 ok/error 精确键。
+ */
+export async function startTaskExecutionBatch(
+  request: XiaoguiTaskExecutionStartBatchRequestV1,
+): Promise<XiaoguiTaskExecutionStartBatchOutcomeV1> {
+  try {
+    const res: unknown = await ipcClient.invoke('xiaogui.hub.execution.startBatch', request)
+    if (isRecord(res) && res.ok === true && hasExactKeys(res, ['ok', 'value']) && isTaskExecutionBatchResult(res.value, request)) {
+      return { ok: true, value: res.value }
+    }
+    if (isRecord(res) && res.ok === false && hasExactKeys(res, ['ok', 'error']) && isTaskExecutionSafeErrorExact(res.error)) {
+      return { ok: false, error: res.error }
+    }
+    return { ok: false, error: taskExecutionIpcFailureError() }
+  } catch {
+    return { ok: false, error: taskExecutionIpcFailureError() }
   }
 }
 

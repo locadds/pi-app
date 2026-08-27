@@ -27,7 +27,7 @@ import type { SessionItem } from '@renderer/stores/ui-store-types'
 
 const observeMock = vi.fn()
 const performMock = vi.fn()
-const executeMock = vi.fn()
+const batchExecuteMock = vi.fn()
 const submitDeliveryMock = vi.fn()
 const approveDeliveryMock = vi.fn()
 const returnDeliveryMock = vi.fn()
@@ -42,7 +42,7 @@ vi.mock('../lib/collaboration-hub-client', () => ({
   DELIVERY_CONTRACT_VERSION: 'm4d.v1',
   observeCollaborationHub: (address: HubAddressV1) => observeMock(address),
   performHubIntent: (address: HubAddressV1, request: unknown) => performMock(address, request),
-  startTaskExecution: (request: unknown) => executeMock(request),
+  startTaskExecutionBatch: (request: unknown) => batchExecuteMock(request),
   submitDeliverySelection: (address: HubAddressV1, request: unknown) => submitDeliveryMock(address, request),
   approveDeliveryGate: (address: HubAddressV1, request: unknown) => approveDeliveryMock(address, request),
   returnDeliveryBatch: (address: HubAddressV1, request: unknown) => returnDeliveryMock(address, request),
@@ -493,6 +493,61 @@ function confirmableProjection(address: HubAddressV1): SessionCollaborationProje
   }
 }
 
+/**
+ * 批量批准场景（生产可达）：maxParallelism=2、activeAttemptCount=0、availableSlots=2，
+ * t4/t5 两个未派发根任务 readiness 均为 READY（raw TaskRun 仍为 BLOCKED）→
+ * 主进程授予 execution.next.confirm，本批最多可勾选 2 个任务一次确认。
+ */
+function batchProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
+  const base = activeProjection(address)
+  const readyDepState = (n: number): TaskDependencyStateV1 => ({
+    version: 1,
+    taskRunId: `xhbtr_${n}` as TaskRunId,
+    state: 'READY',
+    dependencyTaskRunIds: [],
+    blockingTaskRunIds: [],
+    verifiedAncestorTaskChangeSetIds: [],
+  })
+  const spec = (n: number) => ({
+    taskSpecId: `xhbts_${n}` as TaskSpecId,
+    taskKey: `t${n}`,
+    title: `投影任务${['四', '五'][n - 4]}`,
+    dependsOn: [] as string[],
+    unavailableReason: 'AGENT_DISABLED_M2A' as const,
+  })
+  const executionReadiness: ExecutionReadinessSnapshotV1 = {
+    version: 1,
+    flowId: 'xhbf_flow1' as FlowId,
+    maxParallelism: 2,
+    activeAttemptCount: 0,
+    availableSlots: 2,
+    dependencyStates: [readyDepState(4), readyDepState(5)],
+    readyTaskRunIds: ['xhbtr_4' as TaskRunId, 'xhbtr_5' as TaskRunId],
+    capturedAt: '2026-08-18T00:00:01.000Z',
+  }
+  return {
+    ...base,
+    activeRevision: {
+      ...base.activeRevision!,
+      draft: {
+        objective: '目标X',
+        tasks: [
+          { taskKey: 't4', title: '投影任务四' },
+          { taskKey: 't5', title: '投影任务五' },
+        ],
+      },
+    },
+    taskSpecs: [spec(4), spec(5)],
+    taskRuns: [
+      { taskRunId: 'xhbtr_4' as TaskRunId, taskSpecId: 'xhbts_4' as TaskSpecId, taskKey: 't4', status: 'BLOCKED' },
+      { taskRunId: 'xhbtr_5' as TaskRunId, taskSpecId: 'xhbts_5' as TaskSpecId, taskKey: 't5', status: 'BLOCKED' },
+    ],
+    attempts: [],
+    executionReadiness,
+    availableActions: ['flow.cancel', 'execution.next.confirm'],
+  }
+}
+
 function deliveryProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
   const delivery: DeliveryBatchProjectionV1 = {
     batchId: 'xhbd_batch1' as DeliveryBatchProjectionV1['batchId'],
@@ -647,7 +702,7 @@ let uiSnapshot: ReturnType<typeof useUIStore.getState>
 beforeEach(() => {
   observeMock.mockReset()
   performMock.mockReset()
-  executeMock.mockReset()
+  batchExecuteMock.mockReset()
   submitDeliveryMock.mockReset()
   approveDeliveryMock.mockReset()
   returnDeliveryMock.mockReset()
@@ -905,59 +960,202 @@ describe('CollaborationHubPanel', () => {
     expect(screen.queryByRole('button', { name: /验证|任务变更集/ })).toBeNull()
   })
 
-  it('执行入口先本地核对零 IPC，最终确认只提交一次窄请求', async () => {
+  it('执行入口先本地核对零 IPC，一次确认真实调用 startBatch 一次且含两个明确 taskRunId', async () => {
     const address: HubAddressV1 = {
       projectId: scopeCoding.projectId,
       sessionKey: scopeCoding.sessionKey,
     }
     let resolveExecution!: (value: unknown) => void
-    observeMock.mockResolvedValue({ ok: true, value: executableProjection(address) })
-    executeMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
+    observeMock.mockResolvedValue({ ok: true, value: batchProjection(address) })
+    batchExecuteMock.mockReturnValue(new Promise((resolve) => (resolveExecution = resolve)))
     showSession(sessionWith('s-execution', scopeCoding))
     const user = userEvent.setup()
     render(<CollaborationHubPanel />)
 
-    await screen.findByTestId('hub-task-execution-edit')
-    await user.type(screen.getByLabelText('本次任务说明'), '完成当前任务')
-    await user.type(screen.getByLabelText('允许修改的已有文件'), 'src/a.ts')
-    await user.type(screen.getByLabelText('允许新建的文件'), 'src/new.ts')
-    await user.click(screen.getByRole('button', { name: '核对执行范围' }))
+    const edit = await screen.findByTestId('hub-task-execution-edit')
+    // 两个 READY 任务逐卡展示标题与依赖摘要，默认全部勾选
+    expect(edit).toHaveTextContent('投影任务四')
+    expect(edit).toHaveTextContent('投影任务五')
+    expect(edit).toHaveTextContent('无前置依赖')
+    const checkboxes = screen.getAllByRole('checkbox')
+    expect(checkboxes).toHaveLength(2)
+    for (const checkbox of checkboxes) expect(checkbox).toBeChecked()
 
-    expect(executeMock).not.toHaveBeenCalled()
+    await user.type(screen.getByLabelText('任务说明：投影任务四'), '完成任务四')
+    await user.type(screen.getByLabelText('允许修改的已有文件：投影任务四'), 'src/a.ts')
+    await user.type(screen.getByLabelText('任务说明：投影任务五'), '完成任务五')
+    await user.type(screen.getByLabelText('允许新建的文件：投影任务五'), 'src/new.ts')
+    await user.click(screen.getByRole('button', { name: '核对本批执行范围' }))
+
+    expect(batchExecuteMock).not.toHaveBeenCalled()
     const review = screen.getByTestId('hub-task-execution-review')
-    expect(review).toHaveTextContent('完成当前任务')
+    expect(review).toHaveTextContent('完成任务四')
+    expect(review).toHaveTextContent('完成任务五')
     expect(review).toHaveTextContent('src/a.ts')
     expect(review).toHaveTextContent('src/new.ts')
+    expect(review).toHaveTextContent('本批 2 个任务，最多并行 2 个')
     expect(review).toHaveTextContent('不能删除文件')
 
-    const confirm = screen.getByRole('button', { name: '确认并执行' })
+    const confirm = screen.getByRole('button', { name: '确认并执行本批' })
     await user.click(confirm)
     await user.click(confirm)
-    expect(executeMock).toHaveBeenCalledTimes(1)
-    expect(executeMock.mock.calls[0]![0]).toEqual({
+    expect(batchExecuteMock).toHaveBeenCalledTimes(1)
+    expect(batchExecuteMock.mock.calls[0]![0]).toEqual({
+      contractVersion: 'xiaogui.task-execution.batch.v1',
       address,
       flowId: 'xhbf_flow1',
-      prompt: '完成当前任务',
-      files: [
-        { operation: 'MODIFY', relativePath: 'src/a.ts' },
-        { operation: 'CREATE', relativePath: 'src/new.ts' },
+      items: [
+        { taskRunId: 'xhbtr_4', prompt: '完成任务四', files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }] },
+        { taskRunId: 'xhbtr_5', prompt: '完成任务五', files: [{ operation: 'CREATE', relativePath: 'src/new.ts' }] },
       ],
     })
 
     resolveExecution({
       ok: true,
       value: {
-        taskRun: {
-          taskRunId: 'xhbtr_3' as TaskRunId,
-          taskSpecId: 'xhbts_1' as TaskSpecId,
-          taskKey: 't1',
-          status: 'RUNNING',
-          attemptId: 'xhba_3' as AttemptId,
-        },
-        attempt: { attemptId: 'xhba_3' as AttemptId, taskRunId: 'xhbtr_3' as TaskRunId, status: 'RUNNING' },
+        contractVersion: 'xiaogui.task-execution.batch.v1',
+        items: [
+          {
+            ok: true,
+            taskRunId: 'xhbtr_4',
+            value: {
+              taskRun: {
+                taskRunId: 'xhbtr_4' as TaskRunId,
+                taskSpecId: 'xhbts_4' as TaskSpecId,
+                taskKey: 't4',
+                status: 'RUNNING',
+                attemptId: 'xhba_4' as AttemptId,
+              },
+              attempt: { attemptId: 'xhba_4' as AttemptId, taskRunId: 'xhbtr_4' as TaskRunId, status: 'RUNNING' },
+            },
+          },
+          {
+            ok: true,
+            taskRunId: 'xhbtr_5',
+            value: {
+              taskRun: {
+                taskRunId: 'xhbtr_5' as TaskRunId,
+                taskSpecId: 'xhbts_5' as TaskSpecId,
+                taskKey: 't5',
+                status: 'RUNNING',
+                attemptId: 'xhba_5' as AttemptId,
+              },
+              attempt: { attemptId: 'xhba_5' as AttemptId, taskRunId: 'xhbtr_5' as TaskRunId, status: 'RUNNING' },
+            },
+          },
+        ],
       },
     })
     await waitFor(() => expect(observeMock).toHaveBeenCalledTimes(2))
+  })
+
+  it('部分成功只清空成功项表单，失败项保留输入并显示对应安全错误', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    observeMock.mockResolvedValue({ ok: true, value: batchProjection(address) })
+    batchExecuteMock.mockResolvedValue({
+      ok: true,
+      value: {
+        contractVersion: 'xiaogui.task-execution.batch.v1',
+        items: [
+          {
+            ok: true,
+            taskRunId: 'xhbtr_4',
+            value: {
+              taskRun: {
+                taskRunId: 'xhbtr_4' as TaskRunId,
+                taskSpecId: 'xhbts_4' as TaskSpecId,
+                taskKey: 't4',
+                status: 'RUNNING',
+                attemptId: 'xhba_4' as AttemptId,
+              },
+              attempt: {
+                attemptId: 'xhba_4' as AttemptId,
+                taskRunId: 'xhbtr_4' as TaskRunId,
+                status: 'RUNNING',
+                runtimeSessionId: 'runtime-secret-batch',
+              },
+            },
+          },
+          {
+            ok: false,
+            taskRunId: 'xhbtr_5',
+            error: {
+              code: 'EXECUTION_IN_PROGRESS',
+              messageKey: 'xiaogui.execution.in_progress',
+              traceId: 'xhbet_00000000-0000-4000-8000-000000000000',
+            },
+          },
+        ],
+      },
+    })
+    showSession(sessionWith('s-partial', scopeCoding))
+    const user = userEvent.setup()
+    render(<CollaborationHubPanel />)
+
+    await screen.findByTestId('hub-task-execution-edit')
+    await user.type(screen.getByLabelText('任务说明：投影任务四'), '完成任务四')
+    await user.type(screen.getByLabelText('允许修改的已有文件：投影任务四'), 'src/a.ts')
+    await user.type(screen.getByLabelText('任务说明：投影任务五'), '保留输入五')
+    await user.type(screen.getByLabelText('允许修改的已有文件：投影任务五'), 'src/b.ts')
+    await user.click(screen.getByRole('button', { name: '核对本批执行范围' }))
+    await user.click(screen.getByRole('button', { name: '确认并执行本批' }))
+
+    await waitFor(() => expect(batchExecuteMock).toHaveBeenCalledTimes(1))
+    // 失败项回到编辑态：输入保留、对应任务卡片显示安全错误
+    const edit = await screen.findByTestId('hub-task-execution-edit')
+    expect(screen.getByLabelText('任务说明：投影任务五')).toHaveValue('保留输入五')
+    expect(edit).toHaveTextContent('错误 EXECUTION_IN_PROGRESS：已有任务正在准备或执行')
+    // 成功项表单已清空并移出选择
+    expect(screen.queryByLabelText('任务说明：投影任务四')).toBeNull()
+    // 不展示私有运行时信息与内部标识
+    expect(edit.textContent).not.toContain('runtime-secret-batch')
+    expect(edit.textContent).not.toContain('xhba_4')
+    expect(edit.textContent).not.toContain('xhbtr_')
+  })
+
+  it('两个任务路径大小写/斜杠别名重叠时本地拦截，不发起批量 IPC', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    observeMock.mockResolvedValue({ ok: true, value: batchProjection(address) })
+    showSession(sessionWith('s-conflict', scopeCoding))
+    const user = userEvent.setup()
+    render(<CollaborationHubPanel />)
+
+    await screen.findByTestId('hub-task-execution-edit')
+    await user.type(screen.getByLabelText('任务说明：投影任务四'), '完成任务四')
+    await user.type(screen.getByLabelText('允许修改的已有文件：投影任务四'), 'SRC/a.ts')
+    await user.type(screen.getByLabelText('任务说明：投影任务五'), '完成任务五')
+    await user.type(screen.getByLabelText('允许修改的已有文件：投影任务五'), 'src\\a.ts')
+    await user.click(screen.getByRole('button', { name: '核对本批执行范围' }))
+
+    expect(await screen.findByText('两个任务的文件范围重叠：src\\a.ts')).toBeInTheDocument()
+    expect(screen.queryByTestId('hub-task-execution-review')).toBeNull()
+    expect(batchExecuteMock).not.toHaveBeenCalled()
+  })
+
+  it('availableSlots 为 0 时不显示执行确认区', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    const full = batchProjection(address)
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: {
+        ...full,
+        executionReadiness: { ...full.executionReadiness!, activeAttemptCount: 2, availableSlots: 0 },
+      },
+    })
+    showSession(sessionWith('s-no-slot', scopeCoding))
+    render(<CollaborationHubPanel />)
+
+    await screen.findByTestId('hub-active-plan')
+    expect(screen.queryByTestId('hub-task-execution')).toBeNull()
   })
 
   it('任务按状态分组展示，空组不出现；分组与徽标以实时 readiness 为权威', async () => {
@@ -1038,23 +1236,32 @@ describe('CollaborationHubPanel', () => {
     expect(view.textContent).not.toContain(`sha256:${'e'.repeat(64)}`)
   })
 
-  it('可用槽场景显示确认区与本批摘要，一次确认本批只提交一次窄请求', async () => {
+  it('可用槽场景显示确认区与本批摘要，勾选后一次确认本批只提交一次批量请求', async () => {
     const address: HubAddressV1 = {
       projectId: scopeCoding.projectId,
       sessionKey: scopeCoding.sessionKey,
     }
     observeMock.mockResolvedValue({ ok: true, value: confirmableProjection(address) })
-    executeMock.mockResolvedValue({
+    batchExecuteMock.mockResolvedValue({
       ok: true,
       value: {
-        taskRun: {
-          taskRunId: 'xhbtr_4' as TaskRunId,
-          taskSpecId: 'xhbts_4' as TaskSpecId,
-          taskKey: 't4',
-          status: 'RUNNING',
-          attemptId: 'xhba_4' as AttemptId,
-        },
-        attempt: { attemptId: 'xhba_4' as AttemptId, taskRunId: 'xhbtr_4' as TaskRunId, status: 'RUNNING' },
+        contractVersion: 'xiaogui.task-execution.batch.v1',
+        items: [
+          {
+            ok: true,
+            taskRunId: 'xhbtr_4',
+            value: {
+              taskRun: {
+                taskRunId: 'xhbtr_4' as TaskRunId,
+                taskSpecId: 'xhbts_4' as TaskSpecId,
+                taskKey: 't4',
+                status: 'RUNNING',
+                attemptId: 'xhba_4' as AttemptId,
+              },
+              attempt: { attemptId: 'xhba_4' as AttemptId, taskRunId: 'xhbtr_4' as TaskRunId, status: 'RUNNING' },
+            },
+          },
+        ],
       },
     })
     showSession(sessionWith('s-wave', scopeCoding))
@@ -1064,8 +1271,7 @@ describe('CollaborationHubPanel', () => {
     const section = await screen.findByTestId('hub-task-execution')
     expect(section).toHaveTextContent('执行本批可执行任务')
     expect(section).toHaveTextContent('同一项目最多并行执行 2 个任务')
-    expect(section).toHaveTextContent('文件范围重叠的任务会串行排队')
-    expect(section).toHaveTextContent('由主进程按确定性规则选择')
+    expect(section).toHaveTextContent('勾选本批要执行的就绪任务')
 
     // 实时 readiness 给出并行上限/执行中/空位；wave 只贡献「本批新调度」，
     // wave.activeAttemptIds 不得被当成新调度数量
@@ -1082,20 +1288,27 @@ describe('CollaborationHubPanel', () => {
     expect(screen.getByTestId('hub-taskrun-status-t4')).toHaveTextContent('就绪')
     expect(screen.getByTestId('hub-taskrun-status-t4')).not.toHaveTextContent('阻塞')
 
-    // 核对执行范围零 IPC；确认并执行只提交一次窄请求
-    await user.type(screen.getByLabelText('本次任务说明'), '完成本批任务')
-    await user.type(screen.getByLabelText('允许修改的已有文件'), 'src/a.ts')
-    await user.click(screen.getByRole('button', { name: '核对执行范围' }))
-    expect(executeMock).not.toHaveBeenCalled()
-    const confirm = screen.getByRole('button', { name: '确认并执行' })
+    // 只剩 1 个槽位：仅 READY 的 t4 可勾选且默认已勾选
+    const checkboxes = screen.getAllByRole('checkbox')
+    expect(checkboxes).toHaveLength(1)
+    expect(checkboxes[0]).toBeChecked()
+
+    // 核对本批执行范围零 IPC；确认并执行本批只提交一次批量请求
+    await user.type(screen.getByLabelText('任务说明：投影任务四'), '完成本批任务')
+    await user.type(screen.getByLabelText('允许修改的已有文件：投影任务四'), 'src/a.ts')
+    await user.click(screen.getByRole('button', { name: '核对本批执行范围' }))
+    expect(batchExecuteMock).not.toHaveBeenCalled()
+    const review = screen.getByTestId('hub-task-execution-review')
+    expect(review).toHaveTextContent('本批 1 个任务，最多并行 2 个')
+    const confirm = screen.getByRole('button', { name: '确认并执行本批' })
     await user.click(confirm)
     await user.click(confirm)
-    await waitFor(() => expect(executeMock).toHaveBeenCalledTimes(1))
-    expect(executeMock.mock.calls[0]![0]).toEqual({
+    await waitFor(() => expect(batchExecuteMock).toHaveBeenCalledTimes(1))
+    expect(batchExecuteMock.mock.calls[0]![0]).toEqual({
+      contractVersion: 'xiaogui.task-execution.batch.v1',
       address,
       flowId: 'xhbf_flow1',
-      prompt: '完成本批任务',
-      files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }],
+      items: [{ taskRunId: 'xhbtr_4', prompt: '完成本批任务', files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }] }],
     })
   })
 

@@ -12,7 +12,10 @@ import type {
   SessionCollaborationProjectionM2BV1,
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
-import type { XiaoguiTaskExecutionStartRequestV1 } from '@shared/xiaogui-task-execution'
+import type {
+  XiaoguiTaskExecutionStartBatchRequestV1,
+  XiaoguiTaskExecutionStartRequestV1,
+} from '@shared/xiaogui-task-execution'
 import type { RuntimeEventV1, RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
 
 import type { CollaborationHubApplicationV1 } from './application'
@@ -179,6 +182,140 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     expect(scheduleIntents).toHaveLength(2)
     expect(scheduleIntents[0].executionInputDigest).not.toBe(scheduleIntents[1].executionInputDigest)
     expect(scheduleIntents[0].authorizationScope?.pathTokens).not.toEqual(scheduleIntents[1].authorizationScope?.pathTokens)
+    await orchestrator.close()
+  })
+
+  it('binds a targeted confirmation to that READY TaskRun instead of silently selecting another one', async () => {
+    const events: string[] = []
+    const hub = parallelHub(events)
+    const orchestrator = await createOrchestrator(hub.application, events)
+
+    await expect(orchestrator.start({
+      ...request({ relativePath: 'src/second.ts' }),
+      targetTaskRunId: 'run-second' as TaskRunId,
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        taskRun: { taskRunId: 'run-second' },
+        attempt: { attemptId: 'attempt-second', taskRunId: 'run-second' },
+      },
+    })
+    expect(hub.systemCommands().find((command) => command.intent.type === 'system.schedule')).toMatchObject({
+      intent: { targetTaskRunId: 'run-second' },
+    })
+    await orchestrator.close()
+  })
+
+  it('starts two targeted READY tasks from one batch confirmation and reports their distinct Attempts in request order', async () => {
+    const events: string[] = []
+    const hub = parallelHub(events)
+    const orchestrator = await createOrchestrator(hub.application, events)
+
+    await expect(orchestrator.startBatch(batchRequest())).resolves.toMatchObject({
+      ok: true,
+      value: {
+        contractVersion: 'xiaogui.task-execution.batch.v1',
+        items: [
+          { ok: true, taskRunId: 'run-first', value: { attempt: { attemptId: 'attempt-first' } } },
+          { ok: true, taskRunId: 'run-second', value: { attempt: { attemptId: 'attempt-second' } } },
+        ],
+      },
+    })
+    expect(hub.systemCommands().filter((command) => command.intent.type === 'system.schedule')).toHaveLength(2)
+    await orchestrator.close()
+  })
+
+  it('starts the second batch item while the first runtime dispatch is still pending', async () => {
+    const events: string[] = []
+    const hub = parallelHub(events, { blockDispatchTaskRunId: 'run-first' as TaskRunId })
+    const orchestrator = await createOrchestrator(hub.application, events)
+
+    const pendingBatch = orchestrator.startBatch(batchRequest())
+    await hub.waitForBlockedDispatch()
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const secondReachedDispatchBeforeRelease = await Promise.race([
+      hub.waitForOtherDispatch().then(() => true),
+      new Promise<false>((resolve) => {
+        timeoutId = setTimeout(() => resolve(false), 100)
+      }),
+    ])
+    if (timeoutId) clearTimeout(timeoutId)
+    hub.releaseBlockedDispatch()
+    const outcome = await pendingBatch
+    await orchestrator.close()
+
+    expect(secondReachedDispatchBeforeRelease).toBe(true)
+    expect(outcome).toMatchObject({
+      ok: true,
+      value: {
+        items: [
+          { ok: true, taskRunId: 'run-first', value: { attempt: { attemptId: 'attempt-first' } } },
+          { ok: true, taskRunId: 'run-second', value: { attempt: { attemptId: 'attempt-second' } } },
+        ],
+      },
+    })
+  })
+
+  it.each([
+    {
+      name: 'duplicate TaskRuns',
+      hubOptions: {},
+      mutate: (input: XiaoguiTaskExecutionStartBatchRequestV1) => ({
+        ...input,
+        items: [input.items[0], { ...input.items[1]!, taskRunId: input.items[0].taskRunId }] as XiaoguiTaskExecutionStartBatchRequestV1['items'],
+      }),
+    },
+    {
+      name: 'insufficient project slots',
+      hubOptions: { availableSlots: 1 },
+      mutate: (input: XiaoguiTaskExecutionStartBatchRequestV1) => input,
+    },
+    {
+      name: 'overlapping file scopes',
+      hubOptions: {},
+      mutate: (input: XiaoguiTaskExecutionStartBatchRequestV1) => ({
+        ...input,
+        items: [input.items[0], { ...input.items[1]!, files: [{ operation: 'MODIFY' as const, relativePath: 'SRC\\FIRST.TS' }] }] as XiaoguiTaskExecutionStartBatchRequestV1['items'],
+      }),
+    },
+    {
+      name: 'a non-READY target',
+      hubOptions: { readyTaskRunIds: ['run-first' as TaskRunId] },
+      mutate: (input: XiaoguiTaskExecutionStartBatchRequestV1) => input,
+    },
+  ])('rejects $name before dispatching any batch item', async ({ hubOptions, mutate }) => {
+    const events: string[] = []
+    const hub = parallelHub(events, hubOptions)
+    const orchestrator = await createOrchestrator(hub.application, events)
+
+    await expect(orchestrator.startBatch(mutate(batchRequest()))).resolves.toMatchObject({
+      ok: true,
+      value: {
+        items: [
+          { ok: false, taskRunId: expect.any(String), error: { code: expect.any(String) } },
+          { ok: false, taskRunId: expect.any(String), error: { code: expect.any(String) } },
+        ],
+      },
+    })
+    expect(hub.systemCommands().filter((command) => command.intent.type === 'system.schedule')).toHaveLength(0)
+    await orchestrator.close()
+  })
+
+  it('continues with an unrelated batch item when an earlier item fails during startup', async () => {
+    const events: string[] = []
+    const hub = parallelHub(events, { failPrepareTaskRunId: 'run-first' as TaskRunId })
+    const orchestrator = await createOrchestrator(hub.application, events)
+
+    await expect(orchestrator.startBatch(batchRequest())).resolves.toMatchObject({
+      ok: true,
+      value: {
+        items: [
+          { ok: false, taskRunId: 'run-first', error: { code: 'INTERNAL' } },
+          { ok: true, taskRunId: 'run-second', value: { attempt: { attemptId: 'attempt-second' } } },
+        ],
+      },
+    })
+    expect(hub.systemCommands().filter((command) => command.intent.type === 'system.schedule')).toHaveLength(2)
     await orchestrator.close()
   })
 
@@ -560,7 +697,15 @@ function terminalThenNextHub(events: string[]) {
   }
 }
 
-function parallelHub(events: string[]) {
+function parallelHub(
+  events: string[],
+  options: {
+    availableSlots?: number
+    readyTaskRunIds?: readonly TaskRunId[]
+    failPrepareTaskRunId?: TaskRunId
+    blockDispatchTaskRunId?: TaskRunId
+  } = {},
+) {
   const tasks = [
     {
       taskSpecId: 'xhbts_first' as never,
@@ -578,6 +723,12 @@ function parallelHub(events: string[]) {
     },
   ] as const
   const attemptStatuses = new Map<AttemptId, 'WORKSPACE_PREPARING' | 'READY' | 'RUNNING'>()
+  let releaseBlockedDispatch!: () => void
+  const blockedDispatchGate = new Promise<void>((resolve) => { releaseBlockedDispatch = resolve })
+  let signalBlockedDispatch!: () => void
+  const blockedDispatchEntered = new Promise<void>((resolve) => { signalBlockedDispatch = resolve })
+  let signalOtherDispatch!: () => void
+  const otherDispatchEntered = new Promise<void>((resolve) => { signalOtherDispatch = resolve })
 
   const projection = (): SessionCollaborationProjectionM2BV1 => ({
     kind: 'SESSION_COLLABORATION_PROJECTION',
@@ -617,6 +768,25 @@ function parallelHub(events: string[]) {
         : []
     }),
     history: [],
+    executionReadiness: {
+      version: 1,
+      flowId: FLOW_ID,
+      maxParallelism: 2,
+      activeAttemptCount: attemptStatuses.size,
+      availableSlots: options.availableSlots ?? Math.max(0, 2 - attemptStatuses.size),
+      dependencyStates: tasks.map((task) => ({
+        version: 1 as const,
+        taskRunId: task.taskRunId,
+        state: attemptStatuses.has(task.attemptId) ? 'IN_FLIGHT' as const : 'READY' as const,
+        dependencyTaskRunIds: [],
+        blockingTaskRunIds: [],
+        verifiedAncestorTaskChangeSetIds: [],
+      })),
+      readyTaskRunIds: options.readyTaskRunIds ?? tasks
+        .filter((task) => !attemptStatuses.has(task.attemptId))
+        .map((task) => task.taskRunId),
+      capturedAt: '2026-08-28T00:00:00.000Z',
+    },
     availableActions: attemptStatuses.size < tasks.length
       ? ['flow.cancel', 'execution.next.confirm']
       : ['flow.cancel'],
@@ -625,7 +795,11 @@ function parallelHub(events: string[]) {
   const executeSystem = vi.fn(async (command: HubSystemCommandRequestM2BV1) => {
     switch (command.intent.type) {
       case 'system.schedule': {
-        const task = tasks.find((candidate) => !attemptStatuses.has(candidate.attemptId))
+        const targetTaskRunId = command.intent.targetTaskRunId
+        const task = tasks.find((candidate) =>
+          !attemptStatuses.has(candidate.attemptId) &&
+          (!targetTaskRunId || candidate.taskRunId === targetTaskRunId),
+        )
         if (!task) throw new Error('no schedulable task')
         attemptStatuses.set(task.attemptId, 'WORKSPACE_PREPARING')
         events.push(`schedule:${task.attemptId}`)
@@ -642,6 +816,13 @@ function parallelHub(events: string[]) {
         const attemptId = command.intent.attemptId
         const task = tasks.find((candidate) => candidate.attemptId === attemptId)
         if (!task || attemptStatuses.get(task.attemptId) !== 'READY') throw new Error('unexpected dispatch')
+        events.push(`dispatch-enter:${task.attemptId}`)
+        if (task.taskRunId === options.blockDispatchTaskRunId) {
+          signalBlockedDispatch()
+          await blockedDispatchGate
+        } else {
+          signalOtherDispatch()
+        }
         attemptStatuses.set(task.attemptId, 'RUNNING')
         events.push(`dispatch:${task.attemptId}`)
         return { ok: true as const, value: {
@@ -665,6 +846,9 @@ function parallelHub(events: string[]) {
       if (!task || attemptStatuses.get(task.attemptId) !== 'WORKSPACE_PREPARING') {
         throw new Error('unexpected prepare')
       }
+      if (task.taskRunId === options.failPrepareTaskRunId) {
+        throw new Error('test prepare failure')
+      }
       attemptStatuses.set(task.attemptId, 'READY')
       events.push(`prepare:${task.attemptId}`)
       return { ok: true as const, value: {
@@ -681,6 +865,9 @@ function parallelHub(events: string[]) {
   return {
     application,
     systemCommands: () => executeSystem.mock.calls.map(([command]) => command),
+    waitForBlockedDispatch: () => blockedDispatchEntered,
+    waitForOtherDispatch: () => otherDispatchEntered,
+    releaseBlockedDispatch: () => releaseBlockedDispatch(),
   }
 }
 
@@ -825,6 +1012,26 @@ function request(file: { relativePath: string } = { relativePath: 'src/task.ts' 
     flowId: FLOW_ID,
     prompt: '完成当前任务',
     files: [{ operation: 'MODIFY', relativePath: file.relativePath }],
+  }
+}
+
+function batchRequest(): XiaoguiTaskExecutionStartBatchRequestV1 {
+  return {
+    contractVersion: 'xiaogui.task-execution.batch.v1',
+    address: ADDRESS,
+    flowId: FLOW_ID,
+    items: [
+      {
+        taskRunId: 'run-first' as TaskRunId,
+        prompt: '完成第一项',
+        files: [{ operation: 'MODIFY', relativePath: 'src/first.ts' }],
+      },
+      {
+        taskRunId: 'run-second' as TaskRunId,
+        prompt: '完成第二项',
+        files: [{ operation: 'MODIFY', relativePath: 'src/second.ts' }],
+      },
+    ],
   }
 }
 

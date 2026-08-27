@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
     application: { generation: number }
     close: ReturnType<typeof vi.fn>
     stageAttemptInput: ReturnType<typeof vi.fn>
-    taskExecution: { start: ReturnType<typeof vi.fn> }
+    taskExecution: { start: ReturnType<typeof vi.fn>; startBatch: ReturnType<typeof vi.fn> }
     delivery: {
       selectTasks: ReturnType<typeof vi.fn>
       approveGate: ReturnType<typeof vi.fn>
@@ -54,6 +54,20 @@ mocks.createRuntimeComposition.mockImplementation(() => {
         value: {
           taskRun: { taskRunId: 'xhbtr_task', taskSpecId: 'xhbts_task', taskKey: 'task', status: 'RUNNING' },
           attempt: { attemptId: 'xhba_attempt', taskRunId: 'xhbtr_task', status: 'RUNNING' },
+        },
+      })),
+      startBatch: vi.fn(async (request) => ({
+        ok: true,
+        value: {
+          contractVersion: 'xiaogui.task-execution.batch.v1',
+          items: request.items.map((item: { taskRunId: string }, index: number) => ({
+            ok: true,
+            taskRunId: item.taskRunId,
+            value: {
+              taskRun: { taskRunId: item.taskRunId, taskSpecId: `xhbts_${index}`, taskKey: `task-${index}`, status: 'RUNNING' },
+              attempt: { attemptId: `xhba_${index}`, taskRunId: item.taskRunId, status: 'RUNNING' },
+            },
+          })),
         },
       })),
     },
@@ -282,6 +296,41 @@ describe('M2A collaboration hub IPC adapter', () => {
       })
     }
     expect(taskExecution.start).toHaveBeenCalledOnce()
+  })
+
+  it('registers a versioned batch execution IPC method and forwards only its narrow 1..2 item shape', async () => {
+    registerCollaborationHubHandlers()
+    const startBatch = mocks.handlers.get('ipc:xiaogui.hub.execution.startBatch')!
+    const taskExecution = mocks.runtimeCompositions[0]!.taskExecution
+    const valid = {
+      contractVersion: 'xiaogui.task-execution.batch.v1',
+      address: ADDRESS,
+      flowId: 'xhbf_flow',
+      items: [
+        { taskRunId: 'xhbtr_a', prompt: '完成 A', files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }] },
+        { taskRunId: 'xhbtr_b', prompt: '完成 B', files: [{ operation: 'CREATE', relativePath: 'src/b.ts' }] },
+      ],
+    }
+
+    await expect(startBatch(valid)).resolves.toMatchObject({
+      ok: true,
+      value: { contractVersion: 'xiaogui.task-execution.batch.v1', items: [{ taskRunId: 'xhbtr_a' }, { taskRunId: 'xhbtr_b' }] },
+    })
+    expect(taskExecution.startBatch).toHaveBeenCalledOnce()
+
+    for (const payload of [
+      { ...valid, contractVersion: 'xiaogui.task-execution.batch.v2' },
+      { ...valid, items: [] },
+      { ...valid, items: [...valid.items, valid.items[0]] },
+      { ...valid, items: [{ ...valid.items[0], adapterId: 'kimi-acp' }] },
+      { ...valid, items: [{ ...valid.items[0], files: [{ operation: 'MODIFY', relativePath: '../outside.ts' }] }] },
+    ]) {
+      await expect(startBatch(payload)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'EXECUTION_INPUT_INVALID' },
+      })
+    }
+    expect(taskExecution.startBatch).toHaveBeenCalledOnce()
   })
 
   it('matches Direct outputs for the same observe/perform/readEvents fixture', async () => {

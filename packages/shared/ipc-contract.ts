@@ -39,6 +39,8 @@ import type {
   XiaoguiKimiRuntimeStatusSnapshotV1,
 } from './xiaogui-kimi-runtime'
 import type {
+  XiaoguiTaskExecutionStartBatchOutcomeV1,
+  XiaoguiTaskExecutionStartBatchRequestV1,
   XiaoguiTaskExecutionStartOutcomeV1,
   XiaoguiTaskExecutionStartRequestV1,
 } from './xiaogui-task-execution'
@@ -353,6 +355,10 @@ export interface IpcMethodMap {
   'xiaogui.hub.execution.start': {
     request: XiaoguiTaskExecutionStartRequestV1
     response: XiaoguiTaskExecutionStartOutcomeV1
+  }
+  'xiaogui.hub.execution.startBatch': {
+    request: XiaoguiTaskExecutionStartBatchRequestV1
+    response: XiaoguiTaskExecutionStartBatchOutcomeV1
   }
   'xiaogui.hub.perform': {
     request: HubPerformIpcRequestV1

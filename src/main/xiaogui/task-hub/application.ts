@@ -531,6 +531,9 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       tasks: store.schedulerTasks(request.intent.flowId),
       attempts: store.schedulerAttempts(address.projectId),
       requestedAuthorizationPathTokens: authorizationScope.pathTokens,
+      ...(request.intent.targetTaskRunId
+        ? { requestedTaskRunId: request.intent.targetTaskRunId }
+        : {}),
       now,
     })
     if (!planned.selectedTaskRunId) return systemError('ILLEGAL_TRANSITION', { reason: 'NO_ELIGIBLE_WAVE_TASK' })

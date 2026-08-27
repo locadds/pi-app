@@ -11,9 +11,14 @@ import type {
   TaskFileAuthorizationScopeV1,
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
+import { XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 } from '@shared/xiaogui-task-execution'
 import type {
+  XiaoguiTaskExecutionStartBatchItemOutcomeV1,
+  XiaoguiTaskExecutionStartBatchOutcomeV1,
+  XiaoguiTaskExecutionStartBatchRequestV1,
   XiaoguiTaskExecutionErrorCodeV1,
   XiaoguiTaskExecutionFileSelectionV1,
+  XiaoguiTaskExecutionSafeErrorV1,
   XiaoguiTaskExecutionStartOutcomeV1,
   XiaoguiTaskExecutionStartRequestV1,
   XiaoguiTaskExecutionStartResultV1,
@@ -50,6 +55,7 @@ interface ExecutionSagaRowV1 {
   project_id: HubAddressV1['projectId']
   session_key: HubAddressV1['sessionKey']
   flow_id: FlowId
+  target_task_run_id: TaskRunId | null
   input_digest: string
   prompt_blob: Uint8Array | null
   grants_json: string | null
@@ -62,9 +68,16 @@ interface ExecutionSagaRowV1 {
 interface CanonicalExecutionInputV1 {
   readonly address: HubAddressV1
   readonly flowId: FlowId
+  readonly targetTaskRunId?: TaskRunId
   readonly prompt: string
   readonly files: readonly XiaoguiTaskExecutionFileSelectionV1[]
   readonly inputDigest: string
+}
+
+interface CanonicalBatchExecutionInputV1 {
+  readonly address: HubAddressV1
+  readonly flowId: FlowId
+  readonly items: readonly (CanonicalExecutionInputV1 & { readonly targetTaskRunId: TaskRunId })[]
 }
 
 export interface TaskExecutionInputStageV1 {
@@ -127,6 +140,61 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     }
   }
 
+  async startBatch(
+    input: XiaoguiTaskExecutionStartBatchRequestV1,
+  ): Promise<XiaoguiTaskExecutionStartBatchOutcomeV1> {
+    if (this.closed) return batchExecutionError('INTERNAL')
+    const canonical = canonicalBatchExecutionInput(input)
+    if (!canonical.ok) return canonical.outcome
+    await this.recover()
+    if (this.closed) return batchExecutionError('INTERNAL')
+
+    const projection = await this.options.application.observeM2B(canonical.value.address)
+    if (!projection.ok) {
+      return rejectedBatch(canonical.value.items, 'SESSION_SCOPE_MISMATCH')
+    }
+    const preflightError = batchPreflightError(canonical.value, projection.value)
+    if (preflightError) return rejectedBatch(canonical.value.items, preflightError)
+
+    // Resolve every private file selection before the first schedule write. A
+    // later invalid item therefore cannot leave an earlier item dispatched.
+    try {
+      for (const item of canonical.value.items) {
+        await this.options.fileScopeResolver.resolveApprovedFiles(
+          canonical.value.address.projectId,
+          item.files,
+        )
+      }
+    } catch {
+      return rejectedBatch(canonical.value.items, 'EXECUTION_INPUT_INVALID')
+    }
+
+    const items: XiaoguiTaskExecutionStartBatchItemOutcomeV1[] = await Promise.all(
+      canonical.value.items.map(async (item) => {
+        let outcome: XiaoguiTaskExecutionStartOutcomeV1
+        try {
+          outcome = await this.start({
+            address: item.address,
+            flowId: item.flowId,
+            targetTaskRunId: item.targetTaskRunId,
+            prompt: item.prompt,
+            files: item.files,
+          })
+        } catch {
+          outcome = executionError('INTERNAL')
+        }
+        return { taskRunId: item.targetTaskRunId, ...outcome }
+      }),
+    )
+    return {
+      ok: true,
+      value: {
+        contractVersion: XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1,
+        items,
+      },
+    }
+  }
+
   recover(): Promise<void> {
     if (this.closed) return Promise.resolve()
     this.recovery ??= this.recoverOnce()
@@ -163,6 +231,10 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     if (existing) {
       return this.run(existing, false)
     }
+    if (
+      input.targetTaskRunId &&
+      !isReadyTarget(projection.value, input.flowId, input.targetTaskRunId)
+    ) return executionError('FLOW_NOT_READY')
     if (!projection.value.availableActions.includes('execution.next.confirm')) {
       return executionError(this.saga.hasActiveFlow(input.address, input.flowId)
         ? 'EXECUTION_IN_PROGRESS'
@@ -271,6 +343,9 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
         intent: {
           type: 'system.schedule',
           flowId: operation.flow_id,
+          ...(operation.target_task_run_id
+            ? { targetTaskRunId: operation.target_task_run_id }
+            : {}),
           authorizationScope: authorizationScope(privateGrants(operation)),
           executionInputDigest: operation.input_digest as TaskFileAuthorizationScopeV1['scopeDigest'],
         },
@@ -667,7 +742,7 @@ class SqliteTaskExecutionSagaStoreV1 {
   activeByInput(address: HubAddressV1, flowId: FlowId, inputDigest: string): ExecutionSagaRowV1 | undefined {
     return this.db
       .prepare(`
-        select operation_id, project_id, session_key, flow_id, input_digest,
+        select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
                prompt_blob, grants_json, phase, task_run_id, attempt_id, last_safe_code
           from task_execution_sagas
          where project_id = ? and session_key = ? and flow_id = ? and input_digest = ?
@@ -680,7 +755,7 @@ class SqliteTaskExecutionSagaStoreV1 {
   activeOperations(): ExecutionSagaRowV1[] {
     return this.db
       .prepare(`
-        select operation_id, project_id, session_key, flow_id, input_digest,
+        select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
                prompt_blob, grants_json, phase, task_run_id, attempt_id, last_safe_code
           from task_execution_sagas
          where phase not in ('FAILED', 'SETTLED')
@@ -703,7 +778,7 @@ class SqliteTaskExecutionSagaStoreV1 {
   byId(operationId: string): ExecutionSagaRowV1 | undefined {
     return this.db
       .prepare(`
-        select operation_id, project_id, session_key, flow_id, input_digest,
+        select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
                prompt_blob, grants_json, phase, task_run_id, attempt_id, last_safe_code
           from task_execution_sagas where operation_id = ?
       `)
@@ -725,15 +800,16 @@ class SqliteTaskExecutionSagaStoreV1 {
       const now = this.now()
       this.db.prepare(`
         insert into task_execution_sagas (
-          operation_id, project_id, session_key, flow_id, input_digest,
+          operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
           prompt_blob, grants_json, phase, task_run_id, attempt_id,
           last_safe_code, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, 'ACCEPTED', null, null, null, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, 'ACCEPTED', null, null, null, ?, ?)
       `).run(
         operationId,
         input.address.projectId,
         input.address.sessionKey,
         input.flowId,
+        input.targetTaskRunId ?? null,
         input.inputDigest,
         Buffer.from(input.prompt, 'utf8'),
         JSON.stringify(grants),
@@ -793,6 +869,7 @@ class SqliteTaskExecutionSagaStoreV1 {
         project_id text not null,
         session_key text not null,
         flow_id text not null,
+        target_task_run_id text,
         input_digest text not null,
         prompt_blob blob,
         grants_json text,
@@ -808,6 +885,12 @@ class SqliteTaskExecutionSagaStoreV1 {
         on task_execution_sagas(project_id, session_key, flow_id, input_digest)
         where phase not in ('FAILED', 'SETTLED');
     `)
+    const columns = this.db
+      .prepare('pragma table_info(task_execution_sagas)')
+      .all() as unknown as Array<{ name: string }>
+    if (!columns.some((column) => column.name === 'target_task_run_id')) {
+      this.db.exec('alter table task_execution_sagas add column target_task_run_id text')
+    }
   }
 }
 
@@ -821,7 +904,10 @@ function canonicalExecutionInput(
   if (
     typeof input !== 'object' ||
     input === null ||
-    !isExactKeySet(input as unknown as Record<string, unknown>, ['address', 'flowId', 'prompt', 'files']) ||
+    !(
+      isExactKeySet(input as unknown as Record<string, unknown>, ['address', 'flowId', 'prompt', 'files']) ||
+      isExactKeySet(input as unknown as Record<string, unknown>, ['address', 'flowId', 'targetTaskRunId', 'prompt', 'files'])
+    ) ||
     typeof input.address !== 'object' ||
     input.address === null ||
     !isExactKeySet(input.address as unknown as Record<string, unknown>, ['projectId', 'sessionKey']) ||
@@ -831,6 +917,12 @@ function canonicalExecutionInput(
     input.flowId.length === 0 ||
     input.flowId.length > 256 ||
     input.flowId !== input.flowId.trim() ||
+    (input.targetTaskRunId !== undefined && (
+      typeof input.targetTaskRunId !== 'string' ||
+      input.targetTaskRunId.length === 0 ||
+      input.targetTaskRunId.length > 256 ||
+      input.targetTaskRunId !== input.targetTaskRunId.trim()
+    )) ||
     typeof input.prompt !== 'string' ||
     input.prompt.trim().length === 0 ||
     Buffer.byteLength(input.prompt, 'utf8') > PRIVATE_RUNTIME_PAYLOAD_MAX_BYTES ||
@@ -861,6 +953,7 @@ function canonicalExecutionInput(
   const inputDigest = digestJson({
     address: input.address,
     flowId: input.flowId,
+    ...(input.targetTaskRunId ? { targetTaskRunId: input.targetTaskRunId } : {}),
     promptDigest: digestBytes(Buffer.from(input.prompt, 'utf8')),
     files: canonicalFiles,
   })
@@ -869,11 +962,113 @@ function canonicalExecutionInput(
     value: {
       address: input.address,
       flowId: input.flowId,
+      ...(input.targetTaskRunId ? { targetTaskRunId: input.targetTaskRunId } : {}),
       prompt: input.prompt,
       files: canonicalFiles,
       inputDigest,
     },
   }
+}
+
+function canonicalBatchExecutionInput(
+  input: XiaoguiTaskExecutionStartBatchRequestV1,
+):
+  | { ok: true; value: CanonicalBatchExecutionInputV1 }
+  | { ok: false; outcome: XiaoguiTaskExecutionStartBatchOutcomeV1 } {
+  if (
+    typeof input !== 'object' ||
+    input === null ||
+    !isExactKeySet(
+      input as unknown as Record<string, unknown>,
+      ['contractVersion', 'address', 'flowId', 'items'],
+    ) ||
+    input.contractVersion !== XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 ||
+    !Array.isArray(input.items) ||
+    input.items.length < 1 ||
+    input.items.length > 2
+  ) return { ok: false, outcome: batchExecutionError('EXECUTION_INPUT_INVALID') }
+
+  const items: Array<CanonicalExecutionInputV1 & { targetTaskRunId: TaskRunId }> = []
+  for (const item of input.items) {
+    if (
+      typeof item !== 'object' ||
+      item === null ||
+      !isExactKeySet(
+        item as unknown as Record<string, unknown>,
+        ['taskRunId', 'prompt', 'files'],
+      )
+    ) return { ok: false, outcome: batchExecutionError('EXECUTION_INPUT_INVALID') }
+    const canonical = canonicalExecutionInput({
+      address: input.address,
+      flowId: input.flowId,
+      targetTaskRunId: item.taskRunId,
+      prompt: item.prompt,
+      files: item.files,
+    })
+    if (!canonical.ok) {
+      return { ok: false, outcome: batchExecutionError('EXECUTION_INPUT_INVALID') }
+    }
+    items.push({ ...canonical.value, targetTaskRunId: item.taskRunId })
+  }
+  return {
+    ok: true,
+    value: { address: input.address, flowId: input.flowId, items },
+  }
+}
+
+function batchPreflightError(
+  input: CanonicalBatchExecutionInputV1,
+  projection: SessionCollaborationProjectionM2BV1,
+): XiaoguiTaskExecutionErrorCodeV1 | undefined {
+  if (
+    projection.address.projectId !== input.address.projectId ||
+    projection.address.sessionKey !== input.address.sessionKey
+  ) return 'SESSION_SCOPE_MISMATCH'
+  if (projection.authoritativeMode === 'DESIGN') return 'DESIGN_RESERVED'
+  if (projection.authoritativeMode === 'WORK') return 'WORK_NOT_SUPPORTED'
+  if (
+    projection.activeFlow?.flowId !== input.flowId ||
+    projection.activeFlow.status !== 'PLAN_ACTIVE' ||
+    projection.executionReadiness?.flowId !== input.flowId
+  ) return 'FLOW_NOT_READY'
+
+  const targetIds = input.items.map((item) => item.targetTaskRunId)
+  if (new Set(targetIds).size !== targetIds.length || batchFileScopesOverlap(input.items)) {
+    return 'EXECUTION_INPUT_INVALID'
+  }
+  if (projection.executionReadiness.availableSlots < input.items.length) {
+    return 'EXECUTION_IN_PROGRESS'
+  }
+  const currentTaskRunIds = new Set(projection.taskRuns.map((task) => task.taskRunId))
+  const readyTaskRunIds = new Set(projection.executionReadiness.readyTaskRunIds)
+  if (targetIds.some((taskRunId) =>
+    !currentTaskRunIds.has(taskRunId) || !readyTaskRunIds.has(taskRunId),
+  )) return 'FLOW_NOT_READY'
+  if (!projection.availableActions.includes('execution.next.confirm')) return 'FLOW_NOT_READY'
+  return undefined
+}
+
+function batchFileScopesOverlap(
+  items: CanonicalBatchExecutionInputV1['items'],
+): boolean {
+  const ownerByPath = new Map<string, number>()
+  return items.some((item, itemIndex) => item.files.some((file) => {
+    const path = file.relativePath.replace(/[\\]+/g, '/').toLowerCase()
+    const owner = ownerByPath.get(path)
+    if (owner !== undefined && owner !== itemIndex) return true
+    ownerByPath.set(path, itemIndex)
+    return false
+  }))
+}
+
+function isReadyTarget(
+  projection: SessionCollaborationProjectionM2BV1,
+  flowId: FlowId,
+  targetTaskRunId: TaskRunId,
+): boolean {
+  return projection.executionReadiness?.flowId === flowId &&
+    projection.executionReadiness.readyTaskRunIds.includes(targetTaskRunId) &&
+    projection.taskRuns.some((task) => task.taskRunId === targetTaskRunId)
 }
 
 function executionResult(
@@ -987,13 +1182,39 @@ function mapSystemError(code: HubSystemErrorCodeM2BV1): XiaoguiTaskExecutionErro
 }
 
 function executionError(code: XiaoguiTaskExecutionErrorCodeV1): XiaoguiTaskExecutionStartOutcomeV1 {
+  return { ok: false, error: safeExecutionError(code) }
+}
+
+function batchExecutionError(
+  code: XiaoguiTaskExecutionErrorCodeV1,
+): XiaoguiTaskExecutionStartBatchOutcomeV1 {
+  return { ok: false, error: safeExecutionError(code) }
+}
+
+function rejectedBatch(
+  items: CanonicalBatchExecutionInputV1['items'],
+  code: XiaoguiTaskExecutionErrorCodeV1,
+): XiaoguiTaskExecutionStartBatchOutcomeV1 {
   return {
-    ok: false,
-    error: {
-      code,
-      messageKey: `xiaogui.hub.execution.${code.toLowerCase()}`,
-      traceId: `xhbet_${randomUUID()}`,
+    ok: true,
+    value: {
+      contractVersion: XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1,
+      items: items.map((item) => ({
+        ok: false,
+        taskRunId: item.targetTaskRunId,
+        error: safeExecutionError(code),
+      })),
     },
+  }
+}
+
+function safeExecutionError(
+  code: XiaoguiTaskExecutionErrorCodeV1,
+): XiaoguiTaskExecutionSafeErrorV1 {
+  return {
+    code,
+    messageKey: `xiaogui.hub.execution.${code.toLowerCase()}`,
+    traceId: `xhbet_${randomUUID()}`,
   }
 }
 
