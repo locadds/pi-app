@@ -78,7 +78,7 @@ const ADDRESS = {
 } as SessionAddressV1
 
 const roots: string[] = []
-const TEST_TEMP_ROOT = 'E:\\CodexTemp\\m4f-c-store'
+const TEST_TEMP_ROOT = 'D:\\CodexTemp\\xiaogui-hub-m2c-m4g\\sqlite-store'
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -1123,6 +1123,7 @@ describe('M2B sqlite store migration', () => {
       attempt_authorization_scopes: 0,
       task_execution_baselines: 0,
       derived_execution_baselines: 0,
+      derived_execution_baseline_reservations: 0,
       flow_execution_baselines: 0,
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
@@ -1174,8 +1175,9 @@ describe('M2B sqlite store migration', () => {
       { version: 9 },
       { version: 10 },
       { version: 11 },
+      { version: 12 },
     ])
-    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'execution_waves', 'attempt_runtime_bindings', 'attempt_authorization_scopes', 'task_execution_baselines', 'derived_execution_baselines', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
+    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'execution_waves', 'attempt_runtime_bindings', 'attempt_authorization_scopes', 'task_execution_baselines', 'derived_execution_baselines', 'derived_execution_baseline_reservations', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
       { name: 'agent_dispatch_outbox' },
       { name: 'agent_failures' },
       { name: 'agent_reconcile_results' },
@@ -1199,6 +1201,7 @@ describe('M2B sqlite store migration', () => {
       { name: 'delivery_verification_attempts' },
       { name: 'delivery_verification_outbox' },
       { name: 'delivery_verification_receipts' },
+      { name: 'derived_execution_baseline_reservations' },
       { name: 'derived_execution_baselines' },
       { name: 'execution_waves' },
       { name: 'flow_execution_baselines' },
@@ -1216,6 +1219,52 @@ describe('M2B sqlite store migration', () => {
       { name: 'workspace_receipts' },
     ])
     db.close()
+  })
+
+  it('arbitrates a derived baseline reservation across stores and atomically publishes the cache', async () => {
+    const dbPath = await tempDb('derived-reservation.sqlite')
+    const first = new CollaborationHubSqliteStoreV1(dbPath)
+    const second = new CollaborationHubSqliteStoreV1(dbPath)
+    const base = {
+      derivation_input_digest: 'sha256:derived-reservation',
+      project_id: ADDRESS.projectId,
+      flow_id: 'xhbf_reserved',
+      task_run_id: 'xhbtr_reserved',
+    }
+    const firstReservation = {
+      ...base,
+      owner_token: 'owner-first',
+      lease_expires_at: '2026-08-27T00:05:00.000Z',
+      now: '2026-08-27T00:00:00.000Z',
+    }
+    const secondReservation = {
+      ...base,
+      owner_token: 'owner-second',
+      lease_expires_at: '2026-08-27T00:05:01.000Z',
+      now: '2026-08-27T00:00:01.000Z',
+    }
+
+    try {
+      expect(first.reserveDerivedExecutionBaseline(firstReservation)).toEqual({ kind: 'ACQUIRED' })
+      expect(second.reserveDerivedExecutionBaseline(secondReservation)).toEqual({ kind: 'WAITING' })
+      first.releaseDerivedExecutionBaselineReservation(base.derivation_input_digest, firstReservation.owner_token)
+      expect(second.reserveDerivedExecutionBaseline(secondReservation)).toEqual({ kind: 'ACQUIRED' })
+
+      const cache = {
+        ...base,
+        baseline_json: '{"version":1}',
+        created_at: '2026-08-27T00:00:02.000Z',
+      }
+      second.writeDerivedExecutionBaseline(cache, secondReservation.owner_token)
+      expect(first.reserveDerivedExecutionBaseline({
+        ...secondReservation,
+        owner_token: 'owner-third',
+      })).toEqual({ kind: 'CACHED', cache })
+      expect(first.tableCounts().derived_execution_baseline_reservations).toBe(0)
+    } finally {
+      first.close()
+      second.close()
+    }
   })
 
   it('does not silently turn legacy PENDING_DISABLED task runs into attempts', async () => {
@@ -1366,6 +1415,62 @@ describe('M2B sqlite store migration', () => {
     expect(flowBaselineRow(dbPath, flowId as FlowId)).toEqual(oldRow)
   })
 
+  it('rejects a stale schedule at the SQLite boundary after its flow is cancelled', async () => {
+    const dbPath = await tempDb('schedule-cancel-race.sqlite')
+    const { app, flowId } = await activePlan(dbPath)
+    const beforeCancel = await app.observe(ADDRESS)
+    if (!beforeCancel.ok) throw new Error('missing active plan projection')
+    const snapshotStore = new CollaborationHubSqliteStoreV1(dbPath)
+    const projection = snapshotStore.readProjection(ADDRESS)
+    const taskRun = snapshotStore.taskRuns(flowId as FlowId)[0]
+    snapshotStore.close()
+    if (!projection || !taskRun) throw new Error('missing active plan rows')
+    const record = {
+      ...scheduleRecord({
+        flowId: flowId as FlowId,
+        taskRunId: taskRun.task_run_id,
+        attemptId: 'xhba_cancelled_late' as AttemptId,
+        suffix: 'cancelled-late',
+        projection,
+      }),
+      expectedSessionVersion: beforeCancel.value.sessionVersion,
+    }
+    await expect(app.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'req-cancel-before-schedule-write',
+      expectedSessionVersion: beforeCancel.value.sessionVersion,
+      intent: { type: 'flow.cancel', flowId: flowId as FlowId, reason: 'cancel before delayed write' },
+    })).resolves.toMatchObject({ ok: true })
+    app.close()
+
+    const store = new CollaborationHubSqliteStoreV1(dbPath)
+    const idempotency = {
+      requestId: 'sys-cancelled-late',
+      commandType: 'system.schedule',
+      payloadHash: 'sha256:cancelled-late-payload',
+    }
+    try {
+      expect(() => store.writeSchedule(ADDRESS, idempotency, record)).toThrow('STALE_SESSION_VERSION')
+      expect(() => store.writeSchedule(ADDRESS, idempotency, {
+        ...record,
+        expectedSessionVersion: undefined,
+      })).toThrow('FLOW_SCHEDULE_CONFLICT')
+      expect(() => store.writeSchedule(ADDRESS, idempotency, record)).toThrow('STALE_SESSION_VERSION')
+      expect(store.readProjection(ADDRESS)).toMatchObject({ activeFlow: null })
+      expect(store.idempotency(ADDRESS, idempotency.requestId)).toBeNull()
+      expect(store.tableCounts()).toMatchObject({
+        attempts: 0,
+        execution_waves: 0,
+        flow_execution_baselines: 0,
+        task_execution_baselines: 0,
+      })
+    } finally {
+      store.close()
+    }
+  })
+
   it('upgrades legacy v2 tables to schema v3 with private M2B2 tables and claim columns', async () => {
     const dbPath = await tempDb()
     const db = new DatabaseSync(dbPath)
@@ -1410,6 +1515,7 @@ describe('M2B sqlite store migration', () => {
         { version: 9 },
         { version: 10 },
         { version: 11 },
+        { version: 12 },
       ])
       expect(migrated.prepare('pragma table_info(flow_execution_baselines)').all()).toEqual(
         expect.arrayContaining([expect.objectContaining({ name: 'base_revision' })]),

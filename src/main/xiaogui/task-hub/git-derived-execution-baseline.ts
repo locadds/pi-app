@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
 
 import type { FlowId, HubAddressV1, TaskRunId } from '@shared/xiaogui-collaboration-hub'
@@ -24,10 +25,16 @@ import {
   MainProcessDeliveryIntegrationWorktreePortV1,
 } from './delivery-integration-worktree'
 import { digestJson } from './digest'
-import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import {
+  CollaborationHubSqliteStoreV1,
+  type DerivedExecutionBaselineReservationResultV1,
+} from './sqlite-store'
 
 const GIT_OID_PATTERN = /^[0-9a-f]{40}$/
 const INTERNAL_COMMIT_DATE = '2000-01-01T00:00:00Z'
+const RESERVATION_LEASE_MS = 5 * 60_000
+const RESERVATION_WAIT_MS = 30_000
+const RESERVATION_POLL_MS = 25
 
 export interface VerifiedTaskChangeSetMaterialV1 {
   readonly changeSet: TaskChangeSetV1
@@ -66,9 +73,12 @@ export class GitDerivedExecutionBaselineErrorV1 extends Error {
 
 /**
  * Main-process deep Module that squashes the verified dependency closure into
- * an unreferenced deterministic Git commit. It never changes the source
- * worktree or a user-visible ref, and removes the private integration worktree
- * before returning the path-free baseline.
+ * an unreferenced deterministic Git commit. A linked worktree necessarily
+ * writes private administration records under `.git/worktrees` and internal
+ * objects to the repository object database; that is the permitted architecture
+ * boundary. The source worktree, its index, and user-visible refs/branches stay
+ * unchanged, the internal commit is not assigned a visible ref, and the linked
+ * worktree is removed before the path-free baseline is returned.
  */
 export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBaselineProviderV1 {
   constructor(private readonly options: GitDerivedExecutionBaselineProviderOptionsV1) {
@@ -105,16 +115,95 @@ export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBa
       })),
     })
     const repositoryRoot = resolve(await this.options.projectResolver.resolveProjectRoot(input.address.projectId))
-    const cached = this.readCached(derivationInputDigest)
-    if (cached) {
-      const baseline = parseCachedBaseline(cached.baseline_json, input)
-      await assertCommitTree(repositoryRoot, baseline.baseRevision!, baseline.baselineTreeHash)
-      return baseline
+    return this.deriveReserved({
+      input,
+      files: resolved.files,
+      derivationInputDigest,
+      repositoryRoot,
+    })
+  }
+
+  private async deriveReserved(context: {
+    input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0]
+    files: Parameters<MainProcessDeliveryIntegrationWorktreePortV1['integrate']>[0]
+    derivationInputDigest: string
+    repositoryRoot: string
+  }): Promise<DerivedTaskExecutionBaselineV1> {
+    const ownerToken = randomUUID()
+    const deadline = Date.now() + RESERVATION_WAIT_MS
+    while (true) {
+      const reservation = this.reserve(context, ownerToken)
+      if (reservation.kind === 'CACHED') {
+        return this.validateCached(reservation.cache.baseline_json, context.input, context.repositoryRoot)
+      }
+      if (reservation.kind === 'ACQUIRED') {
+        try {
+          return await this.materializeReserved(context, ownerToken)
+        } catch (error) {
+          try {
+            this.releaseReservation(context.derivationInputDigest, ownerToken)
+          } catch {
+            // Preserve the materialization failure; the finite lease remains auditable
+            // and permits a later owner to recover this reservation.
+          }
+          throw error
+        }
+      }
+      if (Date.now() >= deadline) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_GIT_FAILED')
+      await delay(RESERVATION_POLL_MS)
     }
+  }
+
+  private reserve(
+    context: {
+      input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0]
+      derivationInputDigest: string
+    },
+    ownerToken: string,
+  ): DerivedExecutionBaselineReservationResultV1 {
+    const now = new Date().toISOString()
+    const store = this.options.storeFactory()
+    try {
+      return store.reserveDerivedExecutionBaseline({
+        derivation_input_digest: context.derivationInputDigest,
+        project_id: context.input.address.projectId,
+        flow_id: context.input.flowId,
+        task_run_id: context.input.taskRunId,
+        owner_token: ownerToken,
+        lease_expires_at: new Date(Date.now() + RESERVATION_LEASE_MS).toISOString(),
+        now,
+      })
+    } finally {
+      store.close()
+    }
+  }
+
+  private async validateCached(
+    value: string,
+    input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0],
+    repositoryRoot: string,
+  ): Promise<DerivedTaskExecutionBaselineV1> {
+    const baseline = parseCachedBaseline(value, input)
+    await assertCommitTree(repositoryRoot, baseline.baseRevision!, baseline.baselineTreeHash)
+    return baseline
+  }
+
+  private async materializeReserved(
+    context: {
+      input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0]
+      files: Parameters<MainProcessDeliveryIntegrationWorktreePortV1['integrate']>[0]
+      derivationInputDigest: string
+      repositoryRoot: string
+    },
+    ownerToken: string,
+  ): Promise<DerivedTaskExecutionBaselineV1> {
+    const { input, files, derivationInputDigest, repositoryRoot } = context
+    const baseRevision = input.flowBaseline.baseRevision
+    if (!baseRevision) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_BASE_INVALID')
 
     const target = {
       projectId: input.address.projectId,
-      baseRevision: input.flowBaseline.baseRevision,
+      baseRevision,
       baselineTreeHash: input.flowBaseline.baselineTreeHash,
       initialTargetFingerprint: input.flowBaseline.initialTargetFingerprint as Sha256Digest,
     }
@@ -123,7 +212,7 @@ export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBa
       managedRoot: this.options.managedRoot,
       target,
       batchId: `derived-${derivationInputDigest}`,
-    }).integrate(resolved.files)
+    }).integrate(files)
 
     let derivedCommit: string
     let derivedTree: string
@@ -135,7 +224,7 @@ export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBa
           '-c', 'user.name=Xiaogui Internal',
           '-c', 'user.email=xiaogui@internal.invalid',
           'commit-tree', derivedTree,
-          '-p', input.flowBaseline.baseRevision,
+          '-p', baseRevision,
           '-m', `xiaogui-derived-baseline-v1 ${derivationInputDigest}`,
         ],
         {
@@ -168,7 +257,7 @@ export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBa
       ...withBaselineDigest,
       derivationDigest: digestJson(withBaselineDigest),
     }
-    this.writeCached(derivationInputDigest, input, baseline)
+    this.writeCached(derivationInputDigest, input, baseline, ownerToken)
     return baseline
   }
 
@@ -203,15 +292,6 @@ export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBa
     }
   }
 
-  private readCached(derivationInputDigest: string) {
-    const store = this.options.storeFactory()
-    try {
-      return store.derivedExecutionBaseline(derivationInputDigest)
-    } finally {
-      store.close()
-    }
-  }
-
   private writeCached(
     derivationInputDigest: string,
     input: {
@@ -220,6 +300,7 @@ export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBa
       taskRunId: TaskRunId
     },
     baseline: DerivedTaskExecutionBaselineV1,
+    ownerToken?: string,
   ): void {
     const store = this.options.storeFactory()
     try {
@@ -230,7 +311,16 @@ export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBa
         task_run_id: input.taskRunId,
         baseline_json: JSON.stringify(baseline),
         created_at: this.options.now?.() ?? new Date().toISOString(),
-      })
+      }, ownerToken)
+    } finally {
+      store.close()
+    }
+  }
+
+  private releaseReservation(derivationInputDigest: string, ownerToken: string): void {
+    const store = this.options.storeFactory()
+    try {
+      store.releaseDerivedExecutionBaselineReservation(derivationInputDigest, ownerToken)
     } finally {
       store.close()
     }
@@ -287,6 +377,10 @@ function exactGitOid(value: string): string {
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))
 }
 
 function git(cwd: string, args: readonly string[], env: Readonly<Record<string, string>> = {}): Promise<string> {

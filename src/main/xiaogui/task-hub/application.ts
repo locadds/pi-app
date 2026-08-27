@@ -51,6 +51,7 @@ import type { AgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import {
   bindExecutionWaveAttemptV1,
   planExecutionWaveV1,
+  projectExecutionReadinessV1,
 } from './execution-wave-scheduler'
 
 export interface CollaborationHubApplicationOptionsV1 {
@@ -173,10 +174,24 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       const activeDelivery = projection.activeFlow
         ? store.readActiveDelivery(address, projection.activeFlow.flowId)
         : null
+      const executionReadiness = projection.activeFlow?.status === 'PLAN_ACTIVE'
+        ? {
+            version: 1 as const,
+            flowId: projection.activeFlow.flowId,
+            ...projectExecutionReadinessV1({
+              tasks: store.schedulerTasks(projection.activeFlow.flowId),
+              attempts: store.schedulerAttempts(address.projectId),
+            }),
+            capturedAt: this.now(),
+          }
+        : undefined
       return {
         ok: true,
         value: withAuthoritativeM2BActions(
-          withAuthoritativeDeliveryActions(projection, activeDelivery),
+          withAuthoritativeDeliveryActions({
+            ...projection,
+            ...(executionReadiness ? { executionReadiness } : {}),
+          }, activeDelivery),
           this.options.agentRuntime !== undefined,
         ),
       }
@@ -592,8 +607,9 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       derivationDigest: taskBaseline.value.derivationDigest,
     })
     try {
-      store.writeSchedule(address, this.idempotency(request), {
+      const persistedReceipt = store.writeSchedule(address, this.idempotency(request), {
         flowId: request.intent.flowId,
+        expectedSessionVersion: request.expectedSessionVersion,
         taskRunId: task.task_run_id,
         attemptId,
         attemptDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, baselineDigest: taskBaseline.value.baselineDigest }),
@@ -620,12 +636,15 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
         receipt,
         now,
       })
+      return { ok: true, value: persistedReceipt }
     } catch (error) {
+      if (scheduleConflictCode(error) === 'IDEMPOTENCY_CONFLICT') return systemError('IDEMPOTENCY_CONFLICT')
+      if (scheduleConflictCode(error) === 'STALE_SESSION_VERSION') return systemError('STALE_SESSION_VERSION')
+      if (scheduleConflictCode(error) === 'FLOW_SCHEDULE_CONFLICT') return systemError('FLOW_NOT_FOUND')
       if (isBaselineConflictError(error)) return systemError('BASELINE_CONFLICT')
       if (isScheduleConflictError(error)) return systemError('ILLEGAL_TRANSITION', { reason: scheduleConflictCode(error) })
       throw error
     }
-    return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
   }
 
   private recordWorkspaceResult(
@@ -1333,32 +1352,13 @@ function withAuthoritativeM2BActions(
   if (
     !runtimeConfigured ||
     projection.authoritativeMode !== 'CODING' ||
-    projection.activeFlow?.status !== 'PLAN_ACTIVE'
+    projection.activeFlow?.status !== 'PLAN_ACTIVE' ||
+    projection.executionReadiness === undefined
   ) {
     return { ...projection, availableActions: baseActions }
   }
-  const activeAttempts = projection.attempts.filter((attempt) =>
-    [
-      'CREATED',
-      'WORKSPACE_PREPARING',
-      'READY',
-      'STARTING',
-      'RUNNING',
-      'VERIFYING',
-      'INTERRUPT_REQUESTED',
-      'OUTCOME_UNKNOWN',
-    ].includes(attempt.status),
-  )
-  if (activeAttempts.length >= 2) return { ...projection, availableActions: baseActions }
-  const executable = projection.taskRuns.some((run) => {
-    if (run.status !== 'BLOCKED' || run.attemptId) return false
-    const spec = projection.taskSpecs.find((candidate) => candidate.taskSpecId === run.taskSpecId)
-    return spec?.dependsOn.every((dependencyKey) => {
-      const dependency = projection.taskRuns.find((candidate) => candidate.taskKey === dependencyKey)
-      return dependency !== undefined && ['VERIFIED', 'DELIVERY_PENDING', 'APPLYING', 'DONE'].includes(dependency.status)
-    })
-  })
-  return executable
+  return projection.executionReadiness.availableSlots > 0 &&
+    projection.executionReadiness.readyTaskRunIds.length > 0
     ? { ...projection, availableActions: [...baseActions, 'execution.next.confirm'] }
     : { ...projection, availableActions: baseActions }
 }

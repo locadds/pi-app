@@ -87,6 +87,84 @@ describe('GitDerivedExecutionBaselineProviderV1', () => {
     }
   })
 
+  it('squashes two non-overlapping verified ancestors without changing source refs or index', async () => {
+    const fixture = await fixtureRoot()
+    const first = taskMaterial('non-overlap-a', 'base\n', 'from A\n')
+    const second = taskMaterial('non-overlap-b', null, 'from B\n', [], 'src/other.txt')
+    const before = await sourceGitState(fixture.repo)
+    const provider = derivedProvider(fixture, new Map([
+      [first.changeSet.taskChangeSetId, first],
+      [second.changeSet.taskChangeSetId, second],
+    ]))
+
+    const baseline = await provider.derive(await deriveInput(fixture.repo, [
+      first.changeSet.taskChangeSetId,
+      second.changeSet.taskChangeSetId,
+    ]))
+
+    expect(await git(fixture.repo, ['show', `${baseline.baseRevision}:src/value.txt`])).toBe('from A\n')
+    expect(await git(fixture.repo, ['show', `${baseline.baseRevision}:src/other.txt`])).toBe('from B\n')
+    await expectSourceGitState(fixture.repo, before)
+    expect(await git(fixture.repo, ['branch', '--contains', baseline.baseRevision!])).toBe('')
+    expect((await git(fixture.repo, ['worktree', 'list', '--porcelain'])).includes('delivery-')).toBe(false)
+  })
+
+  it('applies same-file ancestors in dependency order when each precondition matches the previous result', async () => {
+    const fixture = await fixtureRoot()
+    const first = taskMaterial('ordered-a', 'base\n', 'from A\n')
+    const second = taskMaterial(
+      'ordered-b',
+      'from A\n',
+      'from B\n',
+      [first.changeSet.taskChangeSetId],
+    )
+    const before = await sourceGitState(fixture.repo)
+    const provider = derivedProvider(fixture, new Map([
+      [first.changeSet.taskChangeSetId, first],
+      [second.changeSet.taskChangeSetId, second],
+    ]))
+
+    const baseline = await provider.derive(await deriveInput(fixture.repo, [
+      first.changeSet.taskChangeSetId,
+      second.changeSet.taskChangeSetId,
+    ]))
+
+    expect(await git(fixture.repo, ['show', `${baseline.baseRevision}:src/value.txt`])).toBe('from B\n')
+    await expectSourceGitState(fixture.repo, before)
+    expect(await git(fixture.repo, ['branch', '--contains', baseline.baseRevision!])).toBe('')
+    expect((await git(fixture.repo, ['worktree', 'list', '--porcelain'])).includes('delivery-')).toBe(false)
+  })
+
+  it('fails closed on a conflicting later ancestor and cleans the private worktree', async () => {
+    const fixture = await fixtureRoot()
+    const first = taskMaterial('conflicting-a', 'base\n', 'from A\n')
+    const second = taskMaterial(
+      'conflicting-b',
+      'base\n',
+      'unsafe B\n',
+      [first.changeSet.taskChangeSetId],
+    )
+    const before = await sourceGitState(fixture.repo)
+    const provider = derivedProvider(fixture, new Map([
+      [first.changeSet.taskChangeSetId, first],
+      [second.changeSet.taskChangeSetId, second],
+    ]))
+
+    await expect(provider.derive(await deriveInput(fixture.repo, [
+      first.changeSet.taskChangeSetId,
+      second.changeSet.taskChangeSetId,
+    ]))).rejects.toMatchObject({ reasonCode: 'DELIVERY_WORKTREE_BASELINE_DRIFT' })
+
+    await expectSourceGitState(fixture.repo, before)
+    expect((await git(fixture.repo, ['worktree', 'list', '--porcelain'])).includes('delivery-')).toBe(false)
+    const store = new CollaborationHubSqliteStoreV1(fixture.dbPath)
+    try {
+      expect(store.tableCounts().derived_execution_baselines).toBe(0)
+    } finally {
+      store.close()
+    }
+  })
+
   it('fails closed on a patch baseline conflict and removes the private integration worktree', async () => {
     const fixture = await fixtureRoot()
     const conflicting = taskMaterial('conflict', 'not-the-base\n', 'unsafe\n')
@@ -98,7 +176,12 @@ describe('GitDerivedExecutionBaselineProviderV1', () => {
     expect(await readFile(join(fixture.repo, 'src/value.txt'), 'utf8')).toBe('base\n')
     expect(await git(fixture.repo, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
     expect((await git(fixture.repo, ['worktree', 'list', '--porcelain'])).includes('delivery-')).toBe(false)
-    expect(new CollaborationHubSqliteStoreV1(fixture.dbPath).tableCounts().derived_execution_baselines).toBe(0)
+    const store = new CollaborationHubSqliteStoreV1(fixture.dbPath)
+    try {
+      expect(store.tableCounts().derived_execution_baselines).toBe(0)
+    } finally {
+      store.close()
+    }
   })
 
   it('reuses the persisted derived commit after provider restart without rematerializing a worktree', async () => {
@@ -170,16 +253,22 @@ async function deriveInput(repo: string, ancestorTaskChangeSetIds: readonly Task
   }
 }
 
-function taskMaterial(suffix: string, before: string, after: string): VerifiedTaskChangeSetMaterialV1 {
+function taskMaterial(
+  suffix: string,
+  before: string | null,
+  after: string,
+  ancestors: readonly TaskChangeSetId[] = [],
+  relativePath = 'src/value.txt',
+): VerifiedTaskChangeSetMaterialV1 {
   const taskChangeSetId = `xhbtcs_${suffix}` as TaskChangeSetId
   const patchArtifactId = `xhart_${suffix}` as ArtifactId
   const patchBytes = Buffer.from(JSON.stringify({
     kind: 'TASK_PATCH_V1',
     version: 1,
     files: [{
-      operation: 'MODIFY',
-      relativePath: 'src/value.txt',
-      baselineDigest: digestBytes(before),
+      operation: before === null ? 'CREATE' : 'MODIFY',
+      relativePath,
+      baselineDigest: before === null ? null : digestBytes(before),
       contentDigest: digestBytes(after),
       contentBase64: Buffer.from(after).toString('base64'),
     }],
@@ -196,7 +285,7 @@ function taskMaterial(suffix: string, before: string, after: string): VerifiedTa
     candidateId: `xhbcand_${suffix}` as TaskChangeSetCandidateId,
     inputTreeHash: `sha256:${'a'.repeat(64)}` as Sha256Digest,
     resultTreeHash: `sha256:${'b'.repeat(64)}` as Sha256Digest,
-    ancestorTaskChangeSetIds: [] as readonly TaskChangeSetId[],
+    ancestorTaskChangeSetIds: ancestors,
     patchArtifactId,
     evidenceBundleId: `xhbe_${suffix}` as EvidenceBundleId,
     qaResultId: `xhbqa_${suffix}` as QaResultId,
@@ -215,6 +304,20 @@ function taskMaterial(suffix: string, before: string, after: string): VerifiedTa
       bytes: patchBytes,
     },
   }
+}
+
+async function sourceGitState(repo: string) {
+  return {
+    head: await git(repo, ['rev-parse', '--verify', 'HEAD']),
+    refs: await git(repo, ['show-ref']),
+    indexTree: await git(repo, ['write-tree']),
+    status: await git(repo, ['status', '--porcelain=v1', '--untracked-files=all']),
+  }
+}
+
+async function expectSourceGitState(repo: string, expected: Awaited<ReturnType<typeof sourceGitState>>): Promise<void> {
+  expect(await sourceGitState(repo)).toEqual(expected)
+  expect(await readFile(join(repo, 'src/value.txt'), 'utf8')).toBe('base\n')
 }
 
 function git(cwd: string, args: readonly string[]): Promise<string> {

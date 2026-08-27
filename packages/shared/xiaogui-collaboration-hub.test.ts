@@ -4,6 +4,7 @@ import type {
   AgentFailureSignalV1,
   AttemptId,
   AttemptProjectionM2BV1,
+  ExecutionReadinessSnapshotV1,
   FlowId,
   M2ADisabledIntentTypeV1,
   M2BSystemIntentV1,
@@ -34,6 +35,36 @@ const candidateAuditFailure = {
 } as const satisfies AgentFailureSignalV1
 
 describe('xiaogui collaboration hub shared contract', () => {
+  it('keeps execution readiness versioned, read-only, and free of execution-private fields', () => {
+    const snapshot = {
+      version: 1,
+      flowId,
+      maxParallelism: 2,
+      activeAttemptCount: 0,
+      availableSlots: 2,
+      dependencyStates: [{
+        version: 1,
+        taskRunId,
+        state: 'READY',
+        dependencyTaskRunIds: [],
+        blockingTaskRunIds: [],
+        verifiedAncestorTaskChangeSetIds: [],
+      }],
+      readyTaskRunIds: [taskRunId],
+      capturedAt: '2026-08-27T00:00:00.000Z',
+    } satisfies ExecutionReadinessSnapshotV1
+
+    expect(snapshot.readyTaskRunIds).toEqual([taskRunId])
+    expect(JSON.stringify(snapshot)).not.toMatch(/attemptId|path|command|session/i)
+
+    const leaked = {
+      ...snapshot,
+      // @ts-expect-error A readiness snapshot must not expose a new attempt identity.
+      attemptId,
+    } satisfies ExecutionReadinessSnapshotV1
+    expect(leaked.attemptId).toBe(attemptId)
+  })
+
   it('closes M2B system agent outcome DTOs by outcome kind', () => {
     const failed = {
       type: 'system.agent.outcome.record',

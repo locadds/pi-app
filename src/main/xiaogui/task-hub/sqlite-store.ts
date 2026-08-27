@@ -83,7 +83,11 @@ import type {
   VerificationAttemptV1,
 } from '@shared/xiaogui-task-verification'
 import type { CanonicalPlanDraftV1 } from './digest'
-import type { SchedulerAttemptV1, SchedulerTaskV1 } from './execution-wave-scheduler'
+import {
+  ACTIVE_ATTEMPT_STATUSES_V1,
+  type SchedulerAttemptV1,
+  type SchedulerTaskV1,
+} from './execution-wave-scheduler'
 
 interface FlowRecord {
   flow_id: FlowId
@@ -173,6 +177,21 @@ export interface DerivedExecutionBaselineCacheRecordV1 {
   readonly baseline_json: string
   readonly created_at: string
 }
+
+export interface DerivedExecutionBaselineReservationRecordV1 {
+  readonly derivation_input_digest: string
+  readonly project_id: string
+  readonly flow_id: string
+  readonly task_run_id: string
+  readonly owner_token: string
+  readonly lease_expires_at: string
+  readonly now: string
+}
+
+export type DerivedExecutionBaselineReservationResultV1 =
+  | { readonly kind: 'ACQUIRED' }
+  | { readonly kind: 'WAITING' }
+  | { readonly kind: 'CACHED'; readonly cache: DerivedExecutionBaselineCacheRecordV1 }
 
 interface VerificationAttemptRecord {
   verification_attempt_id: string
@@ -357,6 +376,7 @@ export interface CancelFlowRecordV1 {
 
 export interface ScheduleRecordM2BV1 {
   flowId: FlowId
+  expectedSessionVersion?: number
   taskRunId: TaskRunId
   attemptId: AttemptId
   attemptDigest: string
@@ -829,8 +849,10 @@ export class CollaborationHubSqliteStoreV1 {
         select a.attempt_id as attemptId, a.task_run_id as taskRunId, a.status,
                coalesce(s.path_tokens_json, '[]') as pathTokensJson
           from attempts a
+          join flows f on f.flow_id = a.flow_id
           left join attempt_authorization_scopes s on s.attempt_id = a.attempt_id
          where a.project_id = ?
+           and ${activeSchedulerAttemptSql('a', 'f.status')}
          order by a.rowid
       `)
       .all(projectId)
@@ -1898,8 +1920,90 @@ export class CollaborationHubSqliteStoreV1 {
     return row ?? null
   }
 
-  writeDerivedExecutionBaseline(record: DerivedExecutionBaselineCacheRecordV1): void {
+  reserveDerivedExecutionBaseline(
+    record: DerivedExecutionBaselineReservationRecordV1,
+  ): DerivedExecutionBaselineReservationResultV1 {
+    return this.transaction(() => {
+      const cached = this.derivedExecutionBaseline(record.derivation_input_digest)
+      if (cached) {
+        assertDerivedBaselineScope(cached, record)
+        return { kind: 'CACHED', cache: cached }
+      }
+      this.db.prepare(`
+        insert or ignore into derived_execution_baseline_reservations (
+          derivation_input_digest, project_id, flow_id, task_run_id,
+          owner_token, lease_expires_at, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        record.derivation_input_digest,
+        record.project_id,
+        record.flow_id,
+        record.task_run_id,
+        record.owner_token,
+        record.lease_expires_at,
+        record.now,
+        record.now,
+      )
+      const existing = this.db.prepare(`
+        select derivation_input_digest, project_id, flow_id, task_run_id,
+               owner_token, lease_expires_at
+          from derived_execution_baseline_reservations
+         where derivation_input_digest = ?
+      `).get(record.derivation_input_digest) as {
+        derivation_input_digest: string
+        project_id: string
+        flow_id: string
+        task_run_id: string
+        owner_token: string
+        lease_expires_at: string
+      } | undefined
+      if (!existing) throw derivedBaselineConflict()
+      assertDerivedBaselineScope(existing, record)
+      if (existing.owner_token === record.owner_token) return { kind: 'ACQUIRED' }
+      if (existing.lease_expires_at <= record.now) {
+        const taken = this.db.prepare(`
+          update derived_execution_baseline_reservations
+             set owner_token = ?, lease_expires_at = ?, updated_at = ?
+           where derivation_input_digest = ? and owner_token = ? and lease_expires_at = ?
+        `).run(
+          record.owner_token,
+          record.lease_expires_at,
+          record.now,
+          record.derivation_input_digest,
+          existing.owner_token,
+          existing.lease_expires_at,
+        )
+        if (taken.changes === 1) return { kind: 'ACQUIRED' }
+      }
+      return { kind: 'WAITING' }
+    })
+  }
+
+  releaseDerivedExecutionBaselineReservation(derivationInputDigest: string, ownerToken: string): void {
     this.transaction(() => {
+      this.db.prepare(
+        'delete from derived_execution_baseline_reservations where derivation_input_digest = ? and owner_token = ?',
+      ).run(derivationInputDigest, ownerToken)
+    })
+  }
+
+  writeDerivedExecutionBaseline(record: DerivedExecutionBaselineCacheRecordV1, ownerToken?: string): void {
+    this.transaction(() => {
+      if (ownerToken) {
+        const reservation = this.db.prepare(`
+          select derivation_input_digest, project_id, flow_id, task_run_id, owner_token
+            from derived_execution_baseline_reservations
+           where derivation_input_digest = ?
+        `).get(record.derivation_input_digest) as {
+          derivation_input_digest: string
+          project_id: string
+          flow_id: string
+          task_run_id: string
+          owner_token: string
+        } | undefined
+        if (!reservation || reservation.owner_token !== ownerToken) throw derivedBaselineConflict()
+        assertDerivedBaselineScope(reservation, record)
+      }
       this.db.prepare(`
         insert or ignore into derived_execution_baselines (
           derivation_input_digest, project_id, flow_id, task_run_id,
@@ -1921,9 +2025,13 @@ export class CollaborationHubSqliteStoreV1 {
         persisted.task_run_id !== record.task_run_id ||
         persisted.baseline_json !== record.baseline_json
       ) {
-        throw Object.assign(new Error('DERIVED_BASELINE_IDEMPOTENCY_CONFLICT'), {
-          code: 'DERIVED_BASELINE_IDEMPOTENCY_CONFLICT',
-        })
+        throw derivedBaselineConflict()
+      }
+      if (ownerToken) {
+        const released = this.db.prepare(
+          'delete from derived_execution_baseline_reservations where derivation_input_digest = ? and owner_token = ?',
+        ).run(record.derivation_input_digest, ownerToken)
+        if (released.changes !== 1) throw derivedBaselineConflict()
       }
     })
   }
@@ -2068,8 +2176,7 @@ export class CollaborationHubSqliteStoreV1 {
         `select count(*) as count
          from attempts a
          join flows f on f.flow_id = a.flow_id
-         where a.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-           and not (a.status = 'OUTCOME_UNKNOWN' and f.status = 'CANCELLED')`,
+         where ${activeSchedulerAttemptSql('a', 'f.status')}`,
       )
       .get() as { count: number }
     return row.count > 0
@@ -2161,15 +2268,39 @@ export class CollaborationHubSqliteStoreV1 {
     })
   }
 
-  writeSchedule(address: HubAddressV1, idempotency: IdempotencyInput, record: ScheduleRecordM2BV1): void {
-    this.transaction(() => {
+  writeSchedule(address: HubAddressV1, idempotency: IdempotencyInput, record: ScheduleRecordM2BV1): PerformReceiptV1 {
+    return this.transaction(() => {
+      // Every derived-baseline owner/waiter converges here. Replay, optimistic
+      // version, flow authority, capacity, and authorization scope are checked
+      // under the same BEGIN IMMEDIATE lock before any execution binding write.
+      const replay = this.checkIdempotencyForWrite(address, idempotency)
+      if (replay) return replay
+      const currentProjection = this.readProjection(address)
+      const currentVersion = currentProjection?.sessionVersion ?? 0
+      if (record.expectedSessionVersion !== undefined && record.expectedSessionVersion !== currentVersion) {
+        throw Object.assign(new Error('STALE_SESSION_VERSION'), { code: 'STALE_SESSION_VERSION' })
+      }
+      if (
+        !currentProjection?.activeFlow ||
+        currentProjection.activeFlow.flowId !== record.flowId ||
+        currentProjection.activeFlow.status !== 'PLAN_ACTIVE'
+      ) {
+        throw Object.assign(new Error('FLOW_SCHEDULE_CONFLICT'), { code: 'FLOW_SCHEDULE_CONFLICT' })
+      }
+      const currentFlow = this.db.prepare(`
+        select status
+          from flows
+         where flow_id = ? and project_id = ? and session_key = ?
+      `).get(record.flowId, address.projectId, address.sessionKey) as { status: string } | undefined
+      if (currentFlow?.status !== 'PLAN_ACTIVE') {
+        throw Object.assign(new Error('FLOW_SCHEDULE_CONFLICT'), { code: 'FLOW_SCHEDULE_CONFLICT' })
+      }
       const activeCount = (this.db.prepare(`
         select count(*) as count
           from attempts a
           join flows f on f.flow_id = a.flow_id
          where a.project_id = ?
-           and a.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-           and not (a.status = 'OUTCOME_UNKNOWN' and f.status = 'CANCELLED')
+           and ${activeSchedulerAttemptSql('a', 'f.status')}
       `).get(address.projectId) as { count: number }).count
       if (activeCount >= record.executionWave.maxParallelism) {
         throw Object.assign(new Error('ATTEMPT_CAPACITY_CONFLICT'), { code: 'ATTEMPT_CAPACITY_CONFLICT' })
@@ -2178,19 +2309,18 @@ export class CollaborationHubSqliteStoreV1 {
       const activeScopes = this.db.prepare(`
         select s.path_tokens_json
           from attempts a
-          join flows f on f.flow_id = a.flow_id
+         join flows f on f.flow_id = a.flow_id
           join attempt_authorization_scopes s on s.attempt_id = a.attempt_id
          where a.project_id = ?
-           and a.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-           and not (a.status = 'OUTCOME_UNKNOWN' and f.status = 'CANCELLED')
+           and ${activeSchedulerAttemptSql('a', 'f.status')}
       `).all(address.projectId) as unknown as Array<{ path_tokens_json: string }>
       if (activeScopes.some((scope) =>
         (JSON.parse(scope.path_tokens_json) as string[]).some((token) => requestedTokens.has(token)),
       )) {
         throw Object.assign(new Error('ATTEMPT_SCOPE_CONFLICT'), { code: 'ATTEMPT_SCOPE_CONFLICT' })
       }
-      const version = this.currentVersion(address) + 1
-      const projection = { ...record.projection, sessionVersion: version }
+      const version = currentVersion + 1
+      const projection = { ...currentProjection, sessionVersion: version }
       const receipt = { ...record.receipt, sessionVersion: version }
       const insertBaseline = this.db.prepare(
         'insert or ignore into flow_execution_baselines (flow_id, baseline_id, base_revision, baseline_tree_hash, initial_target_fingerprint, baseline_digest, baseline_binding_digest, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -2338,6 +2468,7 @@ export class CollaborationHubSqliteStoreV1 {
       }, record.now)
       this.writeProjection(address, projection)
       this.writeIdempotency(address, idempotency, receipt)
+      return receipt
     })
   }
 
@@ -2904,6 +3035,7 @@ export class CollaborationHubSqliteStoreV1 {
       'attempt_authorization_scopes',
       'task_execution_baselines',
       'derived_execution_baselines',
+      'derived_execution_baseline_reservations',
       'flow_execution_baselines',
       'composition_attempts',
       'workspace_prepare_outbox',
@@ -3456,30 +3588,21 @@ export class CollaborationHubSqliteStoreV1 {
         drop trigger if exists attempts_one_active_external_update;
         create trigger attempts_one_active_external_insert
           before insert on attempts
-          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-            and not (
-              new.status = 'OUTCOME_UNKNOWN'
-              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
-            )
+          when ${activeSchedulerAttemptSql('new', "coalesce((select status from flows where flow_id = new.flow_id), '')")}
             and exists (
               select 1
               from attempts existing
               join flows existing_flow on existing_flow.flow_id = existing.flow_id
               where existing.project_id = new.project_id
                 and existing.session_key = new.session_key
-                and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-                and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+                and ${activeSchedulerAttemptSql('existing', 'existing_flow.status')}
             )
           begin
             select raise(abort, 'ATTEMPT_ACTIVE_CONFLICT');
           end;
         create trigger attempts_one_active_external_update
           before update of project_id, session_key, flow_id, status on attempts
-          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-            and not (
-              new.status = 'OUTCOME_UNKNOWN'
-              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
-            )
+          when ${activeSchedulerAttemptSql('new', "coalesce((select status from flows where flow_id = new.flow_id), '')")}
             and exists (
               select 1
               from attempts existing
@@ -3487,8 +3610,7 @@ export class CollaborationHubSqliteStoreV1 {
               where existing.attempt_id <> old.attempt_id
                 and existing.project_id = new.project_id
                 and existing.session_key = new.session_key
-                and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-                and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+                and ${activeSchedulerAttemptSql('existing', 'existing_flow.status')}
             )
           begin
             select raise(abort, 'ATTEMPT_ACTIVE_CONFLICT');
@@ -3563,37 +3685,27 @@ export class CollaborationHubSqliteStoreV1 {
         drop trigger if exists attempts_project_parallel_limit_update;
         create trigger attempts_project_parallel_limit_insert
           before insert on attempts
-          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-            and not (
-              new.status = 'OUTCOME_UNKNOWN'
-              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
-            )
+          when ${activeSchedulerAttemptSql('new', "coalesce((select status from flows where flow_id = new.flow_id), '')")}
             and 2 <= (
               select count(*)
                 from attempts existing
                 join flows existing_flow on existing_flow.flow_id = existing.flow_id
                where existing.project_id = new.project_id
-                 and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-                 and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+                 and ${activeSchedulerAttemptSql('existing', 'existing_flow.status')}
             )
           begin
             select raise(abort, 'ATTEMPT_PROJECT_CAPACITY_CONFLICT');
           end;
         create trigger attempts_project_parallel_limit_update
           before update of project_id, flow_id, status on attempts
-          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-            and not (
-              new.status = 'OUTCOME_UNKNOWN'
-              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
-            )
+          when ${activeSchedulerAttemptSql('new', "coalesce((select status from flows where flow_id = new.flow_id), '')")}
             and 2 <= (
               select count(*)
                 from attempts existing
                 join flows existing_flow on existing_flow.flow_id = existing.flow_id
                where existing.attempt_id <> old.attempt_id
                  and existing.project_id = new.project_id
-                 and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-                 and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+                 and ${activeSchedulerAttemptSql('existing', 'existing_flow.status')}
             )
           begin
             select raise(abort, 'ATTEMPT_PROJECT_CAPACITY_CONFLICT');
@@ -3614,6 +3726,23 @@ export class CollaborationHubSqliteStoreV1 {
         create index if not exists derived_execution_baselines_task
           on derived_execution_baselines(project_id, flow_id, task_run_id);
         insert or ignore into schema_migrations (version, applied_at) values (11, datetime('now'));
+      `)
+    })
+    this.transaction(() => {
+      this.db.exec(`
+        create table if not exists derived_execution_baseline_reservations (
+          derivation_input_digest text primary key,
+          project_id text not null,
+          flow_id text not null,
+          task_run_id text not null,
+          owner_token text not null,
+          lease_expires_at text not null,
+          created_at text not null,
+          updated_at text not null
+        );
+        create index if not exists derived_execution_baseline_reservations_lease
+          on derived_execution_baseline_reservations(lease_expires_at);
+        insert or ignore into schema_migrations (version, applied_at) values (12, datetime('now'));
       `)
     })
   }
@@ -3982,6 +4111,15 @@ export class CollaborationHubSqliteStoreV1 {
       .run(scopeKey(address), idempotency.requestId, idempotency.commandType, idempotency.payloadHash, JSON.stringify(receipt))
   }
 
+  private checkIdempotencyForWrite(address: HubAddressV1, idempotency: IdempotencyInput): PerformReceiptV1 | null {
+    const existing = this.idempotency(address, idempotency.requestId)
+    if (!existing) return null
+    if (existing.command_type !== idempotency.commandType || existing.payload_hash !== idempotency.payloadHash) {
+      throw Object.assign(new Error('IDEMPOTENCY_CONFLICT'), { code: 'IDEMPOTENCY_CONFLICT' })
+    }
+    return JSON.parse(existing.receipt_json) as PerformReceiptV1
+  }
+
   private transaction<T>(fn: () => T): T {
     this.db.exec('begin immediate')
     try {
@@ -4003,6 +4141,50 @@ export interface IdempotencyInput {
 
 function scopeKey(address: HubAddressV1): string {
   return `${address.projectId}:${address.sessionKey}`
+}
+
+function assertDerivedBaselineScope(
+  persisted: {
+    readonly derivation_input_digest: string
+    readonly project_id: string
+    readonly flow_id: string
+    readonly task_run_id: string
+  },
+  requested: {
+    readonly derivation_input_digest: string
+    readonly project_id: string
+    readonly flow_id: string
+    readonly task_run_id: string
+  },
+): void {
+  if (
+    persisted.derivation_input_digest !== requested.derivation_input_digest ||
+    persisted.project_id !== requested.project_id ||
+    persisted.flow_id !== requested.flow_id ||
+    persisted.task_run_id !== requested.task_run_id
+  ) {
+    throw derivedBaselineConflict()
+  }
+}
+
+function derivedBaselineConflict(): Error & { code: string } {
+  return Object.assign(new Error('DERIVED_BASELINE_IDEMPOTENCY_CONFLICT'), {
+    code: 'DERIVED_BASELINE_IDEMPOTENCY_CONFLICT',
+  })
+}
+
+const ACTIVE_ATTEMPT_STATUSES_SQL_V1 = [...ACTIVE_ATTEMPT_STATUSES_V1]
+  .map((status) => `'${status}'`)
+  .join(', ')
+
+/**
+ * Authoritative scheduler occupancy predicate. An OUTCOME_UNKNOWN attempt
+ * remains active until its owning flow is cancelled; only then does it stop
+ * consuming project capacity and authorization-path range.
+ */
+function activeSchedulerAttemptSql(attemptAlias: string, flowStatusExpression: string): string {
+  return `${attemptAlias}.status in (${ACTIVE_ATTEMPT_STATUSES_SQL_V1}) and not (` +
+    `${attemptAlias}.status = 'OUTCOME_UNKNOWN' and ${flowStatusExpression} = 'CANCELLED')`
 }
 
 function toVerificationOutboxRecord(row: VerificationOutboxRow): VerificationOutboxRecordV1 {
