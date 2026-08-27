@@ -3,29 +3,18 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import {
   validateXiaoguiNodePublicDtoV1,
-  type XiaoguiAssignmentPayloadRefV1,
   type XiaoguiNodeCapabilityManifestV1,
-  type XiaoguiNodeCapabilityV1,
-  type XiaoguiNodeDataEgressPolicyV1,
-  type XiaoguiNodeHealthV1,
   type XiaoguiNodePortV1,
 } from '@shared/xiaogui-node-contract'
 import {
-  hasOnlyLanKeysV1 as hasOnlyKeys,
-  isLanDataEgressPolicyV1 as isDataEgressPolicy,
-  isLanDigestV1 as isDigest,
-  isLanHealthV1 as isHealth,
-  isLanNodeIdV1 as isNodeId,
-  isLanOpaqueIdV1 as isOpaqueId,
-  isLanReasonCodeV1 as isReasonCode,
   isLanRecordV1 as isRecord,
-  parseXiaoguiLanAssignmentPayloadRefV1 as parsePayloadRef,
-  parseXiaoguiLanCapabilitiesV1 as parseCapabilities,
   parseXiaoguiLanEnvelopeResponseV1 as parseEnvelopeResponse,
   parseXiaoguiLanEventsResponseV1 as parseEventsResponse,
   parseXiaoguiLanNodeManifestV1,
   parseXiaoguiLanReconcileResponseV1 as parseReconcileResponse,
+  parseXiaoguiLanRouteRequestV1,
   parseXiaoguiLanSimpleResponseV1 as parseSimpleResponse,
+  type XiaoguiLanRouteRequestV1,
 } from './lan-contract-shapes'
 import { isRfc1918LiteralIpv4V1 } from './lan-network-policy'
 
@@ -42,23 +31,6 @@ const ROUTES = new Set([
   '/reconcile',
   '/events',
 ])
-
-type LanRouteRequestV1 =
-  | { route: '/register'; nodeId: string; manifest: XiaoguiNodeCapabilityManifestV1 }
-  | { route: '/heartbeat'; nodeId: string; health: XiaoguiNodeHealthV1 }
-  | {
-      route: '/offer'
-      taskId: string
-      requiredCapabilities: XiaoguiNodeCapabilityV1[]
-      dataEgressPolicy: XiaoguiNodeDataEgressPolicyV1
-      payloadRef: XiaoguiAssignmentPayloadRefV1
-    }
-  | { route: '/claim'; nodeId: string }
-  | { route: '/approve-local' | '/mark-running'; nodeId: string; assignmentId: string; leaseId: string }
-  | { route: '/complete'; nodeId: string; assignmentId: string; leaseId: string; resultDigest: string }
-  | { route: '/fail' | '/outcome-unknown'; nodeId: string; assignmentId: string; leaseId: string; reasonCode: string }
-  | { route: '/reconcile'; assignmentId: string; nodeId?: string }
-  | { route: '/events' }
 
 export interface XiaoguiLanHubHttpServerV1 {
   readonly port: number
@@ -96,16 +68,16 @@ export async function startXiaoguiLanHubHttpServerV1(options: {
       if (!validateXiaoguiNodePublicDtoV1(body).ok) {
         return write(response, 400, { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' })
       }
-      const parsed = parseRouteRequest(request.url, body)
-      if (!parsed.ok) return write(response, 400, parsed)
-      if (!authorizeRequest(parsed.request, bearerToken(request), options.authorization)) {
+      const parsed = parseXiaoguiLanRouteRequestV1(request.url, body)
+      if (!parsed) return write(response, 400, { ok: false, reasonCode: 'LAN_REQUEST_INVALID' })
+      if (!authorizeRequest(parsed, bearerToken(request), options.authorization)) {
         return write(response, 401, { ok: false, reasonCode: 'LAN_NODE_UNAUTHORIZED' })
       }
-      const result = await route(parsed.request, options.hub)
+      const result = await route(parsed, options.hub)
       if (!validateXiaoguiNodePublicDtoV1(result).ok) {
         return write(response, 500, { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' })
       }
-      const validatedResult = parseRouteResponse(parsed.request, result)
+      const validatedResult = parseRouteResponse(parsed, result)
       if (!validatedResult) {
         return write(response, 500, { ok: false, reasonCode: 'LAN_HUB_RESPONSE_INVALID' })
       }
@@ -136,7 +108,7 @@ export async function startXiaoguiLanHubHttpServerV1(options: {
   }
 }
 
-function parseRouteResponse(request: LanRouteRequestV1, value: unknown): unknown | null {
+function parseRouteResponse(request: XiaoguiLanRouteRequestV1, value: unknown): unknown | null {
   switch (request.route) {
     case '/offer':
       return parseEnvelopeResponse(value)
@@ -151,7 +123,7 @@ function parseRouteResponse(request: LanRouteRequestV1, value: unknown): unknown
   }
 }
 
-async function route(request: LanRouteRequestV1, hub: XiaoguiNodePortV1): Promise<unknown> {
+async function route(request: XiaoguiLanRouteRequestV1, hub: XiaoguiNodePortV1): Promise<unknown> {
   switch (request.route) {
     case '/register':
       return hub.register(request.manifest)
@@ -183,84 +155,8 @@ async function route(request: LanRouteRequestV1, hub: XiaoguiNodePortV1): Promis
   }
 }
 
-function parseRouteRequest(routeName: string, body: unknown):
-  | { ok: true; request: LanRouteRequestV1 }
-  | { ok: false; reasonCode: 'LAN_REQUEST_INVALID' } {
-  if (!isRecord(body)) return invalidRequest()
-  switch (routeName) {
-    case '/register': {
-      if (!hasOnlyKeys(body, ['manifest'])) return invalidRequest()
-      const manifest = parseXiaoguiLanNodeManifestV1(body.manifest)
-      return manifest
-        ? { ok: true, request: { route: '/register', nodeId: String(manifest.identity.nodeId), manifest } }
-        : invalidRequest()
-    }
-    case '/heartbeat': {
-      if (!hasOnlyKeys(body, ['nodeId', 'health']) || !isNodeId(body.nodeId) || !isHealth(body.health)) return invalidRequest()
-      return { ok: true, request: { route: '/heartbeat', nodeId: body.nodeId, health: body.health } }
-    }
-    case '/offer': {
-      if (!hasOnlyKeys(body, ['taskId', 'requiredCapabilities', 'dataEgressPolicy', 'payloadRef'])) return invalidRequest()
-      const requiredCapabilities = parseCapabilities(body.requiredCapabilities)
-      const payloadRef = parsePayloadRef(body.payloadRef)
-      if (!isOpaqueId(body.taskId) || !requiredCapabilities || !isDataEgressPolicy(body.dataEgressPolicy) || !payloadRef) {
-        return invalidRequest()
-      }
-      return {
-        ok: true,
-        request: {
-          route: '/offer',
-          taskId: body.taskId,
-          requiredCapabilities,
-          dataEgressPolicy: body.dataEgressPolicy,
-          payloadRef,
-        },
-      }
-    }
-    case '/claim':
-      return hasOnlyKeys(body, ['nodeId']) && isNodeId(body.nodeId)
-        ? { ok: true, request: { route: '/claim', nodeId: body.nodeId } }
-        : invalidRequest()
-    case '/approve-local':
-    case '/mark-running':
-      return hasOnlyKeys(body, ['nodeId', 'assignmentId', 'leaseId'])
-        && isNodeId(body.nodeId)
-        && isOpaqueId(body.assignmentId)
-        && isOpaqueId(body.leaseId)
-        ? { ok: true, request: { route: routeName, nodeId: body.nodeId, assignmentId: body.assignmentId, leaseId: body.leaseId } }
-        : invalidRequest()
-    case '/complete':
-      return hasOnlyKeys(body, ['nodeId', 'assignmentId', 'leaseId', 'resultDigest'])
-        && isNodeId(body.nodeId)
-        && isOpaqueId(body.assignmentId)
-        && isOpaqueId(body.leaseId)
-        && isDigest(body.resultDigest)
-        ? { ok: true, request: { route: '/complete', nodeId: body.nodeId, assignmentId: body.assignmentId, leaseId: body.leaseId, resultDigest: body.resultDigest } }
-        : invalidRequest()
-    case '/fail':
-    case '/outcome-unknown':
-      return hasOnlyKeys(body, ['nodeId', 'assignmentId', 'leaseId', 'reasonCode'])
-        && isNodeId(body.nodeId)
-        && isOpaqueId(body.assignmentId)
-        && isOpaqueId(body.leaseId)
-        && isReasonCode(body.reasonCode)
-        ? { ok: true, request: { route: routeName, nodeId: body.nodeId, assignmentId: body.assignmentId, leaseId: body.leaseId, reasonCode: body.reasonCode } }
-        : invalidRequest()
-    case '/reconcile':
-      return hasOnlyKeys(body, ['assignmentId', 'nodeId'])
-        && isOpaqueId(body.assignmentId)
-        && (body.nodeId === undefined || isNodeId(body.nodeId))
-        ? { ok: true, request: { route: '/reconcile', assignmentId: body.assignmentId, ...(body.nodeId ? { nodeId: body.nodeId } : {}) } }
-        : invalidRequest()
-    case '/events':
-      return hasOnlyKeys(body, []) ? { ok: true, request: { route: '/events' } } : invalidRequest()
-    default:
-      return invalidRequest()
-  }
-}
-
 function authorizeRequest(
-  request: LanRouteRequestV1,
+  request: XiaoguiLanRouteRequestV1,
   presented: string,
   authorization: {
     hubToken: string
@@ -361,10 +257,6 @@ function assertPrivateToken(token: string): void {
 
 function isFailure(value: unknown): value is { ok: false; reasonCode: string } {
   return isRecord(value) && value.ok === false && typeof value.reasonCode === 'string'
-}
-
-function invalidRequest(): { ok: false; reasonCode: 'LAN_REQUEST_INVALID' } {
-  return { ok: false, reasonCode: 'LAN_REQUEST_INVALID' }
 }
 
 class BodyLimitError extends Error {}

@@ -11,6 +11,7 @@ import type {
 import { createInMemoryXiaoguiNodeHubV1 } from './in-memory-node-hub'
 import { xiaoguiTaskIdentityDigestV1 } from './hub-assignment-store'
 import { startXiaoguiLanHubHttpServerV1 } from './lan-hub-http'
+import { parseXiaoguiLanRouteRequestV1 } from './lan-contract-shapes'
 import { createXiaoguiLanWorkerV1 } from './lan-worker'
 import {
   createInMemoryWorkerAssignmentLedgerV1,
@@ -30,6 +31,12 @@ describe('Xiaogui outbound LAN worker', () => {
     'https://100.64.10.8:9443',
     'https://169.254.10.8:9443',
     'https://[fd00::8]:9443',
+    'http://0xC0A80108:9443',
+    'http://3232235784:9443',
+    'http://0300.0250.0001.0010:9443',
+    'http://192.0250.1.8:9443',
+    'http://192.168.1:9443',
+    'http://192.168.001.008:9443',
   ])('rejects a non-RFC1918 origin at the low-level worker seam: %s', (origin) => {
     expect(() => createXiaoguiLanWorkerV1({
       origin,
@@ -38,6 +45,57 @@ describe('Xiaogui outbound LAN worker', () => {
       approveLocal: async () => true,
       executeLocal: async () => ({ status: 'SUCCEEDED', resultDigest: 'sha256:must-not-run' }),
     })).toThrow('LAN_HUB_ORIGIN_HOST_INVALID')
+  })
+
+  it.each([
+    'http://node-a@192.168.10.8:9443',
+    'http://node-a:password@192.168.10.8:9443',
+  ])('rejects user information in the raw LAN origin authority: %s', (origin) => {
+    expect(() => createXiaoguiLanWorkerV1({
+      origin,
+      nodeToken: NODE_B_TOKEN,
+      manifest: node('node-b', ['WORK.DOCX.TEMPLATE', 'EXECUTION.LOCAL_ONLY']),
+      approveLocal: async () => true,
+      executeLocal: async () => ({ status: 'SUCCEEDED', resultDigest: 'sha256:must-not-run' }),
+    })).toThrow('LAN_HUB_ORIGIN_INVALID')
+  })
+
+  it.each([
+    ['/register', { manifest: {} }],
+    ['/heartbeat', { nodeId: 'node-b', health: 'BUSY' }],
+    ['/claim', { nodeId: '../node-b' }],
+    ['/approve-local', { nodeId: 'node-b', assignmentId: 'assignment-a', leaseId: '' }],
+    ['/mark-running', { nodeId: 'node-b', assignmentId: '', leaseId: 'lease-a' }],
+    ['/complete', { nodeId: 'node-b', assignmentId: 'assignment-a', leaseId: 'lease-a', resultDigest: 'not-a-digest' }],
+    ['/fail', { nodeId: 'node-b', assignmentId: 'assignment-a', leaseId: 'lease-a', reasonCode: 'not_uppercase' }],
+    ['/outcome-unknown', { nodeId: 'node-b', assignmentId: 'assignment-a', leaseId: 'lease-a', reasonCode: '' }],
+    ['/reconcile', { nodeId: 'node-b', assignmentId: '../assignment-a' }],
+    ['/not-a-worker-route', {}],
+  ])('rejects a malformed outbound Worker request contract before transport: %s', (route, body) => {
+    expect(parseXiaoguiLanRouteRequestV1(route, body)).toBeNull()
+  })
+
+  it('does not fetch when a local register payload violates its route contract', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const malformedManifest = {
+        ...node('node-b', ['WORK.DOCX.TEMPLATE', 'EXECUTION.LOCAL_ONLY']),
+        unexpected: 'not-approved-by-the-route-contract',
+      } as unknown as XiaoguiNodeCapabilityManifestV1
+      const worker = createXiaoguiLanWorkerV1({
+        origin: 'http://192.168.10.8:9443',
+        nodeToken: NODE_B_TOKEN,
+        manifest: malformedManifest,
+        approveLocal: async () => true,
+        executeLocal: async () => ({ status: 'SUCCEEDED', resultDigest: 'sha256:must-not-run' }),
+      })
+
+      await expect(worker.register()).resolves.toEqual({ ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' })
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('rejects a malformed Hub JSON response instead of trusting a generic cast', async () => {

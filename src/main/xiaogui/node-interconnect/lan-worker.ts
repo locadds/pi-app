@@ -6,10 +6,9 @@ import {
   type XiaoguiNodeCapabilityManifestV1,
 } from '@shared/xiaogui-node-contract'
 import {
-  isLanNodeIdV1 as isNodeId,
-  isLanRecordV1 as isRecord,
   parseXiaoguiLanEnvelopeResponseV1 as parseEnvelopeResponse,
   parseXiaoguiLanReconcileResponseV1 as parseReconcileResponse,
+  parseXiaoguiLanRouteRequestV1,
   parseXiaoguiLanSimpleResponseV1 as parseSimpleResponse,
   type XiaoguiLanFailureResponseV1,
   type XiaoguiLanReconcileResponseV1,
@@ -282,6 +281,8 @@ async function post(
   token: string,
 ): Promise<LanWorkerSimpleResponseV1 | LanWorkerClaimResponseV1 | LanWorkerReconcileResponseV1> {
   if (!validateXiaoguiNodePublicDtoV1(body).ok) return { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' }
+  const request = parseXiaoguiLanRouteRequestV1(route, body)
+  if (!request) return { ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' }
   try {
     const response = await fetch(`${origin}${route}`, {
       method: 'POST',
@@ -293,8 +294,8 @@ async function post(
     if (!validateXiaoguiNodePublicDtoV1(result).ok) {
       return { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' }
     }
-    const expectedNodeId = route === '/claim' && isRecord(body) && isNodeId(body.nodeId)
-      ? body.nodeId
+    const expectedNodeId = request.route === '/claim'
+      ? request.nodeId
       : undefined
     return parseLanWorkerResponse(route, result, expectedNodeId)
   } catch {

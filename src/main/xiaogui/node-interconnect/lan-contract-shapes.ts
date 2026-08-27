@@ -22,6 +22,23 @@ export type XiaoguiLanEventsResponseV1 =
   | { ok: true; events: XiaoguiNodeEventV1[] }
   | XiaoguiLanFailureResponseV1
 
+export type XiaoguiLanRouteRequestV1 =
+  | { route: '/register'; nodeId: string; manifest: XiaoguiNodeCapabilityManifestV1 }
+  | { route: '/heartbeat'; nodeId: string; health: XiaoguiNodeHealthV1 }
+  | {
+      route: '/offer'
+      taskId: string
+      requiredCapabilities: XiaoguiNodeCapabilityV1[]
+      dataEgressPolicy: XiaoguiNodeDataEgressPolicyV1
+      payloadRef: XiaoguiAssignmentPayloadRefV1
+    }
+  | { route: '/claim'; nodeId: string }
+  | { route: '/approve-local' | '/mark-running'; nodeId: string; assignmentId: string; leaseId: string }
+  | { route: '/complete'; nodeId: string; assignmentId: string; leaseId: string; resultDigest: string }
+  | { route: '/fail' | '/outcome-unknown'; nodeId: string; assignmentId: string; leaseId: string; reasonCode: string }
+  | { route: '/reconcile'; assignmentId: string; nodeId?: string }
+  | { route: '/events' }
+
 export function parseXiaoguiLanNodeManifestV1(value: unknown): XiaoguiNodeCapabilityManifestV1 | null {
   if (!isLanRecordV1(value) || !hasOnlyLanKeysV1(value, [
     'identity',
@@ -54,6 +71,77 @@ export function parseXiaoguiLanNodeManifestV1(value: unknown): XiaoguiNodeCapabi
     leaseTtlMs: value.leaseTtlMs,
     updatedAt: value.updatedAt,
     designReserved: true,
+  }
+}
+
+export function parseXiaoguiLanRouteRequestV1(routeName: string, body: unknown): XiaoguiLanRouteRequestV1 | null {
+  if (!isLanRecordV1(body)) return null
+  switch (routeName) {
+    case '/register': {
+      if (!hasOnlyLanKeysV1(body, ['manifest'])) return null
+      const manifest = parseXiaoguiLanNodeManifestV1(body.manifest)
+      return manifest
+        ? { route: '/register', nodeId: String(manifest.identity.nodeId), manifest }
+        : null
+    }
+    case '/heartbeat':
+      return hasOnlyLanKeysV1(body, ['nodeId', 'health']) && isLanNodeIdV1(body.nodeId) && isLanHealthV1(body.health)
+        ? { route: '/heartbeat', nodeId: body.nodeId, health: body.health }
+        : null
+    case '/offer': {
+      if (!hasOnlyLanKeysV1(body, ['taskId', 'requiredCapabilities', 'dataEgressPolicy', 'payloadRef'])) return null
+      const requiredCapabilities = parseXiaoguiLanCapabilitiesV1(body.requiredCapabilities)
+      const payloadRef = parseXiaoguiLanAssignmentPayloadRefV1(body.payloadRef)
+      if (!isLanOpaqueIdV1(body.taskId) || !requiredCapabilities || !isLanDataEgressPolicyV1(body.dataEgressPolicy) || !payloadRef) {
+        return null
+      }
+      return {
+        route: '/offer',
+        taskId: body.taskId,
+        requiredCapabilities,
+        dataEgressPolicy: body.dataEgressPolicy,
+        payloadRef,
+      }
+    }
+    case '/claim':
+      return hasOnlyLanKeysV1(body, ['nodeId']) && isLanNodeIdV1(body.nodeId)
+        ? { route: '/claim', nodeId: body.nodeId }
+        : null
+    case '/approve-local':
+    case '/mark-running':
+      return hasOnlyLanKeysV1(body, ['nodeId', 'assignmentId', 'leaseId'])
+        && isLanNodeIdV1(body.nodeId)
+        && isLanOpaqueIdV1(body.assignmentId)
+        && isLanOpaqueIdV1(body.leaseId)
+        ? { route: routeName, nodeId: body.nodeId, assignmentId: body.assignmentId, leaseId: body.leaseId }
+        : null
+    case '/complete':
+      return hasOnlyLanKeysV1(body, ['nodeId', 'assignmentId', 'leaseId', 'resultDigest'])
+        && isLanNodeIdV1(body.nodeId)
+        && isLanOpaqueIdV1(body.assignmentId)
+        && isLanOpaqueIdV1(body.leaseId)
+        && isLanDigestV1(body.resultDigest)
+        ? { route: '/complete', nodeId: body.nodeId, assignmentId: body.assignmentId, leaseId: body.leaseId, resultDigest: body.resultDigest }
+        : null
+    case '/fail':
+    case '/outcome-unknown':
+      return hasOnlyLanKeysV1(body, ['nodeId', 'assignmentId', 'leaseId', 'reasonCode'])
+        && isLanNodeIdV1(body.nodeId)
+        && isLanOpaqueIdV1(body.assignmentId)
+        && isLanOpaqueIdV1(body.leaseId)
+        && isLanReasonCodeV1(body.reasonCode)
+        ? { route: routeName, nodeId: body.nodeId, assignmentId: body.assignmentId, leaseId: body.leaseId, reasonCode: body.reasonCode }
+        : null
+    case '/reconcile':
+      return hasOnlyLanKeysV1(body, ['assignmentId', 'nodeId'])
+        && isLanOpaqueIdV1(body.assignmentId)
+        && (body.nodeId === undefined || isLanNodeIdV1(body.nodeId))
+        ? { route: '/reconcile', assignmentId: body.assignmentId, ...(body.nodeId ? { nodeId: body.nodeId } : {}) }
+        : null
+    case '/events':
+      return hasOnlyLanKeysV1(body, []) ? { route: '/events' } : null
+    default:
+      return null
   }
 }
 
