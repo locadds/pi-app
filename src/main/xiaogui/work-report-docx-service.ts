@@ -291,18 +291,9 @@ function suggestedFileName(title: string): string {
   return `${safe}.docx`
 }
 
-async function assertNewTarget(target: string): Promise<void> {
+async function assertTargetLocation(target: string): Promise<void> {
   if (!isAbsolute(target) || extname(target).toLowerCase() !== '.docx') {
     throw new ServiceError('REPORT_DOCX_TARGET_INVALID')
-  }
-  try {
-    await access(target, fsConstants.F_OK)
-    throw new ServiceError('REPORT_DOCX_TARGET_EXISTS')
-  } catch (error) {
-    if (error instanceof ServiceError) throw error
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new ServiceError('REPORT_DOCX_TARGET_INVALID')
-    }
   }
   try {
     const parent = dirname(target)
@@ -316,6 +307,57 @@ async function assertNewTarget(target: string): Promise<void> {
     }
   } catch (error) {
     if (error instanceof ServiceError) throw error
+    throw new ServiceError('REPORT_DOCX_TARGET_INVALID')
+  }
+}
+
+async function assertNewTarget(target: string): Promise<void> {
+  await assertTargetLocation(target)
+  try {
+    await access(target, fsConstants.F_OK)
+    throw new ServiceError('REPORT_DOCX_TARGET_EXISTS')
+  } catch (error) {
+    if (error instanceof ServiceError) throw error
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new ServiceError('REPORT_DOCX_TARGET_INVALID')
+    }
+  }
+}
+
+async function readPublishedTarget(
+  target: string,
+  expectedSha256: string,
+): Promise<Buffer | null> {
+  await assertTargetLocation(target)
+  let info: Awaited<ReturnType<typeof lstat>>
+  try {
+    info = await lstat(target)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw new ServiceError('REPORT_DOCX_TARGET_INVALID')
+  }
+  if (
+    !info.isFile() ||
+    info.isSymbolicLink() ||
+    info.size > DOCX_SAFETY_MAX_FILE_BYTES_V1
+  ) {
+    throw new ServiceError('REPORT_DOCX_TARGET_EXISTS')
+  }
+  try {
+    if (resolve(target).toLocaleLowerCase() !== (await realpath(target)).toLocaleLowerCase()) {
+      throw new ServiceError('REPORT_DOCX_TARGET_EXISTS')
+    }
+    const content = await readFile(target)
+    if (hash(content) !== expectedSha256) {
+      throw new ServiceError('REPORT_DOCX_TARGET_EXISTS')
+    }
+    await inspectSafeDocxArchiveV1(content)
+    return content
+  } catch (error) {
+    if (error instanceof ServiceError) throw error
+    if (error instanceof DocxSafetyErrorV1) {
+      throw new ServiceError('REPORT_DOCX_TARGET_EXISTS')
+    }
     throw new ServiceError('REPORT_DOCX_TARGET_INVALID')
   }
 }
@@ -509,7 +551,7 @@ export class WorkReportDocxServiceV1 {
       bulletCount: record.plan.bulletCount,
       characterCount: record.plan.characterCount,
       outputSha256: record.plan.previewSha256,
-      publishedAtLocal: localIso(this.now()),
+      publishedAtLocal: localIso(new Date(record.updatedAt)),
     }
   }
 
@@ -522,19 +564,12 @@ export class WorkReportDocxServiceV1 {
     if (record.preparedRunId === sourceRunId) {
       return failure('REPORT_DOCX_CONFIRMATION_REQUIRED')
     }
-    const content = await readPreview(this.options.tempRoot, record)
     const target = record.publishedPath
     if (!target) throw new ServiceError('REPORT_DOCX_STORAGE_FAILED')
-    let existing: Buffer | null = null
-    try {
-      existing = await readFile(target)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    if (existing && hash(existing) === record.plan.previewSha256) {
+    const existing = await readPublishedTarget(target, record.plan.previewSha256)
+    if (existing) {
       record.receipt ??= this.receipt(record)
       record.status = 'PUBLISHED'
-      record.updatedAt = this.now().toISOString()
       this.options.store.save(record)
       await removePreview(this.options.tempRoot, record.previewPath)
       return {
@@ -542,15 +577,18 @@ export class WorkReportDocxServiceV1 {
         value: { kind: 'XIAOGUI_WORK_REPORT_DOCX_PUBLISHED', receipt: record.receipt },
       }
     }
-    if (existing) return failure('REPORT_DOCX_TARGET_EXISTS')
+    const content = await readPreview(this.options.tempRoot, record)
     await assertNewTarget(target)
+    // Persist the publish-attempt instant before the atomic link. If the final
+    // status write fails, a retry can reconstruct the exact same receipt.
+    record.updatedAt = this.now().toISOString()
+    this.options.store.save(record)
     await publish(target, content, record.operationId)
-    if (hash(await readFile(target)) !== record.plan.previewSha256) {
+    if (!(await readPublishedTarget(target, record.plan.previewSha256))) {
       throw new ServiceError('REPORT_DOCX_PUBLISH_FAILED')
     }
     record.receipt = this.receipt(record)
     record.status = 'PUBLISHED'
-    record.updatedAt = this.now().toISOString()
     try {
       this.options.store.save(record)
     } catch {

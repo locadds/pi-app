@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -136,6 +136,120 @@ describe('WORK 标准报告 DOCX 服务', () => {
     expect(outputXml).toContain('补充真实 Word 冒烟验证。')
     expect(outputXml).toContain('确认后只另存新文件')
     second.close()
+  })
+
+  it('发布成功但状态落库失败后，重启 CONFIRM 收敛到同一回执且不重写目标', async () => {
+    const root = await fixtureRoot()
+    const targetPath = join(root, '可恢复报告.docx')
+    const databasePath = join(root, 'private', 'report-docx.sqlite')
+    let now = new Date('2026-08-27T08:00:00.000Z')
+    const chooseNewTarget = vi.fn(async () => targetPath)
+    const outputAccess = {
+      openPath: vi.fn(async () => ''),
+      revealPath: vi.fn(async () => undefined),
+    }
+    const firstStore = new WorkReportDocxStoreV1(databasePath)
+    const save = firstStore.save.bind(firstStore)
+    let rejectedPublishedSave = false
+    vi.spyOn(firstStore, 'save').mockImplementation((record) => {
+      if (record.status === 'PUBLISHED' && !rejectedPublishedSave) {
+        rejectedPublishedSave = true
+        throw new Error('simulated SQLite write failure')
+      }
+      save(record)
+    })
+    const first = new WorkReportDocxServiceV1({
+      lookup: lookup(),
+      store: firstStore,
+      dialogs: { chooseNewTarget },
+      outputAccess,
+      tempRoot: join(root, 'preview'),
+      now: () => now,
+    })
+
+    await first.execute(ADDRESS, {
+      action: 'PREPARE',
+      draft: DRAFT,
+      sourceSessionId: 'session-1',
+      sourceRunId: 'run-1',
+      toolCallId: 'tool-1',
+    })
+    now = new Date('2026-08-27T08:05:00.000Z')
+    const firstPublished = await first.execute(ADDRESS, {
+      action: 'CONFIRM',
+      sourceSessionId: 'session-1',
+      sourceRunId: 'run-2',
+      toolCallId: 'tool-2',
+    })
+    expect(firstPublished.ok && firstPublished.value.kind).toBe(
+      'XIAOGUI_WORK_REPORT_DOCX_PUBLISHED',
+    )
+    expect(rejectedPublishedSave).toBe(true)
+    const firstBytes = await readFile(targetPath)
+    const firstStat = await stat(targetPath)
+    const firstReceipt =
+      firstPublished.ok && firstPublished.value.kind === 'XIAOGUI_WORK_REPORT_DOCX_PUBLISHED'
+        ? firstPublished.value.receipt
+        : null
+    first.close()
+
+    now = new Date('2026-08-27T08:10:00.000Z')
+    const restarted = new WorkReportDocxServiceV1({
+      lookup: lookup(),
+      store: new WorkReportDocxStoreV1(databasePath),
+      dialogs: { chooseNewTarget },
+      outputAccess,
+      tempRoot: join(root, 'preview'),
+      now: () => now,
+    })
+    const converged = await restarted.execute(ADDRESS, {
+      action: 'CONFIRM',
+      sourceSessionId: 'session-1',
+      sourceRunId: 'run-3',
+      toolCallId: 'tool-3',
+    })
+    restarted.close()
+
+    expect(converged).toEqual(firstPublished)
+    expect(firstReceipt).not.toBeNull()
+    expect(await readFile(targetPath)).toEqual(firstBytes)
+    expect((await stat(targetPath)).mtimeMs).toBe(firstStat.mtimeMs)
+    expect(chooseNewTarget).toHaveBeenCalledOnce()
+  })
+
+  it('CONFIRM 不接受 PREPARE 后被占用或篡改的目标', async () => {
+    const root = await fixtureRoot()
+    const targetPath = join(root, '被篡改目标.docx')
+    const tampered = Buffer.from('not-the-generated-docx')
+    const service = new WorkReportDocxServiceV1({
+      lookup: lookup(),
+      store: new WorkReportDocxStoreV1(join(root, 'private', 'report-docx.sqlite')),
+      dialogs: { chooseNewTarget: vi.fn(async () => targetPath) },
+      outputAccess: {
+        openPath: vi.fn(async () => ''),
+        revealPath: vi.fn(async () => undefined),
+      },
+      tempRoot: join(root, 'preview'),
+    })
+    await service.execute(ADDRESS, {
+      action: 'PREPARE',
+      draft: DRAFT,
+      sourceSessionId: 'session-1',
+      sourceRunId: 'run-1',
+      toolCallId: 'tool-1',
+    })
+    await writeFile(targetPath, tampered, { flag: 'wx' })
+
+    const outcome = await service.execute(ADDRESS, {
+      action: 'CONFIRM',
+      sourceSessionId: 'session-1',
+      sourceRunId: 'run-2',
+      toolCallId: 'tool-2',
+    })
+    service.close()
+
+    expect(outcome).toEqual({ ok: false, error: { code: 'REPORT_DOCX_TARGET_EXISTS' } })
+    expect(await readFile(targetPath)).toEqual(tampered)
   })
 
   it('PREPARE 拒绝已存在目标且不覆盖内容、不保留受控预览', async () => {
