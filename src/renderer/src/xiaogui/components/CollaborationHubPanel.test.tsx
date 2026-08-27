@@ -283,7 +283,9 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
     readyTaskRunIds: ['xhbtr_4' as TaskRunId],
     capturedAt: '2026-08-18T00:00:01.000Z',
   }
-  // lastExecutionWave 仅作历史证据：t1 是批前既有 active，t5 是本批新调度，两集合不相交
+  // lastExecutionWave 仅作历史证据：t1 是批前既有 active，t5 是本批新调度，两集合不相交；
+  // 真实 planExecutionWaveV1 会保存规划时点全部任务状态（t5 规划时仍为 READY，调度后才 IN_FLIGHT），
+  // 与调度后的 executionReadiness 是两个不同时点的快照，不能复用同一数组
   const lastExecutionWave: ExecutionWaveV1 = {
     version: 1,
     waveId: 'xhbev_wave1' as ExecutionWaveId,
@@ -291,7 +293,14 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
     maxParallelism: 2,
     activeAttemptIds: ['xhba_1' as AttemptId],
     scheduled: [{ taskRunId: 'xhbtr_5' as TaskRunId, attemptId: 'xhba_5' as AttemptId }],
-    dependencyStates: [],
+    dependencyStates: [
+      depState(1, 'IN_FLIGHT'),
+      depState(2, 'WAITING_FOR_DEPENDENCIES', [1]),
+      depState(3, 'BLOCKED_BY_FAILED_DEPENDENCY', [6]),
+      depState(4, 'READY'),
+      depState(5, 'READY'),
+      depState(6, 'TERMINAL'),
+    ],
     createdAt: '2026-08-18T00:00:00.000Z',
   }
   return {
@@ -380,7 +389,8 @@ function confirmableProjection(address: HubAddressV1): SessionCollaborationProje
     capturedAt: '2026-08-18T00:00:01.000Z',
   }
   // 首波新调度 t1：调度发生前 wave 内没有既有 active，两集合不相交；
-  // activeAttemptCount=1 来自调度之后的实时 readiness
+  // activeAttemptCount=1 来自调度之后的实时 readiness。
+  // 规划时点全部任务状态随 wave 保存：t1 规划时为 READY（随后 scheduled），t2 等待 t1，t4 READY
   const lastExecutionWave: ExecutionWaveV1 = {
     version: 1,
     waveId: 'xhbev_wave1' as ExecutionWaveId,
@@ -388,7 +398,32 @@ function confirmableProjection(address: HubAddressV1): SessionCollaborationProje
     maxParallelism: 2,
     activeAttemptIds: [],
     scheduled: [{ taskRunId: 'xhbtr_1' as TaskRunId, attemptId: 'xhba_1' as AttemptId }],
-    dependencyStates: [],
+    dependencyStates: [
+      {
+        version: 1,
+        taskRunId: 'xhbtr_1' as TaskRunId,
+        state: 'READY',
+        dependencyTaskRunIds: [],
+        blockingTaskRunIds: [],
+        verifiedAncestorTaskChangeSetIds: [],
+      },
+      {
+        version: 1,
+        taskRunId: 'xhbtr_2' as TaskRunId,
+        state: 'WAITING_FOR_DEPENDENCIES',
+        dependencyTaskRunIds: ['xhbtr_1' as TaskRunId],
+        blockingTaskRunIds: ['xhbtr_1' as TaskRunId],
+        verifiedAncestorTaskChangeSetIds: [],
+      },
+      {
+        version: 1,
+        taskRunId: 'xhbtr_4' as TaskRunId,
+        state: 'READY',
+        dependencyTaskRunIds: [],
+        blockingTaskRunIds: [],
+        verifiedAncestorTaskChangeSetIds: [],
+      },
+    ],
     createdAt: '2026-08-18T00:00:00.000Z',
   }
   return {
@@ -1064,13 +1099,27 @@ describe('CollaborationHubPanel', () => {
   it.each([
     ['满槽分组', groupedWaveProjection],
     ['可确认', confirmableProjection],
-  ] as const)('%s fixture 的 wave activeAttemptIds 与 scheduled 不相交', (_name, factory) => {
+  ] as const)('%s fixture 的 wave 与生产时序一致', (_name, factory) => {
     const projection = factory({
       projectId: scopeCoding.projectId,
       sessionKey: scopeCoding.sessionKey,
     })
     const wave = projection.lastExecutionWave
     expect(wave).toBeDefined()
+
+    // 规划时点保存全部任务状态：非空且覆盖该 fixture 全部 taskRunIds
+    expect(wave!.dependencyStates.length).toBeGreaterThan(0)
+    const stateByRunId = new Map(wave!.dependencyStates.map((state) => [state.taskRunId, state.state]))
+    for (const run of projection.taskRuns) {
+      expect(stateByRunId.has(run.taskRunId)).toBe(true)
+    }
+
+    // scheduled 的任务在规划时点必须为 READY（调度后才转为 IN_FLIGHT）
+    for (const item of wave!.scheduled) {
+      expect(stateByRunId.get(item.taskRunId)).toBe('READY')
+    }
+
+    // 既有 active 与本批新调度不相交
     const activeAttemptIds = new Set<string>(wave!.activeAttemptIds)
     expect(wave!.scheduled.length).toBeGreaterThan(0)
     for (const item of wave!.scheduled) {
