@@ -22,6 +22,10 @@ describe('xiaogui Worker host-tool router', () => {
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' as const },
     }))
+    const workReportDocx = vi.fn(async () => ({
+      ok: true as const,
+      value: { kind: 'XIAOGUI_WORK_REPORT_DOCX_CANCELLED' as const },
+    }))
     const workDocxTemplateData = vi.fn(async () => ({
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' as const },
@@ -45,6 +49,7 @@ describe('xiaogui Worker host-tool router', () => {
     const router = createXiaoguiWorkerHostToolRouterV1({
       collaboration,
       workDocx,
+      workReportDocx,
       workDocxTemplateData,
       workDocxTemplateIntake,
       workDocxTemplateMaterialize,
@@ -82,6 +87,17 @@ describe('xiaogui Worker host-tool router', () => {
         sourceSessionId: 'session-1',
         sourceRunId: 'run-1',
         toolCallId: 'call-3',
+      },
+    }
+    const reportRequest: WorkerHostToolRequestV1 = {
+      type: 'host-tool-request',
+      requestId: 'report-1',
+      method: 'xiaogui.work.report-docx.v1',
+      payload: {
+        action: 'CANCEL',
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
+        toolCallId: 'call-report',
       },
     }
     const templateDataRequest: WorkerHostToolRequestV1 = {
@@ -131,6 +147,7 @@ describe('xiaogui Worker host-tool router', () => {
 
     await router(metadata(collaborationRequest))
     await router(metadata(workRequest))
+    await router(metadata(reportRequest))
     await router(metadata(templateDataRequest))
     await router(metadata(templateIntakeRequest))
     await router(metadata(templateMaterializeRequest))
@@ -139,6 +156,7 @@ describe('xiaogui Worker host-tool router', () => {
 
     expect(collaboration).toHaveBeenCalledOnce()
     expect(workDocx).toHaveBeenCalledOnce()
+    expect(workReportDocx).toHaveBeenCalledOnce()
     expect(workDocxTemplateData).toHaveBeenCalledOnce()
     expect(workDocxTemplateIntake).toHaveBeenCalledOnce()
     expect(workDocxTemplateMaterialize).toHaveBeenCalledOnce()
@@ -146,6 +164,7 @@ describe('xiaogui Worker host-tool router', () => {
     expect(workDocumentSnapshot).toHaveBeenCalledOnce()
     expect(collaboration).toHaveBeenCalledWith(metadata(collaborationRequest))
     expect(workDocx).toHaveBeenCalledWith(metadata(workRequest))
+    expect(workReportDocx).toHaveBeenCalledWith(metadata(reportRequest))
     expect(workDocxTemplateData).toHaveBeenCalledWith(metadata(templateDataRequest))
     expect(workDocxTemplateIntake).toHaveBeenCalledWith(metadata(templateIntakeRequest))
     expect(workDocxTemplateMaterialize).toHaveBeenCalledWith(metadata(templateMaterializeRequest))

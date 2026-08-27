@@ -5,6 +5,12 @@ import type {
 } from './xiaogui-document-snapshot'
 import type { WorkDocxErrorCodeV1 } from './xiaogui-work-docx'
 import type {
+  WorkReportDocxErrorCodeV1,
+  WorkReportDocxPlanV1,
+  WorkReportDocxReceiptV1,
+  WorkReportDraftV1,
+} from './xiaogui-work-report-docx'
+import type {
   WorkDocxTemplateFieldInputV1,
   WorkDocxTemplateFieldV1,
   WorkDocxTemplateProfileV1,
@@ -34,12 +40,13 @@ import type {
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
- * 当前开放“创建协作计划草稿”、四版“WORK DOCX”和“WORK 文档快照”六个版本化方法；
+ * 当前只开放显式列出的协作、WORK 文档与快照版本化方法；
  * 后续能力必须显式扩充 method 联合类型。
  */
 export const XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1 =
   'xiaogui.collaboration.create-plan-draft' as const
 export const XIAOGUI_WORK_DOCX_METHOD_V1 = 'xiaogui.work.docx.v1' as const
+export const XIAOGUI_WORK_REPORT_DOCX_METHOD_V1 = 'xiaogui.work.report-docx.v1' as const
 export const XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1 =
   'xiaogui.work.docx-template-data.v1' as const
 export const XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1 =
@@ -71,6 +78,22 @@ export interface XiaoguiWorkDocxPayloadV1 {
   sourceRunId: string
   toolCallId: string
 }
+
+type XiaoguiWorkReportDocxCommonPayloadV1 = {
+  sourceSessionId: string
+  sourceRunId: string
+  toolCallId: string
+}
+
+/** PREPARE 之外的动作不接受草稿、路径、operationId 或会话地址。 */
+export type XiaoguiWorkReportDocxPayloadV1 =
+  | (XiaoguiWorkReportDocxCommonPayloadV1 & {
+      action: 'PREPARE'
+      draft: WorkReportDraftV1
+    })
+  | (XiaoguiWorkReportDocxCommonPayloadV1 & {
+      action: 'CONFIRM' | 'CANCEL' | 'OPEN' | 'REVEAL'
+    })
 
 export type XiaoguiWorkDocxTemplateDataActionV1 =
   | 'SELECT_TEMPLATE'
@@ -217,6 +240,12 @@ export type WorkerHostToolRequestV1 =
   | {
       type: 'host-tool-request'
       requestId: string
+      method: typeof XIAOGUI_WORK_REPORT_DOCX_METHOD_V1
+      payload: XiaoguiWorkReportDocxPayloadV1
+    }
+  | {
+      type: 'host-tool-request'
+      requestId: string
       method: typeof XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1
       payload: XiaoguiWorkDocxTemplateDataPayloadV1
     }
@@ -294,6 +323,13 @@ export type XiaoguiWorkDocxResultV1 =
       kind: 'XIAOGUI_WORK_DOCX_ACCESSED'
       action: 'OPEN' | 'REVEAL'
     }
+
+export type XiaoguiWorkReportDocxResultV1 =
+  | { kind: 'XIAOGUI_WORK_REPORT_DOCX_PREPARED'; plan: WorkReportDocxPlanV1 }
+  | { kind: 'XIAOGUI_WORK_REPORT_DOCX_TARGET_SELECTION_CANCELLED' }
+  | { kind: 'XIAOGUI_WORK_REPORT_DOCX_PUBLISHED'; receipt: WorkReportDocxReceiptV1 }
+  | { kind: 'XIAOGUI_WORK_REPORT_DOCX_CANCELLED' }
+  | { kind: 'XIAOGUI_WORK_REPORT_DOCX_ACCESSED'; action: 'OPEN' | 'REVEAL' }
 
 export type XiaoguiWorkDocxTemplateDataResultV1 =
   | { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' }
@@ -442,6 +478,7 @@ export type WorkerHostToolErrorCodeV1 =
   | TemplateIntakeErrorCodeV1
   | TemplateMaterializeErrorCodeV1
   | AdvancedGenerationErrorCodeV1
+  | WorkReportDocxErrorCodeV1
   | WorkDocumentSnapshotErrorCodeV1
 
 export type WorkerHostToolOutcomeV1 =
@@ -450,6 +487,7 @@ export type WorkerHostToolOutcomeV1 =
       value:
         | XiaoguiCollaborationPlanCreatedV1
         | XiaoguiWorkDocxResultV1
+        | XiaoguiWorkReportDocxResultV1
         | XiaoguiWorkDocxTemplateDataResultV1
         | XiaoguiWorkDocxTemplateIntakeResultV1
         | XiaoguiWorkDocxTemplateMaterializeResultV1

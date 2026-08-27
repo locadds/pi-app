@@ -126,6 +126,53 @@ describe('worker host-tool response routing', () => {
     },
   )
 
+  it('does not locally time out a confirmed standard report publication', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = requestWorkerHostTool({
+        method: 'xiaogui.work.report-docx.v1',
+        payload: {
+          action: 'CONFIRM',
+          sourceSessionId: 'session-1',
+          sourceRunId: 'run-2',
+          toolCallId: 'call-report-confirm',
+        },
+      })
+      const requestId = sendToMainMock.mock.calls[0]?.[0]?.requestId as string
+
+      await vi.advanceTimersByTimeAsync(16 * 60_000)
+      expect(sendToMainMock).toHaveBeenCalledTimes(1)
+      expect(sendToMainMock).not.toHaveBeenCalledWith({ type: 'host-tool-cancel', requestId })
+
+      receiveWorkerHostToolResponse({
+        type: 'host-tool-response',
+        requestId,
+        outcome: {
+          ok: true,
+          value: {
+            kind: 'XIAOGUI_WORK_REPORT_DOCX_PUBLISHED',
+            receipt: {
+              receiptVersion: 1,
+              sectionCount: 1,
+              paragraphCount: 1,
+              bulletCount: 1,
+              characterCount: 12,
+              outputSha256: 'd'.repeat(64),
+              publishedAtLocal: '2026-08-27T16:00:00.000+08:00',
+            },
+          },
+        },
+      })
+
+      await expect(pending).resolves.toMatchObject({
+        ok: true,
+        value: { kind: 'XIAOGUI_WORK_REPORT_DOCX_PUBLISHED' },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('gives the interactive PDF read an interactive timeout instead of the 30s default', async () => {
     vi.useFakeTimers()
     try {
