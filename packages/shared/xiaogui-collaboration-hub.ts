@@ -15,6 +15,8 @@ export type PlanRevisionId = string & { readonly __brand: 'PlanRevisionId' }
 export type TaskSpecId = string & { readonly __brand: 'TaskSpecId' }
 export type TaskRunId = string & { readonly __brand: 'TaskRunId' }
 export type ExecutionWaveId = string & { readonly __brand: 'ExecutionWaveId' }
+/** Canonical lowercase SHA-256 hex without a `sha256:` prefix. */
+export type RawSha256HexV1 = string & { readonly __brand: 'RawSha256HexV1' }
 
 export type CollaborationHubActionV1 =
   | 'flow.start.with_draft'
@@ -79,8 +81,8 @@ export interface AttemptRuntimeBindingV1 {
   readonly executionInputDigest: Sha256Digest
   readonly authorizationScopeDigest: Sha256Digest
   readonly selection: RuntimeAdapterSelectionV1
-  readonly selectionDigest: Sha256Digest
-  readonly bindingDigest: Sha256Digest
+  readonly selectionDigest: RawSha256HexV1
+  readonly bindingDigest: RawSha256HexV1
   readonly boundAt: string
 }
 
@@ -246,7 +248,6 @@ export interface AttemptProjectionM2BV1 {
   attemptId: AttemptId
   taskRunId: TaskRunId
   status: AttemptStatusM2BV1
-  runtimeSessionId?: string
   workspaceReceiptId?: WorkspaceReceiptId
   verificationSummary?: TaskVerificationSummaryV1
   runtimeBinding?: AttemptRuntimeBindingV1

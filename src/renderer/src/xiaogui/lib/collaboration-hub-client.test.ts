@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   AttemptId,
+  AttemptRuntimeBindingV1,
   FlowId,
   HubAddressV1,
   HubOutcomeV1,
@@ -132,6 +133,30 @@ function verifiedSummaryFixture(): TaskVerificationSummaryV1 {
   }
 }
 
+function runtimeBindingFixture(attemptId: AttemptId, taskRunId: TaskRunId): AttemptRuntimeBindingV1 {
+  return {
+    version: 1,
+    attemptId,
+    taskRunId,
+    executionInputDigest: `sha256:${'e'.repeat(64)}` as AttemptRuntimeBindingV1['executionInputDigest'],
+    authorizationScopeDigest: `sha256:${'f'.repeat(64)}` as AttemptRuntimeBindingV1['authorizationScopeDigest'],
+    selection: {
+      adapterId: 'codex-cli-internal-adapter',
+      runtimeKind: 'CODEX',
+      protocol: 'HEADLESS',
+      capabilityDigest: `sha256:${'7'.repeat(64)}`,
+      approvalStatus: 'APPROVED_FOR_PRODUCTION',
+      diagnosticOnly: false,
+      stream: 'PUSH',
+      interrupt: 'ACKED',
+      inspect: 'RECONCILE',
+    },
+    selectionDigest: '8'.repeat(64) as AttemptRuntimeBindingV1['selectionDigest'],
+    bindingDigest: '9'.repeat(64) as AttemptRuntimeBindingV1['bindingDigest'],
+    boundAt: '2026-08-18T00:00:00.000Z',
+  }
+}
+
 function batchExecutionResultValue(n: number) {
   return {
     taskRun: {
@@ -207,7 +232,7 @@ describe('collaboration-hub-client', () => {
         { taskRunId: 'xhbtr_2' as TaskRunId, taskSpecId: 'xhbts_2' as TaskSpecId, taskKey: 't2', status: 'BLOCKED' },
       ],
       attempts: [
-        { attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING', runtimeSessionId: 'rs-1' },
+        { attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING' },
         { attemptId: 'xhba_0' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'FAILED' },
       ],
       availableActions: ['flow.cancel', 'execution.next.confirm'],
@@ -245,6 +270,110 @@ describe('collaboration-hub-client', () => {
     invokeMock.mockResolvedValueOnce({ ok: true, value: valid })
 
     await expect(observeCollaborationHub(address)).resolves.toEqual({ ok: true, value: valid })
+  })
+
+  it('observe 接受携带合法 runtimeBinding 的 attempt', async () => {
+    const valid: SessionCollaborationProjectionM2BV1 = {
+      ...projectionFixture(),
+      sessionMode: 'CODING',
+      authoritativeMode: 'CODING',
+      taskRuns: [
+        {
+          taskRunId: 'xhbtr_1' as TaskRunId,
+          taskSpecId: 'xhbts_1' as TaskSpecId,
+          taskKey: 't1',
+          status: 'RUNNING',
+          attemptId: 'xhba_1' as AttemptId,
+        },
+      ],
+      attempts: [
+        {
+          attemptId: 'xhba_1' as AttemptId,
+          taskRunId: 'xhbtr_1' as TaskRunId,
+          status: 'RUNNING',
+          runtimeBinding: runtimeBindingFixture('xhba_1' as AttemptId, 'xhbtr_1' as TaskRunId),
+        },
+      ],
+    }
+    invokeMock.mockResolvedValueOnce({ ok: true, value: valid })
+
+    await expect(observeCollaborationHub(address)).resolves.toEqual({ ok: true, value: valid })
+  })
+
+  it.each<[string, (binding: AttemptRuntimeBindingV1) => unknown]>([
+    ['runtimeBinding 携带 secret 字段', (binding) => ({ ...binding, secret: 'x' })],
+    ['runtimeBinding 携带 command 字段', (binding) => ({ ...binding, command: 'rm -rf /' })],
+    ['runtimeBinding 携带绝对路径字段', (binding) => ({ ...binding, absolutePath: 'C:\\private\\a.ts' })],
+    [
+      'runtimeBinding selection 携带额外私有字段',
+      (binding) => ({ ...binding, selection: { ...binding.selection, systemPrompt: 'secret' } }),
+    ],
+    ['runtimeBinding 摘要非 sha256', (binding) => ({ ...binding, bindingDigest: 'md5:deadbeef' })],
+    [
+      'runtimeBinding selectionDigest/bindingDigest 误带 sha256 前缀',
+      (binding) => ({
+        ...binding,
+        selectionDigest: `sha256:${binding.selectionDigest}`,
+        bindingDigest: `sha256:${binding.bindingDigest}`,
+      }),
+    ],
+    ['runtimeBinding version 非 1', (binding) => ({ ...binding, version: 2 })],
+    ['runtimeBinding 缺失字段', (binding) => ({ ...binding, bindingDigest: undefined })],
+    [
+      'runtimeBinding 结构合法但错绑其他 attempt/taskRun',
+      (binding) => ({ ...binding, attemptId: 'xhba_other', taskRunId: 'xhbtr_other' }),
+    ],
+  ])('observe 拒绝非法 runtimeBinding（%s），映射为安全 INTERNAL', async (_label, mutate) => {
+    const attempt: Record<string, unknown> = {
+      attemptId: 'xhba_1',
+      taskRunId: 'xhbtr_1',
+      status: 'RUNNING',
+      runtimeBinding: mutate(runtimeBindingFixture('xhba_1' as AttemptId, 'xhbtr_1' as TaskRunId)),
+    }
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...projectionFixture(),
+        taskRuns: [
+          { taskRunId: 'xhbtr_1', taskSpecId: 'xhbts_1', taskKey: 't1', status: 'RUNNING', attemptId: 'xhba_1' },
+        ],
+        attempts: [attempt],
+      },
+    })
+
+    await expect(observeCollaborationHub(address)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+    })
+  })
+
+  it.each([
+    ['普通值', 'rs-1'],
+    ['pi-e2e 运行时标识', 'pi-e2e-runtime-abc123'],
+  ])('observe 拒绝携带底层 runtimeSessionId（%s）的 attempt，映射为安全 INTERNAL', async (_label, runtimeSessionId) => {
+    // 即使 runtimeBinding 完全合法，attempt 也不允许向 renderer 暴露 runtimeSessionId
+    const attempt: Record<string, unknown> = {
+      attemptId: 'xhba_1',
+      taskRunId: 'xhbtr_1',
+      status: 'RUNNING',
+      runtimeSessionId,
+      runtimeBinding: runtimeBindingFixture('xhba_1' as AttemptId, 'xhbtr_1' as TaskRunId),
+    }
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...projectionFixture(),
+        taskRuns: [
+          { taskRunId: 'xhbtr_1', taskSpecId: 'xhbts_1', taskKey: 't1', status: 'RUNNING', attemptId: 'xhba_1' },
+        ],
+        attempts: [attempt],
+      },
+    })
+
+    await expect(observeCollaborationHub(address)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+    })
   })
 
   it('observe 接受 activeDelivery 公开摘要和交付动作，但拒绝绝对路径', async () => {
@@ -761,7 +890,7 @@ describe('collaboration-hub-client', () => {
       (value: { items: unknown[] }) => ({ ...value, runtime: { session: 'secret' } }),
     ],
     [
-      '成功项携带私有运行时字段',
+      '成功项 runtimeBinding 结构合法但携带额外 secret 字段',
       (value: { items: { ok: true; taskRunId: string; value: { attempt: Record<string, unknown> } }[] }) => ({
         ...value,
         items: [
@@ -769,7 +898,13 @@ describe('collaboration-hub-client', () => {
             ...value.items[0]!,
             value: {
               ...value.items[0]!.value,
-              attempt: { ...value.items[0]!.value.attempt, command: 'rm -rf /', runtimeBinding: { secret: true } },
+              attempt: {
+                ...value.items[0]!.value.attempt,
+                runtimeBinding: {
+                  ...runtimeBindingFixture('xhba_1' as AttemptId, 'xhbtr_1' as TaskRunId),
+                  secret: true,
+                },
+              },
             },
           },
           value.items[1]!,

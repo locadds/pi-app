@@ -11,6 +11,7 @@ import type {
   FlowId,
   HubAddressV1,
   InitialPlanDraftInputV1,
+  SessionCollaborationProjectionM2BV1,
   TaskFileAuthorizationScopeV1,
   TaskRunId,
   WorkspaceReceiptId,
@@ -90,6 +91,34 @@ async function tempDb(name = 'hub.sqlite') {
   const root = await mkdtemp(join(tmpdir(), 'xiaogui-hub-m2b-runtime-'))
   roots.push(root)
   return join(root, name)
+}
+
+async function expectPublicAttemptWithoutRuntimeSession(
+  app: ReturnType<typeof createCollaborationHubApplicationV1>,
+  status: SessionCollaborationProjectionM2BV1['attempts'][number]['status'],
+  attemptId?: AttemptId,
+): Promise<void> {
+  const observed = await app.observeM2B(ADDRESS)
+  expect(observed).toMatchObject({ ok: true })
+  if (!observed.ok) throw new Error('missing public attempt projection')
+  const attempt = attemptId
+    ? observed.value.attempts.find((candidate) => candidate.attemptId === attemptId)
+    : observed.value.attempts[0]
+  expect(attempt).toMatchObject({ status })
+  expect(attempt).not.toHaveProperty('runtimeSessionId')
+}
+
+function expectPrivateRuntimeSession(
+  dbPath: string,
+  attemptId: AttemptId,
+  runtimeSessionId = 'runtime-1',
+): void {
+  const store = new CollaborationHubSqliteStoreV1(dbPath)
+  try {
+    expect(store.attempt(attemptId)).toMatchObject({ runtime_session_id: runtimeSessionId })
+  } finally {
+    store.close()
+  }
 }
 
 function writeSystemIdempotencyForTest(
@@ -335,12 +364,10 @@ describe('M2B fake agent runtime integration', () => {
         },
       }),
     ).resolves.toMatchObject({ ok: true })
-    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
-      ok: true,
-      value: { attempts: [expect.objectContaining({ status: 'RUNNING', runtimeSessionId: 'runtime-1' })] },
-    })
+    await expectPublicAttemptWithoutRuntimeSession(app, 'RUNNING', attemptId)
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({ agent_dispatch_outbox: 1, runtime_session_bindings: 1 })
+    expect(store.attempt(attemptId)).toMatchObject({ runtime_session_id: 'runtime-1' })
     store.close()
     app.close()
   })
@@ -378,12 +405,10 @@ describe('M2B fake agent runtime integration', () => {
       runtimePromptVault: testPromptVault(),
     })
     await expect(recovered.executeSystem(request)).resolves.toMatchObject({ ok: true })
-    await expect(recovered.observeM2B(ADDRESS)).resolves.toMatchObject({
-      ok: true,
-      value: { attempts: [expect.objectContaining({ status: 'RUNNING', runtimeSessionId: 'runtime-1' })] },
-    })
+    await expectPublicAttemptWithoutRuntimeSession(recovered, 'RUNNING', crashed.attemptId)
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({ attempts: 1, agent_dispatch_outbox: 1, runtime_session_bindings: 1 })
+    expect(store.attempt(crashed.attemptId)).toMatchObject({ runtime_session_id: 'runtime-1' })
     store.close()
     recovered.close()
   })
@@ -571,10 +596,8 @@ describe('M2B fake agent runtime integration', () => {
         createdAt: '2026-08-17T00:00:00.000Z',
       },
     ])
-    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
-      ok: true,
-      value: { attempts: [expect.objectContaining({ status: 'RUNNING', runtimeSessionId: 'runtime-1' })] },
-    })
+    await expectPublicAttemptWithoutRuntimeSession(app, 'RUNNING', attemptId)
+    expectPrivateRuntimeSession(dbPath, attemptId)
     app.close()
   })
 
@@ -605,12 +628,10 @@ describe('M2B fake agent runtime integration', () => {
         intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
       }),
     ).resolves.toMatchObject({ ok: true })
-    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
-      ok: true,
-      value: { attempts: [expect.objectContaining({ status: 'FAILED', runtimeSessionId: 'runtime-1' })] },
-    })
+    await expectPublicAttemptWithoutRuntimeSession(app, 'FAILED', attemptId)
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({ agent_failures: 1, verification_attempts: 0 })
+    expect(store.attempt(attemptId)).toMatchObject({ runtime_session_id: 'runtime-1' })
     store.close()
     app.close()
   })
@@ -642,12 +663,10 @@ describe('M2B fake agent runtime integration', () => {
         intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
       }),
     ).resolves.toMatchObject({ ok: true })
-    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
-      ok: true,
-      value: { attempts: [expect.objectContaining({ status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1' })] },
-    })
+    await expectPublicAttemptWithoutRuntimeSession(app, 'OUTCOME_UNKNOWN', attemptId)
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({ agent_failures: 0, verification_attempts: 0 })
+    expect(store.attempt(attemptId)).toMatchObject({ runtime_session_id: 'runtime-1' })
     store.close()
     app.close()
   })
@@ -673,10 +692,8 @@ describe('M2B fake agent runtime integration', () => {
         intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
       }),
     ).resolves.toMatchObject({ ok: true })
-    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
-      ok: true,
-      value: { attempts: [expect.objectContaining({ status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1' })] },
-    })
+    await expectPublicAttemptWithoutRuntimeSession(app, 'OUTCOME_UNKNOWN', attemptId)
+    expectPrivateRuntimeSession(dbPath, attemptId)
     app.close()
   })
 
@@ -789,12 +806,10 @@ describe('M2B fake agent runtime integration', () => {
         intent: { type: 'system.agent.report.record', flowId, taskRunId, attemptId },
       }),
     ).resolves.toMatchObject({ ok: true })
-    await expect(app.observeM2B(ADDRESS)).resolves.toMatchObject({
-      ok: true,
-      value: { attempts: [expect.objectContaining({ status: 'OUTCOME_UNKNOWN', runtimeSessionId: 'runtime-1' })] },
-    })
+    await expectPublicAttemptWithoutRuntimeSession(app, 'OUTCOME_UNKNOWN', attemptId)
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({ agent_failures: 0, agent_succeeded_audits: 0 })
+    expect(store.attempt(attemptId)).toMatchObject({ runtime_session_id: 'runtime-1' })
     store.close()
     app.close()
   })

@@ -30,6 +30,12 @@ import {
   type XiaoguiRuntimeCompositionV1,
 } from './runtime-composition'
 import { registerXiaoguiDeliveryHandlers } from './delivery-ipc'
+import {
+  deactivatePiE2eScriptedRuntimeLaunchV1,
+  PI_E2E_SCRIPTED_RUNTIME_ROUTING_POLICY_V1,
+  recordPiE2eRendererEventV1,
+  resolvePiE2eScriptedRuntimeLaunchV1,
+} from './pi-e2e-scripted-runtime'
 
 const AddressSchema = z
   .object({
@@ -163,6 +169,7 @@ const ExecutionStartBatchSchema = z
 interface DefaultRuntimeLifecycleV1 {
   readonly composition: XiaoguiRuntimeCompositionV1
   readonly kimiLogin: KimiLoginCoordinatorV1
+  readonly piE2eLaunch?: NonNullable<ReturnType<typeof resolvePiE2eScriptedRuntimeLaunchV1>>
 }
 
 let defaultRuntimeLifecycle: DefaultRuntimeLifecycleV1 | null = null
@@ -188,6 +195,7 @@ export async function closeDefaultCollaborationHubRuntimeComposition(): Promise<
   defaultRuntimeLifecycle = null
   lifecycle?.kimiLogin.close()
   await lifecycle?.composition.close()
+  if (lifecycle?.piE2eLaunch) deactivatePiE2eScriptedRuntimeLaunchV1(lifecycle.piE2eLaunch)
 }
 
 export function registerCollaborationHubHandlers(
@@ -196,8 +204,10 @@ export function registerCollaborationHubHandlers(
   taskExecution?: XiaoguiTaskExecutionOrchestratorV1,
   deliveryCoordinator?: XiaoguiDeliveryCoordinatorPortV1,
 ): void {
-  const resolveKimiLogin = () => kimiLogin ?? getDefaultKimiLoginCoordinator()
-  const resolveTaskExecution = () => taskExecution ?? getDefaultTaskExecutionOrchestrator()
+  const defaultLifecycle = arguments.length === 0 ? getDefaultRuntimeLifecycle() : undefined
+  const resolveKimiLogin = () => kimiLogin ?? defaultLifecycle?.kimiLogin ?? getDefaultKimiLoginCoordinator()
+  const resolveTaskExecution = () =>
+    taskExecution ?? defaultLifecycle?.composition.taskExecution ?? getDefaultTaskExecutionOrchestrator()
   if (deliveryCoordinator) {
     registerXiaoguiDeliveryHandlers(deliveryCoordinator)
   } else if (arguments.length === 0) {
@@ -222,6 +232,10 @@ export function registerCollaborationHubHandlers(
   registerHandler('ipc:xiaogui.hub.execution.startBatch', async (payload) => {
     const parsed = ExecutionStartBatchSchema.safeParse(payload)
     if (!parsed.success) return invalidExecutionInput()
+    recordPiE2eRendererEventV1('renderer.ipc.startBatch', {
+      itemCount: parsed.data.items.length,
+      taskRunIds: parsed.data.items.map((item) => item.taskRunId),
+    })
     return resolveTaskExecution().startBatch(
       parsed.data as unknown as XiaoguiTaskExecutionStartBatchRequestV1,
     )
@@ -270,10 +284,21 @@ function getDefaultRuntimeLifecycle(): DefaultRuntimeLifecycleV1 {
 
   const userDataDir = app.getPath('userData')
   const effectiveEnabled = configStore.get('xiaoguiKimiProductionEnabled') === true
+  const piE2eLaunch = resolvePiE2eScriptedRuntimeLaunchV1({
+    isPackaged: app.isPackaged,
+    argv: process.argv,
+    env: process.env,
+  })
   const composition = createXiaoguiRuntimeCompositionV1({
     userDataDir,
     productionEnabled: effectiveEnabled,
     lookup: sessionScopeResolverV1,
+    ...(piE2eLaunch
+      ? {
+          piE2eScriptedRuntimeLaunch: piE2eLaunch,
+          runtimeRoutingPolicy: PI_E2E_SCRIPTED_RUNTIME_ROUTING_POLICY_V1,
+        }
+      : {}),
   })
   defaultRuntimeLifecycle = {
     composition,
@@ -281,6 +306,7 @@ function getDefaultRuntimeLifecycle(): DefaultRuntimeLifecycleV1 {
       effectiveEnabled,
       userDataDir,
     }),
+    ...(piE2eLaunch ? { piE2eLaunch } : {}),
   }
   return defaultRuntimeLifecycle
 }

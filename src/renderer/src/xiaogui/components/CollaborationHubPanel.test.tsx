@@ -194,7 +194,7 @@ function activeProjection(address: HubAddressV1): SessionCollaborationProjection
     ],
     attempts: [
       { attemptId: 'xhba_0' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'FAILED' },
-      { attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING', runtimeSessionId: 'rs-1' },
+      { attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING' },
     ],
     availableActions: ['flow.cancel'],
   })
@@ -227,8 +227,8 @@ function runtimeBindingFixture(attemptId: AttemptId, taskRunId: TaskRunId): Atte
       interrupt: 'ACKED',
       inspect: 'RECONCILE',
     },
-    selectionDigest: `sha256:${'8'.repeat(64)}` as AttemptRuntimeBindingV1['selectionDigest'],
-    bindingDigest: `sha256:${'9'.repeat(64)}` as AttemptRuntimeBindingV1['bindingDigest'],
+    selectionDigest: '8'.repeat(64) as AttemptRuntimeBindingV1['selectionDigest'],
+    bindingDigest: '9'.repeat(64) as AttemptRuntimeBindingV1['bindingDigest'],
     boundAt: '2026-08-18T00:00:00.000Z',
   }
 }
@@ -336,7 +336,6 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
         attemptId: 'xhba_1' as AttemptId,
         taskRunId: 'xhbtr_1' as TaskRunId,
         status: 'RUNNING',
-        runtimeSessionId: 'runtime-secret-session',
         workspaceReceiptId: 'xhbwr_receipt-secret' as never,
         runtimeBinding: runtimeBindingFixture('xhba_1' as AttemptId, 'xhbtr_1' as TaskRunId),
       },

@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -342,8 +343,8 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
 
   it('restores the persisted runtime binding before watching a cross-restart RUNNING Attempt', async () => {
     const events: string[] = []
-    const hub = fakeHub(events)
     const dbPath = await tempDb()
+    const hub = fakeHub(events, dbPath)
     const firstMonitor = fakeRuntimeMonitor()
     const coordinator = fakeVerificationCoordinator()
     const first = await createOrchestrator(hub.application, events, undefined, dbPath, {
@@ -374,16 +375,21 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
 
   it('registers runtime monitoring for RUNNING Attempts and routes SUCCEEDED to task verification', async () => {
     const events: string[] = []
-    const hub = fakeHub(events)
+    const dbPath = await tempDb()
+    const hub = fakeHub(events, dbPath)
     const monitor = fakeRuntimeMonitor()
     const coordinator = fakeVerificationCoordinator()
-    const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
       runtimeMonitor: monitor,
       verificationCoordinator: coordinator,
     })
 
     await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true })
     expect(monitor.watched()).toEqual(['runtime-1'])
+    const observed = await hub.application.observeM2B(ADDRESS)
+    expect(observed).toMatchObject({ ok: true })
+    if (!observed.ok) throw new Error('missing public projection')
+    expect(observed.value.attempts[0]).not.toHaveProperty('runtimeSessionId')
 
     await monitor.emit('runtime-1', {
       state: 'SUCCEEDED',
@@ -404,10 +410,11 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
 
   it('binds deterministic ALLOW_ONCE decisions to the confirmed execution scope', async () => {
     const events: string[] = []
-    const hub = fakeHub(events)
+    const dbPath = await tempDb()
+    const hub = fakeHub(events, dbPath)
     const monitor = fakeRuntimeMonitor()
     const coordinator = fakeVerificationCoordinator()
-    const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
       runtimeMonitor: monitor,
       verificationCoordinator: coordinator,
     })
@@ -441,10 +448,11 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
 
   it('writes CANDIDATE_AUDIT_FAILED when verification cannot capture the task candidate', async () => {
     const events: string[] = []
-    const hub = fakeHub(events)
+    const dbPath = await tempDb()
+    const hub = fakeHub(events, dbPath)
     const monitor = fakeRuntimeMonitor()
     const coordinator = fakeVerificationCoordinator({ ok: false, reasonCode: 'TASK_VERIFICATION_CAPTURE_FAILED' })
-    const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
       runtimeMonitor: monitor,
       verificationCoordinator: coordinator,
     })
@@ -871,7 +879,7 @@ function parallelHub(
   }
 }
 
-function fakeHub(events: string[]) {
+function fakeHub(events: string[], privateDbPath?: string) {
   let attemptStatus: 'WORKSPACE_PREPARING' | 'READY' | 'RUNNING' | 'FAILED' | 'OUTCOME_UNKNOWN' | undefined
   let runtimeSession: string | undefined
   let schedules = 0
@@ -909,7 +917,6 @@ function fakeHub(events: string[]) {
       attemptId: ATTEMPT_ID,
       taskRunId: TASK_RUN_ID,
       status: attemptStatus,
-      ...(runtimeSession ? { runtimeSessionId: runtimeSession } : {}),
       workspaceReceiptId: 'workspace-receipt-1' as never,
     }] : [],
     history: [],
@@ -934,6 +941,7 @@ function fakeHub(events: string[]) {
         events.push('dispatch')
         attemptStatus = 'RUNNING'
         runtimeSession = 'runtime-1'
+        if (privateDbPath) writePrivateRuntimeAttempt(privateDbPath, attemptStatus, runtimeSession)
         return { ok: true as const, value: {
           requestId: command.requestId,
           intentType: command.intent.type,
@@ -946,6 +954,7 @@ function fakeHub(events: string[]) {
         events.push('outcome-unknown')
         attemptStatus = command.intent.outcome === 'FAILED' ? 'FAILED' : 'OUTCOME_UNKNOWN'
         runtimeSession = command.intent.runtimeSessionId
+        if (privateDbPath) writePrivateRuntimeAttempt(privateDbPath, attemptStatus, runtimeSession)
         return { ok: true as const, value: {
           requestId: command.requestId,
           intentType: command.intent.type,
@@ -980,6 +989,40 @@ function fakeHub(events: string[]) {
     scheduleCount: () => schedules,
     runtimeSessionId: () => runtimeSession,
     systemCommands: () => executeSystem.mock.calls.map(([command]) => command),
+  }
+}
+
+function writePrivateRuntimeAttempt(
+  dbPath: string,
+  status: 'RUNNING' | 'FAILED' | 'OUTCOME_UNKNOWN',
+  runtimeSessionId: string,
+): void {
+  const db = new DatabaseSync(dbPath)
+  try {
+    // The fake application owns no flow/task rows; this fixture writes only
+    // the private attempt record consumed by the main-process orchestrator.
+    db.exec('pragma foreign_keys = off')
+    db.prepare(`
+      insert or replace into attempts (
+        attempt_id, project_id, session_key, flow_id, task_run_id, status,
+        attempt_digest, workspace_receipt_id, runtime_session_id,
+        outcome_receipt_digest, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?)
+    `).run(
+      ATTEMPT_ID,
+      ADDRESS.projectId,
+      ADDRESS.sessionKey,
+      FLOW_ID,
+      TASK_RUN_ID,
+      status,
+      'sha256:attempt',
+      'workspace-receipt-1',
+      runtimeSessionId,
+      '2026-08-17T00:00:00.000Z',
+      '2026-08-17T00:00:00.000Z',
+    )
+  } finally {
+    db.close()
   }
 }
 

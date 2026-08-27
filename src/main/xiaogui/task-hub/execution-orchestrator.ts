@@ -11,6 +11,7 @@ import type {
   TaskFileAuthorizationScopeV1,
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
 import { XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 } from '@shared/xiaogui-task-execution'
 import type {
   XiaoguiTaskExecutionStartBatchItemOutcomeV1,
@@ -36,8 +37,8 @@ import type {
   RuntimePermissionDecisionFactoryV1,
   RuntimePermissionRequestEventV1,
 } from './runtime-outcome-monitor'
+import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
-import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
 
 type ExecutionSagaPhaseV1 =
   | 'ACCEPTED'
@@ -103,6 +104,7 @@ export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
  */
 export class XiaoguiTaskExecutionOrchestratorV1 {
   private readonly saga: SqliteTaskExecutionSagaStoreV1
+  private readonly privateAttemptStore: CollaborationHubSqliteStoreV1
   private readonly inFlight = new Map<
     string,
     { inputDigest: string; outcome: Promise<XiaoguiTaskExecutionStartOutcomeV1> }
@@ -115,6 +117,7 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       throw new Error('XIAOGUI_TASK_EXECUTION_RUNTIME_VERIFICATION_PAIR_REQUIRED')
     }
     this.saga = new SqliteTaskExecutionSagaStoreV1(options.dbPath, () => this.now())
+    this.privateAttemptStore = new CollaborationHubSqliteStoreV1(options.dbPath)
   }
 
   async start(input: XiaoguiTaskExecutionStartRequestV1): Promise<XiaoguiTaskExecutionStartOutcomeV1> {
@@ -210,6 +213,7 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     ])
     await this.options.runtimeMonitor?.close()
     await this.options.verificationCoordinator?.close()
+    this.privateAttemptStore.close()
     this.saga.close()
   }
 
@@ -543,7 +547,13 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     operation: ExecutionSagaRowV1,
     current: XiaoguiTaskExecutionStartResultV1,
   ): Promise<boolean> {
-    const runtimeSessionId = current.attempt.runtimeSessionId
+    const privateAttempt = this.privateAttemptStore.attempt(current.attempt.attemptId)
+    if (
+      !privateAttempt ||
+      privateAttempt.task_run_id !== current.taskRun.taskRunId ||
+      privateAttempt.status !== current.attempt.status
+    ) return false
+    const runtimeSessionId = privateAttempt.runtime_session_id
     if (!runtimeSessionId || !this.options.runtimeMonitor) return false
     const restored = await this.restoreRuntimeBinding(current.attempt.attemptId, runtimeSessionId)
     if (!restored) return false

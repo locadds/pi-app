@@ -12,6 +12,7 @@
 
 import type {
   AttemptProjectionM2BV1,
+  AttemptRuntimeBindingV1,
   AttemptStatusM2BV1,
   CollaborationHubActionM2BV1,
   CollaborationHubActionV1,
@@ -25,6 +26,7 @@ import type {
   TaskRunStatusM2BV1,
   UserIntentRequestV1,
 } from '@shared/xiaogui-collaboration-hub'
+import type { RuntimeAdapterSelectionV1 } from '@shared/xiaogui-agent-runtime'
 import type {
   DeliveryApplyAttemptV1,
   DeliveryApplySafeCodeV1,
@@ -97,6 +99,8 @@ const HUB_TRACE_ID = /^xhbt_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 const DELIVERY_TRACE_ID = /^xhbd_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const TASK_EXECUTION_TRACE_ID = /^xhbet_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/
+/** 裸 64 位小写 hex（主进程 payloadDigest 实际 wire 形态，无 sha256: 前缀）。 */
+const RAW_SHA256_HEX = /^[0-9a-f]{64}$/
 
 const TASK_EXECUTION_ERROR_CODES = new Set<XiaoguiTaskExecutionErrorCodeV1>([
   'SESSION_SCOPE_MISMATCH',
@@ -432,18 +436,90 @@ function isTaskRunM2B(value: unknown): value is TaskRunProjectionM2BV1 {
   )
 }
 
+const RUNTIME_SELECTION_KEYS = [
+  'adapterId',
+  'runtimeKind',
+  'protocol',
+  'capabilityDigest',
+  'approvalStatus',
+  'diagnosticOnly',
+  'stream',
+  'interrupt',
+  'inspect',
+] as const
+const RUNTIME_KINDS = new Set(['KIMI', 'QODER', 'CODEX', 'OTHER'])
+const RUNTIME_PROTOCOLS = new Set(['ACP', 'HEADLESS', 'SDK', 'REMOTE_CONTROL', 'CLOUD_REMOTE', 'NON_INTERACTIVE_CLI_DIAGNOSTIC'])
+
+/** 共享 RuntimeAdapterSelectionV1 公开字段的 exact-key 严格校验，不放行任何额外字段。 */
+function isRuntimeAdapterSelection(value: unknown): value is RuntimeAdapterSelectionV1 {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, RUNTIME_SELECTION_KEYS) &&
+    isNonEmptyString(value.adapterId) &&
+    RUNTIME_KINDS.has(String(value.runtimeKind)) &&
+    RUNTIME_PROTOCOLS.has(String(value.protocol)) &&
+    isNonEmptyString(value.capabilityDigest) &&
+    value.approvalStatus === 'APPROVED_FOR_PRODUCTION' &&
+    value.diagnosticOnly === false &&
+    (value.stream === 'POLL' || value.stream === 'PUSH') &&
+    (value.interrupt === 'BEST_EFFORT' || value.interrupt === 'ACKED') &&
+    (value.inspect === 'SNAPSHOT' || value.inspect === 'RECONCILE')
+  )
+}
+
+const ATTEMPT_RUNTIME_BINDING_KEYS = [
+  'version',
+  'attemptId',
+  'taskRunId',
+  'executionInputDigest',
+  'authorizationScopeDigest',
+  'selection',
+  'selectionDigest',
+  'bindingDigest',
+  'boundAt',
+] as const
+
+/**
+ * AttemptRuntimeBindingV1 严格校验：exact keys + version=1 +
+ * executionInputDigest/authorizationScopeDigest 为带 sha256: 前缀摘要，
+ * selectionDigest/bindingDigest 为裸 64 hex（主进程 payloadDigest 真实 wire 形态）+
+ * selection exact-key 校验；任何额外/缺失/畸形字段整体判非法，绝不放行任意对象。
+ */
+function isAttemptRuntimeBinding(value: unknown): value is AttemptRuntimeBindingV1 {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ATTEMPT_RUNTIME_BINDING_KEYS) &&
+    value.version === 1 &&
+    isNonEmptyString(value.attemptId) &&
+    isNonEmptyString(value.taskRunId) &&
+    typeof value.executionInputDigest === 'string' &&
+    SHA256_DIGEST.test(value.executionInputDigest) &&
+    typeof value.authorizationScopeDigest === 'string' &&
+    SHA256_DIGEST.test(value.authorizationScopeDigest) &&
+    isRuntimeAdapterSelection(value.selection) &&
+    typeof value.selectionDigest === 'string' &&
+    RAW_SHA256_HEX.test(value.selectionDigest) &&
+    typeof value.bindingDigest === 'string' &&
+    RAW_SHA256_HEX.test(value.bindingDigest) &&
+    typeof value.boundAt === 'string'
+  )
+}
+
 function isAttemptM2B(value: unknown): value is AttemptProjectionM2BV1 {
   return (
     isRecord(value) &&
     Object.keys(value).every((key) =>
-      ['attemptId', 'taskRunId', 'status', 'runtimeSessionId', 'workspaceReceiptId', 'verificationSummary'].includes(key),
+      ['attemptId', 'taskRunId', 'status', 'workspaceReceiptId', 'verificationSummary', 'runtimeBinding'].includes(key),
     ) &&
     typeof value.attemptId === 'string' &&
     typeof value.taskRunId === 'string' &&
     ATTEMPT_STATUSES_M2B.has(value.status as AttemptStatusM2BV1) &&
-    (value.runtimeSessionId === undefined || typeof value.runtimeSessionId === 'string') &&
     (value.workspaceReceiptId === undefined || typeof value.workspaceReceiptId === 'string') &&
-    (value.verificationSummary === undefined || isTaskVerificationSummary(value.verificationSummary))
+    (value.verificationSummary === undefined || isTaskVerificationSummary(value.verificationSummary)) &&
+    (value.runtimeBinding === undefined ||
+      (isAttemptRuntimeBinding(value.runtimeBinding) &&
+        value.runtimeBinding.attemptId === value.attemptId &&
+        value.runtimeBinding.taskRunId === value.taskRunId))
   )
 }
 

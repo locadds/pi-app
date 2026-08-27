@@ -47,6 +47,11 @@ import { createRuntimeOutcomeMonitorV1, type RuntimeOutcomeMonitorV1 } from './r
 import { createTaskVerificationCoordinatorV1, type TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import { MainProcessChangeApplyPortV1, SqliteDeliveryApplyAttemptRegistryV1 } from './change-apply'
 import { createXiaoguiDeliveryWorkflowV1, type XiaoguiDeliveryWorkflowV1 } from './delivery-workflow'
+import {
+  deactivatePiE2eScriptedRuntimeLaunchV1,
+  PiE2eWorkspaceScriptedRuntimeAdapterV1,
+  type PiE2eScriptedRuntimeLaunchV1,
+} from './pi-e2e-scripted-runtime'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
@@ -56,6 +61,8 @@ export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly kimiProbe?: KimiAcpProbeV1
   readonly kimiTransportFactory?: AcpTransportFactoryV1
   readonly additionalRuntimeAdapters?: readonly AgentRuntimeAdapterV1[]
+  /** Opaque, process-launch-gated E2E seam. Forged launch objects are rejected by the adapter. */
+  readonly piE2eScriptedRuntimeLaunch?: PiE2eScriptedRuntimeLaunchV1
   readonly runtimeRoutingPolicy?: RuntimeRoutingPolicyV1
   readonly now?: () => string
 }
@@ -152,6 +159,13 @@ export function createXiaoguiRuntimeCompositionV1(
     })
     runtimeRegistry = createAgentRuntimeRegistryV1()
     void runtimeRegistry.register(kimiAdapter)
+    const piE2eAdapter = options.piE2eScriptedRuntimeLaunch
+      ? new PiE2eWorkspaceScriptedRuntimeAdapterV1(
+          attemptWorkspaces,
+          options.piE2eScriptedRuntimeLaunch,
+        )
+      : undefined
+    if (piE2eAdapter) void runtimeRegistry.register(piE2eAdapter)
     for (const adapter of options.additionalRuntimeAdapters ?? []) {
       void runtimeRegistry.register(adapter)
     }
@@ -173,10 +187,12 @@ export function createXiaoguiRuntimeCompositionV1(
       // Keep the existing desktop database location so installing the runtime
       // composition does not make previously created plans disappear.
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
-      ...(options.productionEnabled
+      ...(options.productionEnabled || piE2eAdapter
         ? {
             agentRuntime: runtimeHost,
-            agentSelection: KIMI_PRODUCTION_SELECTION_V1,
+            ...(options.productionEnabled && !piE2eAdapter
+              ? { agentSelection: KIMI_PRODUCTION_SELECTION_V1 }
+              : {}),
             agentRoutingPolicy: options.runtimeRoutingPolicy ?? {
               mode: 'CODING' as const,
               requiredCapabilities: ['CODING.GIT.CHANGESET' as const, 'CODING.TYPESCRIPT' as const],
@@ -242,6 +258,7 @@ export function createXiaoguiRuntimeCompositionV1(
       inputStore,
       payloadVault,
       workspaceRegistry,
+      options.piE2eScriptedRuntimeLaunch,
     )
   } catch (error) {
     closeQuietly(taskExecution)
@@ -254,6 +271,9 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(inputStore)
     closeQuietly(payloadVault)
     closeQuietly(workspaceRegistry)
+    if (options.piE2eScriptedRuntimeLaunch) {
+      deactivatePiE2eScriptedRuntimeLaunchV1(options.piE2eScriptedRuntimeLaunch)
+    }
     throw error
   }
 }
@@ -267,6 +287,7 @@ function createCompositionInterface(
   inputStore: AttemptExecutionInputStoreV1,
   payloadVault: PrivateRuntimePayloadVaultV1,
   workspaceRegistry: SqliteAttemptWorkspaceRegistryV1,
+  piE2eLaunch: PiE2eScriptedRuntimeLaunchV1 | undefined,
 ): XiaoguiRuntimeCompositionV1 {
   let closed = false
   let closePromise: Promise<void> | undefined
@@ -282,17 +303,22 @@ function createCompositionInterface(
     close() {
       if (closePromise) return closePromise
       closed = true
-      closePromise = taskExecution.close().then(async () => {
-        await delivery.close()
-        await closeAll([
-          deliveryApplyRegistry,
-          runtimeRegistry,
-          application,
-          inputStore,
-          payloadVault,
-          workspaceRegistry,
-        ])
-      })
+      closePromise = (async () => {
+        try {
+          await taskExecution.close()
+          await delivery.close()
+          await closeAll([
+            deliveryApplyRegistry,
+            runtimeRegistry,
+            application,
+            inputStore,
+            payloadVault,
+            workspaceRegistry,
+          ])
+        } finally {
+          if (piE2eLaunch) deactivatePiE2eScriptedRuntimeLaunchV1(piE2eLaunch)
+        }
+      })()
       return closePromise
     },
   }

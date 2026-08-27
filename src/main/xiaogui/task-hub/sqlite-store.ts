@@ -757,7 +757,6 @@ export class CollaborationHubSqliteStoreV1 {
           attemptId: attempt.attempt_id,
           taskRunId: attempt.task_run_id,
           status: attempt.status as AttemptProjectionM2BV1['status'],
-          ...(attempt.runtime_session_id ? { runtimeSessionId: attempt.runtime_session_id } : {}),
           ...(attempt.workspace_receipt_id ? { workspaceReceiptId: attempt.workspace_receipt_id } : {}),
           ...(verificationSummary ? { verificationSummary } : {}),
           ...(runtimeBinding ? { runtimeBinding } : {}),
