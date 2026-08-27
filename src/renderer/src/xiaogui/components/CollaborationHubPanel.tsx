@@ -161,6 +161,13 @@ const RUN_STATUS_GROUP: Record<TaskRunStatusM2BV1, TaskGroupKey> = {
   SUPERSEDED: 'failed',
 }
 
+function currentAttemptOf(
+  run: TaskRunProjectionM2BV1,
+  attempts: readonly AttemptProjectionM2BV1[],
+): AttemptProjectionM2BV1 | undefined {
+  return attempts.find((attempt) => attempt.attemptId === run.attemptId) ?? attempts[attempts.length - 1]
+}
+
 function groupKeyForRun(
   run: TaskRunProjectionM2BV1,
   readiness: TaskDependencyStateV1 | undefined,
@@ -173,12 +180,32 @@ function groupKeyForRun(
     }
     if (readiness.state === 'IN_FLIGHT') {
       // 执行波内任务再结合当前 attempt 状态细分：验证中 / 执行中
-      const current = attempts.find((attempt) => attempt.attemptId === run.attemptId) ?? attempts[attempts.length - 1]
-      return current?.status === 'VERIFYING' ? 'verifying' : 'running'
+      return currentAttemptOf(run, attempts)?.status === 'VERIFYING' ? 'verifying' : 'running'
     }
     // TERMINAL：落到 TaskRun/Attempt 的终态展示
   }
   return RUN_STATUS_GROUP[run.status]
+}
+
+/**
+ * 卡片徽标：存在实时 readiness 时显示与 readiness 一致的用户语义，
+ * 避免「分组可执行 + 徽标阻塞」这类矛盾（未派发任务的 raw TaskRun 仍是 BLOCKED）；
+ * TERMINAL 或无快照时回退 TaskRun 终态文案。
+ */
+function taskRunBadgeText(
+  run: TaskRunProjectionM2BV1,
+  readiness: TaskDependencyStateV1 | undefined,
+  attempts: readonly AttemptProjectionM2BV1[],
+): string {
+  if (readiness) {
+    if (readiness.state === 'READY') return '就绪'
+    if (readiness.state === 'WAITING_FOR_DEPENDENCIES') return '等待依赖'
+    if (readiness.state === 'BLOCKED_BY_FAILED_DEPENDENCY') return '前置失败'
+    if (readiness.state === 'IN_FLIGHT') {
+      return currentAttemptOf(run, attempts)?.status === 'VERIFYING' ? '验证中' : '执行中'
+    }
+  }
+  return TASK_RUN_STATUS_TEXT[run.status]
 }
 
 /** 依赖/阻断原因：以 executionReadiness 实时快照为权威，只显示任务标题。 */
@@ -820,11 +847,13 @@ function AwaitingApprovalView({ projection }: { projection: SessionCollaboration
 function TaskRunCard({
   run,
   title,
+  badge,
   attempts,
   reason,
 }: {
   run: TaskRunProjectionM2BV1
   title: string
+  badge: string
   attempts: readonly AttemptProjectionM2BV1[]
   reason: string | null
 }) {
@@ -836,7 +865,7 @@ function TaskRunCard({
           className="rounded bg-muted px-1.5 py-0.5 text-[10px]"
           data-testid={`hub-taskrun-status-${run.taskKey}`}
         >
-          {TASK_RUN_STATUS_TEXT[run.status]}
+          {badge}
         </span>
       </div>
       {reason && <div className="mt-1 text-[10px] text-muted-foreground">{reason}</div>}
@@ -901,9 +930,11 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
               <ul className="flex flex-col gap-1">
                 {group.runs.map((run) => {
                   const spec = specByKey.get(run.taskKey)
+                  const runAttempts = attemptsByRun.get(run.taskRunId) ?? []
+                  const readiness = readinessByRunId.get(run.taskRunId)
                   const reason =
                     dependencyReasonText(
-                      readinessByRunId.get(run.taskRunId) ?? historicalDepStateByRunId.get(run.taskRunId),
+                      readiness ?? historicalDepStateByRunId.get(run.taskRunId),
                       titleByRunId,
                     ) ??
                     (run.status === 'BLOCKED' && spec && spec.dependsOn.length > 0
@@ -914,7 +945,8 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
                       key={run.taskRunId}
                       run={run}
                       title={titleByRunId.get(run.taskRunId) ?? '协作任务'}
-                      attempts={attemptsByRun.get(run.taskRunId) ?? []}
+                      badge={taskRunBadgeText(run, readiness, runAttempts)}
+                      attempts={runAttempts}
                       reason={reason}
                     />
                   )

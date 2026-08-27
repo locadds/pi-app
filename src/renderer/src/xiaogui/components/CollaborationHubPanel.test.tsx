@@ -234,9 +234,10 @@ function runtimeBindingFixture(attemptId: AttemptId, taskRunId: TaskRunId): Atte
 }
 
 /**
- * 覆盖全部分组的真实可达投影（以 executionReadiness 实时快照为权威）：
- * t1 执行中（IN_FLIGHT，attempt 含 runtimeBinding）、t5 验证中（IN_FLIGHT + attempt VERIFYING）、
- * t6 父任务失败（TERMINAL）、t2 等待 t1、t3 因 t6 失败被阻断、t4 未派发根任务 READY。
+ * 满槽分组场景（生产可达）：t1 执行中（IN_FLIGHT，attempt 含 runtimeBinding）、
+ * t5 验证中（IN_FLIGHT + attempt VERIFYING）、t6 父任务失败（TERMINAL）、
+ * t2 等待 t1、t3 因 t6 失败被阻断、t4 未派发根任务（raw TaskRun=BLOCKED，readiness=READY）。
+ * activeAttemptCount=2 占满并行上限 → availableSlots=0，主进程不会授予 execution.next.confirm。
  */
 function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
   const base = activeProjection(address)
@@ -314,7 +315,8 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
       { ...run(1, 'RUNNING'), attemptId: 'xhba_1' as AttemptId },
       run(2, 'BLOCKED'),
       run(3, 'BLOCKED'),
-      run(4, 'READY'),
+      // 真实 observeM2B：未派发根任务的 raw TaskRun 仍为 BLOCKED，readiness 才是 READY
+      run(4, 'BLOCKED'),
       { ...run(5, 'VERIFYING'), attemptId: 'xhba_5' as AttemptId },
       { ...run(6, 'FAILED'), attemptId: 'xhba_6' as AttemptId },
     ],
@@ -330,6 +332,122 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
       { attemptId: 'xhba_5' as AttemptId, taskRunId: 'xhbtr_5' as TaskRunId, status: 'VERIFYING' },
       { attemptId: 'xhba_6' as AttemptId, taskRunId: 'xhbtr_6' as TaskRunId, status: 'FAILED' },
     ],
+    executionReadiness,
+    lastExecutionWave,
+    availableActions: ['flow.cancel'],
+  }
+}
+
+/**
+ * 可确认场景（生产可达）：maxParallelism=2，仅 t1 IN_FLIGHT（activeAttemptCount=1），
+ * availableSlots=1 且确有 READY 根任务 t4 → 主进程授予 execution.next.confirm。
+ */
+function confirmableProjection(address: HubAddressV1): SessionCollaborationProjectionM2BV1 {
+  const base = activeProjection(address)
+  const executionReadiness: ExecutionReadinessSnapshotV1 = {
+    version: 1,
+    flowId: 'xhbf_flow1' as FlowId,
+    maxParallelism: 2,
+    activeAttemptCount: 1,
+    availableSlots: 1,
+    dependencyStates: [
+      {
+        version: 1,
+        taskRunId: 'xhbtr_1' as TaskRunId,
+        state: 'IN_FLIGHT',
+        dependencyTaskRunIds: [],
+        blockingTaskRunIds: [],
+        verifiedAncestorTaskChangeSetIds: [],
+      },
+      {
+        version: 1,
+        taskRunId: 'xhbtr_2' as TaskRunId,
+        state: 'WAITING_FOR_DEPENDENCIES',
+        dependencyTaskRunIds: ['xhbtr_1' as TaskRunId],
+        blockingTaskRunIds: ['xhbtr_1' as TaskRunId],
+        verifiedAncestorTaskChangeSetIds: [],
+      },
+      {
+        version: 1,
+        taskRunId: 'xhbtr_4' as TaskRunId,
+        state: 'READY',
+        dependencyTaskRunIds: [],
+        blockingTaskRunIds: [],
+        verifiedAncestorTaskChangeSetIds: [],
+      },
+    ],
+    readyTaskRunIds: ['xhbtr_4' as TaskRunId],
+    capturedAt: '2026-08-18T00:00:01.000Z',
+  }
+  const lastExecutionWave: ExecutionWaveV1 = {
+    version: 1,
+    waveId: 'xhbev_wave1' as ExecutionWaveId,
+    flowId: 'xhbf_flow1' as FlowId,
+    maxParallelism: 2,
+    activeAttemptIds: ['xhba_1' as AttemptId],
+    scheduled: [{ taskRunId: 'xhbtr_1' as TaskRunId, attemptId: 'xhba_1' as AttemptId }],
+    dependencyStates: [],
+    createdAt: '2026-08-18T00:00:00.000Z',
+  }
+  return {
+    ...base,
+    activeRevision: {
+      ...base.activeRevision!,
+      draft: {
+        objective: '目标X',
+        tasks: [
+          { taskKey: 't1', title: '投影任务一' },
+          { taskKey: 't2', title: '投影任务二', dependsOn: ['t1'] },
+          { taskKey: 't4', title: '投影任务四' },
+        ],
+      },
+    },
+    taskSpecs: [
+      {
+        taskSpecId: 'xhbts_1' as TaskSpecId,
+        taskKey: 't1',
+        title: '投影任务一',
+        dependsOn: [],
+        unavailableReason: 'AGENT_DISABLED_M2A',
+      },
+      {
+        taskSpecId: 'xhbts_2' as TaskSpecId,
+        taskKey: 't2',
+        title: '投影任务二',
+        dependsOn: ['t1'],
+        unavailableReason: 'AGENT_DISABLED_M2A',
+      },
+      {
+        taskSpecId: 'xhbts_4' as TaskSpecId,
+        taskKey: 't4',
+        title: '投影任务四',
+        dependsOn: [],
+        unavailableReason: 'AGENT_DISABLED_M2A',
+      },
+    ],
+    taskRuns: [
+      {
+        taskRunId: 'xhbtr_1' as TaskRunId,
+        taskSpecId: 'xhbts_1' as TaskSpecId,
+        taskKey: 't1',
+        status: 'RUNNING',
+        attemptId: 'xhba_1' as AttemptId,
+      },
+      {
+        taskRunId: 'xhbtr_2' as TaskRunId,
+        taskSpecId: 'xhbts_2' as TaskSpecId,
+        taskKey: 't2',
+        status: 'BLOCKED',
+      },
+      // 未派发根任务：raw TaskRun=BLOCKED，readiness=READY
+      {
+        taskRunId: 'xhbtr_4' as TaskRunId,
+        taskSpecId: 'xhbts_4' as TaskSpecId,
+        taskKey: 't4',
+        status: 'BLOCKED',
+      },
+    ],
+    attempts: [{ attemptId: 'xhba_1' as AttemptId, taskRunId: 'xhbtr_1' as TaskRunId, status: 'RUNNING' }],
     executionReadiness,
     lastExecutionWave,
     availableActions: ['flow.cancel', 'execution.next.confirm'],
@@ -803,7 +921,7 @@ describe('CollaborationHubPanel', () => {
     await waitFor(() => expect(observeMock).toHaveBeenCalledTimes(2))
   })
 
-  it('任务按状态分组展示，空组不出现；分组以实时 readiness 为权威', async () => {
+  it('任务按状态分组展示，空组不出现；分组与徽标以实时 readiness 为权威', async () => {
     const address: HubAddressV1 = {
       projectId: scopeCoding.projectId,
       sessionKey: scopeCoding.sessionKey,
@@ -813,21 +931,32 @@ describe('CollaborationHubPanel', () => {
     render(<CollaborationHubPanel />)
 
     await screen.findByTestId('hub-active-plan')
-    // 未派发根任务（READY，无 attempt）进入可执行组
+    // 未派发根任务（raw TaskRun=BLOCKED，readiness=READY）进入可执行组，徽标显示「就绪」而非「阻塞」
     const executable = screen.getByTestId('hub-task-group-executable')
     expect(executable).toHaveTextContent('投影任务四')
     expect(screen.getByTestId('hub-taskrun-status-t4')).toHaveTextContent('就绪')
+    expect(screen.getByTestId('hub-taskrun-status-t4')).not.toHaveTextContent('阻塞')
     expect(executable).not.toHaveTextContent('执行尝试')
     // IN_FLIGHT + attempt RUNNING → 执行中；IN_FLIGHT + attempt VERIFYING → 验证中
     expect(screen.getByTestId('hub-task-group-running')).toHaveTextContent('投影任务一')
     expect(screen.getByTestId('hub-task-group-running')).not.toHaveTextContent('投影任务五')
     expect(screen.getByTestId('hub-task-group-verifying')).toHaveTextContent('投影任务五')
+    expect(screen.getByTestId('hub-taskrun-status-t1')).toHaveTextContent('执行中')
+    expect(screen.getByTestId('hub-taskrun-status-t5')).toHaveTextContent('验证中')
+    // 等待依赖 / 前置失败的徽标与 readiness 一致，不显示 raw 的「阻塞」
+    expect(screen.getByTestId('hub-taskrun-status-t2')).toHaveTextContent('等待依赖')
+    expect(screen.getByTestId('hub-taskrun-status-t3')).toHaveTextContent('前置失败')
     const waiting = screen.getByTestId('hub-task-group-waiting')
     expect(waiting).toHaveTextContent('投影任务二')
     expect(waiting).toHaveTextContent('投影任务三')
+    expect(waiting).not.toHaveTextContent('阻塞')
+    // TERMINAL 回退 TaskRun 终态
     expect(screen.getByTestId('hub-task-group-failed')).toHaveTextContent('投影任务六')
+    expect(screen.getByTestId('hub-taskrun-status-t6')).toHaveTextContent('失败')
     // 没有「待交付 / 已完成」任务时该组不渲染
     expect(screen.queryByTestId('hub-task-group-done')).toBeNull()
+    // 满槽（availableSlots=0）时主进程不授予 execution.next.confirm，确认区不出现
+    expect(screen.queryByTestId('hub-task-execution')).toBeNull()
   })
 
   it('等待/阻断原因使用任务标题，不显示内部 ID', async () => {
@@ -869,13 +998,27 @@ describe('CollaborationHubPanel', () => {
     expect(view.textContent).not.toContain(`sha256:${'e'.repeat(64)}`)
   })
 
-  it('执行确认区说明本批并行上限，分别显示新调度与执行中数量，不显示内部 ID', async () => {
+  it('可用槽场景显示确认区与本批摘要，一次确认本批只提交一次窄请求', async () => {
     const address: HubAddressV1 = {
       projectId: scopeCoding.projectId,
       sessionKey: scopeCoding.sessionKey,
     }
-    observeMock.mockResolvedValue({ ok: true, value: groupedWaveProjection(address) })
+    observeMock.mockResolvedValue({ ok: true, value: confirmableProjection(address) })
+    executeMock.mockResolvedValue({
+      ok: true,
+      value: {
+        taskRun: {
+          taskRunId: 'xhbtr_4' as TaskRunId,
+          taskSpecId: 'xhbts_4' as TaskSpecId,
+          taskKey: 't4',
+          status: 'RUNNING',
+          attemptId: 'xhba_4' as AttemptId,
+        },
+        attempt: { attemptId: 'xhba_4' as AttemptId, taskRunId: 'xhbtr_4' as TaskRunId, status: 'RUNNING' },
+      },
+    })
     showSession(sessionWith('s-wave', scopeCoding))
+    const user = userEvent.setup()
     render(<CollaborationHubPanel />)
 
     const section = await screen.findByTestId('hub-task-execution')
@@ -887,14 +1030,33 @@ describe('CollaborationHubPanel', () => {
     // 实时 readiness 给出并行上限/执行中/空位；wave 只贡献「本批新调度」，
     // wave.activeAttemptIds 不得被当成新调度数量
     const summary = screen.getByTestId('hub-execution-wave-summary')
-    expect(summary).toHaveTextContent('并行上限 2 · 执行中 2 个 · 可再派发 0 个')
+    expect(summary).toHaveTextContent('并行上限 2 · 执行中 1 个 · 可再派发 1 个')
     expect(summary).toHaveTextContent('本批新调度 1 个')
     expect(summary).toHaveTextContent('等待依赖 1 个')
-    expect(summary).toHaveTextContent('前置失败 1 个')
     expect(summary.textContent).not.toContain('已调度')
     expect(summary.textContent).not.toContain('xhbev_wave1')
     expect(summary.textContent).not.toContain('xhba_')
     expect(summary.textContent).not.toContain('xhbtr_')
+
+    // 可执行组里的未派发根任务（raw BLOCKED + readiness READY）徽标为「就绪」
+    expect(screen.getByTestId('hub-taskrun-status-t4')).toHaveTextContent('就绪')
+    expect(screen.getByTestId('hub-taskrun-status-t4')).not.toHaveTextContent('阻塞')
+
+    // 核对执行范围零 IPC；确认并执行只提交一次窄请求
+    await user.type(screen.getByLabelText('本次任务说明'), '完成本批任务')
+    await user.type(screen.getByLabelText('允许修改的已有文件'), 'src/a.ts')
+    await user.click(screen.getByRole('button', { name: '核对执行范围' }))
+    expect(executeMock).not.toHaveBeenCalled()
+    const confirm = screen.getByRole('button', { name: '确认并执行' })
+    await user.click(confirm)
+    await user.click(confirm)
+    await waitFor(() => expect(executeMock).toHaveBeenCalledTimes(1))
+    expect(executeMock.mock.calls[0]![0]).toEqual({
+      address,
+      flowId: 'xhbf_flow1',
+      prompt: '完成本批任务',
+      files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }],
+    })
   })
 
   it('交付右栏展示公开摘要；审阅零 IPC，确认应用只调用一次 approve', async () => {
