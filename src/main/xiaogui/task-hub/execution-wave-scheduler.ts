@@ -53,16 +53,37 @@ export interface PlannedExecutionWaveV1 {
   readonly selectedTaskRunId?: TaskRunId
 }
 
+export interface ProjectExecutionReadinessV1 {
+  readonly maxParallelism: number
+  readonly activeAttemptCount: number
+  readonly availableSlots: number
+  readonly dependencyStates: readonly TaskDependencyStateV1[]
+  readonly readyTaskRunIds: readonly TaskRunId[]
+}
+
+export function projectExecutionReadinessV1(input: {
+  readonly tasks: readonly SchedulerTaskV1[]
+  readonly attempts: readonly SchedulerAttemptV1[]
+  readonly maxParallelism?: number
+}): ProjectExecutionReadinessV1 {
+  const current = currentExecutionState(input)
+  return {
+    maxParallelism: current.maxParallelism,
+    activeAttemptCount: current.activeAttempts.length,
+    availableSlots: Math.max(0, current.maxParallelism - current.activeAttempts.length),
+    dependencyStates: current.dependencyStates,
+    readyTaskRunIds: current.dependencyStates
+      .filter((state) => state.state === 'READY')
+      .map((state) => state.taskRunId),
+  }
+}
+
 /**
  * Pure deterministic scheduler. Persistence and runtime/worktree side effects
  * remain behind the application/store seam.
  */
 export function planExecutionWaveV1(input: PlanExecutionWaveInputV1): PlannedExecutionWaveV1 {
-  const maxParallelism = Math.max(1, input.maxParallelism ?? DEFAULT_PROJECT_PARALLELISM_V1)
-  const taskByKey = new Map(input.tasks.map((task) => [task.taskKey, task] as const))
-  const activeAttempts = input.attempts.filter((attempt) => ACTIVE_ATTEMPT_STATUSES_V1.has(attempt.status))
-  const activeTaskRunIds = new Set(activeAttempts.map((attempt) => attempt.taskRunId))
-  const dependencyStates = input.tasks.map((task) => dependencyState(task, taskByKey, activeTaskRunIds))
+  const { maxParallelism, activeAttempts, dependencyStates } = currentExecutionState(input)
   const statesByTaskRunId = new Map(dependencyStates.map((state) => [state.taskRunId, state] as const))
   const requestedTokens = new Set(input.requestedAuthorizationPathTokens)
   const scopeConflicts = activeAttempts.some((attempt) =>
@@ -86,6 +107,22 @@ export function planExecutionWaveV1(input: PlanExecutionWaveInputV1): PlannedExe
       createdAt: input.now,
     },
     ...(selectedTask ? { selectedTaskRunId: selectedTask.taskRunId } : {}),
+  }
+}
+
+function currentExecutionState(input: {
+  readonly tasks: readonly SchedulerTaskV1[]
+  readonly attempts: readonly SchedulerAttemptV1[]
+  readonly maxParallelism?: number
+}) {
+  const maxParallelism = Math.max(1, input.maxParallelism ?? DEFAULT_PROJECT_PARALLELISM_V1)
+  const taskByKey = new Map(input.tasks.map((task) => [task.taskKey, task] as const))
+  const activeAttempts = input.attempts.filter((attempt) => ACTIVE_ATTEMPT_STATUSES_V1.has(attempt.status))
+  const activeTaskRunIds = new Set(activeAttempts.map((attempt) => attempt.taskRunId))
+  return {
+    maxParallelism,
+    activeAttempts,
+    dependencyStates: input.tasks.map((task) => dependencyState(task, taskByKey, activeTaskRunIds)),
   }
 }
 

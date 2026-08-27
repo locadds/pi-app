@@ -178,6 +178,21 @@ export interface DerivedExecutionBaselineCacheRecordV1 {
   readonly created_at: string
 }
 
+export interface DerivedExecutionBaselineReservationRecordV1 {
+  readonly derivation_input_digest: string
+  readonly project_id: string
+  readonly flow_id: string
+  readonly task_run_id: string
+  readonly owner_token: string
+  readonly lease_expires_at: string
+  readonly now: string
+}
+
+export type DerivedExecutionBaselineReservationResultV1 =
+  | { readonly kind: 'ACQUIRED' }
+  | { readonly kind: 'WAITING' }
+  | { readonly kind: 'CACHED'; readonly cache: DerivedExecutionBaselineCacheRecordV1 }
+
 interface VerificationAttemptRecord {
   verification_attempt_id: string
   verification_request_id: string
@@ -1904,8 +1919,90 @@ export class CollaborationHubSqliteStoreV1 {
     return row ?? null
   }
 
-  writeDerivedExecutionBaseline(record: DerivedExecutionBaselineCacheRecordV1): void {
+  reserveDerivedExecutionBaseline(
+    record: DerivedExecutionBaselineReservationRecordV1,
+  ): DerivedExecutionBaselineReservationResultV1 {
+    return this.transaction(() => {
+      const cached = this.derivedExecutionBaseline(record.derivation_input_digest)
+      if (cached) {
+        assertDerivedBaselineScope(cached, record)
+        return { kind: 'CACHED', cache: cached }
+      }
+      this.db.prepare(`
+        insert or ignore into derived_execution_baseline_reservations (
+          derivation_input_digest, project_id, flow_id, task_run_id,
+          owner_token, lease_expires_at, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        record.derivation_input_digest,
+        record.project_id,
+        record.flow_id,
+        record.task_run_id,
+        record.owner_token,
+        record.lease_expires_at,
+        record.now,
+        record.now,
+      )
+      const existing = this.db.prepare(`
+        select derivation_input_digest, project_id, flow_id, task_run_id,
+               owner_token, lease_expires_at
+          from derived_execution_baseline_reservations
+         where derivation_input_digest = ?
+      `).get(record.derivation_input_digest) as {
+        derivation_input_digest: string
+        project_id: string
+        flow_id: string
+        task_run_id: string
+        owner_token: string
+        lease_expires_at: string
+      } | undefined
+      if (!existing) throw derivedBaselineConflict()
+      assertDerivedBaselineScope(existing, record)
+      if (existing.owner_token === record.owner_token) return { kind: 'ACQUIRED' }
+      if (existing.lease_expires_at <= record.now) {
+        const taken = this.db.prepare(`
+          update derived_execution_baseline_reservations
+             set owner_token = ?, lease_expires_at = ?, updated_at = ?
+           where derivation_input_digest = ? and owner_token = ? and lease_expires_at = ?
+        `).run(
+          record.owner_token,
+          record.lease_expires_at,
+          record.now,
+          record.derivation_input_digest,
+          existing.owner_token,
+          existing.lease_expires_at,
+        )
+        if (taken.changes === 1) return { kind: 'ACQUIRED' }
+      }
+      return { kind: 'WAITING' }
+    })
+  }
+
+  releaseDerivedExecutionBaselineReservation(derivationInputDigest: string, ownerToken: string): void {
     this.transaction(() => {
+      this.db.prepare(
+        'delete from derived_execution_baseline_reservations where derivation_input_digest = ? and owner_token = ?',
+      ).run(derivationInputDigest, ownerToken)
+    })
+  }
+
+  writeDerivedExecutionBaseline(record: DerivedExecutionBaselineCacheRecordV1, ownerToken?: string): void {
+    this.transaction(() => {
+      if (ownerToken) {
+        const reservation = this.db.prepare(`
+          select derivation_input_digest, project_id, flow_id, task_run_id, owner_token
+            from derived_execution_baseline_reservations
+           where derivation_input_digest = ?
+        `).get(record.derivation_input_digest) as {
+          derivation_input_digest: string
+          project_id: string
+          flow_id: string
+          task_run_id: string
+          owner_token: string
+        } | undefined
+        if (!reservation || reservation.owner_token !== ownerToken) throw derivedBaselineConflict()
+        assertDerivedBaselineScope(reservation, record)
+      }
       this.db.prepare(`
         insert or ignore into derived_execution_baselines (
           derivation_input_digest, project_id, flow_id, task_run_id,
@@ -1927,9 +2024,13 @@ export class CollaborationHubSqliteStoreV1 {
         persisted.task_run_id !== record.task_run_id ||
         persisted.baseline_json !== record.baseline_json
       ) {
-        throw Object.assign(new Error('DERIVED_BASELINE_IDEMPOTENCY_CONFLICT'), {
-          code: 'DERIVED_BASELINE_IDEMPOTENCY_CONFLICT',
-        })
+        throw derivedBaselineConflict()
+      }
+      if (ownerToken) {
+        const released = this.db.prepare(
+          'delete from derived_execution_baseline_reservations where derivation_input_digest = ? and owner_token = ?',
+        ).run(record.derivation_input_digest, ownerToken)
+        if (released.changes !== 1) throw derivedBaselineConflict()
       }
     })
   }
@@ -2910,6 +3011,7 @@ export class CollaborationHubSqliteStoreV1 {
       'attempt_authorization_scopes',
       'task_execution_baselines',
       'derived_execution_baselines',
+      'derived_execution_baseline_reservations',
       'flow_execution_baselines',
       'composition_attempts',
       'workspace_prepare_outbox',
@@ -3602,6 +3704,23 @@ export class CollaborationHubSqliteStoreV1 {
         insert or ignore into schema_migrations (version, applied_at) values (11, datetime('now'));
       `)
     })
+    this.transaction(() => {
+      this.db.exec(`
+        create table if not exists derived_execution_baseline_reservations (
+          derivation_input_digest text primary key,
+          project_id text not null,
+          flow_id text not null,
+          task_run_id text not null,
+          owner_token text not null,
+          lease_expires_at text not null,
+          created_at text not null,
+          updated_at text not null
+        );
+        create index if not exists derived_execution_baseline_reservations_lease
+          on derived_execution_baseline_reservations(lease_expires_at);
+        insert or ignore into schema_migrations (version, applied_at) values (12, datetime('now'));
+      `)
+    })
   }
 
   private taskRunsForFlow(flowId: FlowId | null): TaskRunRecord[] {
@@ -3998,6 +4117,36 @@ export interface IdempotencyInput {
 
 function scopeKey(address: HubAddressV1): string {
   return `${address.projectId}:${address.sessionKey}`
+}
+
+function assertDerivedBaselineScope(
+  persisted: {
+    readonly derivation_input_digest: string
+    readonly project_id: string
+    readonly flow_id: string
+    readonly task_run_id: string
+  },
+  requested: {
+    readonly derivation_input_digest: string
+    readonly project_id: string
+    readonly flow_id: string
+    readonly task_run_id: string
+  },
+): void {
+  if (
+    persisted.derivation_input_digest !== requested.derivation_input_digest ||
+    persisted.project_id !== requested.project_id ||
+    persisted.flow_id !== requested.flow_id ||
+    persisted.task_run_id !== requested.task_run_id
+  ) {
+    throw derivedBaselineConflict()
+  }
+}
+
+function derivedBaselineConflict(): Error & { code: string } {
+  return Object.assign(new Error('DERIVED_BASELINE_IDEMPOTENCY_CONFLICT'), {
+    code: 'DERIVED_BASELINE_IDEMPOTENCY_CONFLICT',
+  })
 }
 
 const ACTIVE_ATTEMPT_STATUSES_SQL_V1 = [...ACTIVE_ATTEMPT_STATUSES_V1]

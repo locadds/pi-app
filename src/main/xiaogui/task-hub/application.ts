@@ -49,9 +49,9 @@ import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import type { AgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import {
-  ACTIVE_ATTEMPT_STATUSES_V1,
   bindExecutionWaveAttemptV1,
   planExecutionWaveV1,
+  projectExecutionReadinessV1,
 } from './execution-wave-scheduler'
 
 export interface CollaborationHubApplicationOptionsV1 {
@@ -174,10 +174,24 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       const activeDelivery = projection.activeFlow
         ? store.readActiveDelivery(address, projection.activeFlow.flowId)
         : null
+      const executionReadiness = projection.activeFlow?.status === 'PLAN_ACTIVE'
+        ? {
+            version: 1 as const,
+            flowId: projection.activeFlow.flowId,
+            ...projectExecutionReadinessV1({
+              tasks: store.schedulerTasks(projection.activeFlow.flowId),
+              attempts: store.schedulerAttempts(address.projectId),
+            }),
+            capturedAt: this.now(),
+          }
+        : undefined
       return {
         ok: true,
         value: withAuthoritativeM2BActions(
-          withAuthoritativeDeliveryActions(projection, activeDelivery),
+          withAuthoritativeDeliveryActions({
+            ...projection,
+            ...(executionReadiness ? { executionReadiness } : {}),
+          }, activeDelivery),
           this.options.agentRuntime !== undefined,
         ),
       }
@@ -1335,21 +1349,13 @@ function withAuthoritativeM2BActions(
   if (
     !runtimeConfigured ||
     projection.authoritativeMode !== 'CODING' ||
-    projection.activeFlow?.status !== 'PLAN_ACTIVE'
+    projection.activeFlow?.status !== 'PLAN_ACTIVE' ||
+    projection.executionReadiness === undefined
   ) {
     return { ...projection, availableActions: baseActions }
   }
-  const activeAttempts = projection.attempts.filter((attempt) => ACTIVE_ATTEMPT_STATUSES_V1.has(attempt.status))
-  if (activeAttempts.length >= 2) return { ...projection, availableActions: baseActions }
-  const executable = projection.taskRuns.some((run) => {
-    if (run.status !== 'BLOCKED' || run.attemptId) return false
-    const spec = projection.taskSpecs.find((candidate) => candidate.taskSpecId === run.taskSpecId)
-    return spec?.dependsOn.every((dependencyKey) => {
-      const dependency = projection.taskRuns.find((candidate) => candidate.taskKey === dependencyKey)
-      return dependency !== undefined && ['VERIFIED', 'DELIVERY_PENDING', 'APPLYING', 'DONE'].includes(dependency.status)
-    })
-  })
-  return executable
+  return projection.executionReadiness.availableSlots > 0 &&
+    projection.executionReadiness.readyTaskRunIds.length > 0
     ? { ...projection, availableActions: [...baseActions, 'execution.next.confirm'] }
     : { ...projection, availableActions: baseActions }
 }

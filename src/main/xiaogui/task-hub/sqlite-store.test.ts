@@ -1123,6 +1123,7 @@ describe('M2B sqlite store migration', () => {
       attempt_authorization_scopes: 0,
       task_execution_baselines: 0,
       derived_execution_baselines: 0,
+      derived_execution_baseline_reservations: 0,
       flow_execution_baselines: 0,
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
@@ -1174,8 +1175,9 @@ describe('M2B sqlite store migration', () => {
       { version: 9 },
       { version: 10 },
       { version: 11 },
+      { version: 12 },
     ])
-    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'execution_waves', 'attempt_runtime_bindings', 'attempt_authorization_scopes', 'task_execution_baselines', 'derived_execution_baselines', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
+    expect(db.prepare("select name from sqlite_master where type = 'table' and name in ('attempts', 'execution_waves', 'attempt_runtime_bindings', 'attempt_authorization_scopes', 'task_execution_baselines', 'derived_execution_baselines', 'derived_execution_baseline_reservations', 'flow_execution_baselines', 'composition_attempts', 'workspace_prepare_outbox', 'workspace_receipts', 'agent_dispatch_outbox', 'runtime_session_bindings', 'agent_failures', 'agent_succeeded_audits', 'agent_reconcile_results', 'attempt_workspace_prepared', 'attempt_workspace_leases', 'attempt_file_manifests', 'scope_expansion_requests', 'create_batches', 'private_runtime_payloads', 'artifacts', 'change_set_candidates', 'verification_attempts', 'verification_outbox', 'verification_receipts', 'task_evidence_bundles', 'task_qa_results', 'task_change_sets', 'delivery_batches', 'delivery_selection_drafts', 'delivery_verification_attempts', 'delivery_verification_outbox', 'delivery_verification_receipts', 'delivery_change_sets', 'delivery_human_gates', 'delivery_apply_attempts', 'delivery_apply_outbox') order by name").all()).toEqual([
       { name: 'agent_dispatch_outbox' },
       { name: 'agent_failures' },
       { name: 'agent_reconcile_results' },
@@ -1199,6 +1201,7 @@ describe('M2B sqlite store migration', () => {
       { name: 'delivery_verification_attempts' },
       { name: 'delivery_verification_outbox' },
       { name: 'delivery_verification_receipts' },
+      { name: 'derived_execution_baseline_reservations' },
       { name: 'derived_execution_baselines' },
       { name: 'execution_waves' },
       { name: 'flow_execution_baselines' },
@@ -1216,6 +1219,52 @@ describe('M2B sqlite store migration', () => {
       { name: 'workspace_receipts' },
     ])
     db.close()
+  })
+
+  it('arbitrates a derived baseline reservation across stores and atomically publishes the cache', async () => {
+    const dbPath = await tempDb('derived-reservation.sqlite')
+    const first = new CollaborationHubSqliteStoreV1(dbPath)
+    const second = new CollaborationHubSqliteStoreV1(dbPath)
+    const base = {
+      derivation_input_digest: 'sha256:derived-reservation',
+      project_id: ADDRESS.projectId,
+      flow_id: 'xhbf_reserved',
+      task_run_id: 'xhbtr_reserved',
+    }
+    const firstReservation = {
+      ...base,
+      owner_token: 'owner-first',
+      lease_expires_at: '2026-08-27T00:05:00.000Z',
+      now: '2026-08-27T00:00:00.000Z',
+    }
+    const secondReservation = {
+      ...base,
+      owner_token: 'owner-second',
+      lease_expires_at: '2026-08-27T00:05:01.000Z',
+      now: '2026-08-27T00:00:01.000Z',
+    }
+
+    try {
+      expect(first.reserveDerivedExecutionBaseline(firstReservation)).toEqual({ kind: 'ACQUIRED' })
+      expect(second.reserveDerivedExecutionBaseline(secondReservation)).toEqual({ kind: 'WAITING' })
+      first.releaseDerivedExecutionBaselineReservation(base.derivation_input_digest, firstReservation.owner_token)
+      expect(second.reserveDerivedExecutionBaseline(secondReservation)).toEqual({ kind: 'ACQUIRED' })
+
+      const cache = {
+        ...base,
+        baseline_json: '{"version":1}',
+        created_at: '2026-08-27T00:00:02.000Z',
+      }
+      second.writeDerivedExecutionBaseline(cache, secondReservation.owner_token)
+      expect(first.reserveDerivedExecutionBaseline({
+        ...secondReservation,
+        owner_token: 'owner-third',
+      })).toEqual({ kind: 'CACHED', cache })
+      expect(first.tableCounts().derived_execution_baseline_reservations).toBe(0)
+    } finally {
+      first.close()
+      second.close()
+    }
   })
 
   it('does not silently turn legacy PENDING_DISABLED task runs into attempts', async () => {
@@ -1410,6 +1459,7 @@ describe('M2B sqlite store migration', () => {
         { version: 9 },
         { version: 10 },
         { version: 11 },
+        { version: 12 },
       ])
       expect(migrated.prepare('pragma table_info(flow_execution_baselines)').all()).toEqual(
         expect.arrayContaining([expect.objectContaining({ name: 'base_revision' })]),

@@ -98,6 +98,18 @@ export interface ExecutionWaveV1 {
   readonly createdAt: string
 }
 
+/** Current, read-only execution truth; ExecutionWaveV1 remains historical evidence. */
+export interface ExecutionReadinessSnapshotV1 {
+  readonly version: 1
+  readonly flowId: FlowId
+  readonly maxParallelism: number
+  readonly activeAttemptCount: number
+  readonly availableSlots: number
+  readonly dependencyStates: readonly TaskDependencyStateV1[]
+  readonly readyTaskRunIds: readonly TaskRunId[]
+  readonly capturedAt: string
+}
+
 export interface InitialPlanDraftInputV1 {
   objective: string
   tasks: InitialPlanTaskInputV1[]
@@ -272,6 +284,7 @@ export interface SessionCollaborationProjectionM2BV1
   taskRuns: TaskRunProjectionM2BV1[]
   attempts: AttemptProjectionM2BV1[]
   activeDelivery?: DeliveryReviewProjectionV1 | null
+  executionReadiness?: ExecutionReadinessSnapshotV1
   lastExecutionWave?: ExecutionWaveV1
   availableActions: CollaborationHubActionM2BV1[]
 }

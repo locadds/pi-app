@@ -120,6 +120,16 @@ function twoIndependentTasksDraft(): InitialPlanDraftInputV1 {
   }
 }
 
+function parentChildDraft(): InitialPlanDraftInputV1 {
+  return {
+    objective: '验证父任务失败后的实时可执行性',
+    tasks: [
+      { taskKey: 'parent', title: '先执行父任务' },
+      { taskKey: 'child', title: '依赖父任务', dependsOn: ['parent'] },
+    ],
+  }
+}
+
 function threeIndependentTasksDraft(): InitialPlanDraftInputV1 {
   return {
     objective: '验证项目并行上限与波次调度',
@@ -143,6 +153,7 @@ function appFor(
   ids = ['xhbf_flow', 'xhbr_rev'],
   runtimeSessionId?: string,
   workspaceBridge?: ExecutionWorkspaceBridgeV1,
+  clock: () => string = () => '2026-08-16T00:00:00.000Z',
 ) {
   let index = 0
   const baseline = scriptedBaseline()
@@ -157,7 +168,7 @@ function appFor(
           runtimePromptVault: testPromptVault(),
         }
       : {}),
-    now: () => '2026-08-16T00:00:00.000Z',
+    now: clock,
     idFactory: (prefix) => ids[index++] ?? `${prefix}_${index}`,
   })
 }
@@ -361,6 +372,8 @@ describe('M2A collaboration hub application', () => {
     const store = {
       readProjectionM2B: () => projection,
       readActiveDelivery: () => activeDelivery,
+      schedulerTasks: () => [],
+      schedulerAttempts: () => [],
       close: vi.fn(),
     } as unknown as CollaborationHubSqliteStoreV1
     const app = createCollaborationHubApplicationV1({
@@ -553,6 +566,7 @@ describe('M2A collaboration hub application', () => {
       attempt_authorization_scopes: 0,
       task_execution_baselines: 0,
       derived_execution_baselines: 0,
+      derived_execution_baseline_reservations: 0,
       flow_execution_baselines: 0,
       composition_attempts: 0,
       workspace_prepare_outbox: 0,
@@ -853,7 +867,7 @@ describe('M2A collaboration hub application', () => {
     const migration = unchangedDb.prepare('select max(version) as version from schema_migrations').get() as { version: number }
     unchangedDb.close()
     expect(JSON.parse(stored.projection_json).activeRevision).not.toHaveProperty('draft')
-    expect(migration.version).toBe(11)
+    expect(migration.version).toBe(12)
   })
 
   it('keeps public projection actions user-only and persisted event payload sanitized', async () => {
@@ -892,6 +906,18 @@ describe('M2A collaboration hub application', () => {
         version: 'm2b.v1',
         taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'BLOCKED' })]),
         attempts: [],
+        executionReadiness: {
+          version: 1,
+          flowId: draftProjection.value.activeFlow.flowId,
+          maxParallelism: 2,
+          activeAttemptCount: 0,
+          availableSlots: 2,
+          readyTaskRunIds: ['xhbtr_projection'],
+          dependencyStates: expect.arrayContaining([
+            expect.objectContaining({ taskRunId: 'xhbtr_projection', state: 'READY' }),
+          ]),
+          capturedAt: '2026-08-16T00:00:00.000Z',
+        },
       },
     })
 
@@ -918,6 +944,18 @@ describe('M2A collaboration hub application', () => {
         version: 'm2b.v1',
         taskRuns: expect.arrayContaining([expect.objectContaining({ taskKey: 'scope', status: 'READY', attemptId: 'xhba_attempt' })]),
         attempts: [expect.objectContaining({ attemptId: 'xhba_attempt', status: 'WORKSPACE_PREPARING' })],
+        executionReadiness: {
+          version: 1,
+          flowId: draftProjection.value.activeFlow.flowId,
+          maxParallelism: 2,
+          activeAttemptCount: 1,
+          availableSlots: 1,
+          readyTaskRunIds: [],
+          dependencyStates: expect.arrayContaining([
+            expect.objectContaining({ taskRunId: 'xhbtr_projection', state: 'IN_FLIGHT' }),
+          ]),
+          capturedAt: '2026-08-16T00:00:00.000Z',
+        },
       },
     })
     const events = await app.readEvents(ADDRESS, { afterSessionSequence: 0, limit: 10 })
@@ -960,6 +998,143 @@ describe('M2A collaboration hub application', () => {
     const store = new CollaborationHubSqliteStoreV1(dbPath)
     expect(store.tableCounts()).toMatchObject({ attempts: 0, flow_execution_baselines: 0, composition_attempts: 0, workspace_prepare_outbox: 0, agent_dispatch_outbox: 0, runtime_session_bindings: 0 })
     store.close()
+    app.close()
+  })
+
+  it('observes readiness without creating attempts or waves and is stable except for capturedAt', async () => {
+    const dbPath = await tempDb('readiness-observe-only.sqlite')
+    let now = '2026-08-16T00:00:00.000Z'
+    const app = appFor(
+      dbPath,
+      'CODING',
+      ['xhbf_readonly', 'xhbr_readonly', 'xhbts_readonly_scope', 'xhbts_readonly_journal', 'xhbts_readonly_projection', 'xhbtr_readonly_scope', 'xhbtr_readonly_journal', 'xhbtr_readonly_projection'],
+      'runtime-readonly',
+      undefined,
+      () => now,
+    )
+    await start(app, 'req-readiness-readonly')
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) {
+      throw new Error('expected draft flow')
+    }
+    await execute(app, {
+      requestId: 'req-readiness-readonly-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const storeBefore = new CollaborationHubSqliteStoreV1(dbPath)
+    const beforeCounts = storeBefore.tableCounts()
+    storeBefore.close()
+
+    now = '2026-08-16T00:00:01.000Z'
+    const first = await app.observeM2B(ADDRESS)
+    now = '2026-08-16T00:00:02.000Z'
+    const second = await app.observeM2B(ADDRESS)
+    if (!first.ok || !second.ok || !first.value.executionReadiness || !second.value.executionReadiness) {
+      throw new Error('expected execution readiness')
+    }
+    const { capturedAt: firstCapturedAt, ...firstStable } = first.value.executionReadiness
+    const { capturedAt: secondCapturedAt, ...secondStable } = second.value.executionReadiness
+
+    expect(firstCapturedAt).toBe('2026-08-16T00:00:01.000Z')
+    expect(secondCapturedAt).toBe('2026-08-16T00:00:02.000Z')
+    expect(secondStable).toEqual(firstStable)
+    expect(first.value.lastExecutionWave).toBeUndefined()
+    expect(second.value.lastExecutionWave).toBeUndefined()
+    const storeAfter = new CollaborationHubSqliteStoreV1(dbPath)
+    try {
+      expect(storeAfter.tableCounts()).toEqual(beforeCounts)
+      expect(storeAfter.tableCounts()).toMatchObject({ attempts: 0, execution_waves: 0 })
+    } finally {
+      storeAfter.close()
+      app.close()
+    }
+  })
+
+  it('recomputes a child as blocked after its parent fails instead of replaying the historical wave state', async () => {
+    const dbPath = await tempDb('readiness-parent-failed.sqlite')
+    const baseline = scriptedBaseline()
+    const app = appFor(
+      dbPath,
+      'CODING',
+      ['xhbf_readiness_failed', 'xhbr_readiness_failed', 'xhbts_readiness_parent', 'xhbts_readiness_child', 'xhbtr_readiness_parent', 'xhbtr_readiness_child', 'xhba_readiness_parent'],
+      'runtime-readiness-failed',
+      testWorkspaceBridge(baseline),
+    )
+    await start(app, 'req-readiness-failed-start', parentChildDraft())
+    const draftProjection = await app.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) {
+      throw new Error('expected draft flow')
+    }
+    await execute(app, {
+      requestId: 'req-readiness-failed-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    const beforeSchedule = await app.observeM2B(ADDRESS)
+    if (!beforeSchedule.ok || !beforeSchedule.value.executionReadiness) throw new Error('expected readiness')
+    const parentRun = beforeSchedule.value.taskRuns.find((run) => run.taskKey === 'parent')
+    const childRun = beforeSchedule.value.taskRuns.find((run) => run.taskKey === 'child')
+    if (!parentRun || !childRun) throw new Error('expected parent and child task runs')
+    expect(beforeSchedule.value.executionReadiness.dependencyStates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskRunId: parentRun.taskRunId, state: 'READY' }),
+      expect.objectContaining({ taskRunId: childRun.taskRunId, state: 'WAITING_FOR_DEPENDENCIES' }),
+    ]))
+
+    const scheduled = await executeSystem(app, {
+      requestId: 'sys-readiness-failed-schedule',
+      expectedSessionVersion: beforeSchedule.value.sessionVersion,
+      intent: { type: 'system.schedule', flowId: draftProjection.value.activeFlow.flowId },
+    })
+    if (!scheduled.ok || !scheduled.value.attemptId || !scheduled.value.taskRunId) throw new Error('expected parent attempt')
+    const afterSchedule = await app.observeM2B(ADDRESS)
+    if (!afterSchedule.ok) throw new Error('expected scheduled projection')
+    const binding = workspaceBinding(dbPath, scheduled.value.attemptId)
+    claimWorkspacePreparation(dbPath, scheduled.value.attemptId)
+    await executeSystem(app, {
+      requestId: 'sys-readiness-parent-workspace-failed',
+      expectedSessionVersion: afterSchedule.value.sessionVersion,
+      intent: {
+        type: 'system.workspace.prepare.result.record',
+        flowId: draftProjection.value.activeFlow.flowId,
+        taskRunId: scheduled.value.taskRunId,
+        attemptId: scheduled.value.attemptId,
+        receipt: {
+          status: 'FAILED',
+          workspaceReceiptId: 'xhbw_readiness_parent_failed' as WorkspaceReceiptId,
+          receiptDigest: 'sha256:readiness-parent-failed',
+          failure: { kind: 'WORKTREE_CREATE_FAILED', failureDigest: 'sha256:readiness-parent-failed' },
+          ...binding,
+        },
+      },
+    })
+
+    const afterFailure = await app.observeM2B(ADDRESS)
+    if (!afterFailure.ok || !afterFailure.value.executionReadiness || !afterFailure.value.lastExecutionWave) {
+      throw new Error('expected current readiness and historical wave')
+    }
+    expect(afterFailure.value.lastExecutionWave.dependencyStates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskRunId: childRun.taskRunId, state: 'WAITING_FOR_DEPENDENCIES' }),
+    ]))
+    expect(afterFailure.value.executionReadiness).toMatchObject({
+      activeAttemptCount: 0,
+      availableSlots: 2,
+      readyTaskRunIds: [],
+      dependencyStates: expect.arrayContaining([
+        expect.objectContaining({ taskRunId: parentRun.taskRunId, state: 'TERMINAL' }),
+        expect.objectContaining({ taskRunId: childRun.taskRunId, state: 'BLOCKED_BY_FAILED_DEPENDENCY' }),
+      ]),
+    })
     app.close()
   })
 
