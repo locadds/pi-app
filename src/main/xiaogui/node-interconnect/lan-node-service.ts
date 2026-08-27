@@ -7,7 +7,12 @@ import {
   type XiaoguiNodeCapabilityV1,
   type XiaoguiNodeDataEgressPolicyV1,
 } from '@shared/xiaogui-node-contract'
-import { createXiaoguiLanWorkerV1, type XiaoguiLanWorkerPollResultV1 } from './lan-worker'
+import {
+  createXiaoguiLanWorkerV1,
+  type XiaoguiLanWorkerPollResultV1,
+  type XiaoguiLanWorkerV1,
+} from './lan-worker'
+import { validateXiaoguiLanHubOriginV1 } from './lan-network-policy'
 
 const KNOWN_CAPABILITIES = new Set<XiaoguiNodeCapabilityV1>([
   'WORK.DOCX.TEMPLATE',
@@ -29,7 +34,7 @@ export type XiaoguiLanNodeMainProcessConfigV1 =
       readonly nodeToken: string
       readonly manifest: XiaoguiNodeCapabilityManifestV1
       readonly connectionMode: 'OUTBOUND_ONLY'
-      readonly transportSecurity: 'TLS' | 'LOOPBACK_HTTP' | 'TOKEN_AUTHENTICATED_HTTP_PILOT'
+      readonly transportSecurity: 'TLS' | 'TOKEN_AUTHENTICATED_HTTP_PILOT'
       readonly localApproval: 'REQUIRED'
       readonly reconcileOnStart: true
     }
@@ -153,12 +158,24 @@ export function createXiaoguiLanNodeMainProcessServiceV1(
   return {
     async start() {
       if (state.state === 'RUNNING') return { ok: true, state: 'RUNNING' }
-      const registered = await worker.register()
+      let registered: Awaited<ReturnType<XiaoguiLanWorkerV1['register']>>
+      try {
+        registered = await worker.register()
+      } catch {
+        state = { state: 'DEGRADED', reasonCode: 'LAN_NODE_START_FAILED' }
+        return { ok: false, reasonCode: 'LAN_NODE_START_FAILED' }
+      }
       if (!registered.ok) {
         state = { state: 'DEGRADED', reasonCode: registered.reasonCode }
         return registered
       }
-      const reconciled = await worker.reconcile()
+      let reconciled: Awaited<ReturnType<XiaoguiLanWorkerV1['reconcile']>>
+      try {
+        reconciled = await worker.reconcile()
+      } catch {
+        state = { state: 'DEGRADED', reasonCode: 'LAN_NODE_START_FAILED' }
+        return { ok: false, reasonCode: 'LAN_NODE_START_FAILED' }
+      }
       if (!reconciled.ok) {
         state = { state: 'DEGRADED', reasonCode: reconciled.reasonCode }
         return reconciled
@@ -168,7 +185,12 @@ export function createXiaoguiLanNodeMainProcessServiceV1(
     },
     async pollOnce() {
       if (state.state !== 'RUNNING') return { ok: false, reasonCode: 'LAN_NODE_SERVICE_NOT_RUNNING' }
-      const result = await worker.pollOnce()
+      let result: Awaited<ReturnType<XiaoguiLanWorkerV1['pollOnce']>>
+      try {
+        result = await worker.pollOnce()
+      } catch {
+        result = { ok: false, reasonCode: 'LAN_NODE_POLL_FAILED' }
+      }
       state = result.ok ? { state: 'RUNNING' } : { state: 'DEGRADED', reasonCode: result.reasonCode }
       return result
     },
@@ -201,50 +223,16 @@ function normalizeHubOrigin(value: string | undefined, allowHttpPilot: boolean):
   | { ok: false; reasonCode: string } {
   const raw = value?.trim() ?? ''
   if (!raw) return { ok: false, reasonCode: 'LAN_HUB_ORIGIN_INVALID' }
-  try {
-    const parsed = new URL(raw)
-    if (
-      parsed.username ||
-      parsed.password ||
-      parsed.pathname !== '/' ||
-      parsed.search ||
-      parsed.hash ||
-      (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')
-    ) {
-      return { ok: false, reasonCode: 'LAN_HUB_ORIGIN_INVALID' }
-    }
-    const loopback = isLoopbackHost(parsed.hostname)
-    if (parsed.protocol === 'http:' && !loopback) {
-      if (!isPrivateLanIpv4(parsed.hostname)) {
-        return { ok: false, reasonCode: 'LAN_NODE_HTTP_PILOT_ORIGIN_INVALID' }
-      }
-      if (!allowHttpPilot) return { ok: false, reasonCode: 'LAN_NODE_HTTP_PILOT_NOT_ENABLED' }
-    }
-    return {
-      ok: true,
-      value: parsed.origin,
-      transportSecurity: parsed.protocol === 'https:'
-        ? 'TLS'
-        : loopback
-          ? 'LOOPBACK_HTTP'
-          : 'TOKEN_AUTHENTICATED_HTTP_PILOT',
-    }
-  } catch {
-    return { ok: false, reasonCode: 'LAN_HUB_ORIGIN_INVALID' }
+  const parsed = validateXiaoguiLanHubOriginV1(raw)
+  if (!parsed.ok) return parsed
+  if (parsed.protocol === 'http:' && !allowHttpPilot) {
+    return { ok: false, reasonCode: 'LAN_NODE_HTTP_PILOT_NOT_ENABLED' }
   }
-}
-
-function isLoopbackHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase()
-  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '[::1]' || normalized === '::1'
-}
-
-function isPrivateLanIpv4(value: string): boolean {
-  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) return false
-  const octets = value.split('.').map(Number)
-  if (octets.some((octet) => octet < 0 || octet > 255)) return false
-  const [first, second] = octets
-  return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168)
+  return {
+    ok: true,
+    value: parsed.origin,
+    transportSecurity: parsed.protocol === 'https:' ? 'TLS' : 'TOKEN_AUTHENTICATED_HTTP_PILOT',
+  }
 }
 
 function parseCapabilities(value: string | undefined):

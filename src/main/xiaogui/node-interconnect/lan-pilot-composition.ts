@@ -1,18 +1,24 @@
-import { isIP } from 'node:net'
 import { isAbsolute } from 'node:path'
 
 import type {
   XiaoguiAssignmentEnvelopeV1,
+  XiaoguiNodeCapabilityManifestV1,
   XiaoguiNodePortV1,
 } from '@shared/xiaogui-node-contract'
 import { createInMemoryXiaoguiNodeHubV1 } from './in-memory-node-hub'
-import { startXiaoguiLanHubHttpServerV1, type XiaoguiLanHubHttpServerV1 } from './lan-hub-http'
+import type { HubAssignmentStoreV1 } from './hub-assignment-store'
+import { parseXiaoguiLanNodeManifestV1 } from './lan-contract-shapes'
+import {
+  startXiaoguiLanHubHttpServerV1,
+  type XiaoguiLanHubHttpServerV1,
+} from './lan-hub-http'
 import {
   createXiaoguiLanNodeMainProcessServiceV1,
   loadXiaoguiLanNodeMainProcessConfigV1,
   type XiaoguiLanNodeMainProcessServiceStateV1,
 } from './lan-node-service'
 import type { XiaoguiLanWorkerPollResultV1 } from './lan-worker'
+import { isRfc1918LiteralIpv4V1 } from './lan-network-policy'
 
 type ConfigEnvironmentV1 = Readonly<Record<string, string | undefined>>
 
@@ -26,6 +32,7 @@ export type XiaoguiLanHubMainProcessConfigV1 =
       /** Private main-process values. They must never be returned through status or IPC. */
       readonly hubToken: string
       readonly nodeTokens: ReadonlyMap<string, string>
+      readonly trustedManifests: ReadonlyMap<string, XiaoguiNodeCapabilityManifestV1>
       readonly exposureMode: 'EXPLICIT_INTERFACE_TOKEN_AUTHENTICATED_HTTP_PILOT'
     }
 
@@ -46,14 +53,14 @@ export function loadXiaoguiLanHubMainProcessConfigV1(
   const hubId = env.XIAOGUI_LAN_HUB_ID?.trim() || 'xiaogui-lan-pilot-hub'
   if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(hubId)) return { ok: false, reasonCode: 'LAN_HUB_ID_INVALID' }
   const bindHost = env.XIAOGUI_LAN_HUB_BIND_HOST?.trim() ?? ''
-  if (!isPrivateLanIpv4(bindHost)) return { ok: false, reasonCode: 'LAN_HUB_BIND_HOST_INVALID' }
+  if (!isRfc1918LiteralIpv4V1(bindHost)) return { ok: false, reasonCode: 'LAN_HUB_BIND_HOST_INVALID' }
   const port = parsePort(env.XIAOGUI_LAN_HUB_PORT)
   if (port === null) return { ok: false, reasonCode: 'LAN_HUB_PORT_INVALID' }
 
   const hubToken = env.XIAOGUI_LAN_HUB_TOKEN ?? ''
   if (!isPrivateToken(hubToken)) return { ok: false, reasonCode: 'LAN_PRIVATE_TOKEN_INVALID' }
-  const nodeTokens = parseNodeTokens(env.XIAOGUI_LAN_HUB_NODE_TOKENS)
-  if (!nodeTokens.ok) return nodeTokens
+  const approvedNodes = parseApprovedNodes(env.XIAOGUI_LAN_HUB_APPROVED_NODES, hubToken)
+  if (!approvedNodes.ok) return approvedNodes
 
   return {
     ok: true,
@@ -63,7 +70,8 @@ export function loadXiaoguiLanHubMainProcessConfigV1(
       bindHost,
       port,
       hubToken,
-      nodeTokens: nodeTokens.value,
+      nodeTokens: approvedNodes.nodeTokens,
+      trustedManifests: approvedNodes.trustedManifests,
       exposureMode: 'EXPLICIT_INTERFACE_TOKEN_AUTHENTICATED_HTTP_PILOT',
     },
   }
@@ -102,18 +110,29 @@ export function createXiaoguiLanPilotMainProcessCompositionV1(options: {
     | { status: 'FAILED'; reasonCode: string }
   >
   now?: () => string
+  hubAssignmentStore?: HubAssignmentStoreV1
 }): XiaoguiLanPilotMainProcessCompositionResultV1 {
   const env = options.env ?? process.env
   const hubConfig = loadXiaoguiLanHubMainProcessConfigV1(env)
   if (!hubConfig.ok) return hubConfig
   const nodeConfig = loadXiaoguiLanNodeMainProcessConfigV1(env, options.now)
   if (!nodeConfig.ok) return nodeConfig
-  if (nodeConfig.value.enabled && !isAbsolute(options.userDataDir)) {
-    return { ok: false, reasonCode: 'LAN_NODE_USER_DATA_DIR_INVALID' }
+  if ((hubConfig.value.enabled || nodeConfig.value.enabled) && !isAbsolute(options.userDataDir)) {
+    return { ok: false, reasonCode: 'LAN_USER_DATA_DIR_INVALID' }
   }
 
+  let hubState: XiaoguiLanPilotMainProcessCompositionStatusV1['hub'] = hubConfig.value.enabled
+    ? { state: 'STOPPED' }
+    : { state: 'DISABLED' }
   const hub = hubConfig.value.enabled
-    ? createInMemoryXiaoguiNodeHubV1({ hubId: hubConfig.value.hubId, now: options.now })
+    ? createInMemoryXiaoguiNodeHubV1({
+        hubId: hubConfig.value.hubId,
+        now: options.now,
+        trustedManifests: hubConfig.value.trustedManifests,
+        assignmentStore: options.hubAssignmentStore,
+        userDataDir: options.userDataDir,
+        onDegraded: (reasonCode) => { hubState = { state: 'DEGRADED', reasonCode } },
+      })
     : null
   const nodeService = nodeConfig.value.enabled
     ? createXiaoguiLanNodeMainProcessServiceV1({
@@ -124,10 +143,6 @@ export function createXiaoguiLanPilotMainProcessCompositionV1(options: {
       })
     : createXiaoguiLanNodeMainProcessServiceV1({ config: nodeConfig.value })
   let server: XiaoguiLanHubHttpServerV1 | null = null
-  let hubState: XiaoguiLanPilotMainProcessCompositionStatusV1['hub'] = hubConfig.value.enabled
-    ? { state: 'STOPPED' }
-    : { state: 'DISABLED' }
-
   const composition: XiaoguiLanPilotMainProcessCompositionV1 = {
     async start() {
       if (hubConfig.value.enabled && !server) {
@@ -137,6 +152,7 @@ export function createXiaoguiLanPilotMainProcessCompositionV1(options: {
             authorization: {
               hubToken: hubConfig.value.hubToken,
               nodeTokens: hubConfig.value.nodeTokens,
+              trustedManifests: hubConfig.value.trustedManifests,
             },
             bindHost: hubConfig.value.bindHost,
             port: hubConfig.value.port,
@@ -181,22 +197,45 @@ export function createXiaoguiLanPilotMainProcessCompositionV1(options: {
   return { ok: true, value: composition }
 }
 
-function parseNodeTokens(value: string | undefined):
-  | { ok: true; value: ReadonlyMap<string, string> }
+function parseApprovedNodes(value: string | undefined, hubToken: string):
+  | {
+      ok: true
+      nodeTokens: ReadonlyMap<string, string>
+      trustedManifests: ReadonlyMap<string, XiaoguiNodeCapabilityManifestV1>
+    }
   | { ok: false; reasonCode: string } {
   try {
     const parsed = JSON.parse(value ?? '') as unknown
-    if (!isRecord(parsed)) return { ok: false, reasonCode: 'LAN_HUB_NODE_TOKENS_INVALID' }
-    const entries = Object.entries(parsed)
-    if (
-      entries.length < 2 ||
-      entries.some(([nodeId, token]) => !/^[a-z0-9][a-z0-9._-]{2,63}$/.test(nodeId) || typeof token !== 'string' || !isPrivateToken(token))
-    ) {
-      return { ok: false, reasonCode: 'LAN_HUB_NODE_TOKENS_INVALID' }
+    if (!Array.isArray(parsed) || parsed.length < 1) {
+      return { ok: false, reasonCode: 'LAN_HUB_APPROVED_NODES_INVALID' }
     }
-    return { ok: true, value: new Map(entries as Array<[string, string]>) }
+    const nodeTokens = new Map<string, string>()
+    const trustedManifests = new Map<string, XiaoguiNodeCapabilityManifestV1>()
+    const tokens = new Set<string>([hubToken])
+    for (const entry of parsed) {
+      if (!isRecord(entry) || !hasOnlyKeys(entry, ['nodeId', 'token', 'manifest'])) {
+        return { ok: false, reasonCode: 'LAN_HUB_APPROVED_NODES_INVALID' }
+      }
+      const manifest = parseXiaoguiLanNodeManifestV1(entry.manifest)
+      if (
+        typeof entry.nodeId !== 'string'
+        || !/^[a-z0-9][a-z0-9._-]{2,63}$/.test(entry.nodeId)
+        || typeof entry.token !== 'string'
+        || !isPrivateToken(entry.token)
+        || tokens.has(entry.token)
+        || nodeTokens.has(entry.nodeId)
+        || !manifest
+        || String(manifest.identity.nodeId) !== entry.nodeId
+      ) {
+        return { ok: false, reasonCode: 'LAN_NODE_IDENTITY_BINDING_INVALID' }
+      }
+      nodeTokens.set(entry.nodeId, entry.token)
+      trustedManifests.set(entry.nodeId, manifest)
+      tokens.add(entry.token)
+    }
+    return { ok: true, nodeTokens, trustedManifests }
   } catch {
-    return { ok: false, reasonCode: 'LAN_HUB_NODE_TOKENS_INVALID' }
+    return { ok: false, reasonCode: 'LAN_HUB_APPROVED_NODES_INVALID' }
   }
 }
 
@@ -207,16 +246,15 @@ function parsePort(value: string | undefined): number | null {
   return Number.isSafeInteger(port) && port >= 1024 && port <= 65_535 ? port : null
 }
 
-function isPrivateLanIpv4(value: string): boolean {
-  if (isIP(value) !== 4 || value === '0.0.0.0' || value.startsWith('127.')) return false
-  const [first, second] = value.split('.').map(Number)
-  return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168)
-}
-
 function isPrivateToken(token: string): boolean {
   return token === token.trim() && token.length >= 32 && !/[\r\n\0]/.test(token)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed)
+  return Object.keys(value).every((key) => allowedKeys.has(key))
 }
