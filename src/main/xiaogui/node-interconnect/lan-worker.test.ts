@@ -98,6 +98,59 @@ describe('Xiaogui outbound LAN worker', () => {
     }
   })
 
+  it('sends the parser-normalized plain DTO instead of a manifest prototype toJSON wire shape', async () => {
+    const approved = node('node-b', ['WORK.DOCX.TEMPLATE', 'EXECUTION.LOCAL_ONLY'])
+    Object.setPrototypeOf(approved, {
+      toJSON: () => ({ unexpected: 'wire-shape' }),
+    })
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        manifest: node('node-b', ['WORK.DOCX.TEMPLATE', 'EXECUTION.LOCAL_ONLY']),
+      })
+      return jsonResponse({ ok: true })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const worker = createXiaoguiLanWorkerV1({
+        origin: 'http://192.168.10.8:9443',
+        nodeToken: NODE_B_TOKEN,
+        manifest: approved,
+        approveLocal: async () => true,
+        executeLocal: async () => ({ status: 'SUCCEEDED', resultDigest: 'sha256:must-not-run' }),
+      })
+
+      await expect(worker.register()).resolves.toEqual({ ok: true })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('fails closed before fetch when a getter changes a parsed field during normalization', async () => {
+    const approved = node('node-b', ['WORK.DOCX.TEMPLATE', 'EXECUTION.LOCAL_ONLY'])
+    let nodeIdReads = 0
+    Object.defineProperty(approved.identity, 'nodeId', {
+      enumerable: true,
+      get: () => ++nodeIdReads <= 2 ? 'node-b' : '../node-b',
+    })
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const worker = createXiaoguiLanWorkerV1({
+        origin: 'http://192.168.10.8:9443',
+        nodeToken: NODE_B_TOKEN,
+        manifest: approved,
+        approveLocal: async () => true,
+        executeLocal: async () => ({ status: 'SUCCEEDED', resultDigest: 'sha256:must-not-run' }),
+      })
+
+      await expect(worker.register()).resolves.toEqual({ ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' })
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('rejects a malformed Hub JSON response instead of trusting a generic cast', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, envelope: {} }), {
       status: 200,

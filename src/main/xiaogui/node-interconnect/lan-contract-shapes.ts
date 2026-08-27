@@ -23,7 +23,7 @@ export type XiaoguiLanEventsResponseV1 =
   | XiaoguiLanFailureResponseV1
 
 export type XiaoguiLanRouteRequestV1 =
-  | { route: '/register'; nodeId: string; manifest: XiaoguiNodeCapabilityManifestV1 }
+  | { route: '/register'; manifest: XiaoguiNodeCapabilityManifestV1 }
   | { route: '/heartbeat'; nodeId: string; health: XiaoguiNodeHealthV1 }
   | {
       route: '/offer'
@@ -81,7 +81,7 @@ export function parseXiaoguiLanRouteRequestV1(routeName: string, body: unknown):
       if (!hasOnlyLanKeysV1(body, ['manifest'])) return null
       const manifest = parseXiaoguiLanNodeManifestV1(body.manifest)
       return manifest
-        ? { route: '/register', nodeId: String(manifest.identity.nodeId), manifest }
+        ? { route: '/register', manifest }
         : null
     }
     case '/heartbeat':

@@ -12,6 +12,7 @@ import {
   parseXiaoguiLanSimpleResponseV1 as parseSimpleResponse,
   type XiaoguiLanFailureResponseV1,
   type XiaoguiLanReconcileResponseV1,
+  type XiaoguiLanRouteRequestV1,
   type XiaoguiLanSimpleResponseV1,
 } from './lan-contract-shapes'
 import {
@@ -280,27 +281,56 @@ async function post(
   body: unknown,
   token: string,
 ): Promise<LanWorkerSimpleResponseV1 | LanWorkerClaimResponseV1 | LanWorkerReconcileResponseV1> {
-  if (!validateXiaoguiNodePublicDtoV1(body).ok) return { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' }
-  const request = parseXiaoguiLanRouteRequestV1(route, body)
-  if (!request) return { ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' }
+  const normalized = normalizeWorkerRequest(route, body)
+  if (!normalized.ok) return normalized
   try {
     const response = await fetch(`${origin}${route}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
+      body: JSON.stringify(normalized.body),
       signal: AbortSignal.timeout(10_000),
     })
     const result: unknown = await response.json()
     if (!validateXiaoguiNodePublicDtoV1(result).ok) {
       return { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' }
     }
-    const expectedNodeId = request.route === '/claim'
-      ? request.nodeId
+    const expectedNodeId = normalized.request.route === '/claim'
+      ? normalized.request.nodeId
       : undefined
     return parseLanWorkerResponse(route, result, expectedNodeId)
   } catch {
     return { ok: false, reasonCode: 'LAN_WORKER_TRANSPORT_FAILED' }
   }
+}
+
+function normalizeWorkerRequest(
+  route: LanWorkerRouteV1,
+  value: unknown,
+):
+  | { ok: true; request: XiaoguiLanRouteRequestV1; body: Record<string, unknown> }
+  | { ok: false; reasonCode: 'NODE_PUBLIC_DTO_LEAK' | 'LAN_WORKER_REQUEST_INVALID' } {
+  try {
+    if (!validateXiaoguiNodePublicDtoV1(value).ok) {
+      return { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' }
+    }
+    const parsed = parseXiaoguiLanRouteRequestV1(route, value)
+    if (!parsed) return { ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' }
+    const canonicalBody = routeRequestBody(parsed)
+    const normalized = parseXiaoguiLanRouteRequestV1(route, canonicalBody)
+    if (!normalized) return { ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' }
+    const body = routeRequestBody(normalized)
+    if (!validateXiaoguiNodePublicDtoV1(body).ok) {
+      return { ok: false, reasonCode: 'NODE_PUBLIC_DTO_LEAK' }
+    }
+    return { ok: true, request: normalized, body }
+  } catch {
+    return { ok: false, reasonCode: 'LAN_WORKER_REQUEST_INVALID' }
+  }
+}
+
+function routeRequestBody(request: XiaoguiLanRouteRequestV1): Record<string, unknown> {
+  const { route: _route, ...body } = request
+  return body
 }
 
 function parseLanWorkerResponse(

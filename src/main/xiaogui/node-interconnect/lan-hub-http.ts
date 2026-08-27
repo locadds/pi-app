@@ -170,7 +170,9 @@ function authorizeRequest(
   if (request.route === '/reconcile' && !request.nodeId) {
     return sameToken(presented, authorization.hubToken)
   }
-  const nodeId = request.nodeId
+  const nodeId = request.route === '/register'
+    ? String(request.manifest.identity.nodeId)
+    : request.nodeId
   if (!nodeId) return false
   const expected = authorization.nodeTokens.get(nodeId)
   return Boolean(expected && sameToken(presented, expected))
