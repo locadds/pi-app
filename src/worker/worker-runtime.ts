@@ -18,6 +18,7 @@ import { addXiaoguiWorkDocxTemplateIntakeTool } from './xiaogui-work-docx-templa
 import { addXiaoguiWorkDocxTemplateMaterializeTool } from './xiaogui-work-docx-template-materialize-tool.js'
 import { addXiaoguiWorkDocxAdvancedGenerationTool } from './xiaogui-work-docx-advanced-generation-tool.js'
 import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool.js'
+import { assertXiaoguiModelToolSchemasCompatible } from './xiaogui-model-tool-schema-compatibility.js'
 import {
   handleSessionEvent as dispatchSessionEvent,
   resetCompletionTurnTracking,
@@ -181,7 +182,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
             getSourceSessionId: () => st.currentSessionId || undefined,
             getSourceTurnId: () => st.currentTurnId || undefined,
           }
-          return addXiaoguiWorkDocxAdvancedGenerationTool(
+          return assertXiaoguiModelToolSchemasCompatible(addXiaoguiWorkDocxAdvancedGenerationTool(
             addXiaoguiWorkDocumentSnapshotTool(
               addXiaoguiWorkDocxTemplateMaterializeTool(
               addXiaoguiWorkDocxTemplateIntakeTool(
@@ -214,7 +215,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
               getSourceSessionId: collaborationToolOptions.getSourceSessionId,
               getSourceRunId: () => st.currentRunId || undefined,
             },
-          )
+          ))
         },
         skillsOverride: applySkillsOverride as never,
       },

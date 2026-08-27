@@ -434,6 +434,8 @@
     "added": "已添加「{{label}}」→ {{key}}",
     "fetchFailed": "拉取失败",
     "fetchNeedBaseUrl": "先填写 baseUrl",
+    "fetchAnthropicManual": "Anthropic Messages 不使用 OpenAI 的 /v1/models；请手动添加模型编号。",
+    "anthropicBaseUrlHint": "Anthropic Messages 会自动请求 /v1/messages。这里只填写服务根地址，不要写 /v1 或 /v1/messages；若中转只支持 OpenAI 格式，请改选 OpenAI Chat Completions。保存时会自动纠正常见的重复端点。",
     "loadedModels": "已加载 {{count}} 个远端模型",
     "remoteModels": "远端模型",
     "local": "本地",

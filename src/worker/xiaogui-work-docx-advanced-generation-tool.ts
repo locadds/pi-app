@@ -12,11 +12,14 @@ const DataSchema = Type.Object({
   repeatBlocks: Type.Array(Type.Object({ name: Type.String({ minLength: 1, maxLength: 64 }), status: Type.Union([Type.Literal('RESOLVED'), Type.Literal('UNRESOLVED')]), records: Type.Optional(Type.Array(Type.Object({ slots: Type.Array(Type.Object({ slotId: Type.String({ minLength: 1, maxLength: 40 }), value: ValueSchema }, { additionalProperties: false }), { maxItems: 50 }) }, { additionalProperties: false }), { maxItems: 500 })) }, { additionalProperties: false }), { maxItems: 50 }),
   conditionalBlocks: Type.Array(Type.Object({ name: Type.String({ minLength: 1, maxLength: 64 }), status: Type.Union([Type.Literal('RESOLVED'), Type.Literal('UNRESOLVED')]), value: Type.Optional(Type.Boolean()) }, { additionalProperties: false }), { maxItems: 50 }),
 }, { additionalProperties: false })
-const ActionSchema = Type.Union([
-  Type.Object({ action: Type.Literal('START') }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('PREPARE'), data: DataSchema }, { additionalProperties: false }),
-  ...(['CONFIRM', 'RESUME', 'CANCEL', 'OPEN', 'REVEAL'] as const).map((action) => Type.Object({ action: Type.Literal(action) }, { additionalProperties: false })),
-])
+// 顶层固定为 object；data 只在 PREPARE 使用，主进程负责动作级严格校验。
+const ActionSchema = Type.Object({
+  action: Type.Union([
+    Type.Literal('START'), Type.Literal('PREPARE'), Type.Literal('CONFIRM'), Type.Literal('RESUME'),
+    Type.Literal('CANCEL'), Type.Literal('OPEN'), Type.Literal('REVEAL'),
+  ]),
+  data: Type.Optional(DataSchema),
+}, { additionalProperties: false })
 
 export interface XiaoguiWorkDocxAdvancedGenerationToolOptionsV1 { getSourceSessionId: () => string | undefined; getSourceRunId: () => string | undefined }
 type SafeDetails = XiaoguiWorkDocxAdvancedGenerationResultV1 | { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_FAILED'; code: WorkerHostToolErrorCodeV1; message: string }
@@ -55,7 +58,7 @@ export function addXiaoguiWorkDocxAdvancedGenerationTool(loaded: LoadExtensionsR
     async execute(toolCallId, params, signal) {
       const sourceSessionId = options.getSourceSessionId(); const sourceRunId = options.getSourceRunId()
       if (!sourceSessionId || !sourceRunId) { const details: SafeDetails = { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_FAILED', code: 'SESSION_NOT_READY', message: '当前用户指令尚未建立完成，请重新发送后再试' }; return { content: [{ type: 'text', text: publicText(details) }], details, isError: true } }
-      const outcome = await requestWorkerHostTool({ method: XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1, payload: { ...params, sourceSessionId, sourceRunId, toolCallId } }, signal)
+      const outcome = await requestWorkerHostTool({ method: XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1, payload: { ...params, sourceSessionId, sourceRunId, toolCallId } as never }, signal)
       if (!outcome.ok) { const details: SafeDetails = { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_FAILED', code: outcome.error.code, message: outcome.error.message }; return { content: [{ type: 'text', text: publicText(details) }], details, isError: true } }
       if (!outcome.value.kind.startsWith('XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_')) { const details: SafeDetails = { kind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_FAILED', code: 'HOST_TOOL_FAILED', message: '高级 Word 生成返回了不支持的结果' }; return { content: [{ type: 'text', text: publicText(details) }], details, isError: true } }
       const details = outcome.value as XiaoguiWorkDocxAdvancedGenerationResultV1

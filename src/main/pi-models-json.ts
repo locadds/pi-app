@@ -235,7 +235,8 @@ export async function writeModelsConfigWithSdk(
   if (warnings.length) {
     console.warn('[models.json] structure warnings:', warnings.join('; '))
   }
-  const output = asRecord(merged) ?? normalized
+  // 使用保留未知字段后的规范化结果，确保协议专属的安全修正真正写入。
+  const output = normalized
   const schemaError = await validateWithPiSdk(sdk, agentDir, output)
   if (schemaError) return { ok: false, error: redactConfigSecrets(schemaError, config), path }
   mkdirSync(dirname(path), { recursive: true })

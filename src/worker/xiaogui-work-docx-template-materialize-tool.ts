@@ -17,18 +17,23 @@ import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 export const XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_TOOL_NAME =
   'xiaogui_work_docx_template_materialize'
 
-const ActionSchema = Type.Union([
-  Type.Object(
-    {
-      action: Type.Literal('PREPARE'),
-      reportId: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
-    },
-    { additionalProperties: false },
-  ),
-  ...(['CONFIRM', 'RESUME', 'CANCEL', 'OPEN', 'REVEAL'] as const).map((action) =>
-    Type.Object({ action: Type.Literal(action) }, { additionalProperties: false }),
-  ),
-])
+// 顶层固定为 object；reportId 只在 PREPARE 使用，主进程负责动作级严格校验。
+const ActionSchema = Type.Object(
+  {
+    action: Type.Union([
+      Type.Literal('PREPARE'),
+      Type.Literal('CONFIRM'),
+      Type.Literal('RESUME'),
+      Type.Literal('CANCEL'),
+      Type.Literal('OPEN'),
+      Type.Literal('REVEAL'),
+    ]),
+    reportId: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 160, description: '仅 PREPARE 使用。' }),
+    ),
+  },
+  { additionalProperties: false },
+)
 
 export interface XiaoguiWorkDocxTemplateMaterializeToolOptionsV1 {
   getSourceSessionId: () => string | undefined

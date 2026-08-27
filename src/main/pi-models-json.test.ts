@@ -67,6 +67,25 @@ describe('active SDK model config persistence', () => {
     expect(readFileSync(join(agentDir, 'models.json'), 'utf8')).not.toContain('sk-test')
   })
 
+  it('removes duplicate Anthropic endpoint suffixes before SDK validation and persistence', async () => {
+    const agentDir = createAgentDir()
+    const sdk = createSdk()
+    const draft: PiModelsConfig = {
+      providers: {
+        anthropicRelay: {
+          baseUrl: 'https://relay.example.invalid/anthropic/v1/messages/',
+          api: 'anthropic-messages',
+          models: [{ id: 'claude-test' }],
+        },
+      },
+    }
+
+    await expect(writeModelsConfigWithSdk(draft, sdk, agentDir)).resolves.toMatchObject({ ok: true })
+
+    const saved = JSON.parse(readFileSync(join(agentDir, 'models.json'), 'utf8'))
+    expect(saved.providers.anthropicRelay.baseUrl).toBe('https://relay.example.invalid/anthropic')
+  })
+
   it('preserves the full SDK document when editing one owned model field', async () => {
     const agentDir = createAgentDir()
     const sdk = createSdk()

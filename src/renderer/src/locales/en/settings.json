@@ -434,6 +434,8 @@
     "added": "Added \"{{label}}\" → {{key}}",
     "fetchFailed": "Fetch failed",
     "fetchNeedBaseUrl": "Fill in baseUrl first",
+    "fetchAnthropicManual": "Anthropic Messages does not use OpenAI /v1/models; add the model ID manually.",
+    "anthropicBaseUrlHint": "Anthropic Messages appends /v1/messages automatically. Enter the service root only, without /v1 or /v1/messages. If the relay only supports OpenAI format, select OpenAI Chat Completions instead. Common duplicate suffixes are corrected on save.",
     "loadedModels": "Loaded {{count}} remote models",
     "remoteModels": "Remote models",
     "local": "Local",

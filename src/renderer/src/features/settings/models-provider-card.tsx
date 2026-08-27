@@ -154,9 +154,16 @@ export function ModelsProviderCard({
                 <input
                   className={inputCls}
                   value={p.baseUrl || ''}
-                  placeholder="https://api.example.com/v1"
+                  placeholder={p.api === 'anthropic-messages'
+                    ? 'https://api.anthropic.com'
+                    : 'https://api.example.com/v1'}
                   onChange={(e) => onUpdateProvider({ baseUrl: e.target.value || undefined })}
                 />
+                {p.api === 'anthropic-messages' && (
+                  <p className="mt-1 text-2xs leading-relaxed text-amber-700 dark:text-amber-300">
+                    {t('models.anthropicBaseUrlHint')}
+                  </p>
+                )}
               </div>
               <div className="sm:col-span-2">
                 <label className="mb-1 block text-xs text-muted-foreground">{t('models.labelApiKey')}</label>

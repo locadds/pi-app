@@ -58,21 +58,17 @@ const UpdateFieldsSchema = {
   reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1_000 })),
 }
 
-const UpdateOperationSchema = Type.Union([
-  Type.Object(
-    {
-      candidateIds: Type.Array(Type.String({ minLength: 1, maxLength: 160 }), {
+const UpdateOperationSchema = Type.Object(
+  {
+    candidateIds: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 160 }), {
         minItems: 1,
         maxItems: 200,
-        description: '仅在已经掌握主进程签发的候选编号时使用',
+        description: '与 match 二选一；仅在已经掌握主进程签发的候选编号时使用。',
       }),
-      ...UpdateFieldsSchema,
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      match: Type.Object(
+    ),
+    match: Type.Optional(
+      Type.Object(
         {
           kinds: Type.Optional(
             Type.Array(DecisionKindSchema, {
@@ -100,42 +96,46 @@ const UpdateOperationSchema = Type.Union([
         {
           additionalProperties: false,
           minProperties: 1,
-          description: '不同匹配维度必须同时满足；匹配由主进程展开成逐项决定',
+          description: '与 candidateIds 二选一；不同匹配维度必须同时满足。',
         },
       ),
-      ...UpdateFieldsSchema,
-    },
-    { additionalProperties: false },
-  ),
-])
+    ),
+    ...UpdateFieldsSchema,
+  },
+  {
+    additionalProperties: false,
+    description: 'candidateIds 与 match 必须且只能提供一个，主进程会再次严格校验。',
+  },
+)
 
-const ActionSchema = Type.Union([
-  Type.Object({ action: Type.Literal('START') }, { additionalProperties: false }),
-  Type.Object(
-    {
-      action: Type.Literal('UPDATE'),
-      operations: Type.Array(UpdateOperationSchema, { minItems: 1, maxItems: 200 }),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object({ action: Type.Literal('REVIEW') }, { additionalProperties: false }),
-  Type.Object(
-    {
-      action: Type.Literal('RESUME'),
-      reportId: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      action: Type.Literal('DELETE'),
-      reportId: Type.String({ minLength: 1, maxLength: 160 }),
-      confirmed: Type.Literal(true),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object({ action: Type.Literal('CANCEL') }, { additionalProperties: false }),
-])
+// 保持顶层 object，规避 OpenAI 兼容接口拒绝顶层 anyOf；动作专属字段
+// 由主进程的版本化 Zod 契约继续严格校验。
+const ActionSchema = Type.Object(
+  {
+    action: Type.Union([
+      Type.Literal('START'),
+      Type.Literal('UPDATE'),
+      Type.Literal('REVIEW'),
+      Type.Literal('RESUME'),
+      Type.Literal('DELETE'),
+      Type.Literal('CANCEL'),
+    ]),
+    operations: Type.Optional(
+      Type.Array(UpdateOperationSchema, {
+        minItems: 1,
+        maxItems: 200,
+        description: '仅 UPDATE 使用。',
+      }),
+    ),
+    reportId: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 160, description: 'RESUME 可选，DELETE 必填。' }),
+    ),
+    confirmed: Type.Optional(
+      Type.Literal(true, { description: '仅 DELETE 使用；用户明确要求删除时必须为 true。' }),
+    ),
+  },
+  { additionalProperties: false },
+)
 
 const ModelSuggestionSchema = z
   .object({

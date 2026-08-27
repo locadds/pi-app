@@ -19,40 +19,44 @@ export const XIAOGUI_WORK_DOCX_TOOL_NAME = 'xiaogui_work_docx'
 const SourceSummarySchema = Type.Optional(
   Type.String({ maxLength: 500, description: '只写字段来源的简短说明，不要放路径或内部编号。' }),
 )
-const FieldSchema = Type.Union([
-  Type.Object(
-    {
-      name: Type.String({ minLength: 1, maxLength: 64 }),
-      status: Type.Literal('READY'),
-      value: Type.Union([Type.String({ maxLength: 20_000 }), Type.Number(), Type.Boolean()]),
-      sourceSummary: SourceSummarySchema,
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      name: Type.String({ minLength: 1, maxLength: 64 }),
-      status: Type.Literal('UNRESOLVED'),
-      sourceSummary: SourceSummarySchema,
-    },
-    { additionalProperties: false },
-  ),
-])
+const FieldSchema = Type.Object(
+  {
+    name: Type.String({ minLength: 1, maxLength: 64 }),
+    status: Type.Union([Type.Literal('READY'), Type.Literal('UNRESOLVED')], {
+      description: 'READY 必须同时提供 value；UNRESOLVED 不提供 value。',
+    }),
+    value: Type.Optional(
+      Type.Union([Type.String({ maxLength: 20_000 }), Type.Number(), Type.Boolean()]),
+    ),
+    sourceSummary: SourceSummarySchema,
+  },
+  {
+    additionalProperties: false,
+    description: '字段的动作约束由主进程再次严格校验。',
+  },
+)
 
-const WorkDocxTemplateDataActionSchema = Type.Union([
-  Type.Object({ action: Type.Literal('SELECT_TEMPLATE') }, { additionalProperties: false }),
-  Type.Object(
-    {
-      action: Type.Literal('PREPARE'),
-      fields: Type.Array(FieldSchema, { maxItems: 200 }),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object({ action: Type.Literal('CONFIRM') }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('CANCEL') }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('OPEN') }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('REVEAL') }, { additionalProperties: false }),
-])
+// 模型工具的顶层参数必须固定为 JSON Schema object。动作之间的严格条件
+// 仍由主进程版本化契约校验，避免不同模型供应商拒绝顶层 anyOf。
+const WorkDocxTemplateDataActionSchema = Type.Object(
+  {
+    action: Type.Union([
+      Type.Literal('SELECT_TEMPLATE'),
+      Type.Literal('PREPARE'),
+      Type.Literal('CONFIRM'),
+      Type.Literal('CANCEL'),
+      Type.Literal('OPEN'),
+      Type.Literal('REVEAL'),
+    ]),
+    fields: Type.Optional(
+      Type.Array(FieldSchema, {
+        maxItems: 200,
+        description: '仅 PREPARE 使用，必须提交模板返回的全部且仅有字段。',
+      }),
+    ),
+  },
+  { additionalProperties: false },
+)
 
 export interface XiaoguiWorkDocxTemplateDataToolOptions {
   getSourceSessionId: () => string | undefined
@@ -159,7 +163,7 @@ export function addXiaoguiWorkDocxTemplateDataTool(
             sourceSessionId,
             sourceRunId,
             toolCallId,
-          },
+          } as never,
         },
         params.action === 'CONFIRM' ? undefined : signal,
       )
