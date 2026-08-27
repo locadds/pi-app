@@ -283,14 +283,14 @@ function groupedWaveProjection(address: HubAddressV1): SessionCollaborationProje
     readyTaskRunIds: ['xhbtr_4' as TaskRunId],
     capturedAt: '2026-08-18T00:00:01.000Z',
   }
-  // lastExecutionWave 仅作历史证据：本批新调度 t1，不再决定当前分组
+  // lastExecutionWave 仅作历史证据：t1 是批前既有 active，t5 是本批新调度，两集合不相交
   const lastExecutionWave: ExecutionWaveV1 = {
     version: 1,
     waveId: 'xhbev_wave1' as ExecutionWaveId,
     flowId: 'xhbf_flow1' as FlowId,
     maxParallelism: 2,
     activeAttemptIds: ['xhba_1' as AttemptId],
-    scheduled: [{ taskRunId: 'xhbtr_1' as TaskRunId, attemptId: 'xhba_1' as AttemptId }],
+    scheduled: [{ taskRunId: 'xhbtr_5' as TaskRunId, attemptId: 'xhba_5' as AttemptId }],
     dependencyStates: [],
     createdAt: '2026-08-18T00:00:00.000Z',
   }
@@ -379,12 +379,14 @@ function confirmableProjection(address: HubAddressV1): SessionCollaborationProje
     readyTaskRunIds: ['xhbtr_4' as TaskRunId],
     capturedAt: '2026-08-18T00:00:01.000Z',
   }
+  // 首波新调度 t1：调度发生前 wave 内没有既有 active，两集合不相交；
+  // activeAttemptCount=1 来自调度之后的实时 readiness
   const lastExecutionWave: ExecutionWaveV1 = {
     version: 1,
     waveId: 'xhbev_wave1' as ExecutionWaveId,
     flowId: 'xhbf_flow1' as FlowId,
     maxParallelism: 2,
-    activeAttemptIds: ['xhba_1' as AttemptId],
+    activeAttemptIds: [],
     scheduled: [{ taskRunId: 'xhbtr_1' as TaskRunId, attemptId: 'xhba_1' as AttemptId }],
     dependencyStates: [],
     createdAt: '2026-08-18T00:00:00.000Z',
@@ -1057,6 +1059,23 @@ describe('CollaborationHubPanel', () => {
       prompt: '完成本批任务',
       files: [{ operation: 'MODIFY', relativePath: 'src/a.ts' }],
     })
+  })
+
+  it.each([
+    ['满槽分组', groupedWaveProjection],
+    ['可确认', confirmableProjection],
+  ] as const)('%s fixture 的 wave activeAttemptIds 与 scheduled 不相交', (_name, factory) => {
+    const projection = factory({
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    })
+    const wave = projection.lastExecutionWave
+    expect(wave).toBeDefined()
+    const activeAttemptIds = new Set<string>(wave!.activeAttemptIds)
+    expect(wave!.scheduled.length).toBeGreaterThan(0)
+    for (const item of wave!.scheduled) {
+      expect(activeAttemptIds.has(item.attemptId)).toBe(false)
+    }
   })
 
   it('交付右栏展示公开摘要；审阅零 IPC，确认应用只调用一次 approve', async () => {
