@@ -141,6 +141,47 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     await orchestrator.close()
   })
 
+  it('binds two concurrent confirmations to distinct scheduled TaskRuns and their own file scopes', async () => {
+    const events: string[] = []
+    const hub = parallelHub(events)
+    const staged: Parameters<TaskExecutionInputStageV1['stageAttemptInput']>[0][] = []
+    const orchestrator = await createOrchestrator(
+      hub.application,
+      events,
+      undefined,
+      undefined,
+      undefined,
+      {
+        stageAttemptInput(input) {
+          staged.push(input)
+          events.push(`stage:${input.attemptId}`)
+          return {}
+        },
+      },
+    )
+
+    const [first, second] = await Promise.all([
+      orchestrator.start({ ...request({ relativePath: 'src/first.ts' }), prompt: '完成第一项' }),
+      orchestrator.start({ ...request({ relativePath: 'src/second.ts' }), prompt: '完成第二项' }),
+    ])
+
+    expect(first).toMatchObject({ ok: true, value: { taskRun: { taskRunId: 'run-first' }, attempt: { attemptId: 'attempt-first' } } })
+    expect(second).toMatchObject({ ok: true, value: { taskRun: { taskRunId: 'run-second' }, attempt: { attemptId: 'attempt-second' } } })
+    expect(staged
+      .map((input) => ({ attemptId: input.attemptId, grants: input.grants }))
+      .sort((left, right) => left.attemptId.localeCompare(right.attemptId))).toEqual([
+      { attemptId: 'attempt-first', grants: [{ operation: 'MODIFY', relativePath: 'src/first.ts', baselineDigest: 'sha256:baseline' }] },
+      { attemptId: 'attempt-second', grants: [{ operation: 'MODIFY', relativePath: 'src/second.ts', baselineDigest: 'sha256:baseline' }] },
+    ])
+    const scheduleIntents = hub.systemCommands()
+      .map((command) => command.intent)
+      .filter((intent): intent is Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.schedule' }> => intent.type === 'system.schedule')
+    expect(scheduleIntents).toHaveLength(2)
+    expect(scheduleIntents[0].executionInputDigest).not.toBe(scheduleIntents[1].executionInputDigest)
+    expect(scheduleIntents[0].authorizationScope?.pathTokens).not.toEqual(scheduleIntents[1].authorizationScope?.pathTokens)
+    await orchestrator.close()
+  })
+
   it('turns a cross-restart RUNNING Attempt into runtime-unbound OUTCOME_UNKNOWN without redispatch', async () => {
     const events: string[] = []
     const hub = fakeHub(events)
@@ -516,6 +557,130 @@ function terminalThenNextHub(events: string[]) {
       if (phase !== 'OLD_RUNNING') throw new Error('old task is not running')
       phase = 'OLD_SUCCEEDED'
     },
+  }
+}
+
+function parallelHub(events: string[]) {
+  const tasks = [
+    {
+      taskSpecId: 'xhbts_first' as never,
+      taskRunId: 'run-first' as TaskRunId,
+      attemptId: 'attempt-first' as AttemptId,
+      taskKey: 'first',
+      title: '第一项',
+    },
+    {
+      taskSpecId: 'xhbts_second' as never,
+      taskRunId: 'run-second' as TaskRunId,
+      attemptId: 'attempt-second' as AttemptId,
+      taskKey: 'second',
+      title: '第二项',
+    },
+  ] as const
+  const attemptStatuses = new Map<AttemptId, 'WORKSPACE_PREPARING' | 'READY' | 'RUNNING'>()
+
+  const projection = (): SessionCollaborationProjectionM2BV1 => ({
+    kind: 'SESSION_COLLABORATION_PROJECTION',
+    version: 'm2b.v1',
+    address: ADDRESS,
+    sessionVersion: attemptStatuses.size + 1,
+    sessionMode: 'CODING',
+    authoritativeMode: 'CODING',
+    reserved: false,
+    activeFlow: { flowId: FLOW_ID, status: 'PLAN_ACTIVE', activeRevisionId: null, objective: '并行执行两项任务' },
+    activeRevision: null,
+    taskSpecs: tasks.map((task) => ({
+      taskSpecId: task.taskSpecId,
+      taskKey: task.taskKey,
+      title: task.title,
+      summary: `只处理${task.title}批准的文件`,
+      dependsOn: [],
+      unavailableReason: 'AGENT_DISABLED_M2A',
+    })),
+    taskRuns: tasks.map((task) => ({
+      taskRunId: task.taskRunId,
+      taskSpecId: task.taskSpecId,
+      taskKey: task.taskKey,
+      status: attemptStatuses.has(task.attemptId) ? 'RUNNING' : 'BLOCKED',
+      ...(attemptStatuses.has(task.attemptId) ? { attemptId: task.attemptId } : {}),
+    })),
+    attempts: tasks.flatMap((task) => {
+      const status = attemptStatuses.get(task.attemptId)
+      return status
+        ? [{
+            attemptId: task.attemptId,
+            taskRunId: task.taskRunId,
+            status,
+            workspaceReceiptId: `workspace-${task.taskKey}` as never,
+            ...(status === 'RUNNING' ? { runtimeSessionId: `runtime-${task.taskKey}` } : {}),
+          }]
+        : []
+    }),
+    history: [],
+    availableActions: attemptStatuses.size < tasks.length
+      ? ['flow.cancel', 'execution.next.confirm']
+      : ['flow.cancel'],
+  })
+
+  const executeSystem = vi.fn(async (command: HubSystemCommandRequestM2BV1) => {
+    switch (command.intent.type) {
+      case 'system.schedule': {
+        const task = tasks.find((candidate) => !attemptStatuses.has(candidate.attemptId))
+        if (!task) throw new Error('no schedulable task')
+        attemptStatuses.set(task.attemptId, 'WORKSPACE_PREPARING')
+        events.push(`schedule:${task.attemptId}`)
+        return { ok: true as const, value: {
+          requestId: command.requestId,
+          intentType: command.intent.type,
+          sessionVersion: attemptStatuses.size + 1,
+          flowId: FLOW_ID,
+          taskRunId: task.taskRunId,
+          attemptId: task.attemptId,
+        } }
+      }
+      case 'system.agent.report.record': {
+        const attemptId = command.intent.attemptId
+        const task = tasks.find((candidate) => candidate.attemptId === attemptId)
+        if (!task || attemptStatuses.get(task.attemptId) !== 'READY') throw new Error('unexpected dispatch')
+        attemptStatuses.set(task.attemptId, 'RUNNING')
+        events.push(`dispatch:${task.attemptId}`)
+        return { ok: true as const, value: {
+          requestId: command.requestId,
+          intentType: command.intent.type,
+          sessionVersion: attemptStatuses.size + 3,
+          flowId: FLOW_ID,
+          taskRunId: task.taskRunId,
+          attemptId: task.attemptId,
+        } }
+      }
+      default:
+        throw new Error(`unexpected ${command.intent.type}`)
+    }
+  })
+  const application = {
+    observeM2B: vi.fn(async () => ({ ok: true as const, value: projection() })),
+    executeSystem,
+    prepareNextWorkspace: vi.fn(async (_address, preparation) => {
+      const task = tasks.find((candidate) => candidate.attemptId === preparation.attemptId)
+      if (!task || attemptStatuses.get(task.attemptId) !== 'WORKSPACE_PREPARING') {
+        throw new Error('unexpected prepare')
+      }
+      attemptStatuses.set(task.attemptId, 'READY')
+      events.push(`prepare:${task.attemptId}`)
+      return { ok: true as const, value: {
+        requestId: preparation.requestId,
+        intentType: 'system.workspace.prepare.result.record' as const,
+        sessionVersion: attemptStatuses.size + 2,
+        flowId: FLOW_ID,
+        taskRunId: task.taskRunId,
+        attemptId: task.attemptId,
+      } }
+    }),
+  } as unknown as CollaborationHubApplicationV1
+
+  return {
+    application,
+    systemCommands: () => executeSystem.mock.calls.map(([command]) => command),
   }
 }
 

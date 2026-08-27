@@ -5,6 +5,7 @@ import type {
   TaskVerificationSummaryV1,
 } from './xiaogui-task-verification'
 import type { DeliveryReviewProjectionV1 } from './xiaogui-delivery'
+import type { RuntimeAdapterSelectionV1 } from './xiaogui-agent-runtime'
 
 export type HubAddressV1 = SessionAddressV1
 export type CollaborationHubContractVersionV1 = 'm2a.v1' | 'm2b.v1'
@@ -13,6 +14,7 @@ export type FlowId = string & { readonly __brand: 'FlowId' }
 export type PlanRevisionId = string & { readonly __brand: 'PlanRevisionId' }
 export type TaskSpecId = string & { readonly __brand: 'TaskSpecId' }
 export type TaskRunId = string & { readonly __brand: 'TaskRunId' }
+export type ExecutionWaveId = string & { readonly __brand: 'ExecutionWaveId' }
 
 export type CollaborationHubActionV1 =
   | 'flow.start.with_draft'
@@ -45,6 +47,55 @@ export interface InitialPlanTaskInputV1 {
   title: string
   summary?: string
   dependsOn?: string[]
+}
+
+/** Path-free authorization identity used only by trusted main-process scheduling. */
+export interface TaskFileAuthorizationScopeV1 {
+  readonly version: 1
+  readonly pathTokens: readonly Sha256Digest[]
+  readonly scopeDigest: Sha256Digest
+}
+
+export type TaskDependencyStateCodeV1 =
+  | 'READY'
+  | 'WAITING_FOR_DEPENDENCIES'
+  | 'BLOCKED_BY_FAILED_DEPENDENCY'
+  | 'IN_FLIGHT'
+  | 'TERMINAL'
+
+export interface TaskDependencyStateV1 {
+  readonly version: 1
+  readonly taskRunId: TaskRunId
+  readonly state: TaskDependencyStateCodeV1
+  readonly dependencyTaskRunIds: readonly TaskRunId[]
+  readonly blockingTaskRunIds: readonly TaskRunId[]
+  readonly verifiedAncestorTaskChangeSetIds: readonly string[]
+}
+
+export interface AttemptRuntimeBindingV1 {
+  readonly version: 1
+  readonly attemptId: AttemptId
+  readonly taskRunId: TaskRunId
+  readonly executionInputDigest: Sha256Digest
+  readonly authorizationScopeDigest: Sha256Digest
+  readonly selection: RuntimeAdapterSelectionV1
+  readonly selectionDigest: Sha256Digest
+  readonly bindingDigest: Sha256Digest
+  readonly boundAt: string
+}
+
+export interface ExecutionWaveV1 {
+  readonly version: 1
+  readonly waveId: ExecutionWaveId
+  readonly flowId: FlowId
+  readonly maxParallelism: number
+  readonly activeAttemptIds: readonly AttemptId[]
+  readonly scheduled: readonly {
+    readonly taskRunId: TaskRunId
+    readonly attemptId: AttemptId
+  }[]
+  readonly dependencyStates: readonly TaskDependencyStateV1[]
+  readonly createdAt: string
 }
 
 export interface InitialPlanDraftInputV1 {
@@ -186,6 +237,7 @@ export interface AttemptProjectionM2BV1 {
   runtimeSessionId?: string
   workspaceReceiptId?: WorkspaceReceiptId
   verificationSummary?: TaskVerificationSummaryV1
+  runtimeBinding?: AttemptRuntimeBindingV1
 }
 
 export type CollaborationHubActionM2BV1 =
@@ -220,6 +272,7 @@ export interface SessionCollaborationProjectionM2BV1
   taskRuns: TaskRunProjectionM2BV1[]
   attempts: AttemptProjectionM2BV1[]
   activeDelivery?: DeliveryReviewProjectionV1 | null
+  lastExecutionWave?: ExecutionWaveV1
   availableActions: CollaborationHubActionM2BV1[]
 }
 
@@ -231,6 +284,7 @@ export interface PerformReceiptV1 {
   revisionId?: PlanRevisionId
   taskRunId?: TaskRunId
   attemptId?: AttemptId
+  executionWave?: ExecutionWaveV1
 }
 
 export type HubErrorCodeV1 =
@@ -353,6 +407,8 @@ export interface AgentSucceededAuditV1 {
 export interface SystemScheduleIntentM2BV1 {
   type: 'system.schedule'
   flowId: FlowId
+  authorizationScope: TaskFileAuthorizationScopeV1
+  executionInputDigest?: Sha256Digest
 }
 
 export interface SystemWorkspacePrepareResultRecordIntentM2BV1 {

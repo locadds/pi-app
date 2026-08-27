@@ -45,6 +45,8 @@ import type {
   AgentSucceededAuditV1,
   AttemptId,
   AttemptProjectionM2BV1,
+  AttemptRuntimeBindingV1,
+  ExecutionWaveV1,
   FlowId,
   HubAddressV1,
   HubEventEnvelopeV1,
@@ -55,10 +57,12 @@ import type {
   SessionCollaborationProjectionM2BV1,
   TaskRunId,
   TaskRunProjectionM2BV1,
+  TaskFileAuthorizationScopeV1,
   WorkspacePreparedReceiptM2BV1,
   WorkspaceReceiptBindingM2BV1,
   WorkspaceReceiptId,
 } from '@shared/xiaogui-collaboration-hub'
+import type { RuntimeAdapterSelectionV1 } from '@shared/xiaogui-agent-runtime'
 import type {
   ArtifactId,
   ChangeSetCandidateV1,
@@ -79,6 +83,7 @@ import type {
   VerificationAttemptV1,
 } from '@shared/xiaogui-task-verification'
 import type { CanonicalPlanDraftV1 } from './digest'
+import type { SchedulerAttemptV1, SchedulerTaskV1 } from './execution-wave-scheduler'
 
 interface FlowRecord {
   flow_id: FlowId
@@ -151,6 +156,22 @@ interface FlowExecutionBaselineRecord {
   initial_target_fingerprint: string
   baseline_digest: string
   baseline_binding_digest: string
+}
+
+export interface TaskExecutionBaselineRecordV1 extends FlowExecutionBaselineRecord {
+  attempt_id: AttemptId
+  task_run_id: TaskRunId
+  ancestor_task_change_set_ids_json: string
+  derivation_digest: string
+}
+
+export interface DerivedExecutionBaselineCacheRecordV1 {
+  readonly derivation_input_digest: string
+  readonly project_id: string
+  readonly flow_id: string
+  readonly task_run_id: string
+  readonly baseline_json: string
+  readonly created_at: string
 }
 
 interface VerificationAttemptRecord {
@@ -341,11 +362,22 @@ export interface ScheduleRecordM2BV1 {
   attemptDigest: string
   compositionDigest: string
   baselineBindingDigest: string
+  flowBaselineBindingDigest: string
   baselineId: string
   baseRevision?: string
   baselineTreeHash: string
   initialTargetFingerprint: string
   baselineDigest: string
+  taskBaselineId: string
+  taskBaseRevision?: string
+  taskBaselineTreeHash: string
+  taskInitialTargetFingerprint: string
+  taskBaselineDigest: string
+  taskBaselineDerivationDigest: string
+  ancestorTaskChangeSetIds: readonly string[]
+  executionWave: ExecutionWaveV1
+  runtimeBinding: AttemptRuntimeBindingV1
+  authorizationScope: TaskFileAuthorizationScopeV1
   workspacePrepareRequestDigest: string
   projection: SessionCollaborationProjectionV1
   receipt: PerformReceiptV1
@@ -700,6 +732,7 @@ export class CollaborationHubSqliteStoreV1 {
       taskRuns,
       attempts: attempts.map((attempt) => {
         const verificationSummary = this.verificationSummaryForAttempt(attempt.attempt_id)
+        const runtimeBinding = this.attemptRuntimeBinding(attempt.attempt_id)
         return {
           attemptId: attempt.attempt_id,
           taskRunId: attempt.task_run_id,
@@ -707,8 +740,12 @@ export class CollaborationHubSqliteStoreV1 {
           ...(attempt.runtime_session_id ? { runtimeSessionId: attempt.runtime_session_id } : {}),
           ...(attempt.workspace_receipt_id ? { workspaceReceiptId: attempt.workspace_receipt_id } : {}),
           ...(verificationSummary ? { verificationSummary } : {}),
+          ...(runtimeBinding ? { runtimeBinding } : {}),
         }
       }),
+      ...(base.activeFlow
+        ? { lastExecutionWave: this.lastExecutionWave(base.activeFlow.flowId) ?? undefined }
+        : {}),
       availableActions: base.availableActions,
     }
   }
@@ -754,6 +791,63 @@ export class CollaborationHubSqliteStoreV1 {
 
   taskRuns(flowId: FlowId): TaskRunRecord[] {
     return this.taskRunsForFlow(flowId)
+  }
+
+  schedulerTasks(flowId: FlowId): SchedulerTaskV1[] {
+    return this.db
+      .prepare(`
+        select tr.task_run_id as taskRunId, tr.task_key as taskKey, tr.status,
+               ts.depends_json as dependsJson, tcs.task_change_set_id as taskChangeSetId
+          from task_runs tr
+          join task_specs ts on ts.task_spec_id = tr.task_spec_id
+          left join task_change_sets tcs on tcs.task_run_id = tr.task_run_id
+         where tr.flow_id = ?
+         order by tr.rowid
+      `)
+      .all(flowId)
+      .map((row) => {
+        const value = row as unknown as {
+          taskRunId: TaskRunId
+          taskKey: string
+          status: string
+          dependsJson: string
+          taskChangeSetId: string | null
+        }
+        return {
+          taskRunId: value.taskRunId,
+          taskKey: value.taskKey,
+          status: value.status,
+          dependsOn: JSON.parse(value.dependsJson) as string[],
+          ...(value.taskChangeSetId ? { taskChangeSetId: value.taskChangeSetId } : {}),
+        }
+      })
+  }
+
+  schedulerAttempts(projectId: string): SchedulerAttemptV1[] {
+    return this.db
+      .prepare(`
+        select a.attempt_id as attemptId, a.task_run_id as taskRunId, a.status,
+               coalesce(s.path_tokens_json, '[]') as pathTokensJson
+          from attempts a
+          left join attempt_authorization_scopes s on s.attempt_id = a.attempt_id
+         where a.project_id = ?
+         order by a.rowid
+      `)
+      .all(projectId)
+      .map((row) => {
+        const value = row as unknown as {
+          attemptId: AttemptId
+          taskRunId: TaskRunId
+          status: string
+          pathTokensJson: string
+        }
+        return {
+          attemptId: value.attemptId,
+          taskRunId: value.taskRunId,
+          status: value.status,
+          authorizationPathTokens: JSON.parse(value.pathTokensJson) as string[],
+        }
+      })
   }
 
   taskChangeSetAncestorIds(
@@ -1778,6 +1872,76 @@ export class CollaborationHubSqliteStoreV1 {
     return row ?? null
   }
 
+  taskExecutionBaseline(attemptId: AttemptId): TaskExecutionBaselineRecordV1 | null {
+    const row = this.db
+      .prepare(`
+        select attempt_id, task_run_id, flow_id, baseline_id, base_revision,
+               baseline_tree_hash, initial_target_fingerprint, baseline_digest,
+               baseline_binding_digest, ancestor_task_change_set_ids_json,
+               derivation_digest
+          from task_execution_baselines
+         where attempt_id = ?
+      `)
+      .get(attemptId) as TaskExecutionBaselineRecordV1 | undefined
+    return row ?? null
+  }
+
+  derivedExecutionBaseline(derivationInputDigest: string): DerivedExecutionBaselineCacheRecordV1 | null {
+    const row = this.db
+      .prepare(`
+        select derivation_input_digest, project_id, flow_id, task_run_id,
+               baseline_json, created_at
+          from derived_execution_baselines
+         where derivation_input_digest = ?
+      `)
+      .get(derivationInputDigest) as DerivedExecutionBaselineCacheRecordV1 | undefined
+    return row ?? null
+  }
+
+  writeDerivedExecutionBaseline(record: DerivedExecutionBaselineCacheRecordV1): void {
+    this.transaction(() => {
+      this.db.prepare(`
+        insert or ignore into derived_execution_baselines (
+          derivation_input_digest, project_id, flow_id, task_run_id,
+          baseline_json, created_at
+        ) values (?, ?, ?, ?, ?, ?)
+      `).run(
+        record.derivation_input_digest,
+        record.project_id,
+        record.flow_id,
+        record.task_run_id,
+        record.baseline_json,
+        record.created_at,
+      )
+      const persisted = this.derivedExecutionBaseline(record.derivation_input_digest)
+      if (
+        !persisted ||
+        persisted.project_id !== record.project_id ||
+        persisted.flow_id !== record.flow_id ||
+        persisted.task_run_id !== record.task_run_id ||
+        persisted.baseline_json !== record.baseline_json
+      ) {
+        throw Object.assign(new Error('DERIVED_BASELINE_IDEMPOTENCY_CONFLICT'), {
+          code: 'DERIVED_BASELINE_IDEMPOTENCY_CONFLICT',
+        })
+      }
+    })
+  }
+
+  attemptRuntimeBinding(attemptId: AttemptId): AttemptRuntimeBindingV1 | null {
+    const row = this.db
+      .prepare('select binding_json from attempt_runtime_bindings where attempt_id = ?')
+      .get(attemptId) as { binding_json: string } | undefined
+    return row ? JSON.parse(row.binding_json) as AttemptRuntimeBindingV1 : null
+  }
+
+  lastExecutionWave(flowId: FlowId): ExecutionWaveV1 | null {
+    const row = this.db
+      .prepare('select wave_json from execution_waves where flow_id = ? order by rowid desc limit 1')
+      .get(flowId) as { wave_json: string } | undefined
+    return row ? JSON.parse(row.wave_json) as ExecutionWaveV1 : null
+  }
+
   workspaceReceiptForAttempt(attemptId: AttemptId): WorkspaceReceiptRecord | null {
     const row = this.db
       .prepare('select workspace_receipt_id, attempt_id, status, receipt_digest from workspace_receipts where attempt_id = ? order by rowid desc limit 1')
@@ -1999,6 +2163,32 @@ export class CollaborationHubSqliteStoreV1 {
 
   writeSchedule(address: HubAddressV1, idempotency: IdempotencyInput, record: ScheduleRecordM2BV1): void {
     this.transaction(() => {
+      const activeCount = (this.db.prepare(`
+        select count(*) as count
+          from attempts a
+          join flows f on f.flow_id = a.flow_id
+         where a.project_id = ?
+           and a.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+           and not (a.status = 'OUTCOME_UNKNOWN' and f.status = 'CANCELLED')
+      `).get(address.projectId) as { count: number }).count
+      if (activeCount >= record.executionWave.maxParallelism) {
+        throw Object.assign(new Error('ATTEMPT_CAPACITY_CONFLICT'), { code: 'ATTEMPT_CAPACITY_CONFLICT' })
+      }
+      const requestedTokens = new Set<string>(record.authorizationScope.pathTokens)
+      const activeScopes = this.db.prepare(`
+        select s.path_tokens_json
+          from attempts a
+          join flows f on f.flow_id = a.flow_id
+          join attempt_authorization_scopes s on s.attempt_id = a.attempt_id
+         where a.project_id = ?
+           and a.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+           and not (a.status = 'OUTCOME_UNKNOWN' and f.status = 'CANCELLED')
+      `).all(address.projectId) as unknown as Array<{ path_tokens_json: string }>
+      if (activeScopes.some((scope) =>
+        (JSON.parse(scope.path_tokens_json) as string[]).some((token) => requestedTokens.has(token)),
+      )) {
+        throw Object.assign(new Error('ATTEMPT_SCOPE_CONFLICT'), { code: 'ATTEMPT_SCOPE_CONFLICT' })
+      }
       const version = this.currentVersion(address) + 1
       const projection = { ...record.projection, sessionVersion: version }
       const receipt = { ...record.receipt, sessionVersion: version }
@@ -2012,16 +2202,19 @@ export class CollaborationHubSqliteStoreV1 {
         record.baselineTreeHash,
         record.initialTargetFingerprint,
         record.baselineDigest,
-        record.baselineBindingDigest,
+        record.flowBaselineBindingDigest,
         record.now,
       )
       const persistedBaseline = this.flowExecutionBaseline(record.flowId)
       if (!persistedBaseline || !flowBaselineMatchesScheduleRecord(persistedBaseline, record)) {
         throw Object.assign(new Error('BASELINE_CONFLICT'), { code: 'BASELINE_CONFLICT' })
       }
-      this.db
-        .prepare("update task_runs set status = 'READY', unavailable_reason = 'M2B1_SCHEDULED' where task_run_id = ?")
+      const taskUpdated = this.db
+        .prepare("update task_runs set status = 'READY', unavailable_reason = 'M2B1_SCHEDULED' where task_run_id = ? and status = 'PENDING_DISABLED'")
         .run(record.taskRunId)
+      if (taskUpdated.changes !== 1) {
+        throw Object.assign(new Error('TASK_SCHEDULE_CONFLICT'), { code: 'TASK_SCHEDULE_CONFLICT' })
+      }
       this.db
         .prepare(
           'insert into attempts (attempt_id, project_id, session_key, flow_id, task_run_id, status, attempt_digest, workspace_receipt_id, runtime_session_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)',
@@ -2037,6 +2230,57 @@ export class CollaborationHubSqliteStoreV1 {
           record.now,
           record.now,
         )
+      this.db.prepare(`
+        insert into task_execution_baselines (
+          attempt_id, task_run_id, flow_id, baseline_id, base_revision,
+          baseline_tree_hash, initial_target_fingerprint, baseline_digest,
+          baseline_binding_digest, ancestor_task_change_set_ids_json,
+          derivation_digest, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        record.attemptId,
+        record.taskRunId,
+        record.flowId,
+        record.taskBaselineId,
+        record.taskBaseRevision ?? null,
+        record.taskBaselineTreeHash,
+        record.taskInitialTargetFingerprint,
+        record.taskBaselineDigest,
+        record.baselineBindingDigest,
+        JSON.stringify(record.ancestorTaskChangeSetIds),
+        record.taskBaselineDerivationDigest,
+        record.now,
+      )
+      this.db.prepare(`
+        insert into attempt_runtime_bindings (
+          attempt_id, selection_digest, selection_json, binding_json, created_at
+        ) values (?, ?, ?, ?, ?)
+      `).run(
+        record.attemptId,
+        record.runtimeBinding.selectionDigest,
+        JSON.stringify(record.runtimeBinding.selection),
+        JSON.stringify(record.runtimeBinding),
+        record.now,
+      )
+      this.db.prepare(`
+        insert into attempt_authorization_scopes (
+          attempt_id, scope_digest, path_tokens_json, created_at
+        ) values (?, ?, ?, ?)
+      `).run(
+        record.attemptId,
+        record.authorizationScope.scopeDigest,
+        JSON.stringify(record.authorizationScope.pathTokens),
+        record.now,
+      )
+      this.db.prepare(`
+        insert into execution_waves (wave_id, flow_id, wave_json, created_at)
+        values (?, ?, ?, ?)
+      `).run(
+        record.executionWave.waveId,
+        record.flowId,
+        JSON.stringify(record.executionWave),
+        record.now,
+      )
       this.writeEvent(address, version, 'system.schedule', {
         phase: 'task_run.transition',
         flowId: record.flowId,
@@ -2655,6 +2899,11 @@ export class CollaborationHubSqliteStoreV1 {
       'task_specs',
       'task_runs',
       'attempts',
+      'execution_waves',
+      'attempt_runtime_bindings',
+      'attempt_authorization_scopes',
+      'task_execution_baselines',
+      'derived_execution_baselines',
       'flow_execution_baselines',
       'composition_attempts',
       'workspace_prepare_outbox',
@@ -2868,9 +3117,6 @@ export class CollaborationHubSqliteStoreV1 {
         failure_json text,
         created_at text not null
       );
-      create unique index if not exists attempts_one_active_external
-        on attempts(project_id, session_key)
-        where status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'INTERRUPT_REQUESTED');
       insert or ignore into schema_migrations (version, applied_at) values (2, datetime('now'));
     `)
     this.addColumnIfMissing('workspace_receipts', 'conflict_digest', 'text')
@@ -3066,10 +3312,6 @@ export class CollaborationHubSqliteStoreV1 {
           on verification_outbox(status, verification_attempt_id);
         create index if not exists verification_receipts_attempt_created
           on verification_receipts(verification_attempt_id, created_at);
-        drop index if exists attempts_one_active_external;
-        create unique index attempts_one_active_external
-          on attempts(project_id, session_key)
-          where status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED');
         insert or ignore into schema_migrations (version, applied_at) values (4, datetime('now'));
       `)
     })
@@ -3275,6 +3517,103 @@ export class CollaborationHubSqliteStoreV1 {
       this.addColumnIfMissing('delivery_batches', 'recovery_source_apply_attempt_id', 'text')
       this.db.exec(`
         insert or ignore into schema_migrations (version, applied_at) values (9, datetime('now'));
+      `)
+    })
+    this.transaction(() => {
+      this.db.exec(`
+        create table if not exists execution_waves (
+          wave_id text primary key,
+          flow_id text not null references flows(flow_id),
+          wave_json text not null,
+          created_at text not null
+        );
+        create table if not exists attempt_runtime_bindings (
+          attempt_id text primary key references attempts(attempt_id),
+          selection_digest text not null,
+          selection_json text not null,
+          binding_json text not null,
+          created_at text not null
+        );
+        create table if not exists attempt_authorization_scopes (
+          attempt_id text primary key references attempts(attempt_id),
+          scope_digest text not null,
+          path_tokens_json text not null,
+          created_at text not null
+        );
+        create table if not exists task_execution_baselines (
+          attempt_id text primary key references attempts(attempt_id),
+          task_run_id text not null references task_runs(task_run_id),
+          flow_id text not null references flows(flow_id),
+          baseline_id text not null,
+          base_revision text,
+          baseline_tree_hash text not null,
+          initial_target_fingerprint text not null,
+          baseline_digest text not null,
+          baseline_binding_digest text not null,
+          ancestor_task_change_set_ids_json text not null,
+          derivation_digest text not null,
+          created_at text not null
+        );
+        create index if not exists execution_waves_flow_created
+          on execution_waves(flow_id, created_at);
+        drop index if exists attempts_one_active_external;
+        drop trigger if exists attempts_one_active_external_insert;
+        drop trigger if exists attempts_one_active_external_update;
+        drop trigger if exists attempts_project_parallel_limit_insert;
+        drop trigger if exists attempts_project_parallel_limit_update;
+        create trigger attempts_project_parallel_limit_insert
+          before insert on attempts
+          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+            and not (
+              new.status = 'OUTCOME_UNKNOWN'
+              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
+            )
+            and 2 <= (
+              select count(*)
+                from attempts existing
+                join flows existing_flow on existing_flow.flow_id = existing.flow_id
+               where existing.project_id = new.project_id
+                 and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+                 and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+            )
+          begin
+            select raise(abort, 'ATTEMPT_PROJECT_CAPACITY_CONFLICT');
+          end;
+        create trigger attempts_project_parallel_limit_update
+          before update of project_id, flow_id, status on attempts
+          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+            and not (
+              new.status = 'OUTCOME_UNKNOWN'
+              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
+            )
+            and 2 <= (
+              select count(*)
+                from attempts existing
+                join flows existing_flow on existing_flow.flow_id = existing.flow_id
+               where existing.attempt_id <> old.attempt_id
+                 and existing.project_id = new.project_id
+                 and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
+                 and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+            )
+          begin
+            select raise(abort, 'ATTEMPT_PROJECT_CAPACITY_CONFLICT');
+          end;
+        insert or ignore into schema_migrations (version, applied_at) values (10, datetime('now'));
+      `)
+    })
+    this.transaction(() => {
+      this.db.exec(`
+        create table if not exists derived_execution_baselines (
+          derivation_input_digest text primary key,
+          project_id text not null,
+          flow_id text not null,
+          task_run_id text not null,
+          baseline_json text not null,
+          created_at text not null
+        );
+        create index if not exists derived_execution_baselines_task
+          on derived_execution_baselines(project_id, flow_id, task_run_id);
+        insert or ignore into schema_migrations (version, applied_at) values (11, datetime('now'));
       `)
     })
   }
@@ -4891,7 +5230,7 @@ function flowBaselineMatchesScheduleRecord(baseline: FlowExecutionBaselineRecord
     baseline.baseline_tree_hash === record.baselineTreeHash &&
     baseline.initial_target_fingerprint === record.initialTargetFingerprint &&
     baseline.baseline_digest === record.baselineDigest &&
-    baseline.baseline_binding_digest === record.baselineBindingDigest
+    baseline.baseline_binding_digest === record.flowBaselineBindingDigest
   )
 }
 

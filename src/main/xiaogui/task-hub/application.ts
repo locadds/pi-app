@@ -16,6 +16,7 @@ import {
 import type {
   AgentFailureSignalV1,
   AttemptId,
+  AttemptRuntimeBindingV1,
   CollaborationHubActionV1,
   FlowId,
   HubAddressV1,
@@ -38,6 +39,7 @@ import type {
   UserIntentRequestV1,
   WorkspacePreparedReceiptM2BV1,
   WorkspaceReceiptId,
+  TaskFileAuthorizationScopeV1,
 } from '@shared/xiaogui-collaboration-hub'
 import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
@@ -46,6 +48,10 @@ import { hubError } from './errors'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import type { AgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
+import {
+  bindExecutionWaveAttemptV1,
+  planExecutionWaveV1,
+} from './execution-wave-scheduler'
 
 export interface CollaborationHubApplicationOptionsV1 {
   lookup: SessionScopeLookupV1
@@ -57,6 +63,7 @@ export interface CollaborationHubApplicationOptionsV1 {
   workspaceBridge?: ExecutionWorkspaceBridgeV1
   runtimePromptVault?: RuntimePromptVaultV1
   taskVerificationCoordinator?: TaskVerificationCoordinatorV1
+  derivedBaselineProvider?: DerivedExecutionBaselineProviderV1
   afterAgentDispatchStart?: (requestId: string) => void
   now?: () => string
   idFactory?: (prefix: string) => string
@@ -74,12 +81,33 @@ export interface ExecutionBaselineProviderV1 {
   capture(input: { address: HubAddressV1; flowId: FlowId; planRevisionId: PlanRevisionId | null }): Promise<ExecutionBaselineV1>
 }
 
+export interface DerivedTaskExecutionBaselineV1 extends ExecutionBaselineV1 {
+  readonly version: 1
+  readonly taskRunId: import('@shared/xiaogui-collaboration-hub').TaskRunId
+  readonly ancestorTaskChangeSetIds: readonly string[]
+  readonly derivationDigest: string
+}
+
+/**
+ * Materializes a verifiable Git baseline containing every verified ancestor
+ * TaskChangeSet. Returning only metadata for an unmaterialized tree is invalid.
+ */
+export interface DerivedExecutionBaselineProviderV1 {
+  derive(input: {
+    address: HubAddressV1
+    flowId: FlowId
+    taskRunId: import('@shared/xiaogui-collaboration-hub').TaskRunId
+    flowBaseline: ExecutionBaselineV1
+    ancestorTaskChangeSetIds: readonly string[]
+  }): Promise<DerivedTaskExecutionBaselineV1>
+}
+
 export interface ExecutionWorkspaceBridgeV1 {
   prepare(input: {
     address: HubAddressV1
     attempt: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['attempt']>>
     composition: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['compositionAttempt']>>
-    baseline: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['flowExecutionBaseline']>>
+    baseline: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['taskExecutionBaseline']>>
   }): Promise<import('@shared/xiaogui-collaboration-hub').WorkspacePreparedReceiptM2BV1>
   runtimeWorkspace(
     attemptId: AttemptId,
@@ -110,6 +138,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     AttemptId,
     { requestIdentity: string; outcome: Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> }
   >()
+  private readonly scheduleQueue = new Map<string, Promise<void>>()
 
   constructor(private readonly options: CollaborationHubApplicationOptionsV1) {}
 
@@ -275,7 +304,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       if (!attempt || attempt.status !== 'WORKSPACE_PREPARING') return systemError('ILLEGAL_TRANSITION')
       const composition = store.compositionAttempt(request.attemptId)
       if (!composition) return systemError('ILLEGAL_TRANSITION')
-      const baseline = store.flowExecutionBaseline(attempt.flow_id)
+      const baseline = store.taskExecutionBaseline(request.attemptId)
       if (!baseline) return systemError('BASELINE_UNAVAILABLE')
       const claimOwnerId = 'xiaogui-main-process'
       const claim = store.claimWorkspacePrepareOutbox({
@@ -446,7 +475,23 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
   }
 
-  private async schedule(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: { type: 'system.schedule'; flowId: FlowId } }): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
+  private async schedule(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.schedule' }> }): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
+    const key = address.projectId
+    const previous = this.scheduleQueue.get(key) ?? Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const queued = previous.then(() => gate)
+    this.scheduleQueue.set(key, queued)
+    await previous
+    try {
+      return await this.scheduleOnce(address, mode, request)
+    } finally {
+      release()
+      if (this.scheduleQueue.get(key) === queued) this.scheduleQueue.delete(key)
+    }
+  }
+
+  private async scheduleOnce(address: HubAddressV1, mode: SessionMode, request: HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.schedule' }> }): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>> {
     const store = this.getStore()
     const replay = this.checkSystemIdempotency(store, address, request)
     if (replay) return replay
@@ -457,7 +502,25 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     if (!projection.activeFlow || projection.activeFlow.flowId !== request.intent.flowId || projection.activeFlow.status !== 'PLAN_ACTIVE') {
       return systemError('FLOW_NOT_FOUND')
     }
-    if (store.hasActiveExternalAttempt()) return systemError('ILLEGAL_TRANSITION')
+    const authorizationScope = canonicalAuthorizationScope(request.intent.authorizationScope)
+    if (!authorizationScope) return systemError('ILLEGAL_TRANSITION')
+    if (request.intent.executionInputDigest && !/^sha256:[0-9a-f]{64}$/.test(request.intent.executionInputDigest)) {
+      return systemError('ILLEGAL_TRANSITION')
+    }
+    const attemptId = this.id('xhba') as AttemptId
+    const now = this.now()
+    const waveId = `xhbwave_${attemptId}` as import('@shared/xiaogui-collaboration-hub').ExecutionWaveId
+    const planned = planExecutionWaveV1({
+      waveId,
+      flowId: request.intent.flowId,
+      tasks: store.schedulerTasks(request.intent.flowId),
+      attempts: store.schedulerAttempts(address.projectId),
+      requestedAuthorizationPathTokens: authorizationScope.pathTokens,
+      now,
+    })
+    if (!planned.selectedTaskRunId) return systemError('ILLEGAL_TRANSITION', { reason: 'NO_ELIGIBLE_WAVE_TASK' })
+    const task = store.taskRun(planned.selectedTaskRunId)
+    if (!task) return systemError('ILLEGAL_TRANSITION')
     const persistedBaseline = store.flowExecutionBaseline(request.intent.flowId)
     const baseline = await this.captureBaseline(address, request.intent.flowId, projection.activeRevision?.revisionId ?? null)
     if (!baseline.ok) return systemError('BASELINE_UNAVAILABLE', { reason: baseline.reasonCode })
@@ -465,13 +528,6 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     if (persistedBaseline && !matchesCapturedFlowBaseline(persistedBaseline, baseline.value, capturedBaselineBindingDigest)) {
       return systemError('BASELINE_CONFLICT')
     }
-    const task = store.taskRuns(request.intent.flowId).find((candidate) => {
-      if (candidate.status !== 'PENDING_DISABLED') return false
-      const dependsOn = JSON.parse(candidate.depends_json) as string[]
-      return dependsOn.length === 0
-    })
-    if (!task) return systemError('ILLEGAL_TRANSITION')
-    const attemptId = this.id('xhba') as AttemptId
     const effectiveBaseline = persistedBaseline
       ? {
           baselineId: persistedBaseline.baseline_id,
@@ -481,7 +537,43 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
           baselineDigest: persistedBaseline.baseline_digest,
         }
       : baseline.value
-    const baselineBindingDigest = persistedBaseline?.baseline_binding_digest ?? capturedBaselineBindingDigest
+    const ancestorTaskChangeSetIds = planned.wave.dependencyStates.find(
+      (state) => state.taskRunId === task.task_run_id,
+    )?.verifiedAncestorTaskChangeSetIds ?? []
+    const taskBaseline = await this.deriveTaskBaseline({
+      address,
+      flowId: request.intent.flowId,
+      taskRunId: task.task_run_id,
+      flowBaseline: effectiveBaseline,
+      ancestorTaskChangeSetIds,
+    })
+    if (!taskBaseline.ok) return systemError('BASELINE_UNAVAILABLE', { reason: taskBaseline.reasonCode })
+    const flowBaselineBindingDigest = persistedBaseline?.baseline_binding_digest ?? capturedBaselineBindingDigest
+    const baselineBindingDigest = payloadDigest({
+      version: 1,
+      flowId: request.intent.flowId,
+      taskRunId: task.task_run_id,
+      taskBaseline: taskBaseline.value,
+    })
+    const runtimeBindingBase: Omit<AttemptRuntimeBindingV1, 'bindingDigest'> = {
+      version: 1,
+      attemptId,
+      taskRunId: task.task_run_id,
+      executionInputDigest: request.intent.executionInputDigest ?? `sha256:${payloadDigest({
+        requestId: request.requestId,
+        taskRunId: task.task_run_id,
+        authorizationScopeDigest: authorizationScope.scopeDigest,
+      })}` as import('@shared/xiaogui-task-verification').Sha256Digest,
+      authorizationScopeDigest: authorizationScope.scopeDigest,
+      selection: agent.selection,
+      selectionDigest: payloadDigest(agent.selection) as import('@shared/xiaogui-task-verification').Sha256Digest,
+      boundAt: now,
+    }
+    const runtimeBinding: AttemptRuntimeBindingV1 = {
+      ...runtimeBindingBase,
+      bindingDigest: payloadDigest(runtimeBindingBase) as import('@shared/xiaogui-task-verification').Sha256Digest,
+    }
+    const executionWave = bindExecutionWaveAttemptV1(planned.wave, task.task_run_id, attemptId)
     const receipt = {
       requestId: request.requestId,
       intentType: request.intent.type,
@@ -489,28 +581,48 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       flowId: request.intent.flowId,
       taskRunId: task.task_run_id,
       attemptId,
+      executionWave,
     }
-    const compositionDigest = payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, attemptKind: 'INITIAL', baselineDigest: effectiveBaseline.baselineDigest })
+    const compositionDigest = payloadDigest({
+      flowId: request.intent.flowId,
+      taskRunId: task.task_run_id,
+      attemptId,
+      attemptKind: 'INITIAL',
+      baselineDigest: taskBaseline.value.baselineDigest,
+      derivationDigest: taskBaseline.value.derivationDigest,
+    })
     try {
       store.writeSchedule(address, this.idempotency(request), {
         flowId: request.intent.flowId,
         taskRunId: task.task_run_id,
         attemptId,
-        attemptDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, baselineDigest: effectiveBaseline.baselineDigest }),
+        attemptDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, baselineDigest: taskBaseline.value.baselineDigest }),
         compositionDigest,
         baselineBindingDigest,
+        flowBaselineBindingDigest,
         baselineId: effectiveBaseline.baselineId,
         baseRevision: effectiveBaseline.baseRevision,
         baselineTreeHash: effectiveBaseline.baselineTreeHash,
         initialTargetFingerprint: effectiveBaseline.initialTargetFingerprint,
         baselineDigest: effectiveBaseline.baselineDigest,
+        taskBaselineId: taskBaseline.value.baselineId,
+        taskBaseRevision: taskBaseline.value.baseRevision,
+        taskBaselineTreeHash: taskBaseline.value.baselineTreeHash,
+        taskInitialTargetFingerprint: taskBaseline.value.initialTargetFingerprint,
+        taskBaselineDigest: taskBaseline.value.baselineDigest,
+        taskBaselineDerivationDigest: taskBaseline.value.derivationDigest,
+        ancestorTaskChangeSetIds,
+        executionWave,
+        runtimeBinding,
+        authorizationScope,
         workspacePrepareRequestDigest: payloadDigest({ flowId: request.intent.flowId, taskRunId: task.task_run_id, attemptId, purpose: 'workspace.prepare', compositionDigest, baselineBindingDigest }),
         projection,
         receipt,
-        now: this.now(),
+        now,
       })
     } catch (error) {
       if (isBaselineConflictError(error)) return systemError('BASELINE_CONFLICT')
+      if (isScheduleConflictError(error)) return systemError('ILLEGAL_TRANSITION', { reason: scheduleConflictCode(error) })
       throw error
     }
     return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
@@ -569,7 +681,17 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     if (!workspaceReceipt || workspaceReceipt.status !== 'PREPARED' || workspaceReceipt.workspace_receipt_id !== attempt.workspace_receipt_id) {
       return systemError('ILLEGAL_TRANSITION')
     }
-    const agent = await this.preflightAgent()
+    let persistedRuntimeRequest: RuntimeCreateOrResumeRequestV1 | undefined
+    if (existingOutbox?.runtime_request_json) {
+      try {
+        persistedRuntimeRequest = JSON.parse(existingOutbox.runtime_request_json) as RuntimeCreateOrResumeRequestV1
+      } catch {
+        return systemError('IDEMPOTENCY_CONFLICT')
+      }
+    }
+    const frozenBinding = store.attemptRuntimeBinding(request.intent.attemptId)
+    const frozenSelection = frozenBinding?.selection ?? persistedRuntimeRequest?.selection
+    const agent = await this.preflightAgent(frozenSelection)
     if (!agent.ok) return systemError('AGENT_UNAVAILABLE', { reason: agent.reasonCode })
     const baseline = store.flowExecutionBaseline(request.intent.flowId)
     if (!baseline) return systemError('BASELINE_UNAVAILABLE')
@@ -581,13 +703,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     }
     const dispatchDigest = payloadDigest(currentRuntimeRequest)
     let runtimeRequest = currentRuntimeRequest
-    if (existingOutbox?.runtime_request_json) {
-      let persistedRuntimeRequest: RuntimeCreateOrResumeRequestV1
-      try {
-        persistedRuntimeRequest = JSON.parse(existingOutbox.runtime_request_json) as RuntimeCreateOrResumeRequestV1
-      } catch {
-        return systemError('IDEMPOTENCY_CONFLICT')
-      }
+    if (persistedRuntimeRequest) {
       if (payloadDigest(persistedRuntimeRequest) !== dispatchDigest) return systemError('IDEMPOTENCY_CONFLICT')
       runtimeRequest = persistedRuntimeRequest
     }
@@ -880,12 +996,24 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     })
   }
 
-  private async preflightAgent(): Promise<
+  private async preflightAgent(requiredSelection?: RuntimeAdapterSelectionV1): Promise<
     { ok: true; runtime: AgentRuntimeHostV1; selection: RuntimeAdapterSelectionV1 } | { ok: false; reasonCode: string }
   > {
     const runtime = this.options.agentRuntime
     if (!runtime) return { ok: false, reasonCode: 'NO_AGENT_RUNTIME' }
     try {
+      if (requiredSelection) {
+        if (!isProductionCapability(requiredSelection)) return { ok: false, reasonCode: 'NO_APPROVED_RUNTIME' }
+        const health = await runtime.health(requiredSelection.adapterId)
+        if (
+          !isProductionCapability(health) ||
+          runtimeSelectionKey(health) !== runtimeSelectionKey(requiredSelection) ||
+          health.health !== 'AVAILABLE'
+        ) {
+          return { ok: false, reasonCode: health.reasonCode ?? 'RUNTIME_NOT_AVAILABLE' }
+        }
+        return { ok: true, runtime, selection: requiredSelection }
+      }
       const routed = await this.resolveRoutedAgent(runtime)
       if (routed) {
         return routed.ok
@@ -935,6 +1063,65 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       return baseline.baselineDigest === expected ? { ok: true, value: baseline } : { ok: false, reasonCode: 'BASELINE_DIGEST_MISMATCH' }
     } catch {
       return { ok: false, reasonCode: 'BASELINE_PROVIDER_ERROR' }
+    }
+  }
+
+  private async deriveTaskBaseline(input: {
+    address: HubAddressV1
+    flowId: FlowId
+    taskRunId: import('@shared/xiaogui-collaboration-hub').TaskRunId
+    flowBaseline: ExecutionBaselineV1
+    ancestorTaskChangeSetIds: readonly string[]
+  }): Promise<{ ok: true; value: DerivedTaskExecutionBaselineV1 } | { ok: false; reasonCode: string }> {
+    if (input.ancestorTaskChangeSetIds.length === 0) {
+      const value = {
+        version: 1 as const,
+        taskRunId: input.taskRunId,
+        ancestorTaskChangeSetIds: [],
+        ...input.flowBaseline,
+      }
+      return {
+        ok: true,
+        value: {
+          ...value,
+          derivationDigest: payloadDigest(value),
+        },
+      }
+    }
+    const provider = this.options.derivedBaselineProvider
+    if (!provider) return { ok: false, reasonCode: 'DEPENDENCY_BASELINE_PROVIDER_MISSING' }
+    try {
+      const value = await provider.derive(input)
+      const baselineDigest = payloadDigest({
+        baselineId: value.baselineId,
+        ...(value.baseRevision ? { baseRevision: value.baseRevision } : {}),
+        baselineTreeHash: value.baselineTreeHash,
+        initialTargetFingerprint: value.initialTargetFingerprint,
+      })
+      const expectedDerivationDigest = payloadDigest({
+        version: value.version,
+        taskRunId: value.taskRunId,
+        ancestorTaskChangeSetIds: value.ancestorTaskChangeSetIds,
+        baselineId: value.baselineId,
+        ...(value.baseRevision ? { baseRevision: value.baseRevision } : {}),
+        baselineTreeHash: value.baselineTreeHash,
+        initialTargetFingerprint: value.initialTargetFingerprint,
+        baselineDigest: value.baselineDigest,
+      })
+      return value.version === 1 &&
+        value.taskRunId === input.taskRunId &&
+        sameStrings(value.ancestorTaskChangeSetIds, input.ancestorTaskChangeSetIds) &&
+        value.baselineDigest === baselineDigest &&
+        value.derivationDigest === expectedDerivationDigest
+        ? { ok: true, value }
+        : { ok: false, reasonCode: 'DEPENDENCY_BASELINE_BINDING_MISMATCH' }
+    } catch (error) {
+      const reasonCode = typeof error === 'object' && error !== null && 'reasonCode' in error &&
+        typeof (error as { reasonCode?: unknown }).reasonCode === 'string' &&
+        /^[A-Z][A-Z0-9_]{0,63}$/.test((error as { reasonCode: string }).reasonCode)
+        ? (error as { reasonCode: string }).reasonCode
+        : 'DEPENDENCY_BASELINE_PROVIDER_ERROR'
+      return { ok: false, reasonCode }
     }
   }
 
@@ -1146,26 +1333,30 @@ function withAuthoritativeM2BActions(
   if (
     !runtimeConfigured ||
     projection.authoritativeMode !== 'CODING' ||
-    projection.activeFlow?.status !== 'PLAN_ACTIVE' ||
-    projection.attempts.some((attempt) =>
-      [
-        'CREATED',
-        'WORKSPACE_PREPARING',
-        'READY',
-        'STARTING',
-        'RUNNING',
-        'VERIFYING',
-        'INTERRUPT_REQUESTED',
-        'OUTCOME_UNKNOWN',
-      ].includes(attempt.status),
-    )
+    projection.activeFlow?.status !== 'PLAN_ACTIVE'
   ) {
     return { ...projection, availableActions: baseActions }
   }
+  const activeAttempts = projection.attempts.filter((attempt) =>
+    [
+      'CREATED',
+      'WORKSPACE_PREPARING',
+      'READY',
+      'STARTING',
+      'RUNNING',
+      'VERIFYING',
+      'INTERRUPT_REQUESTED',
+      'OUTCOME_UNKNOWN',
+    ].includes(attempt.status),
+  )
+  if (activeAttempts.length >= 2) return { ...projection, availableActions: baseActions }
   const executable = projection.taskRuns.some((run) => {
     if (run.status !== 'BLOCKED' || run.attemptId) return false
     const spec = projection.taskSpecs.find((candidate) => candidate.taskSpecId === run.taskSpecId)
-    return spec?.dependsOn.length === 0
+    return spec?.dependsOn.every((dependencyKey) => {
+      const dependency = projection.taskRuns.find((candidate) => candidate.taskKey === dependencyKey)
+      return dependency !== undefined && ['VERIFIED', 'DELIVERY_PENDING', 'APPLYING', 'DONE'].includes(dependency.status)
+    })
   })
   return executable
     ? { ...projection, availableActions: [...baseActions, 'execution.next.confirm'] }
@@ -1249,6 +1440,35 @@ function matchesCapturedFlowBaseline(
 
 function isBaselineConflictError(error: unknown): boolean {
   return error instanceof Error && (error.message === 'BASELINE_CONFLICT' || (error as { code?: string }).code === 'BASELINE_CONFLICT')
+}
+
+function isScheduleConflictError(error: unknown): boolean {
+  const code = scheduleConflictCode(error)
+  return ['ATTEMPT_CAPACITY_CONFLICT', 'ATTEMPT_SCOPE_CONFLICT', 'TASK_SCHEDULE_CONFLICT'].includes(code)
+}
+
+function scheduleConflictCode(error: unknown): string {
+  return error instanceof Error ? (error as { code?: string }).code ?? error.message : 'SCHEDULE_CONFLICT'
+}
+
+function canonicalAuthorizationScope(
+  value: TaskFileAuthorizationScopeV1 | undefined,
+): TaskFileAuthorizationScopeV1 | null {
+  if (!value) return null
+  const pathTokens = [...value.pathTokens]
+  if (
+    value.version !== 1 ||
+    pathTokens.length === 0 ||
+    pathTokens.some((token) => !/^sha256:[0-9a-f]{64}$/.test(token)) ||
+    new Set(pathTokens).size !== pathTokens.length ||
+    pathTokens.some((token, index) => index > 0 && pathTokens[index - 1].localeCompare(token) >= 0)
+  ) return null
+  const base = { version: 1 as const, pathTokens }
+  return value.scopeDigest === `sha256:${payloadDigest(base)}` ? { ...base, scopeDigest: value.scopeDigest } : null
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
 function isValidAgentOutcomeIntent(intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.agent.outcome.record' }>): boolean {
