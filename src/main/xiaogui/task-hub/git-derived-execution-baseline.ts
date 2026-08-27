@@ -66,9 +66,12 @@ export class GitDerivedExecutionBaselineErrorV1 extends Error {
 
 /**
  * Main-process deep Module that squashes the verified dependency closure into
- * an unreferenced deterministic Git commit. It never changes the source
- * worktree or a user-visible ref, and removes the private integration worktree
- * before returning the path-free baseline.
+ * an unreferenced deterministic Git commit. A linked worktree necessarily
+ * writes private administration records under `.git/worktrees` and internal
+ * objects to the repository object database; that is the permitted architecture
+ * boundary. The source worktree, its index, and user-visible refs/branches stay
+ * unchanged, the internal commit is not assigned a visible ref, and the linked
+ * worktree is removed before the path-free baseline is returned.
  */
 export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBaselineProviderV1 {
   constructor(private readonly options: GitDerivedExecutionBaselineProviderOptionsV1) {

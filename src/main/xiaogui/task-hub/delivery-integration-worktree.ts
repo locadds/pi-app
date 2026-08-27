@@ -35,13 +35,15 @@ export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryInt
       await git(repositoryRoot, ['worktree', 'remove', '--force', worktreeRoot], 'DELIVERY_WORKTREE_WRITE_FAILED')
       await git(repositoryRoot, ['worktree', 'prune'], 'DELIVERY_WORKTREE_WRITE_FAILED')
     }
-    await git(repositoryRoot, ['worktree', 'add', '--detach', worktreeRoot, this.options.target.baseRevision], 'DELIVERY_WORKTREE_WRITE_FAILED')
-    const realWorktreeRoot = await realpath(worktreeRoot)
-    if (pathKey(realWorktreeRoot) !== pathKey(worktreeRoot) || !isInside(managedRoot, realWorktreeRoot)) {
-      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_OUTSIDE_ROOT')
-    }
-
+    let worktreeAdded = false
+    let failed: DeliveryIntegrationWorktreeErrorV1 | null = null
     try {
+      await git(repositoryRoot, ['worktree', 'add', '--detach', worktreeRoot, this.options.target.baseRevision], 'DELIVERY_WORKTREE_WRITE_FAILED')
+      worktreeAdded = true
+      const realWorktreeRoot = await realpath(worktreeRoot)
+      if (pathKey(realWorktreeRoot) !== pathKey(worktreeRoot) || !isInside(managedRoot, realWorktreeRoot)) {
+        throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_OUTSIDE_ROOT')
+      }
       for (const file of files) {
         const relativePath = normalizeRelativePath(file.relativePath)
         const target = resolve(realWorktreeRoot, relativePath.replace(/\//g, sep))
@@ -60,14 +62,16 @@ export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryInt
         },
       }
     } catch (error) {
-      try {
-        await cleanupDeliveryIntegrationWorktreeRootV1(repositoryRoot, worktreeRoot)
-      } catch {
-        // Preserve the original closed failure code; the derived-baseline
-        // caller also performs a final cleanup attempt.
+      failed = asDeliveryIntegrationError(error)
+      throw failed
+    } finally {
+      if (worktreeAdded && failed) {
+        try {
+          await cleanupDeliveryIntegrationWorktreeRootV1(repositoryRoot, worktreeRoot)
+        } catch (cleanupError) {
+          throw DeliveryIntegrationWorktreeErrorV1.cleanupFailed(failed, asDeliveryIntegrationError(cleanupError))
+        }
       }
-      if (error instanceof DeliveryIntegrationWorktreeErrorV1) throw error
-      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_WRITE_FAILED')
     }
   }
 }
@@ -78,18 +82,54 @@ export type DeliveryIntegrationWorktreeSafeCodeV1 =
   | 'DELIVERY_WORKTREE_BASELINE_DRIFT'
   | 'DELIVERY_WORKTREE_FILE_INVALID'
   | 'DELIVERY_WORKTREE_WRITE_FAILED'
+  | 'DELIVERY_WORKTREE_CLEANUP_FAILED'
 
 export class DeliveryIntegrationWorktreeErrorV1 extends Error {
-  constructor(readonly reasonCode: DeliveryIntegrationWorktreeSafeCodeV1) {
+  readonly originalReasonCode?: DeliveryIntegrationWorktreeSafeCodeV1
+  readonly cleanupReasonCode?: DeliveryIntegrationWorktreeSafeCodeV1
+
+  constructor(
+    readonly reasonCode: DeliveryIntegrationWorktreeSafeCodeV1,
+    audit?: {
+      readonly originalReasonCode: DeliveryIntegrationWorktreeSafeCodeV1
+      readonly cleanupReasonCode: DeliveryIntegrationWorktreeSafeCodeV1
+      readonly cause: DeliveryIntegrationWorktreeErrorV1
+    },
+  ) {
     super(reasonCode)
     this.name = 'DeliveryIntegrationWorktreeErrorV1'
+    if (audit) {
+      this.originalReasonCode = audit.originalReasonCode
+      this.cleanupReasonCode = audit.cleanupReasonCode
+      Object.assign(this, { cause: audit.cause })
+    }
+  }
+
+  static cleanupFailed(
+    original: DeliveryIntegrationWorktreeErrorV1,
+    cleanup: DeliveryIntegrationWorktreeErrorV1,
+  ): DeliveryIntegrationWorktreeErrorV1 {
+    return new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_CLEANUP_FAILED', {
+      originalReasonCode: original.reasonCode,
+      cleanupReasonCode: cleanup.reasonCode,
+      cause: original,
+    })
   }
 }
 
 export async function cleanupDeliveryIntegrationWorktreeRootV1(repositoryRoot: string, worktreeRoot: string): Promise<void> {
-  if (typeof worktreeRoot !== 'string' || !isAbsolute(worktreeRoot) || !existsSync(worktreeRoot)) return
-  await git(repositoryRoot, ['worktree', 'remove', '--force', worktreeRoot], 'DELIVERY_WORKTREE_WRITE_FAILED')
+  if (typeof worktreeRoot !== 'string' || !isAbsolute(worktreeRoot)) return
+  if (existsSync(worktreeRoot)) {
+    await git(repositoryRoot, ['worktree', 'remove', '--force', worktreeRoot], 'DELIVERY_WORKTREE_WRITE_FAILED')
+  }
   await git(repositoryRoot, ['worktree', 'prune'], 'DELIVERY_WORKTREE_WRITE_FAILED')
+}
+
+function asDeliveryIntegrationError(error: unknown): DeliveryIntegrationWorktreeErrorV1 {
+  if (error instanceof DeliveryIntegrationWorktreeErrorV1) return error
+  const wrapped = new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_WRITE_FAILED')
+  Object.assign(wrapped, { cause: error })
+  return wrapped
 }
 
 async function ensureManagedRoot(value: string): Promise<string> {

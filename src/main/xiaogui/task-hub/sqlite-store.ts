@@ -83,7 +83,11 @@ import type {
   VerificationAttemptV1,
 } from '@shared/xiaogui-task-verification'
 import type { CanonicalPlanDraftV1 } from './digest'
-import type { SchedulerAttemptV1, SchedulerTaskV1 } from './execution-wave-scheduler'
+import {
+  ACTIVE_ATTEMPT_STATUSES_V1,
+  type SchedulerAttemptV1,
+  type SchedulerTaskV1,
+} from './execution-wave-scheduler'
 
 interface FlowRecord {
   flow_id: FlowId
@@ -829,8 +833,10 @@ export class CollaborationHubSqliteStoreV1 {
         select a.attempt_id as attemptId, a.task_run_id as taskRunId, a.status,
                coalesce(s.path_tokens_json, '[]') as pathTokensJson
           from attempts a
+          join flows f on f.flow_id = a.flow_id
           left join attempt_authorization_scopes s on s.attempt_id = a.attempt_id
          where a.project_id = ?
+           and ${activeSchedulerAttemptSql('a', 'f.status')}
          order by a.rowid
       `)
       .all(projectId)
@@ -2068,8 +2074,7 @@ export class CollaborationHubSqliteStoreV1 {
         `select count(*) as count
          from attempts a
          join flows f on f.flow_id = a.flow_id
-         where a.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-           and not (a.status = 'OUTCOME_UNKNOWN' and f.status = 'CANCELLED')`,
+         where ${activeSchedulerAttemptSql('a', 'f.status')}`,
       )
       .get() as { count: number }
     return row.count > 0
@@ -2161,15 +2166,16 @@ export class CollaborationHubSqliteStoreV1 {
     })
   }
 
-  writeSchedule(address: HubAddressV1, idempotency: IdempotencyInput, record: ScheduleRecordM2BV1): void {
-    this.transaction(() => {
+  writeSchedule(address: HubAddressV1, idempotency: IdempotencyInput, record: ScheduleRecordM2BV1): PerformReceiptV1 {
+    return this.transaction(() => {
+      const replay = this.checkIdempotencyForWrite(address, idempotency)
+      if (replay) return replay
       const activeCount = (this.db.prepare(`
         select count(*) as count
           from attempts a
           join flows f on f.flow_id = a.flow_id
          where a.project_id = ?
-           and a.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-           and not (a.status = 'OUTCOME_UNKNOWN' and f.status = 'CANCELLED')
+           and ${activeSchedulerAttemptSql('a', 'f.status')}
       `).get(address.projectId) as { count: number }).count
       if (activeCount >= record.executionWave.maxParallelism) {
         throw Object.assign(new Error('ATTEMPT_CAPACITY_CONFLICT'), { code: 'ATTEMPT_CAPACITY_CONFLICT' })
@@ -2178,11 +2184,10 @@ export class CollaborationHubSqliteStoreV1 {
       const activeScopes = this.db.prepare(`
         select s.path_tokens_json
           from attempts a
-          join flows f on f.flow_id = a.flow_id
+         join flows f on f.flow_id = a.flow_id
           join attempt_authorization_scopes s on s.attempt_id = a.attempt_id
          where a.project_id = ?
-           and a.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-           and not (a.status = 'OUTCOME_UNKNOWN' and f.status = 'CANCELLED')
+           and ${activeSchedulerAttemptSql('a', 'f.status')}
       `).all(address.projectId) as unknown as Array<{ path_tokens_json: string }>
       if (activeScopes.some((scope) =>
         (JSON.parse(scope.path_tokens_json) as string[]).some((token) => requestedTokens.has(token)),
@@ -2338,6 +2343,7 @@ export class CollaborationHubSqliteStoreV1 {
       }, record.now)
       this.writeProjection(address, projection)
       this.writeIdempotency(address, idempotency, receipt)
+      return receipt
     })
   }
 
@@ -3456,30 +3462,21 @@ export class CollaborationHubSqliteStoreV1 {
         drop trigger if exists attempts_one_active_external_update;
         create trigger attempts_one_active_external_insert
           before insert on attempts
-          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-            and not (
-              new.status = 'OUTCOME_UNKNOWN'
-              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
-            )
+          when ${activeSchedulerAttemptSql('new', "coalesce((select status from flows where flow_id = new.flow_id), '')")}
             and exists (
               select 1
               from attempts existing
               join flows existing_flow on existing_flow.flow_id = existing.flow_id
               where existing.project_id = new.project_id
                 and existing.session_key = new.session_key
-                and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-                and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+                and ${activeSchedulerAttemptSql('existing', 'existing_flow.status')}
             )
           begin
             select raise(abort, 'ATTEMPT_ACTIVE_CONFLICT');
           end;
         create trigger attempts_one_active_external_update
           before update of project_id, session_key, flow_id, status on attempts
-          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-            and not (
-              new.status = 'OUTCOME_UNKNOWN'
-              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
-            )
+          when ${activeSchedulerAttemptSql('new', "coalesce((select status from flows where flow_id = new.flow_id), '')")}
             and exists (
               select 1
               from attempts existing
@@ -3487,8 +3484,7 @@ export class CollaborationHubSqliteStoreV1 {
               where existing.attempt_id <> old.attempt_id
                 and existing.project_id = new.project_id
                 and existing.session_key = new.session_key
-                and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-                and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+                and ${activeSchedulerAttemptSql('existing', 'existing_flow.status')}
             )
           begin
             select raise(abort, 'ATTEMPT_ACTIVE_CONFLICT');
@@ -3563,37 +3559,27 @@ export class CollaborationHubSqliteStoreV1 {
         drop trigger if exists attempts_project_parallel_limit_update;
         create trigger attempts_project_parallel_limit_insert
           before insert on attempts
-          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-            and not (
-              new.status = 'OUTCOME_UNKNOWN'
-              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
-            )
+          when ${activeSchedulerAttemptSql('new', "coalesce((select status from flows where flow_id = new.flow_id), '')")}
             and 2 <= (
               select count(*)
                 from attempts existing
                 join flows existing_flow on existing_flow.flow_id = existing.flow_id
                where existing.project_id = new.project_id
-                 and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-                 and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+                 and ${activeSchedulerAttemptSql('existing', 'existing_flow.status')}
             )
           begin
             select raise(abort, 'ATTEMPT_PROJECT_CAPACITY_CONFLICT');
           end;
         create trigger attempts_project_parallel_limit_update
           before update of project_id, flow_id, status on attempts
-          when new.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-            and not (
-              new.status = 'OUTCOME_UNKNOWN'
-              and coalesce((select status from flows where flow_id = new.flow_id), '') = 'CANCELLED'
-            )
+          when ${activeSchedulerAttemptSql('new', "coalesce((select status from flows where flow_id = new.flow_id), '')")}
             and 2 <= (
               select count(*)
                 from attempts existing
                 join flows existing_flow on existing_flow.flow_id = existing.flow_id
                where existing.attempt_id <> old.attempt_id
                  and existing.project_id = new.project_id
-                 and existing.status in ('CREATED', 'WORKSPACE_PREPARING', 'READY', 'STARTING', 'RUNNING', 'VERIFYING', 'INTERRUPT_REQUESTED', 'OUTCOME_UNKNOWN')
-                 and not (existing.status = 'OUTCOME_UNKNOWN' and existing_flow.status = 'CANCELLED')
+                 and ${activeSchedulerAttemptSql('existing', 'existing_flow.status')}
             )
           begin
             select raise(abort, 'ATTEMPT_PROJECT_CAPACITY_CONFLICT');
@@ -3982,6 +3968,15 @@ export class CollaborationHubSqliteStoreV1 {
       .run(scopeKey(address), idempotency.requestId, idempotency.commandType, idempotency.payloadHash, JSON.stringify(receipt))
   }
 
+  private checkIdempotencyForWrite(address: HubAddressV1, idempotency: IdempotencyInput): PerformReceiptV1 | null {
+    const existing = this.idempotency(address, idempotency.requestId)
+    if (!existing) return null
+    if (existing.command_type !== idempotency.commandType || existing.payload_hash !== idempotency.payloadHash) {
+      throw Object.assign(new Error('IDEMPOTENCY_CONFLICT'), { code: 'IDEMPOTENCY_CONFLICT' })
+    }
+    return JSON.parse(existing.receipt_json) as PerformReceiptV1
+  }
+
   private transaction<T>(fn: () => T): T {
     this.db.exec('begin immediate')
     try {
@@ -4003,6 +3998,20 @@ export interface IdempotencyInput {
 
 function scopeKey(address: HubAddressV1): string {
   return `${address.projectId}:${address.sessionKey}`
+}
+
+const ACTIVE_ATTEMPT_STATUSES_SQL_V1 = [...ACTIVE_ATTEMPT_STATUSES_V1]
+  .map((status) => `'${status}'`)
+  .join(', ')
+
+/**
+ * Authoritative scheduler occupancy predicate. An OUTCOME_UNKNOWN attempt
+ * remains active until its owning flow is cancelled; only then does it stop
+ * consuming project capacity and authorization-path range.
+ */
+function activeSchedulerAttemptSql(attemptAlias: string, flowStatusExpression: string): string {
+  return `${attemptAlias}.status in (${ACTIVE_ATTEMPT_STATUSES_SQL_V1}) and not (` +
+    `${attemptAlias}.status = 'OUTCOME_UNKNOWN' and ${flowStatusExpression} = 'CANCELLED')`
 }
 
 function toVerificationOutboxRecord(row: VerificationOutboxRow): VerificationOutboxRecordV1 {

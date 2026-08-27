@@ -49,6 +49,7 @@ import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import type { AgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import {
+  ACTIVE_ATTEMPT_STATUSES_V1,
   bindExecutionWaveAttemptV1,
   planExecutionWaveV1,
 } from './execution-wave-scheduler'
@@ -592,7 +593,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       derivationDigest: taskBaseline.value.derivationDigest,
     })
     try {
-      store.writeSchedule(address, this.idempotency(request), {
+      const persistedReceipt = store.writeSchedule(address, this.idempotency(request), {
         flowId: request.intent.flowId,
         taskRunId: task.task_run_id,
         attemptId,
@@ -620,12 +621,13 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
         receipt,
         now,
       })
+      return { ok: true, value: persistedReceipt }
     } catch (error) {
+      if (scheduleConflictCode(error) === 'IDEMPOTENCY_CONFLICT') return systemError('IDEMPOTENCY_CONFLICT')
       if (isBaselineConflictError(error)) return systemError('BASELINE_CONFLICT')
       if (isScheduleConflictError(error)) return systemError('ILLEGAL_TRANSITION', { reason: scheduleConflictCode(error) })
       throw error
     }
-    return { ok: true, value: JSON.parse(store.idempotency(address, request.requestId)!.receipt_json) as PerformReceiptV1 }
   }
 
   private recordWorkspaceResult(
@@ -1337,18 +1339,7 @@ function withAuthoritativeM2BActions(
   ) {
     return { ...projection, availableActions: baseActions }
   }
-  const activeAttempts = projection.attempts.filter((attempt) =>
-    [
-      'CREATED',
-      'WORKSPACE_PREPARING',
-      'READY',
-      'STARTING',
-      'RUNNING',
-      'VERIFYING',
-      'INTERRUPT_REQUESTED',
-      'OUTCOME_UNKNOWN',
-    ].includes(attempt.status),
-  )
+  const activeAttempts = projection.attempts.filter((attempt) => ACTIVE_ATTEMPT_STATUSES_V1.has(attempt.status))
   if (activeAttempts.length >= 2) return { ...projection, availableActions: baseActions }
   const executable = projection.taskRuns.some((run) => {
     if (run.status !== 'BLOCKED' || run.attemptId) return false

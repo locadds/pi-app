@@ -1094,6 +1094,74 @@ describe('M2A collaboration hub application', () => {
     unavailable.close()
   })
 
+  it('atomically replays the same schedule across two applications sharing one SQLite database', async () => {
+    const dbPath = await tempDb('schedule-cross-application.sqlite')
+    const setup = appFor(dbPath, 'CODING', [
+      'xhbf_atomic_flow',
+      'xhbr_atomic_rev',
+      'xhbts_atomic_scope',
+      'xhbts_atomic_journal',
+      'xhbts_atomic_projection',
+      'xhbtr_atomic_scope',
+      'xhbtr_atomic_journal',
+      'xhbtr_atomic_projection',
+    ])
+    await start(setup, 'req-atomic-start')
+    const draftProjection = await setup.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeFlow || !draftProjection.value.activeRevision) {
+      throw new Error('expected draft flow')
+    }
+    await execute(setup, {
+      requestId: 'req-atomic-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: draftProjection.value.activeFlow.flowId,
+        baseRevisionId: draftProjection.value.activeRevision.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })
+    setup.close()
+
+    const firstApp = appFor(dbPath, 'CODING', ['xhba_atomic_first'], 'runtime-atomic-first')
+    const secondApp = appFor(dbPath, 'CODING', ['xhba_atomic_second'], 'runtime-atomic-second')
+    const request = {
+      requestId: 'sys-schedule-atomic',
+      intent: {
+        type: 'system.schedule' as const,
+        flowId: draftProjection.value.activeFlow.flowId,
+        authorizationScope: authorizationScope('src/atomic.ts'),
+        executionInputDigest: `sha256:${'a'.repeat(64)}` as never,
+      },
+    }
+
+    try {
+      const [first, second] = await Promise.all([
+        executeSystem(firstApp, request),
+        executeSystem(secondApp, request),
+      ])
+
+      expect(first).toEqual(second)
+      expect(first).toMatchObject({ ok: true, value: { requestId: request.requestId } })
+      const store = new CollaborationHubSqliteStoreV1(dbPath)
+      try {
+        expect(store.tableCounts()).toMatchObject({ attempts: 1, execution_waves: 1, composition_attempts: 1 })
+      } finally {
+        store.close()
+      }
+      await expect(executeSystem(secondApp, {
+        ...request,
+        intent: {
+          ...request.intent,
+          authorizationScope: authorizationScope('src/different.ts'),
+        },
+      })).resolves.toMatchObject({ ok: false, error: { code: 'IDEMPOTENCY_CONFLICT' } })
+    } finally {
+      firstApp.close()
+      secondApp.close()
+    }
+  })
+
   it('reuses an immutable flow baseline when scheduling a later task with the same provider facts', async () => {
     const dbPath = await tempDb()
     const baseline = scriptedBaseline()
@@ -1797,6 +1865,14 @@ describe('M2A collaboration hub application', () => {
     expect(journalPayloads(dbPath, 'system.agent.reconcile')).toMatchObject([
       { phase: 'outcome_unknown.reconciled', attemptId: 'xhba_attempt', expectedReceiptDigest: 'sha256:unknown-receipt', outcome: 'OUTCOME_UNKNOWN' },
     ])
+    const activeUnknownStore = new CollaborationHubSqliteStoreV1(dbPath)
+    try {
+      expect(activeUnknownStore.schedulerAttempts(ADDRESS.projectId)).toEqual([
+        expect.objectContaining({ attemptId: 'xhba_attempt', status: 'OUTCOME_UNKNOWN' }),
+      ])
+    } finally {
+      activeUnknownStore.close()
+    }
 
     const beforeCancel = await app.observe(ADDRESS)
     if (!beforeCancel.ok || !beforeCancel.value.activeFlow) throw new Error('expected active unknown flow')
@@ -1809,6 +1885,12 @@ describe('M2A collaboration hub application', () => {
         reason: 'replace abandoned outcome-unknown flow',
       },
     })).resolves.toMatchObject({ ok: true })
+    const cancelledUnknownStore = new CollaborationHubSqliteStoreV1(dbPath)
+    try {
+      expect(cancelledUnknownStore.schedulerAttempts(ADDRESS.projectId)).toEqual([])
+    } finally {
+      cancelledUnknownStore.close()
+    }
 
     await expect(start(app, 'req-start-replacement')).resolves.toMatchObject({
       ok: true,
@@ -1843,7 +1925,7 @@ describe('M2A collaboration hub application', () => {
       intent: {
         type: 'system.schedule',
         flowId: replacementDraft.value.activeFlow.flowId,
-        authorizationScope: authorizationScope('src/replacement.ts'),
+        authorizationScope: authorizationScope('test-default-schedule-scope'),
       },
     })).resolves.toMatchObject({
       ok: true,
