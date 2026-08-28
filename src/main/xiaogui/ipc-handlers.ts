@@ -31,6 +31,7 @@ import { getDefaultWorkDocxTemplateIntakeServiceV1 } from './work-docx-template-
 import { readSessionMetaFromFile } from '../session-file-meta'
 import { normalizeSessionKey } from '../worker-session-key'
 import { requestDirectExtensionUI } from '../direct-extension-ui'
+import { currentVisibleSessionFile } from '../completion-notification-events'
 import { summarizeTemplateReviewActionsV2 } from '@shared/xiaogui-template-review-decisions'
 
 const ModeSwitchSchema = z.object({
@@ -176,8 +177,8 @@ export function registerXiaoguiHandlers(): void {
       }
 
       const requestedSessionFile = normalizeSessionKey(req.sessionFile)
-      const foregroundSessionFile = normalizeSessionKey(workerManager.foregroundSessionFile ?? '')
-      if (!requestedSessionFile || requestedSessionFile !== foregroundSessionFile) {
+      const visibleSessionFile = normalizeSessionKey(currentVisibleSessionFile() ?? '')
+      if (!requestedSessionFile || requestedSessionFile !== visibleSessionFile) {
         return directReviewFailure('SESSION_SCOPE_MISMATCH')
       }
       const cwd = readSessionMetaFromFile(requestedSessionFile)?.cwd
