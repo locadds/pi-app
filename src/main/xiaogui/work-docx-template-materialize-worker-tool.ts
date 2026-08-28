@@ -24,7 +24,17 @@ const RequestSchema = z.object({
       sourceRunId: z.string().min(1).max(200),
       toolCallId: z.string().min(1).max(200),
     }).strict(),
-    ...(['CONFIRM', 'RESUME', 'CANCEL', 'OPEN', 'REVEAL'] as const).map((action) =>
+    z.object({
+      action: z.literal('CONFIRM'),
+      templateName: z.string().min(1).max(120).optional(),
+      purpose: z.string().max(500).optional(),
+      tags: z.array(z.string().min(1).max(32)).max(20).optional(),
+      previewConfirmationToken: z.string().min(1).max(240).optional(),
+      sourceSessionId: z.string().min(1).max(200),
+      sourceRunId: z.string().min(1).max(200),
+      toolCallId: z.string().min(1).max(200),
+    }).strict(),
+    ...(['RESUME', 'CANCEL', 'OPEN', 'REVEAL', 'EXPORT'] as const).map((action) =>
       z.object({
         action: z.literal(action),
         sourceSessionId: z.string().min(1).max(200),
@@ -77,6 +87,10 @@ function messageForError(code: TemplateMaterializeErrorCodeV1): string {
       return '目标文件已经存在，小规不会覆盖；请选择新的文件名'
     case 'TEMPLATE_MATERIALIZE_NO_PUBLISHED_OUTPUT':
       return '没有可打开的已发布模板，或文件已被移动或修改'
+    case 'TEMPLATE_MATERIALIZE_LIBRARY_NOT_CONFIGURED':
+      return '尚未设置本机模板库；请选择一个非系统盘文件夹后再保存'
+    case 'TEMPLATE_MATERIALIZE_LIBRARY_SAVE_FAILED':
+      return '正式模板未能保存进本机模板库；没有修改原文档，可稍后重试'
     case 'TEMPLATE_MATERIALIZE_ABORTED':
       return '模板物化已取消'
     case 'TEMPLATE_MATERIALIZE_SCOPE_NOT_FOUND':

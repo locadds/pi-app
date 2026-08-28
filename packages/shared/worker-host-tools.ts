@@ -28,6 +28,7 @@ import type {
 import type {
   TemplateMaterializeErrorCodeV1,
   TemplateMaterializePlanV1,
+  TemplateMaterializePreviewRequestV1,
   TemplateMaterializeReceiptV1,
 } from './xiaogui-work-docx-template-materialize'
 import type {
@@ -37,6 +38,8 @@ import type {
   AdvancedTemplateDataV1,
   AdvancedTemplateSchemaV1,
 } from './xiaogui-work-docx-advanced-generation'
+import type { TemplateLibraryDetailV1 } from './xiaogui-template-library'
+import type { TemplateReviewRequestV2 } from './xiaogui-work-template-review'
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
@@ -96,6 +99,7 @@ export type XiaoguiWorkReportDocxPayloadV1 =
     })
 
 export type XiaoguiWorkDocxTemplateDataActionV1 =
+  | 'LIST_LIBRARY_TEMPLATES'
   | 'SELECT_TEMPLATE'
   | 'PREPARE'
   | 'CONFIRM'
@@ -106,6 +110,8 @@ export type XiaoguiWorkDocxTemplateDataActionV1 =
 export interface XiaoguiWorkDocxTemplateDataPayloadV1 {
   action: XiaoguiWorkDocxTemplateDataActionV1
   fields?: readonly WorkDocxTemplateFieldInputV1[]
+  /** 仅由可信模板选择器回传，模型参数中不开放。 */
+  templateVersionId?: string
   sourceSessionId: string
   sourceRunId: string
   toolCallId: string
@@ -154,6 +160,7 @@ export type TemplateIntakeModelAnalysisV1 =
 
 export interface TemplateIntakeReviewSubmissionV1 {
   decisions: readonly TemplateIntakeFinalDecisionItemV1[]
+  reviewActionsV2?: readonly import('./xiaogui-work-template-review').TemplateReviewActionV2[]
 }
 
 type XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 = {
@@ -208,10 +215,17 @@ export type XiaoguiWorkDocxTemplateMaterializePayloadV1 =
       action: 'PREPARE'
       reportId?: string
     })
-  | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'CONFIRM' })
+  | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & {
+      action: 'CONFIRM'
+      templateName?: string
+      purpose?: string
+      tags?: readonly string[]
+      /** 仅 Worker 在用户点击内置预览确认按钮后回传；不属于模型工具参数。 */
+      previewConfirmationToken?: string
+    })
   | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'RESUME' })
   | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'CANCEL' })
-  | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'OPEN' | 'REVEAL' })
+  | (XiaoguiWorkDocxTemplateMaterializeCommonPayloadV1 & { action: 'OPEN' | 'REVEAL' | 'EXPORT' })
 
 type XiaoguiWorkDocxAdvancedGenerationCommonPayloadV1 = {
   sourceSessionId: string
@@ -337,6 +351,10 @@ export type XiaoguiWorkReportDocxResultV1 =
   | { kind: 'XIAOGUI_WORK_REPORT_DOCX_ACCESSED'; action: 'OPEN' | 'REVEAL' }
 
 export type XiaoguiWorkDocxTemplateDataResultV1 =
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_LIBRARY_CHOICES'
+      templates: readonly TemplateLibraryDetailV1[]
+    }
   | { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' }
   | {
       kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_PREPARATION_REQUIRED'
@@ -400,6 +418,7 @@ export type XiaoguiWorkDocxTemplateIntakeResultV1 =
       kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_REQUIRED'
       report: TemplateIntakeReportV1
       draftDecisions: readonly TemplateIntakeDraftDecisionItemV1[]
+      reviewRequestV2?: TemplateReviewRequestV2
     }
   | {
       kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CONFIRMED'
@@ -421,16 +440,25 @@ export type XiaoguiWorkDocxTemplateMaterializeResultV1 =
   | {
       kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PREPARED'
       plan: TemplateMaterializePlanV1
+      preview: TemplateMaterializePreviewRequestV1
+      /** Worker 私有接缝；不得进入模型可见工具详情或 Renderer。 */
+      previewConfirmationToken: string
     }
   | {
       kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_RESUMED'
       plan?: TemplateMaterializePlanV1
+      preview?: TemplateMaterializePreviewRequestV1
+      previewConfirmationToken?: string
       receipt?: TemplateMaterializeReceiptV1
     }
   | { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_TARGET_SELECTION_CANCELLED' }
   | {
       kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PUBLISHED'
       receipt: TemplateMaterializeReceiptV1
+    }
+  | {
+      kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_EXPORTED'
+      outputSha256: string
     }
   | { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_CANCELLED' }
   | {

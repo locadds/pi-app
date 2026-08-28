@@ -17,8 +17,13 @@ import { basename, dirname, extname, isAbsolute, join, parse, resolve } from 'no
 
 import type {
   TemplateMaterializeErrorCodeV1,
+  TemplateMaterializePreviewRequestV1,
   TemplateMaterializeReceiptV1,
 } from '@shared/xiaogui-work-docx-template-materialize'
+import type {
+  TemplateLibraryFieldSummaryV1,
+  TemplateLibrarySaveMetadataV1,
+} from '@shared/xiaogui-template-library'
 import type {
   XiaoguiWorkDocxTemplateMaterializePayloadV1,
   XiaoguiWorkDocxTemplateMaterializeResultV1,
@@ -42,6 +47,19 @@ import {
   WorkDocxTemplateMaterializeStoreV1,
   type StoredTemplateMaterializeRecordV1,
 } from './work-docx-template-materialize-store'
+import {
+  TemplateLibraryServiceErrorV1,
+  type TemplateLibraryServiceV1,
+} from './template-library-service'
+import type { DocumentReviewRendererV1 } from './work-document-review-renderer'
+import type {
+  TemplateReviewReplacementImageStoreV1,
+  TemplateReviewReplacementImageV1,
+} from './work-document-review-image-store'
+import {
+  LEGACY_DOC_SAFETY_MAX_FILE_BYTES_V1,
+  inspectSafeLegacyDocV1,
+} from './work-legacy-doc-safety'
 
 type TemplateMaterializeDialogPortV1 = {
   chooseNewTarget(suggestedName: string): Promise<string | null>
@@ -64,6 +82,14 @@ export interface WorkDocxTemplateMaterializeServiceOptionsV1 {
   dialogs: TemplateMaterializeDialogPortV1
   outputAccess: TemplateMaterializeOutputAccessPortV1
   tempRoot: string
+  /** 配置后正式模板优先保存到本机模板库；省略时保留旧版“直接另存”兼容行为。 */
+  templateLibrary?: Pick<
+    TemplateLibraryServiceV1,
+    'getConfiguration' | 'saveFromBuffer' | 'resolveVersionForUse'
+  >
+  configureTemplateLibrary?: () => Promise<{ configured: boolean }>
+  documentReviewRenderer?: Pick<DocumentReviewRendererV1, 'prepare' | 'readNormalizedDocx' | 'release'>
+  replacementImageStore?: Pick<TemplateReviewReplacementImageStoreV1, 'resolve'>
   now?: () => Date
 }
 
@@ -187,6 +213,8 @@ function localIso(date: Date): string {
 
 export class WorkDocxTemplateMaterializeServiceV1 {
   private readonly active = new Set<string>()
+  private readonly previewManifestIds = new Map<string, string>()
+  private readonly previewConfirmationTokens = new Map<string, string>()
 
   constructor(private readonly options: WorkDocxTemplateMaterializeServiceOptionsV1) {}
 
@@ -206,7 +234,11 @@ export class WorkDocxTemplateMaterializeServiceV1 {
         case 'PREPARE':
           return await this.prepare(address, payload.sourceRunId, payload.reportId, signal)
         case 'CONFIRM':
-          return await this.confirm(address, payload.sourceRunId)
+          return await this.confirm(address, payload.sourceRunId, {
+            templateName: payload.templateName,
+            purpose: payload.purpose,
+            tags: payload.tags,
+          }, payload.previewConfirmationToken)
         case 'RESUME':
           return await this.resume(address, signal)
         case 'CANCEL':
@@ -214,6 +246,8 @@ export class WorkDocxTemplateMaterializeServiceV1 {
         case 'OPEN':
         case 'REVEAL':
           return await this.accessOutput(address, payload.action)
+        case 'EXPORT':
+          return await this.exportCopy(address)
       }
     } catch (error) {
       if (error instanceof TemplateMaterializeServiceErrorV1) return failure(error.code)
@@ -229,6 +263,11 @@ export class WorkDocxTemplateMaterializeServiceV1 {
 
   close(): void {
     this.active.clear()
+    for (const manifestId of this.previewManifestIds.values()) {
+      this.options.documentReviewRenderer?.release(manifestId)
+    }
+    this.previewManifestIds.clear()
+    this.previewConfirmationTokens.clear()
     this.options.store.close()
   }
 
@@ -256,15 +295,65 @@ export class WorkDocxTemplateMaterializeServiceV1 {
   private async build(
     source: ConfirmedTemplateIntakeMaterializationSourceV1,
   ): Promise<Awaited<ReturnType<typeof materializeConfirmedTemplateV1>>> {
-    const content = await readSource(source.sourcePath)
-    if (sha256(content) !== source.sourceSha256) {
+    const extension = extname(source.sourcePath).toLowerCase()
+    let originalContent: Buffer
+    let normalizedContent: Buffer
+    let manifestId: string | null = null
+    if (extension === '.docx') {
+      originalContent = await readSource(source.sourcePath)
+      normalizedContent = originalContent
+    } else if (extension === '.doc') {
+      const information = await lstat(source.sourcePath)
+      if (!information.isFile() || information.isSymbolicLink() || information.size > LEGACY_DOC_SAFETY_MAX_FILE_BYTES_V1) {
+        throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_SOURCE_CHANGED')
+      }
+      originalContent = await readFile(source.sourcePath)
+      try {
+        inspectSafeLegacyDocV1(originalContent)
+      } catch {
+        throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_SOURCE_CHANGED')
+      }
+      const renderer = this.options.documentReviewRenderer
+      if (!renderer) throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_GENERATION_FAILED')
+      const prepared = await renderer.prepare(originalContent, 'DOC')
+      manifestId = prepared.manifestId
+      const converted = renderer.readNormalizedDocx(manifestId)
+      if (!converted) {
+        renderer.release(manifestId)
+        throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_GENERATION_FAILED')
+      }
+      normalizedContent = converted
+    } else {
       throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_SOURCE_CHANGED')
     }
-    return materializeConfirmedTemplateV1({
-      source: content,
-      report: source.report,
-      decision: source.decision,
-    })
+    if (sha256(originalContent) !== source.sourceSha256) {
+      if (manifestId) this.options.documentReviewRenderer?.release(manifestId)
+      throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_SOURCE_CHANGED')
+    }
+    try {
+      const replacementImageTokens = [
+        ...new Set(
+          source.decision.reviewActionsV2
+            ?.filter((action) => action.kind === 'REPLACE_IMAGE')
+            .map((action) => action.replacementImageToken) ?? [],
+        ),
+      ]
+      const replacementImages = new Map<string, TemplateReviewReplacementImageV1>()
+      for (const token of replacementImageTokens) {
+        const image = await this.options.replacementImageStore?.resolve(token)
+        if (!image) throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+        replacementImages.set(token, image)
+      }
+      return await materializeConfirmedTemplateV1({
+        source: normalizedContent,
+        ...(extension === '.doc' ? { originalSourceSha256: source.sourceSha256 } : {}),
+        report: source.report,
+        decision: source.decision,
+        ...(replacementImages.size ? { replacementImages } : {}),
+      })
+    } finally {
+      if (manifestId) this.options.documentReviewRenderer?.release(manifestId)
+    }
   }
 
   private async createPreview(content: Buffer): Promise<string> {
@@ -286,6 +375,71 @@ export class WorkDocxTemplateMaterializeServiceV1 {
   private async openPreview(path: string): Promise<void> {
     const error = await this.options.outputAccess.openPath(path)
     if (error) throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_PREVIEW_OPEN_FAILED')
+  }
+
+  private releasePreviewSession(record: StoredTemplateMaterializeRecordV1): void {
+    const manifestId = this.previewManifestIds.get(record.operationId)
+    if (manifestId) this.options.documentReviewRenderer?.release(manifestId)
+    this.previewManifestIds.delete(record.operationId)
+    this.previewConfirmationTokens.delete(record.operationId)
+  }
+
+  private async prepareInternalPreview(
+    record: StoredTemplateMaterializeRecordV1,
+    sourceDisplayName: string,
+    content: Buffer,
+    signal?: AbortSignal,
+  ): Promise<{
+    preview: TemplateMaterializePreviewRequestV1
+    previewConfirmationToken: string
+  }> {
+    this.releasePreviewSession(record)
+    const timestamp = this.now().toISOString()
+    const renderer = this.options.documentReviewRenderer
+    const prepared = renderer ? await renderer.prepare(content, 'DOCX', signal) : null
+    if (prepared) this.previewManifestIds.set(record.operationId, prepared.manifestId)
+    // 旧测试/嵌入环境尚未注入页面渲染器时，保留原来的只读外部预览作为明确降级。
+    else await this.openPreview(record.previewPath)
+
+    const previewConfirmationToken = `xgtmc1_${randomUUID()}`
+    this.previewConfirmationTokens.set(record.operationId, previewConfirmationToken)
+    const sourceName = parse(sourceDisplayName).name || '文档'
+    return {
+      previewConfirmationToken,
+      preview: {
+        previewVersion: 1,
+        document: {
+          reviewVersion: 2,
+          reviewId: record.operationId,
+          status: 'PREVIEWING',
+          source: {
+            displayName: `${sourceName}-模板.docx`,
+            sha256: record.plan.previewSha256,
+            byteLength: content.byteLength,
+            inputFormat: 'DOCX',
+          },
+          render: prepared?.render ?? {
+            mode: 'STRUCTURED_FALLBACK',
+            pageCount: null,
+            pages: [],
+            warnings: [{
+              code: 'STRUCTURED_FALLBACK_ACTIVE',
+              message: '当前环境未接入内置页面渲染，已打开只读文档预览。',
+            }],
+          },
+          targetCount: 0,
+          pendingTargetCount: 0,
+          resolvedTargetCount: 0,
+          unmappedTargetCount: 0,
+          requiresHumanConfirmation: true,
+          sourceReadOnly: true,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        plan: record.plan,
+        suggestedTemplateName: `${sourceName}模板`,
+      },
+    }
   }
 
   private async prepare(
@@ -322,10 +476,19 @@ export class WorkDocxTemplateMaterializeServiceV1 {
       await rm(dirname(previewPath), { recursive: true, force: true }).catch(() => {})
       throw error
     }
-    await this.openPreview(previewPath)
+    const previewSession = await this.prepareInternalPreview(
+      record,
+      source.sourceDisplayName,
+      built.content,
+      signal,
+    )
     return {
       ok: true,
-      value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PREPARED', plan: built.plan },
+      value: {
+        kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PREPARED',
+        plan: built.plan,
+        ...previewSession,
+      },
     }
   }
 
@@ -358,6 +521,7 @@ export class WorkDocxTemplateMaterializeServiceV1 {
   private receipt(
     record: StoredTemplateMaterializeRecordV1,
     publishedAtLocal = localIso(this.now()),
+    library?: TemplateMaterializeReceiptV1['library'],
   ): TemplateMaterializeReceiptV1 {
     return {
       receiptVersion: 1,
@@ -372,6 +536,87 @@ export class WorkDocxTemplateMaterializeServiceV1 {
       removedMediaCount: record.plan.removedMediaCount,
       originalSourceUnchanged: true,
       publishedAtLocal,
+      ...(library ? { library } : {}),
+    }
+  }
+
+  private libraryFields(record: StoredTemplateMaterializeRecordV1): TemplateLibraryFieldSummaryV1[] {
+    return [
+      ...record.plan.variables.map((item, index) => ({
+        fieldId: `text-${index + 1}`,
+        name: item.name,
+        kind: 'TEXT' as const,
+        required: true,
+      })),
+      ...record.plan.repeatBlocks.map((item, index) => ({
+        fieldId: `repeat-${index + 1}`,
+        name: item.name,
+        kind: 'REPEAT' as const,
+        required: false,
+      })),
+      ...record.plan.conditionalBlocks.map((item, index) => ({
+        fieldId: `conditional-${index + 1}`,
+        name: item.name,
+        kind: 'CONDITIONAL' as const,
+        required: false,
+      })),
+    ]
+  }
+
+  private async saveToLibrary(
+    record: StoredTemplateMaterializeRecordV1,
+    source: ConfirmedTemplateIntakeMaterializationSourceV1,
+    built: Awaited<ReturnType<typeof materializeConfirmedTemplateV1>>,
+    metadata: { templateName?: string; purpose?: string; tags?: readonly string[] },
+  ): Promise<TemplateMaterializeServiceOutcomeV1> {
+    const library = this.options.templateLibrary
+    if (!library) throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_LIBRARY_SAVE_FAILED')
+    let configuration = await library.getConfiguration()
+    if (!configuration.configured) {
+      configuration = await this.options.configureTemplateLibrary?.() ?? { configured: false }
+    }
+    if (!configuration.configured) {
+      return {
+        ok: true,
+        value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_TARGET_SELECTION_CANCELLED' },
+      }
+    }
+    const fallbackName = `${parse(source.sourceDisplayName).name || '文档'}模板`
+    const saveMetadata: TemplateLibrarySaveMetadataV1 = {
+      name: metadata.templateName?.trim() || fallbackName,
+      ...(metadata.purpose?.trim() ? { purpose: metadata.purpose.trim() } : {}),
+      ...(metadata.tags?.length ? { tags: metadata.tags } : {}),
+      fields: this.libraryFields(record),
+    }
+    try {
+      const saved = await library.saveFromBuffer(built.content, saveMetadata)
+      const resolved = await library.resolveVersionForUse(saved.version.versionId)
+      record.publishedPath = resolved.assetPath
+      const receipt = this.receipt(record, localIso(this.now()), {
+        entryId: saved.entry.entryId,
+        versionId: saved.version.versionId,
+        versionNumber: saved.version.versionNumber,
+        templateName: saved.entry.name,
+      })
+      record.receipt = receipt
+      record.status = 'PUBLISHED'
+      record.updatedAt = this.now().toISOString()
+      this.options.store.save(record)
+      await rm(dirname(record.previewPath), { recursive: true, force: true }).catch(() => {})
+      this.releasePreviewSession(record)
+      return {
+        ok: true,
+        value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PUBLISHED', receipt },
+      }
+    } catch (error) {
+      if (error instanceof TemplateLibraryServiceErrorV1) {
+        throw new TemplateMaterializeServiceErrorV1(
+          error.code === 'TEMPLATE_LIBRARY_NOT_CONFIGURED'
+            ? 'TEMPLATE_MATERIALIZE_LIBRARY_NOT_CONFIGURED'
+            : 'TEMPLATE_MATERIALIZE_LIBRARY_SAVE_FAILED',
+        )
+      }
+      throw error
     }
   }
 
@@ -390,6 +635,7 @@ export class WorkDocxTemplateMaterializeServiceV1 {
     record.updatedAt = this.now().toISOString()
     this.options.store.save(record)
     await rm(dirname(record.previewPath), { recursive: true, force: true }).catch(() => {})
+    this.releasePreviewSession(record)
     return {
       ok: true,
       value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PUBLISHED', receipt },
@@ -398,16 +644,24 @@ export class WorkDocxTemplateMaterializeServiceV1 {
 
   private async confirm(
     address: SessionAddressV1,
-    sourceRunId: string,
+    _sourceRunId: string,
+    metadata: { templateName?: string; purpose?: string; tags?: readonly string[] },
+    previewConfirmationToken?: string,
   ): Promise<TemplateMaterializeServiceOutcomeV1> {
     const record = this.options.store.latest(address, ['PREPARED'])
     if (!record) return failure('TEMPLATE_MATERIALIZE_NO_PENDING_OPERATION')
-    if (record.preparedRunId === sourceRunId) {
+    const confirmedInPreview =
+      !!previewConfirmationToken &&
+      this.previewConfirmationTokens.get(record.operationId) === previewConfirmationToken
+    if (!confirmedInPreview) {
       return failure('TEMPLATE_MATERIALIZE_CONFIRMATION_REQUIRED')
     }
     const { source, built } = await this.reload(record)
     const reconciled = await this.finalizeExistingTarget(record)
     if (reconciled) return reconciled
+    if (this.options.templateLibrary) {
+      return this.saveToLibrary(record, source, built, metadata)
+    }
     let target = record.publishedPath
     if (!target) {
       const selectedTarget = await this.options.dialogs.chooseNewTarget(
@@ -444,6 +698,7 @@ export class WorkDocxTemplateMaterializeServiceV1 {
       // publishedPath was persisted before publication; RESUME can reconcile this exact hash.
     }
     await rm(dirname(record.previewPath), { recursive: true, force: true }).catch(() => {})
+    this.releasePreviewSession(record)
     return {
       ok: true,
       value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PUBLISHED', receipt },
@@ -465,7 +720,7 @@ export class WorkDocxTemplateMaterializeServiceV1 {
         value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_RESUMED', receipt: record.receipt },
       }
     }
-    const { built } = await this.reload(record)
+    const { source, built } = await this.reload(record)
     const reconciled = await this.finalizeExistingTarget(record)
     if (reconciled) return reconciled
     if (signal?.aborted) return failure('TEMPLATE_MATERIALIZE_ABORTED')
@@ -474,10 +729,19 @@ export class WorkDocxTemplateMaterializeServiceV1 {
     record.plan = built.plan
     record.updatedAt = this.now().toISOString()
     this.options.store.save(record)
-    await this.openPreview(record.previewPath)
+    const previewSession = await this.prepareInternalPreview(
+      record,
+      source.sourceDisplayName,
+      built.content,
+      signal,
+    )
     return {
       ok: true,
-      value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_RESUMED', plan: record.plan },
+      value: {
+        kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_RESUMED',
+        plan: record.plan,
+        ...previewSession,
+      },
     }
   }
 
@@ -488,6 +752,7 @@ export class WorkDocxTemplateMaterializeServiceV1 {
       record.updatedAt = this.now().toISOString()
       this.options.store.save(record)
       await rm(dirname(record.previewPath), { recursive: true, force: true }).catch(() => {})
+      this.releasePreviewSession(record)
     }
     return { ok: true, value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_CANCELLED' } }
   }
@@ -512,6 +777,40 @@ export class WorkDocxTemplateMaterializeServiceV1 {
     return {
       ok: true,
       value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_ACCESSED', action },
+    }
+  }
+
+  private async exportCopy(
+    address: SessionAddressV1,
+  ): Promise<TemplateMaterializeServiceOutcomeV1> {
+    const record = this.options.store.latest(address, ['PUBLISHED'])
+    if (!record?.publishedPath || !record.receipt) {
+      return failure('TEMPLATE_MATERIALIZE_NO_PUBLISHED_OUTPUT')
+    }
+    const content = await readFile(record.publishedPath)
+    if (sha256(content) !== record.receipt.outputSha256) {
+      return failure('TEMPLATE_MATERIALIZE_NO_PUBLISHED_OUTPUT')
+    }
+    const selectedTarget = await this.options.dialogs.chooseNewTarget(
+      `${record.receipt.library?.templateName ?? '小规模板'}.docx`,
+    )
+    if (!selectedTarget) {
+      return {
+        ok: true,
+        value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_TARGET_SELECTION_CANCELLED' },
+      }
+    }
+    await assertNewTarget(selectedTarget, record.sourcePath)
+    await publishNewTarget(selectedTarget, content, `export-${record.operationId}-${randomUUID()}`)
+    if ((await fileSha256(selectedTarget)) !== record.receipt.outputSha256) {
+      throw new TemplateMaterializeServiceErrorV1('TEMPLATE_MATERIALIZE_PUBLISH_FAILED')
+    }
+    return {
+      ok: true,
+      value: {
+        kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_EXPORTED',
+        outputSha256: record.receipt.outputSha256,
+      },
     }
   }
 

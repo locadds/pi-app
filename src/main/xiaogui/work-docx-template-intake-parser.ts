@@ -195,27 +195,24 @@ function textBoxCandidates(xmlParts: readonly string[]): TemplateIntakeCandidate
 }
 
 function drawingCandidates(
-  mediaCount: number,
+  imageUseCount: number,
   inlineDrawingCount: number,
   floatingDrawingCount: number,
 ): TemplateIntakeCandidateV1[] {
-  const total = Math.max(mediaCount, inlineDrawingCount + floatingDrawingCount)
-  if (total === 0) return []
+  if (imageUseCount === 0) return []
   const risks: TemplateIntakeRiskFlagV1[] = ['OLD_PROJECT_DRAWING']
   risks.push('SCANNED_ATTACHMENT')
   if (floatingDrawingCount > 0) risks.push('FLOATING_OBJECT')
-  return [
-    {
+  return Array.from({ length: imageUseCount }, (_, index) => ({
       candidateId: `xgtic1_${randomUUID()}`,
       kind: 'EXCLUDE',
-      preview: `图片或图件 ${total} 项（行内 ${inlineDrawingCount}，浮动 ${floatingDrawingCount}）`,
-      sourceAnchors: [{ part: 'DRAWING', drawingIndex: 1 }],
+      preview: `图片或图件 ${index + 1}（共 ${imageUseCount} 项；行内 ${inlineDrawingCount}，浮动 ${floatingDrawingCount}）`,
+      sourceAnchors: [{ part: 'DRAWING', drawingIndex: index + 1 }],
       reason: '图片、扫描附件和旧项目图件无法仅凭文本可靠区分，首期按高风险规则默认排除并交由人工确认',
       confidence: 1,
       riskFlags: risks,
       defaultDecision: 'EXCLUDE',
-    },
-  ]
+    }))
 }
 
 function nodeText(nodes: readonly OfficeContentNode[] | undefined): string {
@@ -364,6 +361,7 @@ export async function parseTemplateIntakeSourceV1(
   const mediaCount = Object.keys(zip.files).filter(
     (name) => /^word\/media\/[^/]+$/i.test(name) && !zip.files[name].dir,
   ).length
+  const imageUseCount = countMatches(wordXml, /<a:blip\b[^>]*\br:embed=["'][^"']+["']/g)
   const warnings: TemplateIntakeWarningV1[] = [
     ...(pageCount === null
       ? [{ code: 'PAGE_COUNT_UNKNOWN' as const, message: '无法从文档属性可靠取得页数' }]
@@ -437,7 +435,7 @@ export async function parseTemplateIntakeSourceV1(
     fragments,
     deterministicCandidates: [
       ...textBoxCandidates(wordXml),
-      ...drawingCandidates(mediaCount, inlineDrawingCount, floatingDrawingCount),
+      ...drawingCandidates(imageUseCount, inlineDrawingCount, floatingDrawingCount),
     ],
     warnings,
   }

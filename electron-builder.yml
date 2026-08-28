@@ -35,8 +35,22 @@ extraResources:
     to: codex-asr
     filter:
       - "**/*"
+  - from: THIRD_PARTY_NOTICES.md
+    to: legal/THIRD_PARTY_NOTICES.md
+  - from: sbom.cdx.json
+    to: legal/sbom.cdx.json
+  - from: resources/legal
+    to: legal
 
 win:
+  # 发布 Windows 包前由 package-windows 装配并复核。二进制只进入 ignored runtime 子目录。
+  extraResources:
+    - from: resources/libreoffice-runtime/runtime
+      to: libreoffice
+      filter:
+        - "**/*"
+    - from: resources/libreoffice-runtime/README.md
+      to: libreoffice/README.md
   target:
     - target: nsis
       arch:

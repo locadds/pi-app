@@ -9,8 +9,10 @@
  * 仅在 WORK 模式下呈现；其他模式渲染占位提示（与 ProjectInspectView 一致）。
  */
 
+import { useState } from 'react'
 import { useUIStore } from '@renderer/stores/ui-store'
 import { useXiaoguiStore } from '../stores/xiaogui-store'
+import { TemplateLibraryView } from './TemplateLibraryView'
 
 /** 朱砂红——与 ModeSelector / ProjectInspectView 保持同一强调色。 */
 const ACCENT = '#c0392b'
@@ -23,17 +25,18 @@ const EXAMPLE_PROMPTS: { title: string; prompt: string }[] = [
   },
   {
     title: '按模板生成',
-    prompt: '按我选择的 Word 模板，根据刚才的资料生成新文档，先把要填的内容列给我确认',
+    prompt: '按我选择的文档模板，根据刚才的资料生成新文档，先把要填的内容列给我确认',
   },
   {
-    title: '整理普通 Word',
-    prompt: '把我选择的普通成品 Word 整理成可复用模板，先给我一份候选内容报告',
+    title: '整理普通文档',
+    prompt: '把我选择的普通成品文档整理成可复用模板，先给我一份候选内容报告',
   },
 ]
 
 export function WorkHomeView() {
   const mode = useXiaoguiStore((s) => s.mode)
   const setComposerPrefill = useUIStore((s) => s.setComposerPrefill)
+  const [view, setView] = useState<'HOME' | 'TEMPLATE_LIBRARY'>('HOME')
 
   if (mode !== 'WORK') {
     return (
@@ -46,6 +49,10 @@ export function WorkHomeView() {
     )
   }
 
+  if (view === 'TEMPLATE_LIBRARY') {
+    return <TemplateLibraryView onBack={() => setView('HOME')} />
+  }
+
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
       <header className="mb-5 flex items-baseline gap-3">
@@ -53,6 +60,7 @@ export function WorkHomeView() {
         <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
           work · 日常工作
         </span>
+        <button type="button" onClick={() => setView('TEMPLATE_LIBRARY')} className="ml-auto text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">模板库</button>
       </header>
 
       <div className="mb-1 mt-6 flex items-baseline justify-between">

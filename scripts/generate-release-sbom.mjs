@@ -8,6 +8,34 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+function requireString(value, label) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`INVALID_SBOM_EXTERNAL_RUNTIME:${label}`)
+  }
+  return value
+}
+
+function externalRuntimeComponent(runtime) {
+  const name = requireString(runtime?.name, 'name')
+  const version = requireString(runtime?.version, `${name}:version`)
+  const component = {
+    type: requireString(runtime?.type, `${name}:type`),
+    name,
+    version,
+    'bom-ref': requireString(runtime?.bomRef, `${name}:bomRef`),
+    hashes: [{ alg: 'SHA-256', content: requireString(runtime?.sha256, `${name}:sha256`) }],
+    licenses: [{ license: { id: requireString(runtime?.license, `${name}:license`) } }],
+    externalReferences: [
+      {
+        type: 'distribution',
+        url: requireString(runtime?.distributionUrl, `${name}:distributionUrl`),
+      },
+      { type: 'website', url: requireString(runtime?.sourceUrl, `${name}:sourceUrl`) },
+    ],
+  }
+  return component
+}
+
 export async function generateSbom(rootDir = process.cwd(), outputPath = join(rootDir, 'sbom.cdx.json')) {
   const pkg = JSON.parse(await readFile(join(rootDir, 'package.json'), 'utf8'))
   const lock = JSON.parse(await readFile(join(rootDir, 'package-lock.json'), 'utf8'))
@@ -16,12 +44,13 @@ export async function generateSbom(rootDir = process.cwd(), outputPath = join(ro
     : []
   const prodNames = new Set([...Object.keys(pkg.dependencies || {}), ...bundledRuntimeNames])
   const components = []
-  for (const [name, entry] of Object.entries(lock.packages || {})) {
-    if (!name || name === '') continue
-    const short = name.replace(/^node_modules\//, '')
-    const top = short.split('node_modules/').pop()
-    if (!prodNames.has(top)) continue
-    if (components.some((c) => c.name === top)) continue
+  for (const top of prodNames) {
+    const rootEntry = lock.packages?.[`node_modules/${top}`]
+    const fallbackEntry = Object.entries(lock.packages || {}).find(([path]) =>
+      path.endsWith(`/node_modules/${top}`),
+    )?.[1]
+    const entry = rootEntry || fallbackEntry
+    if (!entry) throw new Error(`SBOM_DEPENDENCY_NOT_LOCKED:${top}`)
     components.push({
       type: 'library',
       name: top,
@@ -29,13 +58,21 @@ export async function generateSbom(rootDir = process.cwd(), outputPath = join(ro
       'bom-ref': `pkg:npm/${top}@${entry.version || 'unknown'}`,
     })
   }
+  const externalRuntimes = Array.isArray(pkg.xiaoguiBuild?.bundledExternalRuntimes)
+    ? pkg.xiaoguiBuild.bundledExternalRuntimes
+    : []
+  components.push(...externalRuntimes.map(externalRuntimeComponent))
   components.sort((a, b) => a.name.localeCompare(b.name))
   const bom = {
     bomFormat: 'CycloneDX',
     specVersion: '1.5',
     version: 1,
     metadata: {
-      component: { type: 'application', name: pkg.name, version: pkg.version },
+      component: {
+        type: 'application',
+        name: pkg.xiaoguiBuild?.productName || pkg.name,
+        version: pkg.version,
+      },
     },
     components,
   }

@@ -40,11 +40,13 @@ import type {
   WorkDocxTemplateProfileV1,
 } from '@shared/xiaogui-work-docx-template-data'
 import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
+import type { TemplateLibraryDetailV1 } from '@shared/xiaogui-template-library'
 import {
   DOCX_SAFETY_MAX_FILE_BYTES_V1,
   DocxSafetyErrorV1,
   inspectSafeDocxArchiveV1,
 } from './docx-safety'
+import type { TemplateLibraryServiceV1 } from './template-library-service'
 
 const MAX_TEMPLATE_BYTES = DOCX_SAFETY_MAX_FILE_BYTES_V1
 const MAX_PAYLOAD_BYTES = 1024 * 1024
@@ -72,6 +74,7 @@ type WorkDocxServiceOptionsV1 = {
   dialogs: WorkDocxDialogPortV1
   tempRoot: string
   outputAccess?: WorkDocxOutputAccessPortV1
+  templateLibrary?: Pick<TemplateLibraryServiceV1, 'list' | 'getDetail' | 'resolveVersionForUse'>
 }
 
 type PreparedOperationV1 = {
@@ -95,7 +98,11 @@ export type WorkDocxTemplateSelectionIdV1 = string & {
   readonly __brand: 'WorkDocxTemplateSelectionIdV1'
 }
 
-type WorkDocxTemplateSelectRequestV1 = { address: SessionAddressV1 }
+type WorkDocxTemplateSelectRequestV1 = {
+  address: SessionAddressV1
+  /** 仅由可信模板选择器回传；模型不生成此编号。 */
+  templateVersionId?: string
+}
 type WorkDocxTemplateSelectResultV1 =
   | { kind: 'CANCELLED' }
   | {
@@ -480,11 +487,17 @@ export class WorkDocxServiceV1 {
 
     let stageDir: string | null = null
     try {
-      const sourceTemplate = await this.options.dialogs.chooseTemplate()
+      const libraryVersion = request.templateVersionId
+        ? await this.options.templateLibrary?.resolveVersionForUse(request.templateVersionId)
+        : null
+      if (request.templateVersionId && !libraryVersion) throw new WorkDocxError('OPERATION_NOT_FOUND')
+      const sourceTemplate = libraryVersion?.assetPath ?? await this.options.dialogs.chooseTemplate()
       if (!sourceTemplate) return { ok: true, value: { kind: 'CANCELLED' } }
       if (extname(sourceTemplate).toLowerCase() !== '.docx') throw new WorkDocxError('INPUT_INVALID')
 
-      const templateDisplayName = safeDisplayName(sourceTemplate)
+      const templateDisplayName = libraryVersion
+        ? `${libraryVersion.entry.name}（第 ${libraryVersion.version.versionNumber} 版）.docx`
+        : safeDisplayName(sourceTemplate)
       const templateBefore = await readLimited(sourceTemplate, MAX_TEMPLATE_BYTES)
       await assertSafeDocx(templateBefore)
       const templateSha256 = createHash('sha256').update(templateBefore).digest('hex')
@@ -551,6 +564,31 @@ export class WorkDocxServiceV1 {
       return failure('GENERATION_FAILED')
     } finally {
       if (stageDir) await rm(stageDir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
+  async listLibraryTemplates(
+    address: SessionAddressV1,
+  ): Promise<WorkDocxOutcomeV1<readonly TemplateLibraryDetailV1[]>> {
+    const admitted = await this.admit(address)
+    if (!admitted.ok) return admitted
+    if (!this.options.templateLibrary) return { ok: true, value: [] }
+    try {
+      const listed = await this.options.templateLibrary.list({ status: 'ACTIVE', limit: 50, offset: 0 })
+      const details = await Promise.all(
+        listed.items.map((item) => this.options.templateLibrary!.getDetail(item.entryId)),
+      )
+      return { ok: true, value: details }
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        error.code === 'TEMPLATE_LIBRARY_NOT_CONFIGURED'
+      ) {
+        return { ok: true, value: [] }
+      }
+      return failure('GENERATION_FAILED')
     }
   }
 

@@ -58,3 +58,60 @@ describe('template_intake_review custom kind 接入', () => {
     expect(useExtensionUIStore.getState().activePending).toBeNull()
   })
 })
+
+describe('template_materialize_preview custom kind 接入', () => {
+  it('只接受预览摘要与页面文档摘要一致的内置预览', () => {
+    ensureExtensionUIChannel()
+    const previewSha256 = 'b'.repeat(64)
+    const payload = {
+      previewVersion: 1,
+      suggestedTemplateName: '施工方案模板',
+      plan: {
+        materializeVersion: 1,
+        source: { displayName: '施工方案.docx', sha256: 'a'.repeat(64), byteLength: 10 },
+        previewSha256,
+        variables: [],
+        repeatBlocks: [],
+        conditionalBlocks: [],
+        excludedCandidateCount: 0,
+        removedMediaCount: 0,
+        retainedHighRiskCount: 0,
+        warnings: [],
+        requiresSecondConfirmation: true,
+        originalSourceUnchanged: true,
+        advancedGenerationRequired: false,
+        reportSummary: { reportId: 'report-1', fileDisplayName: '施工方案.docx', fileSha256: 'a'.repeat(64), candidateCount: 0, warningCount: 0 },
+      },
+      document: {
+        reviewVersion: 2,
+        reviewId: 'preview-1',
+        status: 'PREVIEWING',
+        source: { displayName: '施工方案-模板.docx', sha256: previewSha256, byteLength: 10, inputFormat: 'DOCX' },
+        render: { mode: 'PDF', pageCount: 1, pages: [], warnings: [] },
+        targetCount: 0,
+        pendingTargetCount: 0,
+        resolvedTargetCount: 0,
+        unmappedTargetCount: 0,
+        requiresHumanConfirmation: true,
+        sourceReadOnly: true,
+        createdAt: '2026-08-28T10:00:00+08:00',
+        updatedAt: '2026-08-28T10:00:00+08:00',
+      },
+    }
+    requestHandler.fn?.({ id: 'tm-1', method: 'custom', kind: 'template_materialize_preview', payload })
+    expect(useExtensionUIStore.getState().activePending).toEqual({
+      id: 'tm-1',
+      method: 'template_materialize_preview',
+      payload,
+    })
+
+    useExtensionUIStore.setState({ activePending: null })
+    requestHandler.fn?.({
+      id: 'tm-2',
+      method: 'custom',
+      kind: 'template_materialize_preview',
+      payload: { ...payload, document: { ...payload.document, source: { ...payload.document.source, sha256: 'c'.repeat(64) } } },
+    })
+    expect(useExtensionUIStore.getState().activePending).toBeNull()
+  })
+})

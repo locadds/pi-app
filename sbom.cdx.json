@@ -5,8 +5,8 @@
   "metadata": {
     "component": {
       "type": "application",
-      "name": "pi-desktop",
-      "version": "0.5.7"
+      "name": "小规 Agent",
+      "version": "0.3.0-rc.1"
     }
   },
   "components": [
@@ -51,6 +51,12 @@
       "name": "better-sqlite3",
       "version": "12.11.1",
       "bom-ref": "pkg:npm/better-sqlite3@12.11.1"
+    },
+    {
+      "type": "library",
+      "name": "cfb",
+      "version": "1.2.2",
+      "bom-ref": "pkg:npm/cfb@1.2.2"
     },
     {
       "type": "library",
@@ -119,6 +125,35 @@
       "bom-ref": "pkg:npm/katex@0.17.0"
     },
     {
+      "type": "application",
+      "name": "LibreOffice Windows x64 private runtime",
+      "version": "26.2.5",
+      "bom-ref": "pkg:generic/libreoffice@26.2.5?arch=x86_64&os=windows",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f15ba07bfcb0186986cf3171063506f5d207c11f8cc051ba0d135209e9e915f9"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MPL-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://download.documentfoundation.org/libreoffice/stable/26.2.5/win/x86_64/LibreOffice_26.2.5_Win_x86-64.msi"
+        },
+        {
+          "type": "website",
+          "url": "https://download.documentfoundation.org/libreoffice/src/26.2.5/"
+        }
+      ]
+    },
+    {
       "type": "library",
       "name": "lucide-react",
       "version": "0.469.0",
@@ -132,15 +167,9 @@
     },
     {
       "type": "library",
-      "name": "@xmldom/xmldom",
-      "version": "0.9.12",
-      "bom-ref": "pkg:npm/@xmldom/xmldom@0.9.12"
-    },
-    {
-      "type": "library",
-      "name": "pako",
-      "version": "2.2.0",
-      "bom-ref": "pkg:npm/pako@2.2.0"
+      "name": "pdfjs-dist",
+      "version": "6.1.200",
+      "bom-ref": "pkg:npm/pdfjs-dist@6.1.200"
     },
     {
       "type": "library",
