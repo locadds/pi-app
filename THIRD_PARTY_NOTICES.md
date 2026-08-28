@@ -2,6 +2,23 @@
 
 完整生产依赖清单及版本见仓库根目录的 `sbom.cdx.json`。本文件记录经过单独准入审查、需要说明运行边界的组件。
 
+## LibreOffice 26.2.5 Windows x64
+
+- 来源：https://download.documentfoundation.org/libreoffice/stable/26.2.5/win/x86_64/
+- 安装包：`LibreOffice_26.2.5_Win_x86-64.msi`
+- 固定 SHA-256：`f15ba07bfcb0186986cf3171063506f5d207c11f8cc051ba0d135209e9e915f9`
+- 许可证：MPL 2.0；官方发行包中的第三方许可证与说明随运行时一并装配。
+- 用途：仅在本机无界面、独立用户配置目录中把通过基础检查的 DOC/DOCX 转为内部 DOCX 或预览 PDF。
+- 装配：二进制不进入 Git。Windows 阶段封版时由 `scripts/prepare-libreoffice-runtime.mjs` 下载到 D 盘缓存、校验官方摘要，再加入安装包；对应固定版本源码获取地址为 https://download.documentfoundation.org/libreoffice/src/26.2.5/ 。
+- 运行边界：转换设固定超时，可中止并终止进程树；生成的 PDF 只是小规自己的本机预览中间件，不承担外部 PDF 文件安全检测。
+
+## cfb 1.2.2 与 pdfjs-dist 6.1.200
+
+- 来源：https://github.com/SheetJS/js-cfb 与 https://github.com/mozilla/pdf.js
+- 许可证：均为 Apache-2.0，许可证原文随 npm 包发布。
+- 用途：`cfb` 只读识别旧版 DOC 的复合文件结构；`pdfjs-dist` 只渲染小规由 LibreOffice 生成的本机预览 PDF 并建立文字位置映射。
+- 运行边界：不把文档路径、PDF 字节、原始 OOXML 或全文写入模型会话与公开工具结果；Renderer 只能通过短期页面令牌读取当前预览。
+
 ## officeparser 7.8.0
 
 - 来源：https://github.com/harshankur/officeParser

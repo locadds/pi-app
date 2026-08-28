@@ -16,6 +16,7 @@ import type {
   TemplateMaterializePlanV1,
 } from '@shared/xiaogui-work-docx-template-materialize'
 import { TEMPLATE_MATERIALIZE_VERSION_V1 } from '@shared/xiaogui-work-docx-template-materialize'
+import type { TemplateReviewActionV2, TemplateReviewTextRangeV2 } from '@shared/xiaogui-work-template-review'
 
 import { inspectSafeDocxArchiveV1 } from './docx-safety'
 
@@ -49,6 +50,7 @@ type AnchorAction = {
 }
 type RangeEdit = { start: number; end: number; replacement: string }
 type StructuralEdit = RangeEdit & { candidateId: string; partName: string }
+type VisibleRangeReplacement = TemplateReviewTextRangeV2 & { replacement: string }
 
 export class TemplateMaterializerErrorV1 extends Error {
   constructor(
@@ -61,8 +63,14 @@ export class TemplateMaterializerErrorV1 extends Error {
 
 export interface MaterializeConfirmedTemplateInputV1 {
   source: Buffer
+  /** 旧版 DOC 会先转换为内部 DOCX；此时报告摘要仍锚定原 DOC。 */
+  originalSourceSha256?: string
   report: TemplateIntakeReportV1
   decision: TemplateIntakeDecisionV1
+  replacementImages?: ReadonlyMap<
+    string,
+    { content: Buffer; extension: 'png' | 'jpg' | 'jpeg'; contentType: string }
+  >
 }
 
 export interface MaterializeConfirmedTemplateResultV1 {
@@ -242,6 +250,105 @@ function replaceVisibleText(xml: string, replacement: string): string {
   return output
 }
 
+function replaceVisibleTextRanges(
+  xml: string,
+  edits: readonly VisibleRangeReplacement[],
+): string {
+  if (/<w:(?:instrText|fldSimple|fldChar)\b/i.test(xml) || /<w:sdt\b/i.test(xml)) {
+    fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+  }
+  const ordered = [...edits].sort(
+    (left, right) =>
+      left.startUtf16 - right.startUtf16 ||
+      left.endUtf16Exclusive - right.endUtf16Exclusive,
+  )
+  if (
+    ordered.some(
+      (edit, index) =>
+        edit.startUtf16 < 0 ||
+        edit.endUtf16Exclusive <= edit.startUtf16 ||
+        (index > 0 && ordered[index - 1].endUtf16Exclusive > edit.startUtf16),
+    )
+  ) {
+    fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+  }
+
+  type TextToken = {
+    whole: string
+    attributes: string
+    decoded: string
+    start: number
+    end: number
+    xmlStart: number
+    xmlEnd: number
+  }
+  const tokens: TextToken[] = []
+  let visibleOffset = 0
+  for (const match of xml.matchAll(/<w:t\b([^>]*)>([\s\S]*?)<\/w:t>/g)) {
+    const decoded = decodeXmlText(match[2])
+    const xmlStart = match.index ?? 0
+    tokens.push({
+      whole: match[0],
+      attributes: match[1],
+      decoded,
+      start: visibleOffset,
+      end: visibleOffset + decoded.length,
+      xmlStart,
+      xmlEnd: xmlStart + match[0].length,
+    })
+    visibleOffset += decoded.length
+  }
+  if (tokens.length === 0) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+
+  const rawVisibleText = tokens.map((token) => token.decoded).join('')
+  const trimmedVisibleText = rawVisibleText.trim()
+  const leadingTrim = rawVisibleText.indexOf(trimmedVisibleText)
+  const visibleLength = trimmedVisibleText.length
+  if (
+    ordered.some(
+      (edit) => edit.endUtf16Exclusive > visibleLength,
+    )
+  ) {
+    fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+  }
+  const rawEdits = ordered.map((edit) => ({
+    startUtf16: edit.startUtf16 + leadingTrim,
+    endUtf16Exclusive: edit.endUtf16Exclusive + leadingTrim,
+    replacement: edit.replacement,
+  }))
+
+  const xmlEdits: RangeEdit[] = []
+  for (const token of tokens) {
+    const localEdits = rawEdits.flatMap((edit) => {
+      const overlapStart = Math.max(edit.startUtf16, token.start)
+      const overlapEnd = Math.min(edit.endUtf16Exclusive, token.end)
+      if (overlapStart >= overlapEnd) return []
+      return [{
+        start: overlapStart - token.start,
+        end: overlapEnd - token.start,
+        replacement:
+          edit.startUtf16 >= token.start && edit.startUtf16 < token.end
+            ? edit.replacement
+            : '',
+      }]
+    })
+    if (localEdits.length === 0) continue
+    const replaced = applyRangeEdits(token.decoded, localEdits)
+    const attributes = /\bxml:space=/.test(token.attributes)
+      ? token.attributes
+      : /^\s|\s$/.test(replaced)
+        ? `${token.attributes} xml:space="preserve"`
+        : token.attributes
+    xmlEdits.push({
+      start: token.xmlStart,
+      end: token.xmlEnd,
+      replacement: `<w:t${attributes}>${escapeXmlText(replaced)}</w:t>`,
+    })
+  }
+  if (xmlEdits.length === 0) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+  return applyRangeEdits(xml, xmlEdits)
+}
+
 function clearTargetContent(xml: string, kind: AnchorTarget['kind']): string {
   if (kind === 'PARAGRAPH') {
     const opening = xml.match(/^<w:p\b[^>]*>/)?.[0]
@@ -286,11 +393,12 @@ function buildActions(
   decision: TemplateIntakeDecisionV1,
 ): {
   byAnchor: Map<string, AnchorAction>
-  drawingAction: AnchorAction | null
+  drawingActions: Map<number, AnchorAction>
   textBoxActions: Map<number, AnchorAction>
   dynamics: TemplateMaterializeDynamicItemV1[]
   excludedCount: number
   retainedHighRiskCount: number
+  reviewActionsV2ByCandidate: Map<string, readonly TemplateReviewActionV2[]>
 } {
   if (decision.reportId !== report.reportId || decision.decisions.length !== report.candidates.length) {
     fail('TEMPLATE_MATERIALIZE_DECISION_CHANGED')
@@ -299,9 +407,10 @@ function buildActions(
   if (decisionById.size !== decision.decisions.length) fail('TEMPLATE_MATERIALIZE_DECISION_CHANGED')
   const byAnchor = new Map<string, AnchorAction>()
   const textBoxActions = new Map<number, AnchorAction>()
-  let drawingAction: AnchorAction | null = null
+  const drawingActions = new Map<number, AnchorAction>()
   const dynamics: TemplateMaterializeDynamicItemV1[] = []
   const dynamicNames = new Set<string>()
+  const reviewActionsV2ByCandidate = new Map<string, readonly TemplateReviewActionV2[]>()
   let excludedCount = 0
   let retainedHighRiskCount = 0
   let variableIndex = 0
@@ -311,6 +420,78 @@ function buildActions(
   for (const candidate of report.candidates) {
     const item = decisionById.get(candidate.candidateId)
     if (!item) fail('TEMPLATE_MATERIALIZE_DECISION_CHANGED')
+    const reviewActions = decision.reviewActionsV2?.filter(
+      (action) => action.targetId === candidate.candidateId,
+    )
+    if (reviewActions?.length) {
+      reviewActionsV2ByCandidate.set(candidate.candidateId, reviewActions)
+      const retained = reviewActions.some((action) => action.kind !== 'REMOVE')
+      if (!retained) excludedCount += 1
+      if (candidate.riskFlags.length > 0 && retained) {
+        if (
+          reviewActions.some(
+            (action) =>
+              action.kind !== 'REMOVE' &&
+              (!action.highRiskOverrideReason?.trim() || action.highRiskOverrideConfirmed !== true),
+          )
+        ) {
+          fail('TEMPLATE_MATERIALIZE_DECISION_CHANGED')
+        }
+        retainedHighRiskCount += 1
+      }
+      for (const reviewAction of reviewActions) {
+        let dynamic:
+          | { name: string; kind: TemplateMaterializeDynamicItemV1['kind'] }
+          | undefined
+        if (reviewAction.kind === 'FIELD') {
+          dynamic = { name: reviewAction.fieldName.normalize('NFKC').trim(), kind: 'VARIABLE' }
+        } else if (reviewAction.kind === 'REPEAT') {
+          dynamic = { name: reviewAction.blockName.normalize('NFKC').trim(), kind: 'REPEAT' }
+        } else if (reviewAction.kind === 'CONDITIONAL') {
+          dynamic = {
+            name: reviewAction.conditionName.normalize('NFKC').trim(),
+            kind: 'CONDITIONAL',
+          }
+        }
+        if (!dynamic) continue
+        if (!FIELD_NAME_RE.test(dynamic.name) || RESERVED_NAMES.has(dynamic.name) || dynamicNames.has(dynamic.name)) {
+          fail('TEMPLATE_MATERIALIZE_DYNAMIC_NAME_INVALID')
+        }
+        dynamicNames.add(dynamic.name)
+        dynamics.push({
+          name: dynamic.name,
+          kind: dynamic.kind,
+          sourceAnchors: candidate.sourceAnchors,
+        })
+      }
+
+      const fullAction = reviewActions.length === 1 && !reviewActions[0].range
+        ? reviewActions[0]
+        : null
+      const compatibilityDecision: TemplateIntakeFinalDecisionItemV1 = {
+        candidateId: candidate.candidateId,
+        decision: fullAction?.kind === 'REMOVE' ? 'EXCLUDE' : 'FIXED',
+      }
+      const compatibilityAction: AnchorAction = {
+        candidate,
+        decision: compatibilityDecision,
+      }
+      for (const anchor of candidate.sourceAnchors) {
+        if (anchor.part === 'DRAWING') {
+          if (!fullAction || !['KEEP', 'REMOVE', 'REPLACE_IMAGE'].includes(fullAction.kind) || !anchor.drawingIndex) {
+            fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+          }
+          if (drawingActions.has(anchor.drawingIndex)) fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+          drawingActions.set(anchor.drawingIndex, compatibilityAction)
+        } else if (anchor.part === 'TEXT_BOX') {
+          if (!fullAction || !['KEEP', 'REMOVE'].includes(fullAction.kind) || !anchor.drawingIndex) {
+            fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+          }
+          textBoxActions.set(anchor.drawingIndex, compatibilityAction)
+        }
+      }
+      continue
+    }
     if (item.decision === 'EXCLUDE') excludedCount += 1
     if (candidate.riskFlags.length > 0 && item.decision !== 'EXCLUDE') {
       if (!item.highRiskOverrideReason?.trim() || item.highRiskOverrideConfirmed !== true) {
@@ -340,10 +521,10 @@ function buildActions(
         if (item.decision !== 'FIXED' && item.decision !== 'EXCLUDE') {
           fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
         }
-        if (drawingAction && drawingAction.decision.decision !== item.decision) {
+        if (!anchor.drawingIndex || drawingActions.has(anchor.drawingIndex)) {
           fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
         }
-        drawingAction = action
+        drawingActions.set(anchor.drawingIndex, action)
         continue
       }
       if (anchor.part === 'TEXT_BOX') {
@@ -370,7 +551,22 @@ function buildActions(
     }
   }
   if (decisionById.size !== report.candidates.length) fail('TEMPLATE_MATERIALIZE_DECISION_CHANGED')
-  return { byAnchor, drawingAction, textBoxActions, dynamics, excludedCount, retainedHighRiskCount }
+  if (
+    decision.reviewActionsV2?.some(
+      (action) => !report.candidates.some((candidate) => candidate.candidateId === action.targetId),
+    )
+  ) {
+    fail('TEMPLATE_MATERIALIZE_DECISION_CHANGED')
+  }
+  return {
+    byAnchor,
+    drawingActions,
+    textBoxActions,
+    dynamics,
+    excludedCount,
+    retainedHighRiskCount,
+    reviewActionsV2ByCandidate,
+  }
 }
 
 function balancedTagRanges(
@@ -423,7 +619,6 @@ function removeSelectedTextBoxes(
     }
     if (removals.size > 0) {
       const ranges = [...removals.values()]
-      part.xml = applyRangeEdits(part.xml, ranges)
       removedByPart.set(part.name, ranges)
     }
   }
@@ -433,65 +628,135 @@ function removeSelectedTextBoxes(
   return removedByPart
 }
 
-function removeDrawingContentExceptConfirmedTextBoxes(
+function relationshipPartName(partName: string): string {
+  return posix.join(posix.dirname(partName), '_rels', `${posix.basename(partName)}.rels`)
+}
+
+function relationshipIdWithLength(xml: string, length: number, seed: number): string {
+  for (let attempt = 0; attempt < 10_000; attempt += 1) {
+    const suffix = (seed + attempt).toString(36)
+    const candidate = length === 1
+      ? String.fromCharCode(97 + (seed + attempt) % 26)
+      : `x${suffix.padStart(length - 1, '0').slice(-(length - 1))}`
+    if (!new RegExp(`\\bId=["']${candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`).test(xml)) {
+      return candidate
+    }
+  }
+  fail('TEMPLATE_MATERIALIZE_GENERATION_FAILED')
+}
+
+async function addReplacementImage(
+  zip: JSZip,
+  part: MutableXmlPart,
+  blip: XmlMatch,
+  imageIndex: number,
+  replacement: { content: Buffer; extension: 'png' | 'jpg' | 'jpeg'; contentType: string },
+): Promise<RangeEdit> {
+  const relationshipId = blip.value.match(/\br:embed=["']([^"']+)["']/)?.[1]
+  if (!relationshipId) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+  const relationshipsName = relationshipPartName(part.name)
+  const relationshipsEntry = zip.file(relationshipsName)
+  if (!relationshipsEntry) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+  let relationships = await relationshipsEntry.async('string')
+  const nextRelationshipId = relationshipIdWithLength(relationships, relationshipId.length, imageIndex)
+  const extension = replacement.extension === 'jpeg' ? 'jpg' : replacement.extension
+  const mediaName = `word/media/xiaogui-replacement-${imageIndex}.${extension}`
+  if (zip.file(mediaName)) fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+  zip.file(mediaName, replacement.content)
+  const target = posix.relative(posix.dirname(part.name), mediaName)
+  const relationship = `<Relationship Id="${escapeXmlAttribute(nextRelationshipId)}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${escapeXmlAttribute(target)}"/>`
+  if (!/<\/Relationships>\s*$/.test(relationships)) fail('TEMPLATE_MATERIALIZE_GENERATION_FAILED')
+  relationships = relationships.replace(/<\/Relationships>\s*$/, `${relationship}</Relationships>`)
+  zip.file(relationshipsName, relationships)
+
+  const contentTypesEntry = zip.file('[Content_Types].xml')
+  if (!contentTypesEntry) fail('TEMPLATE_MATERIALIZE_GENERATION_FAILED')
+  let contentTypes = await contentTypesEntry.async('string')
+  const extensionPattern = new RegExp(`<Default\\b[^>]*\\bExtension=["']${extension}["']`, 'i')
+  if (!extensionPattern.test(contentTypes)) {
+    const declaration = `<Default Extension="${extension}" ContentType="${escapeXmlAttribute(replacement.contentType)}"/>`
+    if (!/<\/Types>\s*$/.test(contentTypes)) fail('TEMPLATE_MATERIALIZE_GENERATION_FAILED')
+    contentTypes = contentTypes.replace(/<\/Types>\s*$/, `${declaration}</Types>`)
+    zip.file('[Content_Types].xml', contentTypes)
+  }
+  const replacedBlip = blip.value.replace(
+    /\br:embed=(["'])[^"']+\1/,
+    `r:embed="${nextRelationshipId}"`,
+  )
+  if (replacedBlip.length !== blip.value.length) fail('TEMPLATE_MATERIALIZE_GENERATION_FAILED')
+  return {
+    start: blip.index,
+    end: blip.index + blip.value.length,
+    replacement: replacedBlip,
+  }
+}
+
+async function applyDrawingImageActions(
+  zip: JSZip,
   parts: MutableXmlPart[],
-  textBoxActions: ReadonlyMap<number, AnchorAction>,
-): Map<string, RangeEdit[]> {
-  let globalIndex = 0
-  const preservedByPart = new Map<string, RangeEdit[]>()
-  const excludedByPart = new Map<string, RangeEdit[]>()
-  const removedByPart = new Map<string, RangeEdit[]>()
+  actions: ReturnType<typeof buildActions>,
+  replacements: MaterializeConfirmedTemplateInputV1['replacementImages'],
+  textBoxRemovals: ReadonlyMap<string, readonly RangeEdit[]>,
+): Promise<Map<string, RangeEdit[]>> {
+  let imageIndex = 0
+  const removalsByPart = new Map<string, RangeEdit[]>(
+    [...textBoxRemovals.entries()].map(([name, ranges]) => [name, [...ranges]]),
+  )
+  const editsByPart = new Map<string, RangeEdit[]>()
   for (const part of parts) {
-    for (const textBox of collectMatches(part.xml, TEXT_BOX_RE)) {
-      globalIndex += 1
-      const action = textBoxActions.get(globalIndex)
-      const enclosing = [
-        findEnclosingRange(part.xml, textBox.index, 'w:drawing'),
-        findEnclosingRange(part.xml, textBox.index, 'w:pict'),
-      ]
-        .filter((value): value is RangeEdit => Boolean(value))
-        .sort((left, right) => left.end - left.start - (right.end - right.start))[0]
-      if (!enclosing) fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
-      const target = action?.decision.decision === 'FIXED' ? preservedByPart : excludedByPart
-      const ranges = target.get(part.name) ?? []
-      ranges.push(enclosing)
-      target.set(part.name, ranges)
+    const enclosingTextBoxes = textBoxRemovals.get(part.name) ?? []
+    for (const blip of collectMatches(part.xml, /<a:blip\b[^>]*\br:embed=["'][^"']+["'][^>]*\/?\s*>/g)) {
+      imageIndex += 1
+      const action = actions.drawingActions.get(imageIndex)
+      if (!action) continue
+      const reviewAction = actions.reviewActionsV2ByCandidate.get(action.candidate.candidateId)?.[0]
+      const kind = reviewAction?.kind ?? (action.decision.decision === 'EXCLUDE' ? 'REMOVE' : 'KEEP')
+      const containingTextBox = enclosingTextBoxes.some(
+        (range) => range.start <= blip.index && range.end >= blip.index + blip.value.length,
+      )
+      if (containingTextBox) {
+        if (kind !== 'REMOVE') fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+        continue
+      }
+      if (kind === 'KEEP') continue
+      if (kind === 'REMOVE') {
+        const enclosing = [
+          findEnclosingRange(part.xml, blip.index, 'w:drawing'),
+          findEnclosingRange(part.xml, blip.index, 'w:pict'),
+        ]
+          .filter((value): value is RangeEdit => Boolean(value))
+          .sort((left, right) => left.end - left.start - (right.end - right.start))[0]
+        if (!enclosing) fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+        const removals = removalsByPart.get(part.name) ?? []
+        if (removals.some((range) => range.start < enclosing.end && enclosing.start < range.end)) {
+          fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+        }
+        removals.push(enclosing)
+        removalsByPart.set(part.name, removals)
+        continue
+      }
+      if (kind !== 'REPLACE_IMAGE' || !reviewAction || reviewAction.kind !== 'REPLACE_IMAGE') {
+        fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+      }
+      const replacement = replacements?.get(reviewAction.replacementImageToken)
+      if (!replacement) fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+      const edits = editsByPart.get(part.name) ?? []
+      edits.push(await addReplacementImage(zip, part, blip, imageIndex, replacement))
+      editsByPart.set(part.name, edits)
     }
   }
-  for (const index of textBoxActions.keys()) {
-    if (index <= 0 || index > globalIndex) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+  for (const index of actions.drawingActions.keys()) {
+    if (index <= 0 || index > imageIndex) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
   }
   for (const part of parts) {
-    const preserved = preservedByPart.get(part.name) ?? []
-    const excluded = excludedByPart.get(part.name) ?? []
-    if (
-      preserved.some((keep) =>
-        excluded.some((drop) => keep.start === drop.start && keep.end === drop.end),
-      )
-    ) {
-      fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
-    }
-    const candidates = [
-      ...balancedTagRanges(part.xml, 'w:drawing'),
-      ...balancedTagRanges(part.xml, 'w:pict'),
-      ...balancedTagRanges(part.xml, 'w:object'),
-    ]
-      .filter(
-        (range) =>
-          !preserved.some((keep) => keep.start >= range.start && keep.end <= range.end),
-      )
-      .sort((left, right) => left.start - right.start || right.end - left.end)
-    const outermost: RangeEdit[] = []
-    for (const candidate of candidates) {
-      if (outermost.some((range) => candidate.start >= range.start && candidate.end <= range.end)) continue
-      outermost.push(candidate)
-    }
-    if (outermost.length > 0) {
-      part.xml = applyRangeEdits(part.xml, outermost)
-      removedByPart.set(part.name, outermost)
-    }
+    const removals = removalsByPart.get(part.name) ?? []
+    const replacementsForPart = (editsByPart.get(part.name) ?? []).filter(
+      (edit) => !removals.some((range) => range.start <= edit.start && range.end >= edit.end),
+    )
+    const edits = [...removals, ...replacementsForPart]
+    if (edits.length) part.xml = applyRangeEdits(part.xml, edits)
   }
-  return removedByPart
+  return removalsByPart
 }
 
 function adjustTargetAfterRemovals(
@@ -629,9 +894,13 @@ function localWarnings(
   variableCount: number,
   structuralCount: number,
   retainedHighRiskCount: number,
+  hasLocalRanges: boolean,
 ): string[] {
   const warnings: string[] = []
-  if (variableCount > 0) warnings.push('变量会替换整个来源段落或整个表格单元格，不做段内局部猜测')
+  if (variableCount > 0 && !hasLocalRanges) {
+    warnings.push('未拆分的待填写内容会替换整个来源段落或整个表格单元格')
+  }
+  if (hasLocalRanges) warnings.push('已按人工框选范围完成局部修改，框选范围外内容保持不变')
   if (structuralCount > 0) warnings.push('重复块和条件块已写入 Word 内容控件；当前简单字段生成器不会展开这些结构')
   if (retainedHighRiskCount > 0) warnings.push(`有 ${retainedHighRiskCount} 项高风险内容经人工覆盖后保留，请在预览中再次核对`)
   return warnings
@@ -640,7 +909,8 @@ function localWarnings(
 export async function materializeConfirmedTemplateV1(
   input: MaterializeConfirmedTemplateInputV1,
 ): Promise<MaterializeConfirmedTemplateResultV1> {
-  const sourceSha256 = createHash('sha256').update(input.source).digest('hex')
+  const normalizedSourceSha256 = createHash('sha256').update(input.source).digest('hex')
+  const sourceSha256 = input.originalSourceSha256 ?? normalizedSourceSha256
   if (sourceSha256 !== input.report.file.sha256) fail('TEMPLATE_MATERIALIZE_SOURCE_CHANGED')
   const decisionSha256 = createHash('sha256').update(JSON.stringify(input.decision)).digest('hex')
   if (
@@ -664,25 +934,140 @@ export async function materializeConfirmedTemplateV1(
   const originalMediaNames = Object.keys(zip.files).filter(
     (name) => /^word\/media\/[^/]+$/i.test(name) && !zip.files[name].dir,
   )
-  const removeAllDrawings = actions.drawingAction?.decision.decision === 'EXCLUDE'
   const originalTargets = collectAnchorTargets(parts)
-  let drawingRemovals = new Map<string, RangeEdit[]>()
-  if (removeAllDrawings) {
-    drawingRemovals = removeDrawingContentExceptConfirmedTextBoxes(parts, actions.textBoxActions)
-  } else {
-    const textBoxesToRemove = new Set(
-      [...actions.textBoxActions.entries()]
-        .filter(([, action]) => action.decision.decision === 'EXCLUDE')
-        .map(([index]) => index),
-    )
-    if (textBoxesToRemove.size > 0) {
-      drawingRemovals = removeSelectedTextBoxes(parts, textBoxesToRemove)
-    }
-  }
+  const textBoxesToRemove = new Set(
+    [...actions.textBoxActions.entries()]
+      .filter(([, action]) => action.decision.decision === 'EXCLUDE')
+      .map(([index]) => index),
+  )
+  const textBoxRemovals = textBoxesToRemove.size > 0
+    ? removeSelectedTextBoxes(parts, textBoxesToRemove)
+    : new Map<string, RangeEdit[]>()
+  const drawingRemovals = await applyDrawingImageActions(
+    zip,
+    parts,
+    actions,
+    input.replacementImages,
+    textBoxRemovals,
+  )
 
   const targets = adjustTargetsAfterRemovals(originalTargets, drawingRemovals)
   const textEdits = new Map<string, RangeEdit[]>()
   const structuralActions: AnchorAction[] = []
+  const claimedV2Targets = new Set<string>()
+  for (const [candidateId, reviewActions] of actions.reviewActionsV2ByCandidate) {
+    const candidate = input.report.candidates.find((item) => item.candidateId === candidateId)
+    if (!candidate) fail('TEMPLATE_MATERIALIZE_DECISION_CHANGED')
+    const logicalAnchors = candidate.sourceAnchors.filter(
+      (anchor) => anchor.part !== 'DRAWING' && anchor.part !== 'TEXT_BOX',
+    )
+    if (logicalAnchors.length === 0) continue
+    const hasRanges = reviewActions.some((action) => Boolean(action.range))
+    if (hasRanges && logicalAnchors.length !== 1) {
+      fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+    }
+    const candidateTargets = logicalAnchors.map((anchor) => {
+      const key = anchorKey(anchor)
+      const target = targets.get(key)
+      if (!target) {
+        throw new TemplateMaterializerErrorV1(
+          'TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND',
+          `${candidate.candidateId}:${key}`,
+        )
+      }
+      if (claimedV2Targets.has(key)) fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+      claimedV2Targets.add(key)
+      return target
+    })
+
+    if (hasRanges) {
+      const target = candidateTargets[0]
+      const part = parts.find((item) => item.name === target.partName)
+      if (!part) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+      const rangeReplacements: VisibleRangeReplacement[] = reviewActions.flatMap((action) => {
+        if (!action.range || action.kind === 'KEEP') return []
+        switch (action.kind) {
+          case 'REMOVE':
+            return [{ ...action.range, replacement: '' }]
+          case 'REPLACE_TEXT':
+            return [{ ...action.range, replacement: action.replacementText }]
+          case 'FIELD':
+            return [{ ...action.range, replacement: `{{${action.fieldName.normalize('NFKC').trim()}}}` }]
+          case 'REPLACE_IMAGE':
+          case 'REPEAT':
+          case 'CONDITIONAL':
+            fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+        }
+      })
+      if (rangeReplacements.length > 0) {
+        const current = part.xml.slice(target.start, target.end)
+        const edits = textEdits.get(target.partName) ?? []
+        edits.push({
+          start: target.start,
+          end: target.end,
+          replacement: replaceVisibleTextRanges(current, rangeReplacements),
+        })
+        textEdits.set(target.partName, edits)
+      }
+      continue
+    }
+
+    if (reviewActions.length !== 1) fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+    const reviewAction = reviewActions[0]
+    switch (reviewAction.kind) {
+      case 'KEEP':
+        break
+      case 'REMOVE':
+        for (const target of candidateTargets) {
+          const part = parts.find((item) => item.name === target.partName)
+          if (!part) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+          const edits = textEdits.get(target.partName) ?? []
+          edits.push({
+            start: target.start,
+            end: target.end,
+            replacement: clearTargetContent(part.xml.slice(target.start, target.end), target.kind),
+          })
+          textEdits.set(target.partName, edits)
+        }
+        break
+      case 'REPLACE_TEXT':
+      case 'FIELD': {
+        if (candidateTargets.length !== 1) fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+        const target = candidateTargets[0]
+        const part = parts.find((item) => item.name === target.partName)
+        if (!part) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+        const replacement = reviewAction.kind === 'REPLACE_TEXT'
+          ? reviewAction.replacementText
+          : `{{${reviewAction.fieldName.normalize('NFKC').trim()}}}`
+        const edits = textEdits.get(target.partName) ?? []
+        edits.push({
+          start: target.start,
+          end: target.end,
+          replacement: replaceVisibleText(part.xml.slice(target.start, target.end), replacement),
+        })
+        textEdits.set(target.partName, edits)
+        break
+      }
+      case 'REPEAT':
+      case 'CONDITIONAL': {
+        const name = reviewAction.kind === 'REPEAT'
+          ? reviewAction.blockName.normalize('NFKC').trim()
+          : reviewAction.conditionName.normalize('NFKC').trim()
+        structuralActions.push({
+          candidate,
+          name,
+          decision: {
+            candidateId,
+            decision: reviewAction.kind,
+            fieldName: name,
+          },
+        })
+        break
+      }
+      case 'REPLACE_IMAGE':
+        fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
+    }
+  }
   for (const [key, action] of actions.byAnchor) {
     const target = targets.get(key)
     if (!target) {
@@ -743,9 +1128,7 @@ export async function materializeConfirmedTemplateV1(
   }
 
   const removedMediaCount = await pruneUnusedMedia(zip, parts)
-  if (removeAllDrawings && removedMediaCount !== originalMediaNames.length) {
-    fail('TEMPLATE_MATERIALIZE_GENERATION_FAILED')
-  }
+  if (removedMediaCount > originalMediaNames.length) fail('TEMPLATE_MATERIALIZE_GENERATION_FAILED')
 
   for (const entry of Object.values(zip.files)) entry.date = MATERIALIZED_ZIP_ENTRY_DATE
 
@@ -766,7 +1149,7 @@ export async function materializeConfirmedTemplateV1(
     source: {
       displayName: input.report.file.displayName,
       sha256: sourceSha256,
-      byteLength: input.source.byteLength,
+      byteLength: input.report.file.byteLength,
     },
     previewSha256,
     variables,
@@ -779,6 +1162,7 @@ export async function materializeConfirmedTemplateV1(
       variables.length,
       repeatBlocks.length + conditionalBlocks.length,
       actions.retainedHighRiskCount,
+      Boolean(input.decision.reviewActionsV2?.some((action) => action.range)),
     ),
     requiresSecondConfirmation: true,
     originalSourceUnchanged: true,

@@ -4,6 +4,8 @@ import { useUIStore } from '@renderer/stores/ui-store'
 import type { AskQuestionPayload } from '@renderer/features/extension-ui/questionnaire-dialog'
 import type { ImageReviewPayload } from '@renderer/features/extension-ui/image-review-dialog'
 import type { TemplateIntakeReviewRequestV1 } from '@shared/xiaogui-work-docx-template-intake'
+import type { TemplateReviewRequestV2 } from '@shared/xiaogui-work-template-review'
+import type { TemplateMaterializePreviewRequestV1 } from '@shared/xiaogui-work-docx-template-materialize'
 
 export type ExtensionUIPending =
   | { id: string; method: 'ask_user_question'; questions: AskQuestionPayload[] }
@@ -11,7 +13,16 @@ export type ExtensionUIPending =
   | { id: string; method: 'confirm'; title: string; message: string }
   | { id: string; method: 'input'; title: string; placeholder?: string }
   | { id: string; method: 'image_review'; payload: ImageReviewPayload }
-  | { id: string; method: 'template_intake_review'; payload: TemplateIntakeReviewRequestV1 }
+  | {
+      id: string
+      method: 'template_intake_review'
+      payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2
+    }
+  | {
+      id: string
+      method: 'template_materialize_preview'
+      payload: TemplateMaterializePreviewRequestV1
+    }
 
 export type ExtensionUISuspended = {
   requestId: string

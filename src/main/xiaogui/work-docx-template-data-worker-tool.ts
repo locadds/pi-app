@@ -38,8 +38,9 @@ const RequestSchema = z
     method: z.literal(XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1),
     payload: z
       .object({
-        action: z.enum(['SELECT_TEMPLATE', 'PREPARE', 'CONFIRM', 'CANCEL', 'OPEN', 'REVEAL']),
+        action: z.enum(['LIST_LIBRARY_TEMPLATES', 'SELECT_TEMPLATE', 'PREPARE', 'CONFIRM', 'CANCEL', 'OPEN', 'REVEAL']),
         fields: z.array(FieldSchema).max(200).optional(),
+        templateVersionId: z.string().min(1).max(160).optional(),
         sourceSessionId: z.string().trim().min(1).max(200),
         sourceRunId: z.string().trim().min(1).max(200),
         toolCallId: z.string().trim().min(1).max(200),
@@ -49,6 +50,9 @@ const RequestSchema = z
         if ((payload.action === 'PREPARE') !== (payload.fields !== undefined)) {
           context.addIssue({ code: 'custom', message: 'PREPARE 必须且只能携带字段清单' })
         }
+        if (payload.templateVersionId !== undefined && payload.action !== 'SELECT_TEMPLATE') {
+          context.addIssue({ code: 'custom', message: '模板版本编号只能用于 SELECT_TEMPLATE' })
+        }
       }),
   })
   .strict()
@@ -56,6 +60,7 @@ const RequestSchema = z
 type WorkDocxTemplateDataWorkerToolServiceV1 = Pick<
   WorkDocxServiceV1,
   | 'selectTemplate'
+  | 'listLibraryTemplates'
   | 'prepareTemplateData'
   | 'cancelTemplateSelection'
   | 'confirmTemplateData'
@@ -180,6 +185,18 @@ export function createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1(
       const { action, fields, sourceSessionId, sourceRunId } = parsed.data.payload
       const service = options.getService()
 
+      if (action === 'LIST_LIBRARY_TEMPLATES') {
+        const outcome = await service.listLibraryTemplates(address)
+        if (!outcome.ok) return fromServiceFailure(outcome.error.code)
+        return {
+          ok: true,
+          value: {
+            kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_LIBRARY_CHOICES',
+            templates: outcome.value,
+          },
+        }
+      }
+
       if (action === 'SELECT_TEMPLATE') {
         if (pendingByScope.has(key)) {
           return failure('WORK_DOCX_OPERATION_ACTIVE', '已有文档等待确认，请先确认或取消')
@@ -191,7 +208,12 @@ export function createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1(
           }
           return { ok: true, value: existing.summary }
         }
-        const outcome = await service.selectTemplate({ address })
+        const outcome = await service.selectTemplate({
+          address,
+          ...(parsed.data.payload.templateVersionId
+            ? { templateVersionId: parsed.data.payload.templateVersionId }
+            : {}),
+        })
         if (!outcome.ok) return fromServiceFailure(outcome.error.code)
         if (outcome.value.kind === 'CANCELLED') {
           return { ok: true, value: { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' } }

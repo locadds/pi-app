@@ -54,6 +54,19 @@ const WorkDocxTemplateDataActionSchema = Type.Object(
         description: '仅 PREPARE 使用，必须提交模板返回的全部且仅有字段。',
       }),
     ),
+    libraryTemplateName: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 120,
+        description: '仅 SELECT_TEMPLATE 使用；来自用户明确点选或说出的模板名称。',
+      }),
+    ),
+    libraryVersionNumber: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description: '仅 SELECT_TEMPLATE 使用；未指定时使用该模板的最新版。',
+      }),
+    ),
   },
   { additionalProperties: false },
 )
@@ -90,6 +103,8 @@ function profileText(result: {
 
 function successText(result: XiaoguiWorkDocxTemplateDataResultV1): string {
   switch (result.kind) {
+    case 'XIAOGUI_WORK_DOCX_TEMPLATE_LIBRARY_CHOICES':
+      return `模板库中有 ${result.templates.length} 个可用模板。`
     case 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED':
       return '已取消选择模板，没有生成或写入文档。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_PREPARATION_REQUIRED':
@@ -125,12 +140,13 @@ export function addXiaoguiWorkDocxTemplateDataTool(
     XiaoguiWorkDocxTemplateDataToolDetails
   >({
     name: XIAOGUI_WORK_DOCX_TOOL_NAME,
-    label: '按模板生成 Word',
+    label: '按模板生成文档',
     description:
       '在日常工作会话中选择已经标记字段的 Word 模板，从当前对话整理字段，经用户单独确认后生成新的 Word 副本。普通成品文档会提示先整理成模板。',
     promptSnippet: '用自然语言选择模板、整理字段、准备、确认、取消或打开 Word；生成前必须等待用户下一条确认消息',
     promptGuidelines: [
       '用户明确要求按 Word 模板创作时先调用 SELECT_TEMPLATE；不要让用户输入路径，也不要索要 JSON。',
+      '用户明确说出或从模板库点选了模板名称/版本时，把名称写入 libraryTemplateName、版本号写入 libraryVersionNumber；不要编造名称或版本。',
       'SELECT_TEMPLATE 返回字段清单后，优先从当前对话提取字段；无法确定的字段用 UNRESOLVED，不能猜测。',
       '调用 PREPARE 时必须提交模板返回的全部且仅有字段。READY 只允许字符串、数字或布尔值。',
       'PREPARE 返回待确认摘要后必须停止调用工具，等待用户下一条消息明确确认。不得同一轮调用 CONFIRM。',
@@ -139,7 +155,7 @@ export function addXiaoguiWorkDocxTemplateDataTool(
     ],
     parameters: WorkDocxTemplateDataActionSchema,
     executionMode: 'sequential',
-    async execute(toolCallId, params, signal) {
+    async execute(toolCallId, params, signal, _onUpdate, context) {
       const sourceSessionId = options.getSourceSessionId()
       const sourceRunId = options.getSourceRunId()
       if (!sourceSessionId || !sourceRunId) {
@@ -155,11 +171,63 @@ export function addXiaoguiWorkDocxTemplateDataTool(
         }
       }
 
+      let templateVersionId: string | undefined
+      if (params.action === 'SELECT_TEMPLATE') {
+        const listed = await requestWorkerHostTool(
+          {
+            method: XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1,
+            payload: {
+              action: 'LIST_LIBRARY_TEMPLATES',
+              sourceSessionId,
+              sourceRunId,
+              toolCallId,
+            },
+          },
+          signal,
+        )
+        if (listed.ok && listed.value.kind === 'XIAOGUI_WORK_DOCX_TEMPLATE_LIBRARY_CHOICES') {
+          const requestedName = params.libraryTemplateName?.normalize('NFKC').trim()
+          if (requestedName) {
+            const exact = listed.value.templates.find(
+              (template) => template.name.normalize('NFKC').trim() === requestedName,
+            )
+            const requestedVersion = params.libraryVersionNumber
+              ? exact?.versions.find((version) => version.versionNumber === params.libraryVersionNumber)
+              : exact?.latestVersion
+            if (requestedVersion) templateVersionId = requestedVersion.versionId
+          }
+          const choices = new Map<string, string | null>()
+          for (const template of listed.value.templates) {
+            for (const version of template.versions) {
+              const date = new Date(version.createdAt).toLocaleDateString('zh-CN')
+              const label = `${template.name} · 第 ${version.versionNumber} 版${version.isLatest ? '（最新版）' : ''} · ${date}`
+              choices.set(label, version.versionId)
+            }
+          }
+          if (!templateVersionId && choices.size > 0) {
+            const fileChoice = '从电脑选择文档模板…'
+            choices.set(fileChoice, null)
+            const selected = await context.ui.select(
+              '选择模板库历史模板，或从电脑选择文件',
+              [...choices.keys()],
+              { signal },
+            )
+            if (!selected) {
+              const details = { kind: 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED' as const }
+              return { content: [{ type: 'text', text: successText(details) }], details }
+            }
+            templateVersionId = choices.get(selected) ?? undefined
+          }
+        }
+      }
+
       const outcome = await requestWorkerHostTool(
         {
           method: XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1,
           payload: {
-            ...params,
+            action: params.action,
+            ...(params.fields ? { fields: params.fields } : {}),
+            ...(templateVersionId ? { templateVersionId } : {}),
             sourceSessionId,
             sourceRunId,
             toolCallId,

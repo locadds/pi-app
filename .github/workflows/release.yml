@@ -16,9 +16,22 @@ jobs:
   build-win:
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      XIAOGUI_BUILD_CACHE_ROOT: D:\xiaogui-build-cache
+      XIAOGUI_LIBREOFFICE_CACHE_ROOT: D:\xiaogui-libreoffice-cache
+      npm_config_cache: D:\xiaogui-build-cache\npm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Initialize D-drive build caches
+        run: |
+          New-Item -ItemType Directory -Force `
+            D:\xiaogui-build-cache\npm, `
+            D:\xiaogui-build-cache\electron, `
+            D:\xiaogui-build-cache\electron-builder, `
+            D:\xiaogui-build-cache\temp, `
+            D:\xiaogui-libreoffice-cache | Out-Null
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -46,14 +59,14 @@ jobs:
         run: if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 
       - name: Package (NSIS + Portable)
-        run: npx electron-builder --win --publish never
+        run: npm run package:win:prebuilt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pi-desktop-win-${{ github.ref_name }}
+          name: xiaogui-agent-desktop-win-${{ github.ref_name }}
           path: |
             dist/*Setup*.exe
             dist/*Portable*.exe
@@ -156,7 +169,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pi-desktop-mac-${{ github.ref_name }}
+          name: xiaogui-agent-desktop-mac-${{ github.ref_name }}
           path: |
             dist/*.dmg
             dist/*.zip
@@ -202,7 +215,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pi-desktop-linux-${{ github.ref_name }}
+          name: xiaogui-agent-desktop-linux-${{ github.ref_name }}
           path: |
             dist/*.AppImage
             dist/*.deb
@@ -221,7 +234,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
-          pattern: pi-desktop-*
+          pattern: xiaogui-agent-desktop-*
           merge-multiple: true
 
       - name: Prepare release assets (no auto-update metadata)

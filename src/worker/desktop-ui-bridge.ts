@@ -7,6 +7,14 @@ import type {
   TemplateIntakeReviewResultV1,
 } from '@shared/xiaogui-work-docx-template-intake'
 import type {
+  TemplateReviewRequestV2,
+  TemplateReviewResultV2,
+} from '@shared/xiaogui-work-template-review'
+import type {
+  TemplateMaterializePreviewRequestV1,
+  TemplateMaterializePreviewResultV1,
+} from '@shared/xiaogui-work-docx-template-materialize'
+import type {
   ExtensionUIQuestion,
   ExtensionUIQuestionnaireResult,
 } from './questionnaire-types.js'
@@ -37,7 +45,14 @@ export type ExtensionUIRequest =
       id: string
       method: 'custom'
       kind: 'template_intake_review'
-      payload: TemplateIntakeReviewRequestV1
+      payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2
+      toolCallId: string
+    }
+  | {
+      id: string
+      method: 'custom'
+      kind: 'template_materialize_preview'
+      payload: TemplateMaterializePreviewRequestV1
       toolCallId: string
     }
 
@@ -58,9 +73,14 @@ export type DesktopUIBridge = {
   ) => Promise<ExtensionUIQuestionnaireResult>
   requestTemplateIntakeReview: (
     toolCallId: string,
-    payload: TemplateIntakeReviewRequestV1,
+    payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2,
     signal?: AbortSignal,
-  ) => Promise<TemplateIntakeReviewResultV1>
+  ) => Promise<TemplateIntakeReviewResultV1 | TemplateReviewResultV2>
+  requestTemplateMaterializePreview: (
+    toolCallId: string,
+    payload: TemplateMaterializePreviewRequestV1,
+    signal?: AbortSignal,
+  ) => Promise<TemplateMaterializePreviewResultV1>
   /** Cache interact args extracted by Worker (driven by adapter.json interact.fields). */
   setInteractArgs: (schema: 'questions' | 'review' | 'clarify', args: Record<string, unknown> | null) => void
   attachWidgetHost: (host: { setWidget: (key: string, content: unknown) => void; dispose: () => void } | null) => void
@@ -329,6 +349,9 @@ export function createDesktopUIBridge(
     },
     requestTemplateIntakeReview(toolCallId, payload, signal) {
       const id = randomUUID()
+      const fallback = 'reviewVersion' in payload
+        ? { cancelled: true as const, draftActions: payload.draftActions }
+        : { cancelled: true as const, draftDecisions: payload.draftDecisions }
       return createDialogPromise(
         emitReq,
         pending,
@@ -341,9 +364,29 @@ export function createDesktopUIBridge(
         },
         (response) =>
           response.cancelled
-            ? { cancelled: true, draftDecisions: payload.draftDecisions }
-            : (response.result as TemplateIntakeReviewResultV1),
-        { cancelled: true, draftDecisions: payload.draftDecisions },
+            ? fallback
+            : (response.result as TemplateIntakeReviewResultV1 | TemplateReviewResultV2),
+        fallback,
+        { signal, ...dismissOpts },
+      )
+    },
+    requestTemplateMaterializePreview(toolCallId, payload, signal) {
+      const id = randomUUID()
+      const fallback: TemplateMaterializePreviewResultV1 = { action: 'CANCEL' }
+      return createDialogPromise(
+        emitReq,
+        pending,
+        {
+          id,
+          method: 'custom',
+          kind: 'template_materialize_preview',
+          payload,
+          toolCallId,
+        },
+        (response) => response.cancelled
+          ? fallback
+          : (response.result as TemplateMaterializePreviewResultV1),
+        fallback,
         { signal, ...dismissOpts },
       )
     },

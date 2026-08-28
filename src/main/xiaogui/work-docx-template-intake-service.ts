@@ -28,9 +28,17 @@ import type {
   TemplateIntakeAnalysisBatchV1,
   TemplateIntakeModelAnalysisV1,
   TemplateIntakeModelSuggestionV1,
+  TemplateIntakeReviewSubmissionV1,
   XiaoguiWorkDocxTemplateIntakePayloadV1,
   XiaoguiWorkDocxTemplateIntakeResultV1,
 } from '@shared/worker-host-tools'
+import {
+  isValidTemplateReviewTextRangeV2,
+  type TemplateReviewActionV2,
+  type TemplateReviewPageRegionV2,
+  type TemplateReviewRequestV2,
+  type TemplateReviewRiskFlagV2,
+} from '@shared/xiaogui-work-template-review'
 import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import {
   DOCX_SAFETY_MAX_FILE_BYTES_V1,
@@ -51,6 +59,15 @@ import {
   withTemplateIntakeStatusV1,
   type StoredTemplateIntakeRecordV1,
 } from './work-docx-template-intake-store'
+import type {
+  DocumentReviewRendererV1,
+  PreparedDocumentReviewRenderV1,
+} from './work-document-review-renderer'
+import {
+  LegacyDocSafetyErrorV1,
+  LEGACY_DOC_SAFETY_MAX_FILE_BYTES_V1,
+  inspectSafeLegacyDocV1,
+} from './work-legacy-doc-safety'
 
 const MAX_DISPLAY_NAME_CHARS = 160
 const MAX_REASON_CHARS = 1_000
@@ -74,8 +91,18 @@ export interface WorkDocxTemplateIntakeServiceOptionsV1 {
   store: WorkDocxTemplateIntakeStoreV1
   handoffs: TemplateIntakeHandoffPortV1
   semanticParser?: TemplateIntakeSemanticParserV1
+  reviewRenderer?: Pick<
+    DocumentReviewRendererV1,
+    'prepare' | 'locateExactText' | 'countExactTextOccurrences' | 'readNormalizedDocx' | 'release'
+  >
   now?: () => Date
   parseTimeoutMs?: number
+}
+
+type PreparedReviewManifestV1 = {
+  sourceSha256: string
+  manifestId: string
+  prepared: PreparedDocumentReviewRenderV1
 }
 
 export interface ConfirmedTemplateIntakeMaterializationSourceV1 {
@@ -92,13 +119,19 @@ type PrivateSourceV1 = {
   displayName: string
   sha256: string
   byteLength: number
+  inputFormat: 'DOC' | 'DOCX'
   content: Buffer
+  normalizedDocx?: Buffer
+  preparedReview?: PreparedDocumentReviewRenderV1
 }
 
 type PendingAnalysisV1 = {
   address: SessionAddressV1
   reportId: string
-  source: Omit<PrivateSourceV1, 'content'>
+  source: Pick<
+    PrivateSourceV1,
+    'path' | 'displayName' | 'sha256' | 'byteLength' | 'inputFormat'
+  >
   parsed: ParsedTemplateIntakeSourceV1
   batches: readonly TemplateIntakeAnalysisBatchV1[]
   createdAt: string
@@ -138,8 +171,14 @@ function mapSafetyError(error: DocxSafetyErrorV1): TemplateIntakeServiceErrorV1 
   )
 }
 
-async function readPrivateSource(path: string): Promise<PrivateSourceV1> {
-  if (extname(path).toLowerCase() !== '.docx') {
+async function readPrivateSource(
+  path: string,
+  renderer?: WorkDocxTemplateIntakeServiceOptionsV1['reviewRenderer'],
+  normalizeDoc = false,
+  signal?: AbortSignal,
+): Promise<PrivateSourceV1> {
+  const extension = extname(path).toLowerCase()
+  if (extension !== '.docx' && extension !== '.doc') {
     throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_INPUT_INVALID')
   }
   let info
@@ -154,22 +193,54 @@ async function readPrivateSource(path: string): Promise<PrivateSourceV1> {
   if (!info.isFile() || info.isSymbolicLink()) {
     throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_INPUT_INVALID')
   }
-  if (info.size > DOCX_SAFETY_MAX_FILE_BYTES_V1) {
+  const maxBytes = extension === '.doc'
+    ? LEGACY_DOC_SAFETY_MAX_FILE_BYTES_V1
+    : DOCX_SAFETY_MAX_FILE_BYTES_V1
+  if (info.size > maxBytes) {
     throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_INPUT_TOO_LARGE')
   }
   const content = await readFile(path)
-  try {
-    await inspectSafeDocxArchiveV1(content)
-  } catch (error) {
-    if (error instanceof DocxSafetyErrorV1) throw mapSafetyError(error)
-    throw error
+  let normalizedDocx: Buffer | undefined
+  let preparedReview: PreparedDocumentReviewRenderV1 | undefined
+  if (extension === '.docx') {
+    try {
+      await inspectSafeDocxArchiveV1(content)
+    } catch (error) {
+      if (error instanceof DocxSafetyErrorV1) throw mapSafetyError(error)
+      throw error
+    }
+  } else {
+    try {
+      inspectSafeLegacyDocV1(content)
+    } catch (error) {
+      if (error instanceof LegacyDocSafetyErrorV1) {
+        throw new TemplateIntakeServiceErrorV1(
+          error.code === 'INPUT_TOO_LARGE'
+            ? 'TEMPLATE_INTAKE_INPUT_TOO_LARGE'
+            : 'TEMPLATE_INTAKE_UNSAFE_DOC',
+        )
+      }
+      throw error
+    }
+    if (normalizeDoc) {
+      if (!renderer) throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_CONVERSION_FAILED')
+      preparedReview = await renderer.prepare(content, 'DOC', signal)
+      normalizedDocx = renderer.readNormalizedDocx(preparedReview.manifestId) ?? undefined
+      if (!normalizedDocx) {
+        renderer.release(preparedReview.manifestId)
+        throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_CONVERSION_FAILED')
+      }
+    }
   }
   return {
     path,
     displayName: safeDisplayName(path),
     sha256: createHash('sha256').update(content).digest('hex'),
     byteLength: content.byteLength,
+    inputFormat: extension === '.doc' ? 'DOC' : 'DOCX',
     content,
+    ...(normalizedDocx ? { normalizedDocx } : {}),
+    ...(preparedReview ? { preparedReview } : {}),
   }
 }
 
@@ -387,8 +458,57 @@ function localIso(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(absolute / 60))}:${pad(absolute % 60)}`
 }
 
+function reviewRiskFlagsV2(candidate: TemplateIntakeCandidateV1): TemplateReviewRiskFlagV2[] {
+  const flags = [...candidate.riskFlags] as TemplateReviewRiskFlagV2[]
+  if (candidate.confidence == null || candidate.confidence < 0.75) flags.push('LOW_CONFIDENCE')
+  if (candidate.kind === 'UNRESOLVED' && /解析|对齐|位置/.test(candidate.reason)) {
+    flags.push('PARSER_EXCEPTION')
+  }
+  return [...new Set(flags)]
+}
+
+function reviewAnchorV2(anchor: TemplateIntakeCandidateV1['sourceAnchors'][number] | undefined) {
+  if (!anchor) return { part: 'UNMAPPED' as const }
+  return {
+    part:
+      anchor.part === 'TABLE'
+        ? ('TABLE_CELL' as const)
+        : anchor.part,
+    ...(anchor.sectionIndex != null ? { sectionIndex: anchor.sectionIndex } : {}),
+    ...(anchor.partIndex != null ? { partIndex: anchor.partIndex } : {}),
+    ...(anchor.paragraphIndex != null ? { paragraphIndex: anchor.paragraphIndex } : {}),
+    ...(anchor.tableIndex != null ? { tableIndex: anchor.tableIndex } : {}),
+    ...(anchor.rowIndex != null ? { rowIndex: anchor.rowIndex } : {}),
+    ...(anchor.cellIndex != null ? { cellIndex: anchor.cellIndex } : {}),
+    ...(anchor.drawingIndex != null ? { drawingIndex: anchor.drawingIndex } : {}),
+  }
+}
+
+function draftReviewActionsV2(
+  candidate: TemplateIntakeCandidateV1,
+  draft: TemplateIntakeDraftDecisionItemV1 | undefined,
+): TemplateReviewActionV2[] {
+  if (draft?.reviewActionsV2?.length) return [...draft.reviewActionsV2]
+  if (!draft) return []
+  const base = {
+    targetId: candidate.candidateId,
+    ...(draft.highRiskOverrideReason
+      ? { highRiskOverrideReason: draft.highRiskOverrideReason }
+      : {}),
+  }
+  switch (draft.decision) {
+    case 'FIXED': return [{ ...base, kind: 'KEEP' }]
+    case 'VARIABLE': return draft.fieldName ? [{ ...base, kind: 'FIELD', fieldName: draft.fieldName }] : []
+    case 'REPEAT': return [{ ...base, kind: 'REPEAT', blockName: draft.fieldName || candidate.suggestedName || '重复内容' }]
+    case 'CONDITIONAL': return [{ ...base, kind: 'CONDITIONAL', conditionName: draft.fieldName || candidate.suggestedName || '条件内容' }]
+    case 'EXCLUDE': return [{ ...base, kind: 'REMOVE' }]
+    case 'UNRESOLVED': return []
+  }
+}
+
 export class WorkDocxTemplateIntakeServiceV1 {
   private readonly pending = new Map<string, PendingAnalysisV1>()
+  private readonly reviewManifests = new Map<string, PreparedReviewManifestV1>()
 
   constructor(private readonly options: WorkDocxTemplateIntakeServiceOptionsV1) {}
 
@@ -409,7 +529,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
         case 'REOPEN':
           return await this.reopen(address, payload.operations)
         case 'REVIEW':
-          return await this.review(address, payload.submission)
+          return await this.review(address, payload.submission, signal)
         case 'RESUME':
           return await this.resume(address, payload.reportId)
         case 'DELETE':
@@ -432,6 +552,10 @@ export class WorkDocxTemplateIntakeServiceV1 {
 
   close(): void {
     this.pending.clear()
+    for (const manifest of this.reviewManifests.values()) {
+      this.options.reviewRenderer?.release(manifest.manifestId)
+    }
+    this.reviewManifests.clear()
     this.options.store.close()
   }
 
@@ -474,7 +598,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
       if (!existing || existing.reportId !== analysisReportId) {
         return failure('TEMPLATE_INTAKE_REPORT_NOT_FOUND')
       }
-      const current = await readPrivateSource(existing.source.path)
+      const current = await readPrivateSource(existing.source.path, this.options.reviewRenderer)
       if (current.sha256 !== existing.source.sha256) {
         this.pending.delete(key)
         return failure('TEMPLATE_INTAKE_SOURCE_CHANGED')
@@ -507,8 +631,14 @@ export class WorkDocxTemplateIntakeServiceV1 {
     if (!selectedPath) {
       return { ok: true, value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_SELECTION_CANCELLED' } }
     }
-    const source = await readPrivateSource(selectedPath)
+    const source = await readPrivateSource(
+      selectedPath,
+      this.options.reviewRenderer,
+      true,
+      signal,
+    )
     if (handoff && source.sha256 !== handoff.templateSha256) {
+      if (source.preparedReview) this.options.reviewRenderer?.release(source.preparedReview.manifestId)
       throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_SOURCE_CHANGED')
     }
 
@@ -522,11 +652,12 @@ export class WorkDocxTemplateIntakeServiceV1 {
     let parsed: ParsedTemplateIntakeSourceV1
     try {
       parsed = await parseTemplateIntakeSourceV1(
-        source.content,
+        source.normalizedDocx ?? source.content,
         controller.signal,
         this.options.semanticParser,
       )
     } catch (error) {
+      if (source.preparedReview) this.options.reviewRenderer?.release(source.preparedReview.manifestId)
       if (controller.signal.aborted) {
         throw new TemplateIntakeServiceErrorV1(
           signal?.aborted ? 'TEMPLATE_INTAKE_ABORTED' : 'TEMPLATE_INTAKE_PARSER_FAILED',
@@ -540,6 +671,13 @@ export class WorkDocxTemplateIntakeServiceV1 {
 
     const createdAt = this.nowIso()
     const reportId = `xgti1_${randomUUID()}`
+    if (source.preparedReview) {
+      this.reviewManifests.set(reportId, {
+        sourceSha256: source.sha256,
+        manifestId: source.preparedReview.manifestId,
+        prepared: source.preparedReview,
+      })
+    }
     const batches = buildBatches(parsed.fragments)
     const pending: PendingAnalysisV1 = {
       address,
@@ -549,6 +687,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
         displayName: source.displayName,
         sha256: source.sha256,
         byteLength: source.byteLength,
+        inputFormat: source.inputFormat,
       },
       parsed,
       batches: batches ?? [],
@@ -654,7 +793,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
 
     let source: PrivateSourceV1
     try {
-      source = await readPrivateSource(confirmed.sourcePath)
+      source = await readPrivateSource(confirmed.sourcePath, this.options.reviewRenderer)
     } catch (error) {
       if (
         error instanceof TemplateIntakeServiceErrorV1 &&
@@ -678,6 +817,13 @@ export class WorkDocxTemplateIntakeServiceV1 {
       ...(item.fieldName ? { fieldName: item.fieldName } : {}),
       ...(item.highRiskOverrideReason
         ? { highRiskOverrideReason: item.highRiskOverrideReason }
+        : {}),
+      ...(confirmed.decision?.reviewActionsV2
+        ? {
+            reviewActionsV2: confirmed.decision.reviewActionsV2.filter(
+              (action) => action.targetId === item.candidateId,
+            ),
+          }
         : {}),
     }))
     const record: StoredTemplateIntakeRecordV1 = {
@@ -758,6 +904,11 @@ export class WorkDocxTemplateIntakeServiceV1 {
           ...(operation.reason
             ? { highRiskOverrideReason: sliceUnicode(operation.reason, MAX_REASON_CHARS) }
             : {}),
+          ...(operation.reviewActionsV2
+            ? { reviewActionsV2: operation.reviewActionsV2 }
+            : previous?.reviewActionsV2
+              ? { reviewActionsV2: previous.reviewActionsV2 }
+              : {}),
         })
       }
     }
@@ -780,9 +931,138 @@ export class WorkDocxTemplateIntakeServiceV1 {
     }
   }
 
+  private async prepareReviewRequestV2(
+    record: StoredTemplateIntakeRecordV1,
+    source: PrivateSourceV1,
+    signal?: AbortSignal,
+  ): Promise<TemplateReviewRequestV2 | undefined> {
+    const renderer = this.options.reviewRenderer
+    if (!renderer) return undefined
+    let cached = this.reviewManifests.get(record.report.reportId)
+    if (cached && cached.sourceSha256 !== source.sha256) {
+      renderer.release(cached.manifestId)
+      this.reviewManifests.delete(record.report.reportId)
+      cached = undefined
+    }
+    if (!cached) {
+      const prepared = await renderer.prepare(source.content, source.inputFormat, signal)
+      cached = {
+        sourceSha256: source.sha256,
+        manifestId: prepared.manifestId,
+        prepared,
+      }
+      this.reviewManifests.set(record.report.reportId, cached)
+    }
+
+    const draftById = new Map(record.draftDecisions.map((item) => [item.candidateId, item]))
+    const candidatePreviewCounts = new Map<string, number>()
+    for (const candidate of record.report.candidates) {
+      candidatePreviewCounts.set(
+        candidate.preview,
+        (candidatePreviewCounts.get(candidate.preview) ?? 0) + 1,
+      )
+    }
+    const unmappedTargetIds: string[] = []
+    const targets = record.report.candidates.map((candidate) => {
+      const sourcePart = candidate.sourceAnchors[0]?.part
+      const kind = sourcePart === 'DRAWING'
+        ? ('IMAGE' as const)
+        : sourcePart === 'TABLE'
+          ? ('TABLE_CELL' as const)
+          : sourcePart
+            ? ('TEXT' as const)
+            : ('UNMAPPED' as const)
+      const previewIsUntruncated = Array.from(candidate.preview).length < TEMPLATE_INTAKE_MAX_PREVIEW_CHARS_V1
+      const previewIsUniqueInReport = candidatePreviewCounts.get(candidate.preview) === 1
+      const exactPageMatchCount =
+        cached!.prepared.render.mode === 'PDF' && kind !== 'IMAGE' && previewIsUntruncated
+          ? renderer.countExactTextOccurrences(cached!.manifestId, candidate.preview)
+          : 0
+      const pageRegions: readonly TemplateReviewPageRegionV2[] =
+        cached!.prepared.render.mode === 'PDF' &&
+        kind !== 'IMAGE' &&
+        previewIsUntruncated &&
+        previewIsUniqueInReport &&
+        exactPageMatchCount === 1
+          ? renderer.locateExactText(cached!.manifestId, candidate.preview, 1)
+          : []
+      if (cached!.prepared.render.mode === 'PDF' && pageRegions.length === 0) {
+        unmappedTargetIds.push(candidate.candidateId)
+      }
+      const riskFlags = reviewRiskFlagsV2(candidate)
+      const draftActions = draftReviewActionsV2(candidate, draftById.get(candidate.candidateId))
+      const needsReview =
+        candidate.kind === 'UNRESOLVED' ||
+        riskFlags.length > 0 ||
+        kind === 'UNMAPPED' ||
+        (cached!.prepared.render.mode === 'PDF' && pageRegions.length === 0)
+      return {
+        targetId: candidate.candidateId,
+        kind,
+        preview: candidate.preview,
+        sourceAnchor: reviewAnchorV2(candidate.sourceAnchors[0]),
+        pageRegions,
+        reason: candidate.reason,
+        confidence: candidate.confidence,
+        riskFlags,
+        highlight: needsReview ? ('YELLOW' as const) : ('NONE' as const),
+        status: draftActions.length ? ('RESOLVED' as const) : ('PENDING' as const),
+        highRisk: candidate.riskFlags.length > 0,
+      }
+    })
+    const draftActions = record.report.candidates.flatMap((candidate) => {
+      const explicit = draftReviewActionsV2(candidate, draftById.get(candidate.candidateId))
+      if (explicit.length) return explicit
+      const target = targets.find((item) => item.targetId === candidate.candidateId)
+      return target?.highlight === 'NONE'
+        ? [{ targetId: candidate.candidateId, kind: 'KEEP' as const }]
+        : []
+    })
+    const warnings = [...cached.prepared.render.warnings]
+    if (unmappedTargetIds.length > 0) {
+      warnings.push({
+        code: 'TARGET_LOCATION_UNMAPPED',
+        message: `${unmappedTargetIds.length} 处内容无法可靠映射到页面，已列入右侧人工清单`,
+        targetIds: unmappedTargetIds,
+      })
+    }
+    const resolvedTargetCount = targets.filter(
+      (target) => target.highlight === 'NONE' || target.status === 'RESOLVED',
+    ).length
+    return {
+      reviewVersion: 2,
+      document: {
+        reviewVersion: 2,
+        reviewId: record.report.reportId,
+        status: 'REVIEWING',
+        source: {
+          displayName: record.report.file.displayName,
+          sha256: record.report.file.sha256,
+          byteLength: record.report.file.byteLength,
+          inputFormat: source.inputFormat,
+        },
+        render: {
+          ...cached.prepared.render,
+          warnings,
+        },
+        targetCount: targets.length,
+        pendingTargetCount: targets.length - resolvedTargetCount,
+        resolvedTargetCount,
+        unmappedTargetCount: unmappedTargetIds.length,
+        requiresHumanConfirmation: true,
+        sourceReadOnly: true,
+        createdAt: record.report.createdAt,
+        updatedAt: record.report.updatedAt,
+      },
+      targets,
+      draftActions,
+    }
+  }
+
   private async review(
     address: SessionAddressV1,
-    submission: { decisions: readonly TemplateIntakeFinalDecisionItemV1[] } | undefined,
+    submission: TemplateIntakeReviewSubmissionV1 | undefined,
+    signal?: AbortSignal,
   ): Promise<TemplateIntakeServiceOutcomeV1> {
     const record = this.requireLatest(address)
     if (record.report.status === 'CONFIRMED') {
@@ -798,7 +1078,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
     }
     let source: PrivateSourceV1
     try {
-      source = await readPrivateSource(record.sourcePath)
+      source = await readPrivateSource(record.sourcePath, this.options.reviewRenderer)
     } catch (error) {
       if (
         error instanceof TemplateIntakeServiceErrorV1 &&
@@ -821,12 +1101,14 @@ export class WorkDocxTemplateIntakeServiceV1 {
       return failure('TEMPLATE_INTAKE_SOURCE_CHANGED')
     }
     if (!submission) {
+      const reviewRequestV2 = await this.prepareReviewRequestV2(record, source, signal)
       return {
         ok: true,
         value: {
           kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_REQUIRED',
           report: record.report,
           draftDecisions: record.draftDecisions,
+          ...(reviewRequestV2 ? { reviewRequestV2 } : {}),
         },
       }
     }
@@ -854,19 +1136,73 @@ export class WorkDocxTemplateIntakeServiceV1 {
         }
       }
     }
+    if (submission.reviewActionsV2) {
+      const actionsByTarget = new Map<string, TemplateReviewActionV2[]>()
+      for (const action of submission.reviewActionsV2) {
+        const candidate = candidates.get(action.targetId)
+        if (!candidate) return failure('TEMPLATE_INTAKE_REPORT_NOT_CONFIRMABLE')
+        if (action.range) {
+          if (
+            !isValidTemplateReviewTextRangeV2(action.range) ||
+            action.range.endUtf16Exclusive > candidate.preview.length
+          ) {
+            return failure('TEMPLATE_INTAKE_REPORT_NOT_CONFIRMABLE')
+          }
+        }
+        const existing = actionsByTarget.get(action.targetId) ?? []
+        if (
+          action.range &&
+          existing.some(
+            (previous) =>
+              previous.range &&
+              previous.range.startUtf16 < action.range!.endUtf16Exclusive &&
+              action.range!.startUtf16 < previous.range.endUtf16Exclusive,
+          )
+        ) {
+          return failure('TEMPLATE_INTAKE_REPORT_NOT_CONFIRMABLE')
+        }
+        if (candidate.riskFlags.length > 0 && action.kind !== 'REMOVE') {
+          if (!action.highRiskOverrideReason?.trim()) {
+            return failure('TEMPLATE_INTAKE_HIGH_RISK_REASON_REQUIRED')
+          }
+          if (action.highRiskOverrideConfirmed !== true) {
+            return failure('TEMPLATE_INTAKE_SECOND_CONFIRMATION_REQUIRED')
+          }
+        }
+        actionsByTarget.set(action.targetId, [...existing, action])
+      }
+      if ([...candidates.keys()].some((candidateId) => !actionsByTarget.has(candidateId))) {
+        return failure('TEMPLATE_INTAKE_REPORT_NOT_CONFIRMABLE')
+      }
+    }
     const confirmedAt = localIso(this.now())
     const decision: TemplateIntakeDecisionV1 = {
       decisionVersion: 1,
       reportId: record.report.reportId,
       reportSummary: createTemplateIntakeReportSummaryV1(record.report),
       decisions: submission.decisions,
+      ...(submission.reviewActionsV2 ? { reviewActionsV2: submission.reviewActionsV2 } : {}),
       confirmedAtLocal: confirmedAt,
       confirmedBy: 'LOCAL_USER',
     }
     record.decision = decision
-    record.draftDecisions = submission.decisions
+    record.draftDecisions = submission.decisions.map((item) => ({
+      ...item,
+      ...(submission.reviewActionsV2
+        ? {
+            reviewActionsV2: submission.reviewActionsV2.filter(
+              (action) => action.targetId === item.candidateId,
+            ),
+          }
+        : {}),
+    }))
     record.report = withTemplateIntakeStatusV1(record.report, 'CONFIRMED', this.nowIso())
     this.options.store.save(record)
+    const prepared = this.reviewManifests.get(record.report.reportId)
+    if (prepared) {
+      this.options.reviewRenderer?.release(prepared.manifestId)
+      this.reviewManifests.delete(record.report.reportId)
+    }
     return {
       ok: true,
       value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CONFIRMED', decision },
@@ -885,7 +1221,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
 
     let source: PrivateSourceV1
     try {
-      source = await readPrivateSource(record.sourcePath)
+      source = await readPrivateSource(record.sourcePath, this.options.reviewRenderer)
     } catch (error) {
       if (
         !(error instanceof TemplateIntakeServiceErrorV1) ||
@@ -895,7 +1231,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
       }
       const replacement = await this.options.dialogs.chooseSource()
       if (!replacement) return failure('TEMPLATE_INTAKE_SOURCE_MISSING')
-      source = await readPrivateSource(replacement)
+      source = await readPrivateSource(replacement, this.options.reviewRenderer)
     }
     if (source.sha256 !== record.sourceSha256) {
       record.report = withTemplateIntakeStatusV1(record.report, 'STALE', this.nowIso())
@@ -932,6 +1268,11 @@ export class WorkDocxTemplateIntakeServiceV1 {
     if (confirmed !== true) return failure('TEMPLATE_INTAKE_DELETE_CONFIRMATION_REQUIRED')
     if (!this.options.store.delete(address, reportId)) {
       return failure('TEMPLATE_INTAKE_REPORT_NOT_FOUND')
+    }
+    const prepared = this.reviewManifests.get(reportId)
+    if (prepared) {
+      this.options.reviewRenderer?.release(prepared.manifestId)
+      this.reviewManifests.delete(reportId)
     }
     const key = scopeKey(address)
     if (this.pending.get(key)?.reportId === reportId) this.pending.delete(key)

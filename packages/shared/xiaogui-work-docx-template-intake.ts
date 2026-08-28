@@ -1,3 +1,5 @@
+import type { TemplateReviewActionV2 } from './xiaogui-work-template-review'
+
 /** WORK 普通成品 Word 只读整理契约。所有序号均从 1 开始。 */
 
 export const TEMPLATE_INTAKE_REPORT_VERSION_V1 = 1 as const
@@ -175,6 +177,8 @@ export interface TemplateIntakeDraftDecisionItemV1 {
   highRiskOverrideReason?: string
   /** 只允许结构化复核卡在第二次确认后写入 true。 */
   highRiskOverrideConfirmed?: true
+  /** V2 复核器对该候选的完整或局部动作；仅主进程与复核器消费。 */
+  reviewActionsV2?: readonly TemplateReviewActionV2[]
 }
 
 export interface TemplateIntakeFinalDecisionItemV1
@@ -195,6 +199,11 @@ export interface TemplateIntakeDecisionV1 {
   reportId: string
   reportSummary: TemplateIntakeReportSummaryV1
   decisions: readonly TemplateIntakeFinalDecisionItemV1[]
+  /**
+   * V2 内置文档复核器的局部文字、图片和高级结构决定。
+   * 保留 V1 decisions 作为兼容摘要，物化器存在本字段时以它为准。
+   */
+  reviewActionsV2?: readonly TemplateReviewActionV2[]
   confirmedAtLocal: string
   confirmedBy: 'LOCAL_USER'
 }
@@ -230,6 +239,7 @@ interface TemplateIntakeUpdateOperationBaseV1 {
   decision: TemplateIntakeCandidateKindV1
   fieldName?: string
   reason?: string
+  reviewActionsV2?: readonly TemplateReviewActionV2[]
 }
 
 /** 必须使用候选编号或主进程条件匹配之一，不能同时使用。 */
@@ -246,6 +256,8 @@ export type TemplateIntakeErrorCodeV1 =
   | 'TEMPLATE_INTAKE_INPUT_INVALID'
   | 'TEMPLATE_INTAKE_INPUT_TOO_LARGE'
   | 'TEMPLATE_INTAKE_UNSAFE_DOCX'
+  | 'TEMPLATE_INTAKE_UNSAFE_DOC'
+  | 'TEMPLATE_INTAKE_CONVERSION_FAILED'
   | 'TEMPLATE_INTAKE_OPERATION_ACTIVE'
   | 'TEMPLATE_INTAKE_REPORT_NOT_FOUND'
   | 'TEMPLATE_INTAKE_REPORT_LIMIT_REACHED'

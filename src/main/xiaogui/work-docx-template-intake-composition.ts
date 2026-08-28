@@ -5,6 +5,7 @@ import { sessionScopeResolverV1 } from './scope-service'
 import { getDefaultWorkDocxServiceV1 } from './work-docx-ipc'
 import { WorkDocxTemplateIntakeServiceV1 } from './work-docx-template-intake-service'
 import { WorkDocxTemplateIntakeStoreV1 } from './work-docx-template-intake-store'
+import { getDefaultDocumentReviewRendererV1 } from './work-document-review-renderer-composition'
 
 let defaultService: WorkDocxTemplateIntakeServiceV1 | null = null
 
@@ -12,7 +13,7 @@ async function chooseSource(): Promise<string | null> {
   const options: OpenDialogOptions = {
     title: '选择要整理的普通成品 Word',
     properties: ['openFile'],
-    filters: [{ name: 'Word 文档', extensions: ['docx'] }],
+    filters: [{ name: '文档', extensions: ['docx', 'doc'] }],
   }
   const window = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
   const result = window
@@ -35,6 +36,7 @@ export function getDefaultWorkDocxTemplateIntakeServiceV1(): WorkDocxTemplateInt
         'template-intake.sqlite',
       ),
     ),
+    reviewRenderer: getDefaultDocumentReviewRendererV1(),
   })
   return defaultService
 }

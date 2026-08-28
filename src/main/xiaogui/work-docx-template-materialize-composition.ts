@@ -3,8 +3,16 @@ import { join } from 'node:path'
 
 import { sessionScopeResolverV1 } from './scope-service'
 import { getDefaultWorkDocxTemplateIntakeServiceV1 } from './work-docx-template-intake-composition'
+import {
+  chooseAndConfigureDefaultTemplateLibraryV1,
+  getDefaultTemplateLibraryServiceV1,
+} from './template-library-composition'
 import { WorkDocxTemplateMaterializeServiceV1 } from './work-docx-template-materialize-service'
 import { WorkDocxTemplateMaterializeStoreV1 } from './work-docx-template-materialize-store'
+import {
+  getDefaultDocumentReviewRendererV1,
+  getDefaultTemplateReviewReplacementImageStoreV1,
+} from './work-document-review-renderer-composition'
 
 let defaultService: WorkDocxTemplateMaterializeServiceV1 | null = null
 
@@ -41,6 +49,10 @@ export function getDefaultWorkDocxTemplateMaterializeServiceV1(): WorkDocxTempla
       revealPath: async (path) => shell.showItemInFolder(path),
     },
     tempRoot: join(app.getPath('temp'), 'xiaogui-template-materialize', 'v1'),
+    templateLibrary: getDefaultTemplateLibraryServiceV1(),
+    configureTemplateLibrary: chooseAndConfigureDefaultTemplateLibraryV1,
+    documentReviewRenderer: getDefaultDocumentReviewRendererV1(),
+    replacementImageStore: getDefaultTemplateReviewReplacementImageStoreV1(),
   })
   return defaultService
 }

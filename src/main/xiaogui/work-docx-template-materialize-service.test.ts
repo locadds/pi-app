@@ -13,6 +13,8 @@ import {
 } from '@shared/xiaogui-work-docx-template-intake'
 import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 
+import { TemplateLibraryServiceV1 } from './template-library-service'
+import { WorkDocxServiceV1 } from './work-docx-service'
 import type { ConfirmedTemplateIntakeMaterializationSourceV1 } from './work-docx-template-intake-service'
 import { WorkDocxTemplateMaterializeServiceV1 } from './work-docx-template-materialize-service'
 import { WorkDocxTemplateMaterializeStoreV1 } from './work-docx-template-materialize-store'
@@ -188,11 +190,25 @@ describe('WORK 模板物化服务', () => {
     expect(resumed.ok && resumed.value.kind).toBe('XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_RESUMED')
     expect(openPath).toHaveBeenCalledTimes(2)
 
-    const published = await secondService.execute(ADDRESS, {
+    const crossRunWithoutToken = await secondService.execute(ADDRESS, {
       action: 'CONFIRM',
       sourceSessionId: 'session',
       sourceRunId: 'run-2',
       toolCallId: 'tool-4',
+    })
+    expect(crossRunWithoutToken).toEqual({
+      ok: false,
+      error: { code: 'TEMPLATE_MATERIALIZE_CONFIRMATION_REQUIRED' },
+    })
+    if (!resumed.ok || resumed.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_RESUMED' || !('previewConfirmationToken' in resumed.value)) {
+      throw new Error('expected resumed preview confirmation token')
+    }
+    const published = await secondService.execute(ADDRESS, {
+      action: 'CONFIRM',
+      sourceSessionId: 'session',
+      sourceRunId: 'run-2',
+      toolCallId: 'tool-4-confirmed',
+      previewConfirmationToken: resumed.value.previewConfirmationToken,
     })
     expect(published.ok && published.value.kind).toBe('XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PUBLISHED')
     expect(JSON.stringify(published)).not.toContain(root)
@@ -212,5 +228,210 @@ describe('WORK 模板物化服务', () => {
       'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_RESUMED',
     )
     secondService.close()
+  })
+
+  it('只接受本次内置预览签发的令牌在同一轮生成正式模板', async () => {
+    const root = await fixtureRoot()
+    const sourcePath = join(root, '原文.docx')
+    const targetPath = join(root, '正式模板.docx')
+    const confirmed = await makeConfirmedSource(sourcePath)
+    const service = new WorkDocxTemplateMaterializeServiceV1({
+      lookup: lookup(),
+      intake: { loadConfirmedForMaterialization: vi.fn(() => confirmed) },
+      store: new WorkDocxTemplateMaterializeStoreV1(join(root, 'private', 'materialize.sqlite')),
+      dialogs: { chooseNewTarget: vi.fn(async () => targetPath) },
+      outputAccess: { openPath: vi.fn(async () => ''), revealPath: vi.fn(async () => undefined) },
+      tempRoot: join(root, 'preview'),
+    })
+    const prepared = await service.execute(ADDRESS, {
+      action: 'PREPARE',
+      sourceSessionId: 'session',
+      sourceRunId: 'run-1',
+      toolCallId: 'tool-1',
+    })
+    if (!prepared.ok || prepared.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PREPARED') {
+      throw new Error('expected prepared preview')
+    }
+    await expect(service.execute(ADDRESS, {
+      action: 'CONFIRM',
+      sourceSessionId: 'session',
+      sourceRunId: 'run-1',
+      toolCallId: 'tool-2',
+      previewConfirmationToken: 'forged-token',
+    })).resolves.toEqual({
+      ok: false,
+      error: { code: 'TEMPLATE_MATERIALIZE_CONFIRMATION_REQUIRED' },
+    })
+    await expect(service.execute(ADDRESS, {
+      action: 'CONFIRM',
+      sourceSessionId: 'session',
+      sourceRunId: 'run-2',
+      toolCallId: 'tool-cross-run',
+    })).resolves.toEqual({
+      ok: false,
+      error: { code: 'TEMPLATE_MATERIALIZE_CONFIRMATION_REQUIRED' },
+    })
+    const published = await service.execute(ADDRESS, {
+      action: 'CONFIRM',
+      sourceSessionId: 'session',
+      sourceRunId: 'run-1',
+      toolCallId: 'tool-3',
+      previewConfirmationToken: prepared.value.previewConfirmationToken,
+    })
+    expect(published.ok && published.value.kind).toBe(
+      'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PUBLISHED',
+    )
+    expect(JSON.stringify(published)).not.toContain(prepared.value.previewConfirmationToken)
+    await expect(access(targetPath)).resolves.toBeUndefined()
+    service.close()
+  })
+
+  it('正式模板先进入本机模板库，并可按指定历史版本生成新文档', async () => {
+    const root = await fixtureRoot()
+    const sourcePath = join(root, '原文.docx')
+    const outputPath = join(root, '使用历史模板生成.docx')
+    const confirmed = await makeConfirmedSource(sourcePath)
+    const sourceHash = createHash('sha256')
+      .update(await readFile(sourcePath))
+      .digest('hex')
+    const chooseMaterializedTarget = vi.fn(async () => join(root, '不应直接另存.docx'))
+    const library = new TemplateLibraryServiceV1({
+      preferencePath: join(root, 'private', 'template-library.json'),
+      now: () => new Date('2026-08-28T08:00:00.000Z'),
+    })
+    await library.configureRoot(join(root, '用户模板库'))
+
+    const materialize = new WorkDocxTemplateMaterializeServiceV1({
+      lookup: lookup(),
+      intake: { loadConfirmedForMaterialization: vi.fn(() => confirmed) },
+      store: new WorkDocxTemplateMaterializeStoreV1(
+        join(root, 'private', 'template-materialize.sqlite'),
+      ),
+      dialogs: { chooseNewTarget: chooseMaterializedTarget },
+      outputAccess: {
+        openPath: vi.fn(async () => ''),
+        revealPath: vi.fn(async () => undefined),
+      },
+      tempRoot: join(root, 'preview'),
+      templateLibrary: library,
+      now: () => new Date('2026-08-28T08:00:00.000Z'),
+    })
+
+    const prepared = await materialize.execute(ADDRESS, {
+      action: 'PREPARE',
+      sourceSessionId: 'session',
+      sourceRunId: 'run-1',
+      toolCallId: 'tool-1',
+    })
+    expect(prepared.ok && prepared.value.kind).toBe(
+      'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PREPARED',
+    )
+    if (!prepared.ok || prepared.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PREPARED') {
+      throw new Error('expected prepared preview')
+    }
+    const published = await materialize.execute(ADDRESS, {
+      action: 'CONFIRM',
+      sourceSessionId: 'session',
+      sourceRunId: 'run-1',
+      toolCallId: 'tool-2',
+      previewConfirmationToken: prepared.value.previewConfirmationToken,
+      templateName: '施工方案模板',
+      purpose: '生成施工方案',
+      tags: ['施工', '方案'],
+    })
+    expect(published).toMatchObject({
+      ok: true,
+      value: {
+        kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PUBLISHED',
+        receipt: {
+          library: { templateName: '施工方案模板', versionNumber: 1 },
+          originalSourceUnchanged: true,
+        },
+      },
+    })
+    expect(chooseMaterializedTarget).not.toHaveBeenCalled()
+    expect(JSON.stringify(published)).not.toContain(root)
+    expect(
+      createHash('sha256')
+        .update(await readFile(sourcePath))
+        .digest('hex'),
+    ).toBe(sourceHash)
+    if (
+      !published.ok ||
+      published.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PUBLISHED' ||
+      !published.value.receipt.library
+    ) {
+      throw new Error('expected a published local-library template')
+    }
+
+    const listed = await library.list({ status: 'ACTIVE' })
+    expect(listed.items).toEqual([
+      expect.objectContaining({
+        name: '施工方案模板',
+        latestVersion: expect.objectContaining({ versionNumber: 1 }),
+        versionCount: 1,
+      }),
+    ])
+    expect(JSON.stringify(listed)).not.toContain(root)
+    const detail = await library.getDetail(published.value.receipt.library.entryId)
+    expect(detail.versions.map((version) => version.versionNumber)).toEqual([1])
+    expect(detail.latestVersion.fields).toEqual([
+      expect.objectContaining({
+        name: '项目名称',
+        kind: 'TEXT',
+        required: true,
+      }),
+    ])
+    expect(JSON.stringify(detail)).not.toContain(root)
+
+    const chooseLibraryFile = vi.fn(async () => null)
+    const workDocx = new WorkDocxServiceV1({
+      lookup: lookup(),
+      dialogs: {
+        chooseTemplate: chooseLibraryFile,
+        choosePayload: vi.fn(async () => null),
+        chooseNewTarget: vi.fn(async () => outputPath),
+      },
+      tempRoot: join(root, 'document-generation'),
+      templateLibrary: library,
+    })
+    const selected = await workDocx.selectTemplate({
+      address: ADDRESS,
+      templateVersionId: published.value.receipt.library.versionId,
+    })
+    expect(selected).toMatchObject({
+      ok: true,
+      value: {
+        kind: 'TEMPLATE_SELECTED',
+        templateDisplayName: '施工方案模板（第 1 版）.docx',
+        fields: [{ name: '项目名称', required: true }],
+      },
+    })
+    expect(chooseLibraryFile).not.toHaveBeenCalled()
+    expect(JSON.stringify(selected)).not.toContain(root)
+    if (!selected.ok || selected.value.kind !== 'TEMPLATE_SELECTED') {
+      throw new Error('expected historical template selection')
+    }
+    const generated = await workDocx.prepareTemplateData({
+      address: ADDRESS,
+      selectionId: selected.value.selectionId,
+      fields: [{ name: '项目名称', status: 'READY', value: '下盐路迁改工程' }],
+    })
+    expect(generated).toMatchObject({ ok: true, value: { kind: 'PREPARED' } })
+    if (!generated.ok || generated.value.kind !== 'PREPARED') {
+      throw new Error('expected prepared document from historical template')
+    }
+    await expect(
+      workDocx.confirmTemplateData({
+        address: ADDRESS,
+        operationId: generated.value.operationId,
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { kind: 'PUBLISHED' } })
+    const output = await readFile(outputPath)
+    const outputZip = await JSZip.loadAsync(output)
+    expect(await outputZip.file('word/document.xml')!.async('string')).toContain('下盐路迁改工程')
+
+    materialize.close()
+    library.close()
   })
 })

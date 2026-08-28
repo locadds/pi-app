@@ -11,12 +11,19 @@ import { Type } from 'typebox'
 import { z } from 'zod'
 
 import {
-  TEMPLATE_INTAKE_REVIEW_PAGE_SIZE_V1,
   type TemplateIntakeDraftDecisionItemV1,
+  type TemplateIntakeFinalDecisionItemV1,
   type TemplateIntakeReportV1,
-  type TemplateIntakeReviewRequestV1,
   type TemplateIntakeUpdateOperationV1,
 } from '@shared/xiaogui-work-docx-template-intake'
+import type {
+  TemplateReviewActionV2,
+  TemplateReviewRequestV2,
+  TemplateReviewResultV2,
+  TemplateReviewRiskFlagV2,
+  TemplateReviewSourceAnchorV2,
+  TemplateReviewTargetV2,
+} from '@shared/xiaogui-work-template-review'
 import {
   XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1,
   type TemplateIntakeAnalysisBatchV1,
@@ -344,7 +351,7 @@ function reportText(report: TemplateIntakeReportV1, prefix: string): string {
   const groups = [...counts.entries()]
     .map(([kind, count]) => `${labels[kind] ?? kind} ${count} 项`)
     .join('，')
-  return `${prefix}“${report.file.displayName}”：共 ${report.candidates.length} 项候选${groups ? `（${groups}）` : ''}，${report.warnings.length} 条警告。报告只读，仍需人工复核；没有修改 Word，也不能生成正式模板。`
+  return `${prefix}“${report.file.displayName}”：共 ${report.candidates.length} 项候选${groups ? `（${groups}）` : ''}，${report.warnings.length} 条警告。报告只读，仍需人工复核；没有修改文档，也不能生成正式模板。`
 }
 
 function draftDecisionText(decisions: readonly TemplateIntakeDraftDecisionItemV1[]): string {
@@ -364,10 +371,156 @@ function draftDecisionText(decisions: readonly TemplateIntakeDraftDecisionItemV1
   return `当前草稿已记录 ${decisions.length} 项决定${groups ? `（${groups}）` : ''}。`
 }
 
+function reviewAnchorV2(
+  anchor: TemplateIntakeReportV1['candidates'][number]['sourceAnchors'][number] | undefined,
+): TemplateReviewSourceAnchorV2 {
+  if (!anchor) return { part: 'UNMAPPED' }
+  return {
+    part: anchor.part === 'TABLE' ? 'TABLE_CELL' : anchor.part,
+    ...(anchor.sectionIndex != null ? { sectionIndex: anchor.sectionIndex } : {}),
+    ...(anchor.partIndex != null ? { partIndex: anchor.partIndex } : {}),
+    ...(anchor.paragraphIndex != null ? { paragraphIndex: anchor.paragraphIndex } : {}),
+    ...(anchor.tableIndex != null ? { tableIndex: anchor.tableIndex } : {}),
+    ...(anchor.rowIndex != null ? { rowIndex: anchor.rowIndex } : {}),
+    ...(anchor.cellIndex != null ? { cellIndex: anchor.cellIndex } : {}),
+    ...(anchor.drawingIndex != null ? { drawingIndex: anchor.drawingIndex } : {}),
+  }
+}
+
+function reviewRiskFlagsV2(candidate: TemplateIntakeReportV1['candidates'][number]): TemplateReviewRiskFlagV2[] {
+  const flags = [...candidate.riskFlags] as TemplateReviewRiskFlagV2[]
+  if (candidate.confidence == null || candidate.confidence < 0.75) flags.push('LOW_CONFIDENCE')
+  if (candidate.kind === 'UNRESOLVED' && /解析|对齐|位置/.test(candidate.reason)) flags.push('PARSER_EXCEPTION')
+  return [...new Set(flags)]
+}
+
+function draftActionV2(
+  candidate: TemplateIntakeReportV1['candidates'][number],
+  draft: TemplateIntakeDraftDecisionItemV1 | undefined,
+): TemplateReviewActionV2[] {
+  if (draft?.reviewActionsV2?.length) return [...draft.reviewActionsV2]
+  if (!draft) return []
+  const base = {
+    targetId: candidate.candidateId,
+    ...(draft.highRiskOverrideReason ? { highRiskOverrideReason: draft.highRiskOverrideReason } : {}),
+  }
+  switch (draft.decision) {
+    case 'FIXED': return [{ ...base, kind: 'KEEP' }]
+    case 'VARIABLE': return draft.fieldName ? [{ ...base, kind: 'FIELD', fieldName: draft.fieldName }] : []
+    case 'REPEAT': return [{ ...base, kind: 'REPEAT', blockName: draft.fieldName || candidate.suggestedName || '重复内容' }]
+    case 'CONDITIONAL': return [{ ...base, kind: 'CONDITIONAL', conditionName: draft.fieldName || candidate.suggestedName || '条件内容' }]
+    case 'EXCLUDE': return [{ ...base, kind: 'REMOVE' }]
+    case 'UNRESOLVED': return []
+  }
+}
+
+function buildTemplateReviewRequestV2(
+  report: TemplateIntakeReportV1,
+  draftDecisions: readonly TemplateIntakeDraftDecisionItemV1[],
+): TemplateReviewRequestV2 {
+  const draftById = new Map(draftDecisions.map((item) => [item.candidateId, item]))
+  const targets: TemplateReviewTargetV2[] = report.candidates.map((candidate) => {
+    const riskFlags = reviewRiskFlagsV2(candidate)
+    const part = candidate.sourceAnchors[0]?.part
+    const highlight = candidate.kind === 'UNRESOLVED' || riskFlags.length > 0 ? 'YELLOW' : 'NONE'
+    return {
+      targetId: candidate.candidateId,
+      kind: part === 'DRAWING' ? 'IMAGE' : part === 'TABLE' ? 'TABLE_CELL' : part ? 'TEXT' : 'UNMAPPED',
+      preview: candidate.preview,
+      sourceAnchor: reviewAnchorV2(candidate.sourceAnchors[0]),
+      pageRegions: [],
+      reason: candidate.reason,
+      confidence: candidate.confidence,
+      riskFlags,
+      highlight,
+      status: draftActionV2(candidate, draftById.get(candidate.candidateId)).length ? 'RESOLVED' : 'PENDING',
+      highRisk: candidate.riskFlags.length > 0,
+    }
+  })
+  const draftActions = report.candidates.flatMap((candidate) => {
+    const explicit = draftActionV2(candidate, draftById.get(candidate.candidateId))
+    if (explicit.length) return explicit
+    const target = targets.find((item) => item.targetId === candidate.candidateId)
+    return target?.highlight === 'NONE'
+      ? [{ targetId: candidate.candidateId, kind: 'KEEP' as const }]
+      : []
+  })
+  const pageCount = Math.max(1, Math.ceil(targets.length / 20))
+  return {
+    reviewVersion: 2,
+    document: {
+      reviewVersion: 2,
+      reviewId: report.reportId,
+      status: 'REVIEWING',
+      source: {
+        displayName: report.file.displayName,
+        sha256: report.file.sha256,
+        byteLength: report.file.byteLength,
+        inputFormat: 'DOCX',
+      },
+      render: {
+        mode: 'STRUCTURED_FALLBACK',
+        pageCount,
+        pages: Array.from({ length: pageCount }, (_, index) => ({
+          pageNumber: index + 1,
+          pageToken: `xgtr2_${report.reportId}_${index + 1}`,
+          widthPoints: 595,
+          heightPoints: 842,
+          textLayerAvailable: true,
+        })),
+        warnings: [{
+          code: 'STRUCTURED_FALLBACK_ACTIVE',
+          message: '当前使用结构化文档视图；无法定位的内容会在复核清单中明确列出。',
+        }],
+      },
+      targetCount: targets.length,
+      pendingTargetCount: targets.filter((target) => target.highlight === 'YELLOW' && target.status === 'PENDING').length,
+      resolvedTargetCount: targets.filter((target) => target.status === 'RESOLVED' || target.highlight === 'NONE').length,
+      unmappedTargetCount: targets.filter((target) => target.kind === 'UNMAPPED').length,
+      requiresHumanConfirmation: true,
+      sourceReadOnly: true,
+      createdAt: report.createdAt,
+      updatedAt: report.updatedAt,
+    },
+    targets,
+    draftActions,
+  }
+}
+
+function decisionSummaryFromReviewV2(
+  report: TemplateIntakeReportV1,
+  actions: readonly TemplateReviewActionV2[],
+): TemplateIntakeFinalDecisionItemV1[] {
+  const byTarget = new Map<string, TemplateReviewActionV2[]>()
+  for (const action of actions) (byTarget.get(action.targetId) ?? byTarget.set(action.targetId, []).get(action.targetId)!).push(action)
+  return report.candidates.map((candidate) => {
+    const targetActions = byTarget.get(candidate.candidateId) ?? []
+    const action = targetActions.find((item) => item.kind !== 'KEEP') ?? targetActions[0]
+    if (!action) return { candidateId: candidate.candidateId, decision: 'FIXED' }
+    const riskReason = targetActions.find((item) => item.highRiskOverrideReason)?.highRiskOverrideReason
+    const riskConfirmed = targetActions.some((item) => item.highRiskOverrideConfirmed === true)
+    const common = {
+      candidateId: candidate.candidateId,
+      ...(riskReason ? { highRiskOverrideReason: riskReason } : {}),
+      ...(riskConfirmed ? { highRiskOverrideConfirmed: true as const } : {}),
+    }
+    switch (action.kind) {
+      case 'FIELD': return { ...common, decision: 'VARIABLE', fieldName: action.fieldName }
+      case 'REMOVE': return { ...common, decision: 'EXCLUDE' }
+      case 'REPEAT': return { ...common, decision: 'REPEAT', fieldName: action.blockName }
+      case 'CONDITIONAL': return { ...common, decision: 'CONDITIONAL', fieldName: action.conditionName }
+      case 'KEEP':
+      case 'REPLACE_TEXT':
+      case 'REPLACE_IMAGE':
+        return { ...common, decision: 'FIXED' }
+    }
+  })
+}
+
 function publicText(result: SafeToolDetails): string {
   switch (result.kind) {
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_SELECTION_CANCELLED':
-      return '已取消选择 Word，没有创建整理报告，也没有修改文档。'
+      return '已取消选择文档，没有创建整理报告，也没有修改文档。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY':
       return reportText(result.report, '已生成只读模板整理报告：')
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_UPDATED':
@@ -375,13 +528,13 @@ function publicText(result: SafeToolDetails): string {
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_REQUIRED':
       return '模板整理报告正在等待结构化复核。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CONFIRMED':
-      return `已保存人工确认记录，共 ${result.decision.decisions.length} 项。没有修改 Word，也没有生成正式模板。`
+      return `已保存人工确认记录，共 ${result.decision.decisions.length} 项。没有修改文档，也没有生成正式模板。`
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_RESUMED':
       return reportText(result.report, result.decision ? '已恢复已确认的整理报告：' : '已恢复未完成的整理报告：')
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_DELETED':
       return '已按明确要求删除这份历史整理报告。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CANCELLED':
-      return '已取消当前模板整理处理；没有修改 Word。'
+      return '已取消当前模板整理处理；没有修改文档。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_CANCELLED':
       return '已结束本次复核，未生成确认记录；当前草稿仍保留，可稍后继续。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_FAILED':
@@ -400,12 +553,12 @@ export function addXiaoguiWorkDocxTemplateIntakeTool(
   })
   const definition = defineTool<typeof ActionSchema, SafeToolDetails>({
     name: XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_TOOL_NAME,
-    label: '整理普通 Word 模板',
+    label: '整理普通文档模板',
     description:
-      '在日常工作会话中把普通成品 Word 安全解析为只读模板整理报告，并由用户复核确认；不会修改 Word 或生成正式模板。',
-    promptSnippet: '用自然语言开始、调整、复核、继续、删除或取消普通 Word 的只读模板整理',
+      '在日常工作会话中把普通成品文档安全解析为只读模板整理报告，并由用户复核确认；不会修改原文档或直接生成正式模板。',
+    promptSnippet: '用自然语言开始、调整、复核、继续、删除或取消普通文档的只读模板整理',
     promptGuidelines: [
-      '只有用户明确提出“整理成模板”或明确同意进入整理流程时才能调用 START；仅要求生成文档但选中普通成品 Word 时，必须先询问是否整理。',
+      '只有用户明确提出“整理成模板”或明确同意进入整理流程时才能调用 START；仅要求生成文档但选中普通成品文档时，必须先询问是否整理。',
       'START 返回报告后必须结束本轮工具调用；只有用户下一条消息明确要求复核或确认时才调用 REVIEW。',
       '用户用自然语言批量调整时只调用 UPDATE；优先用 match.kinds、match.riskFlags 或 match.keywords，由主进程展开为逐项决定，用户不需要知道候选编号。',
       '用户在报告已经确认后提出修改时必须调用 REOPEN，并把本次修改放入 operations；主进程会复制出新草稿并保留旧确认记录，不得对已确认报告直接调用 UPDATE。',
@@ -414,7 +567,7 @@ export function addXiaoguiWorkDocxTemplateIntakeTool(
       '用户明确说“不要打开复核卡”时，本轮绝对不能调用 REVIEW；只有用户明确说“复核”“确认”或“打开复核卡”时才调用 REVIEW。',
       'DELETE 只在用户明确要求删除具体历史报告时调用，confirmed 必须为 true。',
       '不要展示或索要文件路径、内部存储位置、全文、OOXML、临时片段编号或模型原始输出。',
-      '本工具终点只是已确认的整理报告；不得声称已经写入 Word、插入占位符或生成正式模板。',
+      '本工具终点只是已确认的整理报告；不得声称已经写入原文档、插入占位符或生成正式模板。',
     ],
     parameters: ActionSchema,
     executionMode: 'sequential',
@@ -476,24 +629,23 @@ export function addXiaoguiWorkDocxTemplateIntakeTool(
             }
             return { content: [{ type: 'text', text: publicText(details) }], details, isError: true }
           }
-          const payload: TemplateIntakeReviewRequestV1 = {
-            report: outcome.value.report,
-            draftDecisions: outcome.value.draftDecisions,
-            pageSize: TEMPLATE_INTAKE_REVIEW_PAGE_SIZE_V1,
-          }
+          const report = outcome.value.report
+          const payload = outcome.value.reviewRequestV2
+            ?? buildTemplateReviewRequestV2(report, outcome.value.draftDecisions)
           const reviewed = await bridge.requestTemplateIntakeReview(toolCallId, payload, signal)
           if (reviewed.cancelled) {
-            if (reviewed.draftDecisions.length > 0) {
+            const draftActions = 'draftActions' in reviewed ? reviewed.draftActions : []
+            if (draftActions.length > 0) {
+              const decisions = decisionSummaryFromReviewV2(report, draftActions)
               const saved = await callHost(
                 {
                   action: 'UPDATE',
-                  operations: reviewed.draftDecisions.map((item) => ({
+                  operations: decisions.map((item) => ({
                     candidateIds: [item.candidateId],
                     decision: item.decision,
                     ...(item.fieldName ? { fieldName: item.fieldName } : {}),
-                    ...(item.highRiskOverrideReason
-                      ? { reason: item.highRiskOverrideReason }
-                      : {}),
+                    ...(item.highRiskOverrideReason ? { reason: item.highRiskOverrideReason } : {}),
+                    reviewActionsV2: draftActions.filter((action) => action.targetId === item.candidateId),
                   })),
                 },
                 undefined,
@@ -515,8 +667,16 @@ export function addXiaoguiWorkDocxTemplateIntakeTool(
             }
             return { content: [{ type: 'text', text: publicText(details) }], details }
           }
+          if (!('actions' in reviewed)) throw new Error('INVALID_REVIEW_RESULT')
+          const reviewedV2 = reviewed as Extract<TemplateReviewResultV2, { cancelled: false }>
           outcome = await callHost(
-            { action: 'REVIEW', submission: { decisions: reviewed.decisions } },
+            {
+              action: 'REVIEW',
+              submission: {
+                decisions: decisionSummaryFromReviewV2(report, reviewedV2.actions),
+                reviewActionsV2: reviewedV2.actions,
+              },
+            },
             undefined,
           )
           if (!outcome.ok) {

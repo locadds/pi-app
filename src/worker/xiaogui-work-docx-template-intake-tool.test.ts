@@ -116,9 +116,9 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
   it('is a hidden natural-language intake ending at a read-only report', () => {
     const tool = loadTool()
 
-    expect(tool?.label).toBe('整理普通 Word 模板')
+    expect(tool?.label).toBe('整理普通文档模板')
     expect(tool?.promptGuidelines?.join('\n')).toContain('必须先询问是否整理')
-    expect(tool?.promptGuidelines?.join('\n')).toContain('不得声称已经写入 Word')
+    expect(tool?.promptGuidelines?.join('\n')).toContain('不得声称已经写入原文档')
   })
 
   it('uses one transient repair call and never publishes full fragments or paths', async () => {
@@ -194,7 +194,7 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     expect(published).not.toContain('项目名称：旧项目')
     expect(published).not.toContain('signed-fragment-1')
     expect(published).not.toMatch(/[A-Z]:[\\/]/)
-    expect(result.content[0]?.text).toContain('没有修改 Word')
+    expect(result.content[0]?.text).toContain('没有修改文档')
   })
 
   it('repairs only once then safely degrades invalid model output', async () => {
@@ -288,7 +288,9 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
       })
     requestTemplateIntakeReviewMock.mockResolvedValue({
       cancelled: false,
-      decisions: [{ candidateId: 'candidate-1', decision: 'VARIABLE', fieldName: '项目名称' }],
+      actions: [{ targetId: 'candidate-1', kind: 'FIELD', fieldName: '项目名称' }],
+      confirmedAtLocal: '2026-08-24T16:09:00+08:00',
+      confirmedBy: 'LOCAL_USER',
     })
     const execute = loadTool()?.execute as unknown as Execute
 
@@ -302,16 +304,21 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
 
     expect(requestTemplateIntakeReviewMock).toHaveBeenCalledWith(
       'call-review',
-      { report: { ...REPORT, status: 'REVIEWING' }, draftDecisions, pageSize: 20 },
+      expect.objectContaining({
+        reviewVersion: 2,
+        document: expect.objectContaining({ reviewId: 'report-1', status: 'REVIEWING' }),
+        targets: [expect.objectContaining({ targetId: 'candidate-1' })],
+      }),
       expect.any(AbortSignal),
     )
     expect(requestWorkerHostToolMock.mock.calls[1]?.[0]?.payload).toMatchObject({
       action: 'REVIEW',
       submission: {
         decisions: [{ candidateId: 'candidate-1', decision: 'VARIABLE', fieldName: '项目名称' }],
+        reviewActionsV2: [{ targetId: 'candidate-1', kind: 'FIELD', fieldName: '项目名称' }],
       },
     })
-    expect(result.content[0]?.text).toContain('没有修改 Word')
+    expect(result.content[0]?.text).toContain('没有修改文档')
   })
 
   it('persists review-card draft decisions when the user closes without confirming', async () => {
@@ -335,7 +342,10 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
           draftDecisions,
         },
       })
-    requestTemplateIntakeReviewMock.mockResolvedValue({ cancelled: true, draftDecisions })
+    requestTemplateIntakeReviewMock.mockResolvedValue({
+      cancelled: true,
+      draftActions: [{ targetId: 'candidate-1', kind: 'FIELD', fieldName: '项目名称' }],
+    })
     const execute = loadTool()?.execute as unknown as Execute
 
     const result = await execute(
@@ -349,7 +359,14 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     expect(requestWorkerHostToolMock.mock.calls[1]?.[0]?.payload).toMatchObject({
       action: 'UPDATE',
       operations: [
-        { candidateIds: ['candidate-1'], decision: 'VARIABLE', fieldName: '项目名称' },
+        {
+          candidateIds: ['candidate-1'],
+          decision: 'VARIABLE',
+          fieldName: '项目名称',
+          reviewActionsV2: [
+            { targetId: 'candidate-1', kind: 'FIELD', fieldName: '项目名称' },
+          ],
+        },
       ],
     })
     expect(result.content[0]?.text).toContain('草稿仍保留')

@@ -45,6 +45,9 @@ import {
 import { createXiaoguiWorkDocxTemplateMaterializeWorkerToolHandlerV1 } from './work-docx-template-materialize-worker-tool'
 import { createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1 } from './work-document-snapshot-worker-tool'
 import { createXiaoguiWorkerHostToolRouterV1 } from './worker-host-tool-router'
+import { registerTemplateLibraryHandlersV1 } from './template-library-ipc'
+import { closeDefaultTemplateLibraryServiceV1 } from './template-library-composition'
+import { registerDocumentReviewHandlersV1 } from './work-document-review-ipc'
 
 let initialized = false
 
@@ -55,6 +58,8 @@ export function initXiaogui(): void {
   registerXiaoguiHandlers()
   registerCollaborationHubHandlers()
   registerWorkDocxHandlers()
+  registerTemplateLibraryHandlersV1()
+  registerDocumentReviewHandlersV1()
   workerManager.setHostToolRequestHandler(
     createXiaoguiWorkerHostToolRouterV1({
       collaboration: createXiaoguiWorkerToolHandlerV1({
@@ -104,6 +109,7 @@ export async function shutdownXiaoguiSidecar(): Promise<void> {
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateMaterializeServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxAdvancedGenerationServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkReportDocxServiceV1()),
+    Promise.resolve().then(() => closeDefaultTemplateLibraryServiceV1()),
   ])
   const firstFailure = results.find(
     (result): result is PromiseRejectedResult => result.status === 'rejected',

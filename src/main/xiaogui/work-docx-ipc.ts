@@ -11,6 +11,7 @@ import type {
 import type { SessionAddressV1 } from '@shared/xiaogui-session-scope'
 import { registerHandlerWithSchema } from '../ipc/registry'
 import { sessionScopeResolverV1 } from './scope-service'
+import { getDefaultTemplateLibraryServiceV1 } from './template-library-composition'
 import {
   WorkDocxServiceV1,
   type WorkDocxDialogPortV1,
@@ -83,6 +84,7 @@ export function getDefaultWorkDocxServiceV1(): WorkDocxServiceV1 {
     dialogs: nativeDialogs,
     tempRoot: join(app.getPath('userData'), 'work-docx-v1'),
     outputAccess: nativeOutputAccess,
+    templateLibrary: getDefaultTemplateLibraryServiceV1(),
   })
   return defaultService
 }

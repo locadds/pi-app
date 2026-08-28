@@ -94,3 +94,6 @@ opencode.json
 # WSL mount residue (本地产物，勿提交；目录名以反斜杠开头，git 不解析转义，
 # 用通配匹配 UNC 前缀)
 *wsl.localhost*
+
+# Stage-release only: keep tracked README/legal, but never commit runtime binaries.
+/resources/libreoffice-runtime/runtime/

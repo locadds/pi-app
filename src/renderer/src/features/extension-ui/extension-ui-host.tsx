@@ -5,6 +5,10 @@ import { ipcClient } from '@renderer/lib/ipc-client'
 import { QuestionnaireDialog, type AskQuestionPayload } from './questionnaire-dialog'
 import { ImageReviewDialog, type ImageReviewPayload } from './image-review-dialog'
 import { TemplateIntakeReviewDialog } from './template-intake-review-dialog'
+import { TemplateReviewV2Dialog } from './template-review-v2-dialog'
+import { TemplateMaterializePreviewDialog } from './template-materialize-preview-dialog'
+import type { TemplateIntakeReviewRequestV1 } from '@shared/xiaogui-work-docx-template-intake'
+import type { TemplateReviewRequestV2 } from '@shared/xiaogui-work-template-review'
 import { ExtensionDialogShell } from './extension-dialog-shell'
 import {
   useExtensionUIStore,
@@ -108,22 +112,55 @@ export function ExtensionUIHost() {
           }}
         />
       ) : pending.method === 'template_intake_review' ? (
-        <TemplateIntakeReviewDialog
-          requestId={pending.id}
+        'reviewVersion' in pending.payload && pending.payload.reviewVersion === 2 ? (
+          <TemplateReviewV2Dialog
+            requestId={pending.id}
+            payload={pending.payload as TemplateReviewRequestV2}
+            onSuspend={suspendActiveDialog}
+            onCancel={(result) => {
+              const tid = findToolContextForUi().timelineItemId
+              respond({ id: pending.id, result })
+              clearExtensionToolRowFlags(tid)
+              clearAfterRespond()
+              reconcileStaleInteractiveToolRows(pending.id)
+            }}
+            onSubmit={(result) => {
+              const s = useExtensionUIStore.getState().suspended
+              const tid = findToolContextForUi().timelineItemId || s?.timelineItemId
+              respond({ id: pending.id, result })
+              clearExtensionToolRowFlags(tid)
+              clearAfterRespond()
+            }}
+          />
+        ) : (
+          <TemplateIntakeReviewDialog
+            requestId={pending.id}
+            payload={pending.payload as TemplateIntakeReviewRequestV1}
+            onSuspend={suspendActiveDialog}
+            onCancel={(result) => {
+              // 关闭只保存逐项草稿，不产生人工确认记录。
+              const tid = findToolContextForUi().timelineItemId
+              respond({ id: pending.id, result })
+              clearExtensionToolRowFlags(tid)
+              clearAfterRespond()
+              reconcileStaleInteractiveToolRows(pending.id)
+            }}
+            onSubmit={(r) => {
+              const s = useExtensionUIStore.getState().suspended
+              const tid = findToolContextForUi().timelineItemId || s?.timelineItemId
+              respond({ id: pending.id, result: r })
+              clearExtensionToolRowFlags(tid)
+              clearAfterRespond()
+            }}
+          />
+        )
+      ) : pending.method === 'template_materialize_preview' ? (
+        <TemplateMaterializePreviewDialog
           payload={pending.payload}
-          onSuspend={suspendActiveDialog}
-          onCancel={(result) => {
-            // 关闭只保存逐项草稿，不产生人工确认记录。
-            const tid = findToolContextForUi().timelineItemId
-            respond({ id: pending.id, result })
-            clearExtensionToolRowFlags(tid)
-            clearAfterRespond()
-            reconcileStaleInteractiveToolRows(pending.id)
-          }}
-          onSubmit={(r) => {
+          onResult={(result) => {
             const s = useExtensionUIStore.getState().suspended
             const tid = findToolContextForUi().timelineItemId || s?.timelineItemId
-            respond({ id: pending.id, result: r })
+            respond({ id: pending.id, result })
             clearExtensionToolRowFlags(tid)
             clearAfterRespond()
           }}

@@ -7,6 +7,8 @@ import { signalDesktopAlert } from '@renderer/lib/desktop-alerts'
 import type { AskQuestionPayload } from '@renderer/features/extension-ui/questionnaire-dialog'
 import type { ImageReviewPayload } from '@renderer/features/extension-ui/image-review-dialog'
 import type { TemplateIntakeReviewRequestV1 } from '@shared/xiaogui-work-docx-template-intake'
+import type { TemplateReviewRequestV2 } from '@shared/xiaogui-work-template-review'
+import type { TemplateMaterializePreviewRequestV1 } from '@shared/xiaogui-work-docx-template-materialize'
 import { traceAudioRenderer } from '@renderer/lib/audio-trace'
 import { alertTrace } from '@renderer/lib/alert-trace'
 import {
@@ -17,10 +19,17 @@ import {
 
 let started = false
 const seenDialogIds = new Set<string>()
-const INTERACTIVE_TOOL_NAMES = new Set(['ask_user_question', 'image_review', 'template_intake_review'])
+const INTERACTIVE_TOOL_NAMES = new Set([
+  'ask_user_question',
+  'image_review',
+  'template_intake_review',
+  'template_materialize_preview',
+])
 
 function timelineToolName(method: string): string {
-  return method === 'template_intake_review' ? 'xiaogui_work_docx_template_intake' : method
+  if (method === 'template_intake_review') return 'xiaogui_work_docx_template_intake'
+  if (method === 'template_materialize_preview') return 'xiaogui_work_docx_template_materialize'
+  return method
 }
 
 function pruneSeenIds(): void {
@@ -48,10 +57,29 @@ function rawToPending(raw: Record<string, unknown>): ExtensionUIPending | null {
     }
   }
   if (method === 'custom' && raw.kind === 'template_intake_review') {
-    // WORK-P3C-A 冻结契约：payload 为 TemplateIntakeReviewRequestV1（无路径 report + draftDecisions + pageSize=20）
-    const payload = (raw.payload ?? raw) as unknown as TemplateIntakeReviewRequestV1
-    if (!payload.report || !Array.isArray(payload.draftDecisions)) return null
+    const payload = (raw.payload ?? raw) as unknown as
+      | TemplateIntakeReviewRequestV1
+      | TemplateReviewRequestV2
+    const validV1 = 'report' in payload && !!payload.report && Array.isArray(payload.draftDecisions)
+    const validV2 =
+      'reviewVersion' in payload &&
+      payload.reviewVersion === 2 &&
+      'document' in payload &&
+      Array.isArray(payload.targets) &&
+      Array.isArray(payload.draftActions)
+    if (!validV1 && !validV2) return null
     return { id, method: 'template_intake_review', payload }
+  }
+  if (method === 'custom' && raw.kind === 'template_materialize_preview') {
+    const payload = raw.payload as TemplateMaterializePreviewRequestV1 | undefined
+    if (
+      !payload ||
+      payload.previewVersion !== 1 ||
+      !payload.document ||
+      !payload.plan ||
+      payload.plan.previewSha256 !== payload.document.source.sha256
+    ) return null
+    return { id, method: 'template_materialize_preview', payload }
   }
   if (method === 'select') {
     return { id, method: 'select', title: raw.title as string, options: (raw.options as string[]) || [] }
@@ -147,6 +175,8 @@ export function ensureExtensionUIChannel(): void {
         ? p.payload.title || '图片审查'
         : p.method === 'template_intake_review'
           ? '模板候选复核'
+          : p.method === 'template_materialize_preview'
+            ? '修改后模板预览'
           : p.method === 'ask_user_question'
           ? '扩展问答'
           : p.method === 'confirm' || p.method === 'select' || p.method === 'input'

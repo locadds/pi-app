@@ -2,6 +2,7 @@ import type {
   TemplateIntakeReportSummaryV1,
   TemplateIntakeSourceAnchorV1,
 } from './xiaogui-work-docx-template-intake'
+import type { TemplateReviewDocumentV2 } from './xiaogui-work-template-review'
 
 /** WORK 已确认整理报告到正式 Word 模板的物化契约。 */
 export const TEMPLATE_MATERIALIZE_VERSION_V1 = 1 as const
@@ -13,6 +14,7 @@ export type TemplateMaterializeActionV1 =
   | 'CANCEL'
   | 'OPEN'
   | 'REVEAL'
+  | 'EXPORT'
 
 export type TemplateMaterializeStatusV1 =
   | 'PREPARED'
@@ -66,7 +68,36 @@ export interface TemplateMaterializeReceiptV1 {
   removedMediaCount: number
   originalSourceUnchanged: true
   publishedAtLocal: string
+  /** 正式模板已先保存进本机模板库；不包含任何本机路径。 */
+  library?: {
+    entryId: string
+    versionId: string
+    versionNumber: number
+    templateName: string
+  }
 }
+
+/**
+ * 修改后整份模板在小规内的只读预览。页面只通过主进程签发的令牌读取，
+ * 不包含源文件、临时文件或 LibreOffice 的本机路径。
+ */
+export interface TemplateMaterializePreviewRequestV1 {
+  previewVersion: 1
+  document: TemplateReviewDocumentV2
+  plan: TemplateMaterializePlanV1
+  suggestedTemplateName: string
+}
+
+export type TemplateMaterializePreviewResultV1 =
+  | {
+      action: 'CONFIRM'
+      previewSha256: string
+      templateName?: string
+      purpose?: string
+      tags?: readonly string[]
+    }
+  | { action: 'MODIFY'; previewSha256: string; instruction: string }
+  | { action: 'CANCEL' }
 
 export type TemplateMaterializeErrorCodeV1 =
   | 'TEMPLATE_MATERIALIZE_SCOPE_NOT_FOUND'
@@ -90,5 +121,7 @@ export type TemplateMaterializeErrorCodeV1 =
   | 'TEMPLATE_MATERIALIZE_GENERATION_FAILED'
   | 'TEMPLATE_MATERIALIZE_PUBLISH_FAILED'
   | 'TEMPLATE_MATERIALIZE_NO_PUBLISHED_OUTPUT'
+  | 'TEMPLATE_MATERIALIZE_LIBRARY_NOT_CONFIGURED'
+  | 'TEMPLATE_MATERIALIZE_LIBRARY_SAVE_FAILED'
   | 'TEMPLATE_MATERIALIZE_STORAGE_FAILED'
   | 'TEMPLATE_MATERIALIZE_ABORTED'
