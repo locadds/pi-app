@@ -1,15 +1,21 @@
 import { registerHandler } from '../registry'
 import { workerManager } from '../../worker-manager'
 import { configStore } from '../../config-store'
+import {
+  cancelDirectExtensionUI,
+  respondDirectExtensionUI,
+} from '../../direct-extension-ui'
 
 export function registerExtensionUiHandlers(): void {
   registerHandler('ipc:extension.respondUI', async (req) => {
-    workerManager.respondExtensionUI(req)
+    if (!respondDirectExtensionUI(req)) workerManager.respondExtensionUI(req)
     return { ok: true }
   })
 
   registerHandler('ipc:extension.cancelUI', async (req) => {
-    workerManager.cancelExtensionUI(req.id, req.reason ?? 'renderer-cancel')
+    if (!cancelDirectExtensionUI(req.id)) {
+      workerManager.cancelExtensionUI(req.id, req.reason ?? 'renderer-cancel')
+    }
     return { ok: true }
   })
 

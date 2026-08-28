@@ -17,6 +17,7 @@ export type ExtensionUIPending =
       id: string
       method: 'template_intake_review'
       payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2
+      origin?: 'DIRECT'
     }
   | {
       id: string
@@ -55,6 +56,9 @@ function pruneStaleSuspension(): void {
   if (!suspended) return
   const items = useUIStore.getState().timelineItems
   const tid = suspended.timelineItemId
+  if (suspended.pending.method === 'template_intake_review' && suspended.pending.origin === 'DIRECT') {
+    return
+  }
   if (!tid) {
     useExtensionUIStore.setState({ suspended: null })
     return

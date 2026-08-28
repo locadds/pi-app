@@ -12,10 +12,10 @@ import { z } from 'zod'
 
 import {
   type TemplateIntakeDraftDecisionItemV1,
-  type TemplateIntakeFinalDecisionItemV1,
   type TemplateIntakeReportV1,
   type TemplateIntakeUpdateOperationV1,
 } from '@shared/xiaogui-work-docx-template-intake'
+import { summarizeTemplateReviewActionsV2 } from '@shared/xiaogui-template-review-decisions'
 import type {
   TemplateReviewActionV2,
   TemplateReviewRequestV2,
@@ -487,36 +487,6 @@ function buildTemplateReviewRequestV2(
   }
 }
 
-function decisionSummaryFromReviewV2(
-  report: TemplateIntakeReportV1,
-  actions: readonly TemplateReviewActionV2[],
-): TemplateIntakeFinalDecisionItemV1[] {
-  const byTarget = new Map<string, TemplateReviewActionV2[]>()
-  for (const action of actions) (byTarget.get(action.targetId) ?? byTarget.set(action.targetId, []).get(action.targetId)!).push(action)
-  return report.candidates.map((candidate) => {
-    const targetActions = byTarget.get(candidate.candidateId) ?? []
-    const action = targetActions.find((item) => item.kind !== 'KEEP') ?? targetActions[0]
-    if (!action) return { candidateId: candidate.candidateId, decision: 'FIXED' }
-    const riskReason = targetActions.find((item) => item.highRiskOverrideReason)?.highRiskOverrideReason
-    const riskConfirmed = targetActions.some((item) => item.highRiskOverrideConfirmed === true)
-    const common = {
-      candidateId: candidate.candidateId,
-      ...(riskReason ? { highRiskOverrideReason: riskReason } : {}),
-      ...(riskConfirmed ? { highRiskOverrideConfirmed: true as const } : {}),
-    }
-    switch (action.kind) {
-      case 'FIELD': return { ...common, decision: 'VARIABLE', fieldName: action.fieldName }
-      case 'REMOVE': return { ...common, decision: 'EXCLUDE' }
-      case 'REPEAT': return { ...common, decision: 'REPEAT', fieldName: action.blockName }
-      case 'CONDITIONAL': return { ...common, decision: 'CONDITIONAL', fieldName: action.conditionName }
-      case 'KEEP':
-      case 'REPLACE_TEXT':
-      case 'REPLACE_IMAGE':
-        return { ...common, decision: 'FIXED' }
-    }
-  })
-}
-
 function publicText(result: SafeToolDetails): string {
   switch (result.kind) {
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_SELECTION_CANCELLED':
@@ -636,7 +606,7 @@ export function addXiaoguiWorkDocxTemplateIntakeTool(
           if (reviewed.cancelled) {
             const draftActions = 'draftActions' in reviewed ? reviewed.draftActions : []
             if (draftActions.length > 0) {
-              const decisions = decisionSummaryFromReviewV2(report, draftActions)
+              const decisions = summarizeTemplateReviewActionsV2(report, draftActions)
               const saved = await callHost(
                 {
                   action: 'UPDATE',
@@ -673,7 +643,7 @@ export function addXiaoguiWorkDocxTemplateIntakeTool(
             {
               action: 'REVIEW',
               submission: {
-                decisions: decisionSummaryFromReviewV2(report, reviewedV2.actions),
+                decisions: summarizeTemplateReviewActionsV2(report, reviewedV2.actions),
                 reviewActionsV2: reviewedV2.actions,
               },
             },

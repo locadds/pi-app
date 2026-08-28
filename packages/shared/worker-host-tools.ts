@@ -180,6 +180,8 @@ export type XiaoguiWorkDocxTemplateIntakePayloadV1 =
   | (XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 & {
       action: 'UPDATE'
       operations: readonly TemplateIntakeUpdateOperationV1[]
+      /** 直接复核入口用于把草稿写回绑定到用户点击的报告。 */
+      reportId?: string
     })
   | (XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 & {
       /** 从已确认记录复制出新草稿，并原子应用本次修改；旧确认记录保持不变。 */
@@ -190,6 +192,8 @@ export type XiaoguiWorkDocxTemplateIntakePayloadV1 =
       action: 'REVIEW'
       /** 首次 REVIEW 省略；复核卡提交后仍以 REVIEW 回送。 */
       submission?: TemplateIntakeReviewSubmissionV1
+      /** 省略时保持原模型工具行为；直接复核入口必须提供。 */
+      reportId?: string
     })
   | (XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 & {
       action: 'RESUME'
