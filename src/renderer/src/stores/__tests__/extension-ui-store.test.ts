@@ -43,4 +43,18 @@ describe('extension UI cancellation', () => {
 
     expect(invoke).not.toHaveBeenCalled()
   })
+
+  it('keeps a suspended direct document review available without a running tool row', () => {
+    useExtensionUIStore.getState().setActivePending({
+      id: 'direct-review-1',
+      method: 'template_intake_review',
+      origin: 'DIRECT',
+      payload: { reviewVersion: 2 },
+    } as never)
+    useExtensionUIStore.getState().suspendActive({})
+
+    useExtensionUIStore.getState().pruneStaleSuspension()
+
+    expect(useExtensionUIStore.getState().suspended?.requestId).toBe('direct-review-1')
+  })
 })

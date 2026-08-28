@@ -151,6 +151,7 @@ const PayloadBaseSchema = z.discriminatedUnion('action', [
   CommonSchema.extend({
     action: z.literal('UPDATE'),
     operations: z.array(UpdateOperationSchema).min(1).max(200),
+    reportId: z.string().min(1).max(160).optional(),
   }).strict(),
   CommonSchema.extend({
     action: z.literal('REOPEN'),
@@ -158,6 +159,7 @@ const PayloadBaseSchema = z.discriminatedUnion('action', [
   }).strict(),
   CommonSchema.extend({
     action: z.literal('REVIEW'),
+    reportId: z.string().min(1).max(160).optional(),
     submission: z
       .object({
         decisions: z.array(FinalDecisionItemSchema).max(200),

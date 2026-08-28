@@ -1,29 +1,47 @@
 import '@testing-library/jest-dom/vitest'
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useUIStore } from '@renderer/stores/ui-store'
+import { useExtensionUIStore } from '@renderer/stores/extension-ui-store'
 import type { TimelineDisplayItem } from '@renderer/features/timeline/timeline-display-items'
 
 import {
   hasConfirmedTemplateIntake,
+  findReviewableTemplateIntake,
   hasReviewableTemplateIntake,
   TemplateIntakeNextActions,
   TemplateIntakeStartReviewAction,
 } from './TemplateIntakeNextActions'
 
+const { invokeMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn().mockResolvedValue({}),
+}))
+
+vi.mock('@renderer/lib/ipc-client', () => ({
+  ipcClient: { invoke: invokeMock },
+}))
+
 let uiSnapshot: ReturnType<typeof useUIStore.getState>
+let extensionUiSnapshot: ReturnType<typeof useExtensionUIStore.getState>
 
 beforeEach(() => {
   uiSnapshot = useUIStore.getState()
-  useUIStore.setState({ composerPrefill: null })
+  extensionUiSnapshot = useExtensionUIStore.getState()
+  useUIStore.setState({
+    composerPrefill: null,
+    historySessionFile: 'D:\\sessions\\work.jsonl',
+  })
+  useExtensionUIStore.setState({ activePending: null, suspended: null })
+  invokeMock.mockReset()
 })
 
 afterEach(() => {
   cleanup()
   useUIStore.setState(uiSnapshot, true)
+  useExtensionUIStore.setState(extensionUiSnapshot, true)
 })
 
 describe('TemplateIntakeNextActions', () => {
@@ -68,7 +86,10 @@ describe('TemplateIntakeNextActions', () => {
 
     expect(
       hasReviewableTemplateIntake([
-        block({ kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY' }),
+        block({
+          kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY',
+          report: { reportId: 'report-1' },
+        }),
       ]),
     ).toBe(true)
     expect(
@@ -89,14 +110,31 @@ describe('TemplateIntakeNextActions', () => {
         }),
       ]),
     ).toBe(false)
+
+    expect(
+      findReviewableTemplateIntake([
+        block({
+          kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY',
+          report: { reportId: 'report-1' },
+        }),
+      ]),
+    ).toEqual({ reportId: 'report-1' })
   })
 
-  it('开始复核按钮只填写现有输入框，不自动发送', async () => {
+  it('开始复核按钮直接打开当前报告，不填写或发送提示词', async () => {
+    invokeMock.mockResolvedValue({ ok: true, state: 'CONFIRMED' })
     const user = userEvent.setup()
-    render(<TemplateIntakeStartReviewAction />)
+    render(<TemplateIntakeStartReviewAction target={{ reportId: 'report-1' }} />)
 
-    await user.click(screen.getByRole('button', { name: '填写提示词：开始复核' }))
-    expect(useUIStore.getState().composerPrefill).toBe('复核')
+    await user.click(screen.getByRole('button', { name: '直接打开文档复核' }))
+    expect(invokeMock).toHaveBeenCalledWith('xiaogui.work.template-intake.review.open', {
+      sessionFile: 'D:\\sessions\\work.jsonl',
+      reportId: 'report-1',
+    })
+    expect(useUIStore.getState().composerPrefill).toBeNull()
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '填写提示词：生成正式模板' })).toBeVisible()
+    })
   })
 
   it('两个按钮只填写现有输入框提示词，不直接发送', async () => {

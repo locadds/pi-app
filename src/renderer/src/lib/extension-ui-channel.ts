@@ -68,7 +68,12 @@ function rawToPending(raw: Record<string, unknown>): ExtensionUIPending | null {
       Array.isArray(payload.targets) &&
       Array.isArray(payload.draftActions)
     if (!validV1 && !validV2) return null
-    return { id, method: 'template_intake_review', payload }
+    return {
+      id,
+      method: 'template_intake_review',
+      payload,
+      ...(raw.origin === 'xiaogui-direct' ? { origin: 'DIRECT' as const } : {}),
+    }
   }
   if (method === 'custom' && raw.kind === 'template_materialize_preview') {
     const payload = raw.payload as TemplateMaterializePreviewRequestV1 | undefined

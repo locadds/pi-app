@@ -57,8 +57,8 @@ import { enrichPlainTextWithPaths } from './markdown-inline-paths'
 import { AttachmentChip } from '@renderer/features/composer/attachment-chip'
 import { type AttachmentMeta, type Segment } from '@renderer/features/composer/attachments'
 import {
+  findReviewableTemplateIntake,
   hasConfirmedTemplateIntake,
-  hasReviewableTemplateIntake,
   TemplateIntakeNextActions,
   TemplateIntakeStartReviewAction,
 } from '@renderer/xiaogui/components/TemplateIntakeNextActions'
@@ -985,6 +985,7 @@ export function Timeline() {
         const isLiveTurn =
           turnIndex === turnGroups.length - 1 &&
           (!!streamingAssistantId || agentRunning || sessionChrome.phase === 'waiting_ui')
+        const reviewTarget = findReviewableTemplateIntake(turn.blocks)
         const turnLastProseId = lastProseIdInTurn(turn.blocks)
         return (
           <Fragment key={turn.turnId}>
@@ -1031,8 +1032,8 @@ export function Timeline() {
               <TemplateIntakeNextActions />
             ) : turnIndex === turnGroups.length - 1 &&
               !isLiveTurn &&
-              hasReviewableTemplateIntake(turn.blocks) ? (
-              <TemplateIntakeStartReviewAction />
+              reviewTarget ? (
+              <TemplateIntakeStartReviewAction target={reviewTarget} />
             ) : null}
             {/* Cursor-style files card: only on the last completed turn.
                 Older turns never keep a card; a new live turn hides this until done. */}

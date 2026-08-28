@@ -244,6 +244,15 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
       candidateId: candidate.candidateId,
       decision: 'FIXED',
     }))
+    const wrongReport = await service.execute(ADDRESS, {
+      action: 'REVIEW',
+      ...COMMON,
+      reportId: 'xgti1_other-report',
+    })
+    expect(wrongReport).toEqual({
+      ok: false,
+      error: { code: 'TEMPLATE_INTAKE_REPORT_NOT_FOUND' },
+    })
     const missingReason = await service.execute(ADDRESS, {
       action: 'REVIEW',
       ...COMMON,

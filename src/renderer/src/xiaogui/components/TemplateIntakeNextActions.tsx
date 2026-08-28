@@ -1,4 +1,9 @@
+import { useState } from 'react'
+import { toast } from 'sonner'
+
 import { focusComposerInput } from '@renderer/lib/composer-line-ref'
+import { ipcClient } from '@renderer/lib/ipc-client'
+import { useExtensionUIStore } from '@renderer/stores/extension-ui-store'
 import { useUIStore } from '@renderer/stores/ui-store'
 import type { TimelineDisplayItem, TimelineRawItem } from '@renderer/features/timeline/timeline-display-items'
 
@@ -46,6 +51,19 @@ function isReviewableTemplateIntakeTool(item: TimelineRawItem): boolean {
   )
 }
 
+export interface ReviewableTemplateIntakeTarget {
+  reportId: string
+}
+
+function reviewTargetFromTool(item: TimelineRawItem): ReviewableTemplateIntakeTarget | null {
+  if (!isReviewableTemplateIntakeTool(item) || !isRecord(item.toolDetails)) return null
+  const report = item.toolDetails.report
+  if (!isRecord(report) || typeof report.reportId !== 'string' || !report.reportId.trim()) {
+    return null
+  }
+  return { reportId: report.reportId }
+}
+
 /** 仅在当前轮确实保存了人工确认记录后，提供下一步提示词。 */
 export function hasConfirmedTemplateIntake(blocks: readonly TimelineDisplayItem[]): boolean {
   return blocks.some((block) =>
@@ -64,6 +82,24 @@ export function hasReviewableTemplateIntake(blocks: readonly TimelineDisplayItem
   )
 }
 
+export function findReviewableTemplateIntake(
+  blocks: readonly TimelineDisplayItem[],
+): ReviewableTemplateIntakeTarget | null {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]
+    if (block.kind === 'tool-group') {
+      for (let toolIndex = block.tools.length - 1; toolIndex >= 0; toolIndex -= 1) {
+        const target = reviewTargetFromTool(block.tools[toolIndex])
+        if (target) return target
+      }
+      continue
+    }
+    const target = reviewTargetFromTool(block.item)
+    if (target) return target
+  }
+  return null
+}
+
 function useFillComposer() {
   const setComposerPrefill = useUIStore((state) => state.setComposerPrefill)
   return (prompt: string) => {
@@ -72,8 +108,60 @@ function useFillComposer() {
   }
 }
 
-export function TemplateIntakeStartReviewAction() {
-  const fillComposer = useFillComposer()
+function isSuspendedDirectReview(reportId: string): boolean {
+  const suspended = useExtensionUIStore.getState().suspended
+  if (
+    suspended?.pending.method !== 'template_intake_review' ||
+    suspended.pending.origin !== 'DIRECT' ||
+    !('reviewVersion' in suspended.pending.payload) ||
+    suspended.pending.payload.reviewVersion !== 2
+  ) {
+    return false
+  }
+  return suspended.pending.payload.document.reviewId === reportId
+}
+
+export function TemplateIntakeStartReviewAction({
+  target,
+}: {
+  target: ReviewableTemplateIntakeTarget
+}) {
+  const sessionFile = useUIStore((state) => state.historySessionFile)
+  const suspended = useExtensionUIStore((state) => state.suspended)
+  const resumeSuspended = useExtensionUIStore((state) => state.resumeSuspended)
+  const [state, setState] = useState<'IDLE' | 'OPENING' | 'CONFIRMED'>('IDLE')
+  const canResume = isSuspendedDirectReview(target.reportId) && suspended != null
+
+  if (state === 'CONFIRMED') return <TemplateIntakeNextActions />
+
+  const openReview = async () => {
+    if (canResume) {
+      resumeSuspended()
+      return
+    }
+    if (state === 'OPENING') return
+    if (!sessionFile) {
+      toast.error('当前会话尚未准备好，请重新打开后再试')
+      return
+    }
+
+    setState('OPENING')
+    try {
+      const result = await ipcClient.invoke('xiaogui.work.template-intake.review.open', {
+        sessionFile,
+        reportId: target.reportId,
+      })
+      if (!result?.ok) {
+        toast.error(result?.message || '暂时无法打开文档复核')
+        setState('IDLE')
+        return
+      }
+      setState(result.state === 'CONFIRMED' ? 'CONFIRMED' : 'IDLE')
+    } catch {
+      toast.error('暂时无法打开文档复核，请稍后重试')
+      setState('IDLE')
+    }
+  }
 
   return (
     <div
@@ -84,10 +172,11 @@ export function TemplateIntakeStartReviewAction() {
       <button
         type="button"
         className="rounded-md bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        onClick={() => fillComposer('复核')}
-        aria-label="填写提示词：开始复核"
+        onClick={() => void openReview()}
+        disabled={state === 'OPENING' && !canResume}
+        aria-label={canResume ? '继续文档复核' : '直接打开文档复核'}
       >
-        开始复核
+        {canResume ? '继续复核' : state === 'OPENING' ? '正在打开复核…' : '开始复核'}
       </button>
     </div>
   )

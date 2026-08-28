@@ -525,11 +525,11 @@ export class WorkDocxTemplateIntakeServiceV1 {
         case 'START':
           return await this.start(address, payload.analysis, payload.reportId, signal)
         case 'UPDATE':
-          return this.update(address, payload.operations)
+          return this.update(address, payload.operations, payload.reportId)
         case 'REOPEN':
           return await this.reopen(address, payload.operations)
         case 'REVIEW':
-          return await this.review(address, payload.submission, signal)
+          return await this.review(address, payload.submission, signal, payload.reportId)
         case 'RESUME':
           return await this.resume(address, payload.reportId)
         case 'DELETE':
@@ -774,8 +774,12 @@ export class WorkDocxTemplateIntakeServiceV1 {
   private update(
     address: SessionAddressV1,
     operations: readonly TemplateIntakeUpdateOperationV1[],
+    reportId?: string,
   ): TemplateIntakeServiceOutcomeV1 {
     const record = this.requireLatest(address)
+    if (reportId && record.report.reportId !== reportId) {
+      return failure('TEMPLATE_INTAKE_REPORT_NOT_FOUND')
+    }
     if (!['DRAFT', 'REVIEWING'].includes(record.report.status)) {
       return failure('TEMPLATE_INTAKE_INPUT_INVALID')
     }
@@ -1063,8 +1067,12 @@ export class WorkDocxTemplateIntakeServiceV1 {
     address: SessionAddressV1,
     submission: TemplateIntakeReviewSubmissionV1 | undefined,
     signal?: AbortSignal,
+    reportId?: string,
   ): Promise<TemplateIntakeServiceOutcomeV1> {
     const record = this.requireLatest(address)
+    if (reportId && record.report.reportId !== reportId) {
+      return failure('TEMPLATE_INTAKE_REPORT_NOT_FOUND')
+    }
     if (record.report.status === 'CONFIRMED') {
       return record.decision
         ? {

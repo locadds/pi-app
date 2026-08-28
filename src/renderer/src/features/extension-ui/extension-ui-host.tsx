@@ -56,8 +56,11 @@ function findToolContextForUi(): { toolCallId?: string; toolName?: string; timel
 }
 
 function suspendActiveDialog() {
+  const state = useExtensionUIStore.getState()
+  const direct = state.activePending?.method === 'template_intake_review'
+    && state.activePending.origin === 'DIRECT'
   const meta = findToolContextForUi()
-  useExtensionUIStore.getState().suspendActive(meta)
+  state.suspendActive(meta)
   const { timelineItemId } = meta
   if (timelineItemId) {
     useUIStore.getState().updateTimelineItem(timelineItemId, {
@@ -65,7 +68,11 @@ function suspendActiveDialog() {
       toolStatusLine: '等待你的作答（点击「继续作答」）',
     })
   }
-  toast.message('已挂起，可在时间线该工具行点击「继续作答」')
+  toast.message(
+    direct
+      ? '复核已暂存，可点击报告下方的「继续复核」恢复'
+      : '已挂起，可在时间线该工具行点击「继续作答」',
+  )
 }
 
 export function ExtensionUIHost() {
