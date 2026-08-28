@@ -122,12 +122,17 @@ describe('TemplateIntakeNextActions', () => {
   })
 
   it('开始复核按钮直接打开当前报告，不填写或发送提示词', async () => {
-    invokeMock.mockResolvedValue({ ok: true, state: 'CONFIRMED' })
+    invokeMock
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, state: 'CONFIRMED' })
     const user = userEvent.setup()
     render(<TemplateIntakeStartReviewAction target={{ reportId: 'report-1' }} />)
 
     await user.click(screen.getByRole('button', { name: '直接打开文档复核' }))
-    expect(invokeMock).toHaveBeenCalledWith('xiaogui.work.template-intake.review.open', {
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'session.setVisible', {
+      sessionFile: 'D:\\sessions\\work.jsonl',
+    })
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'xiaogui.work.template-intake.review.open', {
       sessionFile: 'D:\\sessions\\work.jsonl',
       reportId: 'report-1',
     })
