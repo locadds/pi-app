@@ -58,7 +58,9 @@ import { AttachmentChip } from '@renderer/features/composer/attachment-chip'
 import { type AttachmentMeta, type Segment } from '@renderer/features/composer/attachments'
 import {
   hasConfirmedTemplateIntake,
+  hasReviewableTemplateIntake,
   TemplateIntakeNextActions,
+  TemplateIntakeStartReviewAction,
 } from '@renderer/xiaogui/components/TemplateIntakeNextActions'
 
 const MarkdownView = lazy(() => import('./markdown-view'))
@@ -1027,6 +1029,10 @@ export function Timeline() {
             !isLiveTurn &&
             hasConfirmedTemplateIntake(turn.blocks) ? (
               <TemplateIntakeNextActions />
+            ) : turnIndex === turnGroups.length - 1 &&
+              !isLiveTurn &&
+              hasReviewableTemplateIntake(turn.blocks) ? (
+              <TemplateIntakeStartReviewAction />
             ) : null}
             {/* Cursor-style files card: only on the last completed turn.
                 Older turns never keep a card; a new live turn hides this until done. */}
