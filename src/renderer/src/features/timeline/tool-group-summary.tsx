@@ -3,7 +3,11 @@ import { useTranslation } from 'react-i18next'
 import { useUIStore } from '@renderer/stores/ui-store'
 import { ChevronRight } from '@renderer/components/icons'
 import { cn } from '@renderer/lib/utils'
-import { ToolCallRow } from './tool-call-row'
+import {
+  ToolCallRow,
+  xiaoguiToolActivityLabel,
+  xiaoguiToolDisplayName,
+} from './tool-call-row'
 import { ThinkingChainBlock } from './thinking-chain-block'
 import type { ToolTimelineItem } from '@renderer/stores/ui-store-types'
 import type { TimelineClusterChild } from './timeline-display-items'
@@ -44,9 +48,17 @@ function ToolGroupSummaryImpl({
   )
 
   const activityLabel = useMemo(() => {
+    if (tools.length === 1) {
+      const xiaoguiLabel = xiaoguiToolActivityLabel(tools[0])
+      if (xiaoguiLabel) return xiaoguiLabel
+    }
     const line = formatCollapsedToolActivityLine(summary, t)
     if (line) return line
-    const names = [...new Set(tools.map((tool) => tool.toolName || 'tool'))]
+    const names = [
+      ...new Set(
+        tools.map((tool) => xiaoguiToolDisplayName(tool.toolName) ?? tool.toolName ?? 'tool'),
+      ),
+    ]
     return t('timeline:activity.usedTools', {
       count: tools.length,
       names: names.slice(0, 4).join(', '),
