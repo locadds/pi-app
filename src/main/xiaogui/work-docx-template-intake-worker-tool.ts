@@ -130,6 +130,10 @@ const PayloadBaseSchema = z.discriminatedUnion('action', [
     operations: z.array(UpdateOperationSchema).min(1).max(200),
   }).strict(),
   CommonSchema.extend({
+    action: z.literal('REOPEN'),
+    operations: z.array(UpdateOperationSchema).min(1).max(200),
+  }).strict(),
+  CommonSchema.extend({
     action: z.literal('REVIEW'),
     submission: z
       .object({ decisions: z.array(FinalDecisionItemSchema).max(200) })

@@ -285,10 +285,39 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
     )
     expect(createHash('sha256').update(await readFile(sourcePath)).digest('hex')).toBe(originalHash)
 
+    const reopened = await service.execute(ADDRESS, {
+      action: 'REOPEN',
+      ...COMMON,
+      operations: [
+        {
+          match: { riskFlags: ['CONTACT_INFORMATION'] },
+          decision: 'EXCLUDE',
+        },
+      ],
+    })
+    expect(reopened.ok && reopened.value.kind).toBe(
+      'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_UPDATED',
+    )
+    if (!reopened.ok || reopened.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_UPDATED') {
+      throw new Error('expected reopened draft')
+    }
+    expect(reopened.value.report.reportId).not.toBe(report.reportId)
+    expect(reopened.value.report.status).toBe('DRAFT')
+    expect(
+      reopened.value.draftDecisions.every((item) => item.highRiskOverrideConfirmed !== true),
+    ).toBe(true)
+    expect(store.get(ADDRESS, report.reportId)).toMatchObject({
+      report: { status: 'CONFIRMED' },
+      decision: { reportId: report.reportId },
+    })
+    const reopenedRecord = store.get(ADDRESS, reopened.value.report.reportId)
+    expect(reopenedRecord).toMatchObject({ report: { status: 'DRAFT' } })
+    expect(reopenedRecord?.decision).toBeUndefined()
+
     await writeFile(sourcePath, await makeDocx('源文件已经变化'))
     const resumed = await service.execute(ADDRESS, {
       action: 'RESUME',
-      reportId: report.reportId,
+      reportId: reopened.value.report.reportId,
       ...COMMON,
     })
     expect(resumed).toEqual({

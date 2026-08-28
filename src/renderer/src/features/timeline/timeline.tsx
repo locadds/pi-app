@@ -56,6 +56,10 @@ import { EmptyState } from '@renderer/components/ui/empty-state'
 import { enrichPlainTextWithPaths } from './markdown-inline-paths'
 import { AttachmentChip } from '@renderer/features/composer/attachment-chip'
 import { type AttachmentMeta, type Segment } from '@renderer/features/composer/attachments'
+import {
+  hasConfirmedTemplateIntake,
+  TemplateIntakeNextActions,
+} from '@renderer/xiaogui/components/TemplateIntakeNextActions'
 
 const MarkdownView = lazy(() => import('./markdown-view'))
 
@@ -1019,6 +1023,11 @@ export function Timeline() {
                 { showMessageActions: isLastProse },
               )
             })}
+            {turnIndex === turnGroups.length - 1 &&
+            !isLiveTurn &&
+            hasConfirmedTemplateIntake(turn.blocks) ? (
+              <TemplateIntakeNextActions />
+            ) : null}
             {/* Cursor-style files card: only on the last completed turn.
                 Older turns never keep a card; a new live turn hides this until done. */}
             {turnIndex === turnGroups.length - 1 && !isLiveTurn ? (

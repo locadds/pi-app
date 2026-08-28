@@ -115,6 +115,7 @@ const ActionSchema = Type.Object(
     action: Type.Union([
       Type.Literal('START'),
       Type.Literal('UPDATE'),
+      Type.Literal('REOPEN'),
       Type.Literal('REVIEW'),
       Type.Literal('RESUME'),
       Type.Literal('DELETE'),
@@ -124,7 +125,7 @@ const ActionSchema = Type.Object(
       Type.Array(UpdateOperationSchema, {
         minItems: 1,
         maxItems: 200,
-        description: '仅 UPDATE 使用。',
+        description: 'UPDATE 或 REOPEN 使用。',
       }),
     ),
     reportId: Type.Optional(
@@ -407,6 +408,7 @@ export function addXiaoguiWorkDocxTemplateIntakeTool(
       '只有用户明确提出“整理成模板”或明确同意进入整理流程时才能调用 START；仅要求生成文档但选中普通成品 Word 时，必须先询问是否整理。',
       'START 返回报告后必须结束本轮工具调用；只有用户下一条消息明确要求复核或确认时才调用 REVIEW。',
       '用户用自然语言批量调整时只调用 UPDATE；优先用 match.kinds、match.riskFlags 或 match.keywords，由主进程展开为逐项决定，用户不需要知道候选编号。',
+      '用户在报告已经确认后提出修改时必须调用 REOPEN，并把本次修改放入 operations；主进程会复制出新草稿并保留旧确认记录，不得对已确认报告直接调用 UPDATE。',
       '同一 match 数组内任一匹配即可，不同维度必须同时满足；不要猜测候选编号，不要用关键词匹配文件路径或全文。',
       '例如“排除联系方式和扫描附件”应使用一个 operation：match.riskFlags 为 [CONTACT_INFORMATION, SCANNED_ATTACHMENT]，decision 为 EXCLUDE。',
       '用户明确说“不要打开复核卡”时，本轮绝对不能调用 REVIEW；只有用户明确说“复核”“确认”或“打开复核卡”时才调用 REVIEW。',
