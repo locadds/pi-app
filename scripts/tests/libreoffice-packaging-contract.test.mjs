@@ -115,4 +115,14 @@ describe('P3C-E0 LibreOffice packaging contract', () => {
     assert.match(prepare, /LIBREOFFICE_CONTRACT/)
     assert.match(prepare, /SOURCE_URL\s*=\s*LIBREOFFICE_CONTRACT\.sourceUrl/)
   })
+
+  it('finds the prepared private runtime in an unpackaged development checkout', () => {
+    const composition = read(
+      'src/main/xiaogui/work-document-review-renderer-composition.ts',
+    )
+    assert.match(
+      composition,
+      /join\(\s*app\.getAppPath\(\),\s*'resources',\s*'libreoffice-runtime',\s*'runtime',\s*'program',\s*executable,?\s*\)/,
+    )
+  })
 })

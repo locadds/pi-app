@@ -16,6 +16,14 @@ function libreOfficeExecutablePath(): string {
   const candidates = [
     process.env.XIAOGUI_LIBREOFFICE_PATH,
     join(process.resourcesPath, 'libreoffice', 'program', executable),
+    join(
+      app.getAppPath(),
+      'resources',
+      'libreoffice-runtime',
+      'runtime',
+      'program',
+      executable,
+    ),
     join(app.getAppPath(), 'resources', 'libreoffice-runtime', 'program', executable),
     process.platform === 'win32'
       ? join('C:\\Program Files', 'LibreOffice', 'program', executable)
