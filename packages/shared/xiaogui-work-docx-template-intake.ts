@@ -12,6 +12,7 @@ export const TEMPLATE_INTAKE_REVIEW_PAGE_SIZE_V1 = 20 as const
 export type TemplateIntakeActionV1 =
   | 'START'
   | 'UPDATE'
+  | 'REOPEN'
   | 'REVIEW'
   | 'RESUME'
   | 'DELETE'
@@ -29,7 +30,7 @@ export const TEMPLATE_INTAKE_ALLOWED_ACTIONS_BY_STATUS_V1 = {
   ANALYZING: ['CANCEL'],
   DRAFT: ['UPDATE', 'REVIEW', 'RESUME', 'DELETE', 'CANCEL'],
   REVIEWING: ['REVIEW', 'CANCEL'],
-  CONFIRMED: ['RESUME', 'DELETE'],
+  CONFIRMED: ['REOPEN', 'RESUME', 'DELETE'],
   STALE: ['START', 'DELETE'],
   CANCELLED: ['START', 'RESUME', 'DELETE'],
 } as const satisfies Record<TemplateIntakeReportStatusV1, readonly TemplateIntakeActionV1[]>

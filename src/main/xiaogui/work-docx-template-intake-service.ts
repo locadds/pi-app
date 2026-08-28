@@ -406,6 +406,8 @@ export class WorkDocxTemplateIntakeServiceV1 {
           return await this.start(address, payload.analysis, payload.reportId, signal)
         case 'UPDATE':
           return this.update(address, payload.operations)
+        case 'REOPEN':
+          return await this.reopen(address, payload.operations)
         case 'REVIEW':
           return await this.review(address, payload.submission)
         case 'RESUME':
@@ -638,6 +640,66 @@ export class WorkDocxTemplateIntakeServiceV1 {
     if (!['DRAFT', 'REVIEWING'].includes(record.report.status)) {
       return failure('TEMPLATE_INTAKE_INPUT_INVALID')
     }
+    return this.applyUpdateOperations(record, operations, 'SAVE')
+  }
+
+  private async reopen(
+    address: SessionAddressV1,
+    operations: readonly TemplateIntakeUpdateOperationV1[],
+  ): Promise<TemplateIntakeServiceOutcomeV1> {
+    const confirmed = this.requireLatest(address)
+    if (confirmed.report.status !== 'CONFIRMED' || !confirmed.decision) {
+      return failure('TEMPLATE_INTAKE_INPUT_INVALID')
+    }
+
+    let source: PrivateSourceV1
+    try {
+      source = await readPrivateSource(confirmed.sourcePath)
+    } catch (error) {
+      if (
+        error instanceof TemplateIntakeServiceErrorV1 &&
+        error.code === 'TEMPLATE_INTAKE_SOURCE_MISSING'
+      ) {
+        return failure('TEMPLATE_INTAKE_SOURCE_MISSING')
+      }
+      throw error
+    }
+    if (source.sha256 !== confirmed.sourceSha256) {
+      return failure('TEMPLATE_INTAKE_SOURCE_CHANGED')
+    }
+
+    const previousUpdatedAt = Date.parse(confirmed.report.updatedAt)
+    const reopenedAt = new Date(
+      Math.max(this.now().getTime(), Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0),
+    ).toISOString()
+    const draftDecisions = confirmed.decision.decisions.map((item) => ({
+      candidateId: item.candidateId,
+      decision: item.decision,
+      ...(item.fieldName ? { fieldName: item.fieldName } : {}),
+      ...(item.highRiskOverrideReason
+        ? { highRiskOverrideReason: item.highRiskOverrideReason }
+        : {}),
+    }))
+    const record: StoredTemplateIntakeRecordV1 = {
+      ...confirmed,
+      report: {
+        ...confirmed.report,
+        reportId: randomUUID(),
+        status: 'DRAFT',
+        createdAt: reopenedAt,
+        updatedAt: reopenedAt,
+      },
+      draftDecisions,
+      decision: undefined,
+    }
+    return this.applyUpdateOperations(record, operations, 'CREATE')
+  }
+
+  private applyUpdateOperations(
+    record: StoredTemplateIntakeRecordV1,
+    operations: readonly TemplateIntakeUpdateOperationV1[],
+    persistence: 'CREATE' | 'SAVE',
+  ): TemplateIntakeServiceOutcomeV1 {
     const candidatesById = new Map(
       record.report.candidates.map((candidate) => [candidate.candidateId, candidate]),
     )
@@ -701,8 +763,13 @@ export class WorkDocxTemplateIntakeServiceV1 {
     }
     if (matchedCandidateCount === 0) return failure('TEMPLATE_INTAKE_INPUT_INVALID')
     record.draftDecisions = [...decisions.values()]
-    record.report = withTemplateIntakeStatusV1(record.report, 'DRAFT', this.nowIso())
-    this.options.store.save(record)
+    record.report = withTemplateIntakeStatusV1(
+      record.report,
+      'DRAFT',
+      persistence === 'CREATE' ? record.report.updatedAt : this.nowIso(),
+    )
+    if (persistence === 'CREATE') this.options.store.create(record)
+    else this.options.store.save(record)
     return {
       ok: true,
       value: {
