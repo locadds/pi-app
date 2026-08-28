@@ -147,6 +147,10 @@ export function TemplateIntakeStartReviewAction({
 
     setState('OPENING')
     try {
+      // Re-assert the visible session before opening a local-only review. A cached
+      // history view can be painted before the fire-and-forget visibility report
+      // reaches main, but the review must still bind to exactly what the user sees.
+      await ipcClient.invoke('session.setVisible', { sessionFile })
       const result = await ipcClient.invoke('xiaogui.work.template-intake.review.open', {
         sessionFile,
         reportId: target.reportId,
