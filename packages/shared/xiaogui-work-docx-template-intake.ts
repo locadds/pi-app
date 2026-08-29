@@ -1,4 +1,5 @@
 import type { TemplateReviewActionV2 } from './xiaogui-work-template-review'
+import type { TemplateFieldGraphV2 } from './xiaogui-template-field-graph-v2'
 
 /** WORK 普通成品 Word 只读整理契约。所有序号均从 1 开始。 */
 
@@ -204,6 +205,8 @@ export interface TemplateIntakeDecisionV1 {
    * 保留 V1 decisions 作为兼容摘要，物化器存在本字段时以它为准。
    */
   reviewActionsV2?: readonly TemplateReviewActionV2[]
+  /** 模板资产化 V2 语义真值；V1 物化器可继续忽略。 */
+  fieldGraphV2?: TemplateFieldGraphV2
   confirmedAtLocal: string
   confirmedBy: 'LOCAL_USER'
 }

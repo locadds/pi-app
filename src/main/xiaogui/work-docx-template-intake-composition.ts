@@ -37,6 +37,7 @@ export function getDefaultWorkDocxTemplateIntakeServiceV1(): WorkDocxTemplateInt
       ),
     ),
     reviewRenderer: getDefaultDocumentReviewRendererV1(),
+    templateDraftV2Enabled: process.env.XIAOGUI_TEMPLATE_DRAFT_V2 !== '0',
   })
   return defaultService
 }

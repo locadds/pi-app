@@ -40,6 +40,7 @@ import type {
 } from './xiaogui-work-docx-advanced-generation'
 import type { TemplateLibraryDetailV1 } from './xiaogui-template-library'
 import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from './xiaogui-work-template-review'
+import type { TemplateDraftReviewRequestV2 } from './xiaogui-template-draft-review'
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
@@ -424,6 +425,7 @@ export type XiaoguiWorkDocxTemplateIntakeResultV1 =
       draftDecisions: readonly TemplateIntakeDraftDecisionItemV1[]
       reviewRequestV2?: TemplateReviewRequestV2
       reviewRequestV3?: TemplateReviewRequestV3
+      templateDraftRequestV2?: TemplateDraftReviewRequestV2
     }
   | {
       kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CONFIRMED'

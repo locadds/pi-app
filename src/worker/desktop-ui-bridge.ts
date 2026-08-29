@@ -6,6 +6,7 @@ import type {
   TemplateIntakeReviewRequestV1,
   TemplateIntakeReviewResultV1,
 } from '@shared/xiaogui-work-docx-template-intake'
+import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
 import type {
   TemplateReviewRequestV2,
   TemplateReviewRequestV3,
@@ -47,7 +48,7 @@ export type ExtensionUIRequest =
       id: string
       method: 'custom'
       kind: 'template_intake_review'
-      payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2 | TemplateReviewRequestV3
+      payload: TemplateIntakeReviewRequestV1 | TemplateDraftReviewRequestV2 | TemplateReviewRequestV2 | TemplateReviewRequestV3
       toolCallId: string
     }
   | {
@@ -75,7 +76,7 @@ export type DesktopUIBridge = {
   ) => Promise<ExtensionUIQuestionnaireResult>
   requestTemplateIntakeReview: (
     toolCallId: string,
-    payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2 | TemplateReviewRequestV3,
+    payload: TemplateIntakeReviewRequestV1 | TemplateDraftReviewRequestV2 | TemplateReviewRequestV2 | TemplateReviewRequestV3,
     signal?: AbortSignal,
   ) => Promise<TemplateIntakeReviewResultV1 | TemplateReviewResultV2 | TemplateReviewResultV3>
   requestTemplateMaterializePreview: (
@@ -352,7 +353,12 @@ export function createDesktopUIBridge(
     requestTemplateIntakeReview(toolCallId, payload, signal) {
       const id = randomUUID()
       const fallback = 'reviewVersion' in payload
-        ? { cancelled: true as const, draftActions: payload.draftActions }
+        ? {
+            cancelled: true as const,
+            draftActions: payload.reviewVersion === 4
+              ? payload.recommendedActions
+              : payload.draftActions,
+          }
         : { cancelled: true as const, draftDecisions: payload.draftDecisions }
       return createDialogPromise(
         emitReq,

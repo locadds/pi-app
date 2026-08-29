@@ -10,6 +10,7 @@ import type {
   TemplateReviewTargetV2,
   TemplateReviewTargetV3,
 } from '@shared/xiaogui-work-template-review'
+import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { TemplateReviewV2Dialog } from './template-review-v2-dialog'
 
@@ -120,7 +121,69 @@ function requestV3(targets: readonly TemplateReviewTargetV3[]): TemplateReviewRe
   }
 }
 
-function renderDialog(payload: TemplateReviewRequestV2 | TemplateReviewRequestV3, requestId: string) {
+function requestDraftV2(): TemplateDraftReviewRequestV2 {
+  const advancedReview = requestV3([targetV3({
+    highlight: 'YELLOW',
+    reason: '项目名称需要确认',
+  })])
+  return {
+    reviewVersion: 4,
+    mode: 'QUICK',
+    document: advancedReview.document,
+    fieldGraph: {
+      graphVersion: 2,
+      graphId: 'graph-1',
+      source: advancedReview.document.source,
+      fields: [{
+        fieldId: 'field-1',
+        canonicalKey: 'project.name',
+        displayName: '项目名称',
+        valueType: 'TEXT',
+        structureKind: 'SIMPLE',
+        required: true,
+        sampleValue: '甲乙丙丁',
+        aliases: [],
+        occurrenceIds: ['occurrence-1'],
+        confidence: 0.8,
+        status: 'NEEDS_REVIEW',
+      }],
+      occurrences: [{
+        occurrenceId: 'occurrence-1',
+        fieldId: 'field-1',
+        sourceAnchor: { part: 'BODY', paragraphIndex: 1 },
+        originalText: '甲乙丙丁',
+        confidence: 0.8,
+        riskFlags: [],
+        status: 'MAPPED',
+      }],
+      issues: [{
+        issueId: 'issue-1',
+        kind: 'FIELD_AMBIGUOUS',
+        severity: 'WARNING',
+        title: '确认“项目名称”',
+        question: '是否把这一处作为项目名称？',
+        fieldIds: ['field-1'],
+        occurrenceIds: ['occurrence-1'],
+        suggestedActions: ['ACCEPT_SUGGESTION', 'KEEP_ORIGINAL', 'OPEN_ADVANCED_REVIEW'],
+        status: 'OPEN',
+      }],
+      analysisEvidenceId: 'evidence-1',
+      createdAt: '2026-08-29T00:00:00.000Z',
+      updatedAt: '2026-08-29T00:00:00.000Z',
+    },
+    targetBindings: [{
+      targetId: 'target-1',
+      fieldId: 'field-1',
+      issueIds: ['issue-1'],
+      recommendedAction: { targetId: 'target-1', kind: 'FIELD', fieldName: '项目名称' },
+    }],
+    recommendedActions: [{ targetId: 'target-1', kind: 'FIELD', fieldName: '项目名称' }],
+    quickIssueLimit: 15,
+    advancedReview,
+  }
+}
+
+function renderDialog(payload: TemplateDraftReviewRequestV2 | TemplateReviewRequestV2 | TemplateReviewRequestV3, requestId: string) {
   const onSubmit = vi.fn()
   const onSuspend = vi.fn()
   const onCancel = vi.fn()
@@ -150,6 +213,24 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 describe('TemplateReviewV2Dialog', () => {
+  it('默认展示业务字段和合并问题，技术候选只留在高级检查', async () => {
+    const user = userEvent.setup()
+    const { onSubmit } = renderDialog(requestDraftV2(), 'request-draft-v2')
+
+    expect(screen.getByRole('heading', { name: '模板草稿' })).toBeInTheDocument()
+    expect(screen.getByText('先确认模板要复用什么')).toBeInTheDocument()
+    expect(screen.getByText('是否把这一处作为项目名称？')).toBeInTheDocument()
+    expect(screen.queryByText('固定内容')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认字段草稿' })).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: '按建议处理' }))
+    await user.click(screen.getByRole('button', { name: '确认字段草稿' }))
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      actions: [{ targetId: 'target-1', kind: 'FIELD', fieldName: '项目名称' }],
+    }))
+  })
+
   it('renders V3 through a DOCX document token and submits an explicit decision', async () => {
     const user = userEvent.setup()
     const { onSubmit } = renderDialog(requestV3([targetV3()]), 'request-docx')

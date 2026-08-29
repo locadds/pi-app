@@ -9,6 +9,7 @@ import type {
   TemplateReviewTargetV3,
   TemplateReviewTextRangeV2,
 } from '@shared/xiaogui-work-template-review'
+import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { cn } from '@renderer/lib/utils'
 import {
@@ -18,6 +19,7 @@ import {
   X,
 } from '@renderer/components/icons'
 import { DocxHtmlViewer, type DocxHtmlViewerHandleV1 } from '@renderer/components/docx-html-viewer'
+import { TemplateDraftWorkspace } from '@renderer/features/template-draft/template-draft-workspace'
 
 type TemplateReviewRequest = TemplateReviewRequestV2 | TemplateReviewRequestV3
 type TemplateReviewTarget = TemplateReviewTargetV2 | TemplateReviewTargetV3
@@ -134,19 +136,44 @@ function isDirectDocxReview(payload: TemplateReviewRequest): payload is Template
   return isV3(payload) && payload.document.render.mode === 'DOCX_HTML'
 }
 
-export function TemplateReviewV2Dialog({
+type TemplateReviewDialogProps = {
+  requestId: string
+  payload: TemplateDraftReviewRequestV2 | TemplateReviewRequest
+  onSuspend: () => void
+  onCancel: (result: Extract<TemplateReviewResultV2, { cancelled: true }>) => void
+  onSubmit: (result: TemplateReviewResultV2) => void
+}
+
+export function TemplateReviewV2Dialog(props: TemplateReviewDialogProps) {
+  const [advanced, setAdvanced] = useState(false)
+  if (props.payload.reviewVersion === 4) {
+    if (advanced) {
+      return (
+        <TemplateCandidateReviewDialog
+          {...props}
+          payload={props.payload.advancedReview}
+          onSuspend={() => setAdvanced(false)}
+        />
+      )
+    }
+    return (
+      <TemplateDraftWorkspace
+        {...props}
+        payload={props.payload}
+        onOpenAdvanced={() => setAdvanced(true)}
+      />
+    )
+  }
+  return <TemplateCandidateReviewDialog {...props} payload={props.payload} />
+}
+
+function TemplateCandidateReviewDialog({
   requestId,
   payload,
   onSuspend,
   onCancel,
   onSubmit,
-}: {
-  requestId: string
-  payload: TemplateReviewRequest
-  onSuspend: () => void
-  onCancel: (result: Extract<TemplateReviewResultV2, { cancelled: true }>) => void
-  onSubmit: (result: TemplateReviewResultV2) => void
-}) {
+}: Omit<TemplateReviewDialogProps, 'payload'> & { payload: TemplateReviewRequest }) {
   const initial = draftByRequestId.get(requestId) ?? defaultActions(payload)
   const [actions, setActions] = useState<ActionState>(initial)
   const [selectedId, setSelectedId] = useState(() =>

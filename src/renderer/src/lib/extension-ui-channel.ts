@@ -7,6 +7,7 @@ import { signalDesktopAlert } from '@renderer/lib/desktop-alerts'
 import type { AskQuestionPayload } from '@renderer/features/extension-ui/questionnaire-dialog'
 import type { ImageReviewPayload } from '@renderer/features/extension-ui/image-review-dialog'
 import type { TemplateIntakeReviewRequestV1 } from '@shared/xiaogui-work-docx-template-intake'
+import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
 import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from '@shared/xiaogui-work-template-review'
 import type { TemplateMaterializePreviewRequestV1 } from '@shared/xiaogui-work-docx-template-materialize'
 import { traceAudioRenderer } from '@renderer/lib/audio-trace'
@@ -59,6 +60,7 @@ function rawToPending(raw: Record<string, unknown>): ExtensionUIPending | null {
   if (method === 'custom' && raw.kind === 'template_intake_review') {
     const payload = (raw.payload ?? raw) as unknown as
       | TemplateIntakeReviewRequestV1
+      | TemplateDraftReviewRequestV2
       | TemplateReviewRequestV2
       | TemplateReviewRequestV3
     const validV1 = 'report' in payload && !!payload.report && Array.isArray(payload.draftDecisions)
@@ -74,7 +76,13 @@ function rawToPending(raw: Record<string, unknown>): ExtensionUIPending | null {
       'document' in payload &&
       Array.isArray(payload.targets) &&
       Array.isArray(payload.draftActions)
-    if (!validV1 && !validV2 && !validV3) return null
+    const validDraftV2 =
+      'reviewVersion' in payload &&
+      payload.reviewVersion === 4 &&
+      'fieldGraph' in payload &&
+      'advancedReview' in payload &&
+      Array.isArray(payload.targetBindings)
+    if (!validV1 && !validV2 && !validV3 && !validDraftV2) return null
     return {
       id,
       method: 'template_intake_review',

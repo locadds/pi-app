@@ -24,6 +24,9 @@ import {
   TEMPLATE_INTAKE_REPORT_VERSION_V1,
   createTemplateIntakeReportSummaryV1,
 } from '@shared/xiaogui-work-docx-template-intake'
+import type { TemplateFieldGraphV2 } from '@shared/xiaogui-template-field-graph-v2'
+import { TEMPLATE_FIELD_QUICK_ISSUE_TARGET_V2 } from '@shared/xiaogui-template-field-graph-v2'
+import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
 import type {
   TemplateIntakeAnalysisBatchV1,
   TemplateIntakeModelAnalysisV1,
@@ -65,6 +68,7 @@ import type {
   DocumentReviewRendererV1,
   PreparedDocumentReviewRenderV1,
 } from './work-document-review-renderer'
+import { buildTemplateFieldGraphV2 } from './template-intelligence/template-field-graph-builder-v2'
 import {
   LegacyDocSafetyErrorV1,
   LEGACY_DOC_SAFETY_MAX_FILE_BYTES_V1,
@@ -99,6 +103,8 @@ export interface WorkDocxTemplateIntakeServiceOptionsV1 {
   >
   now?: () => Date
   parseTimeoutMs?: number
+  /** 设为 false 可立即回退到既有逐段复核器。 */
+  templateDraftV2Enabled?: boolean
 }
 
 type PreparedReviewManifestV1 = {
@@ -1105,6 +1111,84 @@ export class WorkDocxTemplateIntakeServiceV1 {
     }
   }
 
+  private async prepareTemplateDraftRequestV2(
+    record: StoredTemplateIntakeRecordV1,
+    source: PrivateSourceV1,
+    signal?: AbortSignal,
+  ): Promise<TemplateDraftReviewRequestV2 | undefined> {
+    if (this.options.templateDraftV2Enabled === false) return undefined
+    const advancedReview = await this.prepareReviewRequestV3(record, source, signal)
+    if (!advancedReview) return undefined
+    const graph = buildTemplateFieldGraphV2(record.report)
+    const issueTargetIds = new Set(
+      graph.targetBindings
+        .filter((binding) => binding.issueIds.length > 0)
+        .map((binding) => binding.targetId),
+    )
+    return {
+      reviewVersion: 4,
+      mode: 'QUICK',
+      document: {
+        ...advancedReview.document,
+        pendingTargetCount: graph.fieldGraph.issues.filter((item) => item.status === 'OPEN').length,
+        resolvedTargetCount: 0,
+      },
+      fieldGraph: graph.fieldGraph,
+      targetBindings: graph.targetBindings,
+      recommendedActions: graph.recommendedActions,
+      quickIssueLimit: TEMPLATE_FIELD_QUICK_ISSUE_TARGET_V2,
+      advancedReview: {
+        ...advancedReview,
+        targets: advancedReview.targets.map((target) => ({
+          ...target,
+          highlight: issueTargetIds.has(target.targetId) ? ('YELLOW' as const) : ('NONE' as const),
+        })),
+      },
+    }
+  }
+
+  private confirmedFieldGraphV2(
+    report: TemplateIntakeReportV1,
+    actions: readonly TemplateReviewActionV2[] | undefined,
+  ): TemplateFieldGraphV2 {
+    const built = buildTemplateFieldGraphV2(report)
+    if (!actions?.length) return built.fieldGraph
+    const actionByTarget = new Map(actions.map((action) => [action.targetId, action]))
+    const namesByField = new Map<string, Set<string>>()
+    for (const binding of built.targetBindings) {
+      if (!binding.fieldId) continue
+      const action = actionByTarget.get(binding.targetId)
+      const name = action?.kind === 'FIELD'
+        ? action.fieldName
+        : action?.kind === 'REPEAT'
+          ? action.blockName
+          : action?.kind === 'CONDITIONAL'
+            ? action.conditionName
+            : null
+      if (!name?.trim()) continue
+      const names = namesByField.get(binding.fieldId) ?? new Set<string>()
+      names.add(name.trim())
+      namesByField.set(binding.fieldId, names)
+    }
+    return {
+      ...built.fieldGraph,
+      fields: built.fieldGraph.fields.map((field) => {
+        const names = namesByField.get(field.fieldId)
+        if (!names?.size) return field
+        const displayName = [...names][0]
+        return {
+          ...field,
+          displayName,
+          aliases: displayName === field.displayName
+            ? field.aliases
+            : [...new Set([...field.aliases, field.displayName])],
+          status: 'CONFIRMED' as const,
+        }
+      }),
+      updatedAt: this.nowIso(),
+    }
+  }
+
   private async review(
     address: SessionAddressV1,
     submission: TemplateIntakeReviewSubmissionV1 | undefined,
@@ -1151,13 +1235,17 @@ export class WorkDocxTemplateIntakeServiceV1 {
       return failure('TEMPLATE_INTAKE_SOURCE_CHANGED')
     }
     if (!submission) {
-      const reviewRequestV3 = await this.prepareReviewRequestV3(record, source, signal)
+      const templateDraftRequestV2 = await this.prepareTemplateDraftRequestV2(record, source, signal)
+      const reviewRequestV3 = templateDraftRequestV2
+        ? undefined
+        : await this.prepareReviewRequestV3(record, source, signal)
       return {
         ok: true,
         value: {
           kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_REQUIRED',
           report: record.report,
           draftDecisions: record.draftDecisions,
+          ...(templateDraftRequestV2 ? { templateDraftRequestV2 } : {}),
           ...(reviewRequestV3 ? { reviewRequestV3 } : {}),
         },
       }
@@ -1232,6 +1320,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
       reportSummary: createTemplateIntakeReportSummaryV1(record.report),
       decisions: submission.decisions,
       ...(submission.reviewActionsV2 ? { reviewActionsV2: submission.reviewActionsV2 } : {}),
+      fieldGraphV2: this.confirmedFieldGraphV2(record.report, submission.reviewActionsV2),
       confirmedAtLocal: confirmedAt,
       confirmedBy: 'LOCAL_USER',
     }

@@ -216,7 +216,7 @@ export function registerXiaoguiHandlers(): void {
         }
         if (
           opened.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_REQUIRED' ||
-          (!opened.value.reviewRequestV3 && !opened.value.reviewRequestV2)
+          (!opened.value.templateDraftRequestV2 && !opened.value.reviewRequestV3 && !opened.value.reviewRequestV2)
         ) {
           return directReviewFailure('TEMPLATE_INTAKE_REVIEW_UNAVAILABLE')
         }
@@ -225,7 +225,7 @@ export function registerXiaoguiHandlers(): void {
         const response = await requestDirectExtensionUI(targetWindow, {
           method: 'custom',
           kind: 'template_intake_review',
-          payload: opened.value.reviewRequestV3 ?? opened.value.reviewRequestV2,
+          payload: opened.value.templateDraftRequestV2 ?? opened.value.reviewRequestV3 ?? opened.value.reviewRequestV2,
           toolCallId: common.toolCallId,
         })
         if (response.cancelled) return { ok: true, state: 'CANCELLED' as const }
