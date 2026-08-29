@@ -241,3 +241,102 @@ export function validateTemplateReviewSplitV2(
       (index === 0 || ranges[index - 1].endUtf16Exclusive <= range.startUtf16),
   );
 }
+
+/**
+ * WORK 内置文档复核器 V3：直接把受控 DOCX 副本交给可信 Renderer 渲染。
+ *
+ * V2 继续保留用于读取既有草稿；V3 复用同一组人工决定语义，但不再包含
+ * PDF 页面令牌或坐标。文档令牌和书签名都是短期、不透明、无路径的显示信息。
+ */
+export const TEMPLATE_REVIEW_VERSION_V3 = 3 as const;
+
+export type TemplateReviewRenderModeV3 =
+  | "DOCX_HTML"
+  | "STRUCTURED_FALLBACK";
+
+export type TemplateReviewPaginationBasisV3 =
+  | "DOCX_STORED_BREAKS"
+  | "UNKNOWN";
+
+export type TemplateReviewDocumentTokenV3 = string;
+
+export type TemplateReviewRenderWarningCodeV3 =
+  | "LEGACY_DOC_CONVERSION_UNAVAILABLE"
+  | "LEGACY_DOC_CONVERSION_FAILED"
+  | "DOCX_HTML_PAGINATION_APPROXIMATE"
+  | "DOCX_HTML_RENDER_FAILED"
+  | "TARGET_MARKER_MISSING"
+  | "TARGET_TEXT_MISMATCH"
+  | "TARGET_OBJECT_UNSUPPORTED"
+  | "TARGET_LOCATION_UNMAPPED"
+  | "STRUCTURED_FALLBACK_ACTIVE"
+  | "OTHER";
+
+export interface TemplateReviewRenderWarningV3 {
+  code: TemplateReviewRenderWarningCodeV3;
+  message: string;
+  targetIds?: readonly string[];
+}
+
+export interface TemplateReviewRenderV3 {
+  mode: TemplateReviewRenderModeV3;
+  /** DOCX_HTML 时必有；STRUCTURED_FALLBACK 时不得提供。 */
+  documentToken?: TemplateReviewDocumentTokenV3;
+  paginationBasis: TemplateReviewPaginationBasisV3;
+  /** HTML 视图只能表达近似页面，不冒充 Word 实际页数。 */
+  approximatePageCount: number | null;
+  warnings: readonly TemplateReviewRenderWarningV3[];
+}
+
+export interface TemplateReviewDocumentV3 {
+  reviewVersion: typeof TEMPLATE_REVIEW_VERSION_V3;
+  reviewId: string;
+  status: TemplateReviewDocumentStatusV2;
+  source: TemplateReviewDocumentV2["source"];
+  render: TemplateReviewRenderV3;
+  targetCount: number;
+  pendingTargetCount: number;
+  resolvedTargetCount: number;
+  unmappedTargetCount: number;
+  requiresHumanConfirmation: true;
+  sourceReadOnly: true;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TemplateReviewProjectionStatusV3 = "PROJECTED" | "UNMAPPED";
+
+export interface TemplateReviewRenderAnchorV3 {
+  status: TemplateReviewProjectionStatusV3;
+  /** docx-preview 渲染出的零长度书签；仅 PROJECTED 时存在。 */
+  startBookmark?: string;
+  endBookmark?: string;
+  /** 仅简单文字目标允许把 DOM 选区换算为源 DOCX UTF-16 范围。 */
+  textSelectionAllowed: boolean;
+  expectedTextSha256?: string;
+  expectedTextLengthUtf16?: number;
+  /** 仅用于容忍 DOCX 渲染器添加的视觉空白；命中时仍禁止局部拆分。 */
+  expectedCompactTextSha256?: string;
+  expectedCompactTextLengthUtf16?: number;
+}
+
+export interface TemplateReviewTargetV3
+  extends Omit<TemplateReviewTargetV2, "pageRegions"> {
+  renderAnchor: TemplateReviewRenderAnchorV3;
+}
+
+/** V3 只替换显示契约；人工决定的含义和持久化格式保持 V2 兼容。 */
+export type TemplateReviewActionV3 = TemplateReviewActionV2;
+export type TemplateReviewResultV3 = TemplateReviewResultV2;
+
+export interface TemplateReviewRequestV3 {
+  reviewVersion: typeof TEMPLATE_REVIEW_VERSION_V3;
+  document: TemplateReviewDocumentV3;
+  targets: readonly TemplateReviewTargetV3[];
+  draftActions: readonly TemplateReviewActionV3[];
+}
+
+export type TemplateReviewErrorCodeV3 =
+  | Exclude<TemplateReviewErrorCodeV2, "TEMPLATE_REVIEW_PAGE_TOKEN_INVALID">
+  | "TEMPLATE_REVIEW_DOCUMENT_TOKEN_INVALID"
+  | "TEMPLATE_REVIEW_PROJECTION_FAILED";

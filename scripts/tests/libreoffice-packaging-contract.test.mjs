@@ -84,20 +84,17 @@ describe('P3C-E0 LibreOffice packaging contract', () => {
     }
   })
 
-  it('pins one renderer-compatible pdfjs-dist 6.1.200 dependency', () => {
+  it('pins docx-preview for direct DOCX rendering without a root pdfjs-dist template-preview dependency', () => {
     const pkg = JSON.parse(read('package.json'))
     const lock = JSON.parse(read('package-lock.json'))
-    assert.equal(pkg.dependencies['pdfjs-dist'], '6.1.200')
-    assert.equal(lock.packages[''].dependencies['pdfjs-dist'], '6.1.200')
-    const pdfjsEntries = Object.entries(lock.packages)
-      .filter(([path]) => path === 'node_modules/pdfjs-dist' || path.endsWith('/node_modules/pdfjs-dist'))
-    assert.deepEqual(pdfjsEntries.map(([path, entry]) => [path, entry.version]), [
-      ['node_modules/pdfjs-dist', '6.1.200'],
-    ])
+    assert.equal(pkg.dependencies['docx-preview'], '0.4.0')
+    assert.equal(lock.packages[''].dependencies['docx-preview'], '0.4.0')
+    assert.equal(lock.packages[''].dependencies['pdfjs-dist'], undefined)
+    assert.equal(lock.packages['node_modules/docx-preview']?.version, '0.4.0')
     assert.ok(
-      existsSync(join(root, 'node_modules', 'officeparser', 'node_modules', 'pdfjs-dist', 'legacy', 'build', 'pdf.mjs'))
-        || existsSync(join(root, 'node_modules', 'pdfjs-dist', 'legacy', 'build', 'pdf.mjs')),
-      'the approved pdfjs-dist package must expose the renderer legacy ESM entry',
+      existsSync(join(root, 'node_modules', 'docx-preview', 'dist', 'docx-preview.mjs'))
+        || existsSync(join(root, 'node_modules', 'docx-preview', 'dist', 'docx-preview.min.mjs')),
+      'the approved docx-preview package must expose its renderer ESM entry',
     )
   })
 

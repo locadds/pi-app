@@ -11,7 +11,7 @@
     "bundledRuntimeDependencies": [
       "officeparser",
       "cfb",
-      "pdfjs-dist"
+      "docx-preview"
     ],
     "bundledExternalRuntimes": [
       {
@@ -63,6 +63,7 @@
     "cfb": "1.2.2",
     "clsx": "^2.1.1",
     "docx": "9.7.1",
+    "docx-preview": "0.4.0",
     "docxtemplater": "3.69.3",
     "dompurify": "^3.4.11",
     "electron-log": "^5.2.0",
@@ -73,7 +74,6 @@
     "jszip": "3.10.1",
     "katex": "^0.17.0",
     "lucide-react": "^0.469.0",
-    "pdfjs-dist": "6.1.200",
     "pizzip": "3.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

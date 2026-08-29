@@ -3,14 +3,13 @@ import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 
 import JSZip from "jszip";
+import * as CFB from "cfb";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   DocumentReviewRendererV1,
-  LibreOfficeConversionErrorV1,
   LibreOfficePrivateConverterV1,
   type LibreOfficeConverterV1,
-  type PdfManifestBuilderV1,
 } from "./work-document-review-renderer";
 
 const temporaryRoots: string[] = [];
@@ -23,7 +22,7 @@ afterEach(async () => {
   );
 });
 
-async function createSafeDocx(text = "姓名：张三"): Promise<Buffer> {
+async function createSafeDocxFromBody(bodyXml: string): Promise<Buffer> {
   const zip = new JSZip();
   zip.file(
     "[Content_Types].xml",
@@ -31,136 +30,142 @@ async function createSafeDocx(text = "姓名：张三"): Promise<Buffer> {
   );
   zip.file(
     "word/document.xml",
-    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`,
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${bodyXml}</w:body></w:document>`,
   );
   return zip.generateAsync({ type: "nodebuffer" });
 }
 
-const mappedPdf: PdfManifestBuilderV1 = async () => [
-  {
-    pageNumber: 1,
-    widthPoints: 595,
-    heightPoints: 842,
-    text: "姓名：张三",
-    textSpans: [
-      {
-        text: "姓名：",
-        startUtf16: 0,
-        endUtf16Exclusive: 3,
-        region: { pageNumber: 1, x: 10, y: 20, width: 30, height: 12 },
-      },
-      {
-        text: "张三",
-        startUtf16: 3,
-        endUtf16Exclusive: 5,
-        region: { pageNumber: 1, x: 40, y: 20, width: 20, height: 12 },
-      },
-    ],
-  },
-];
+async function createSafeDocx(text = "姓名：张三"): Promise<Buffer> {
+  return createSafeDocxFromBody(`<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`);
+}
 
-function fakePdfConverter(
-  pdf = Buffer.from("%PDF-xiaogui"),
-): LibreOfficeConverterV1 {
+function neverConvert(): LibreOfficeConverterV1 {
   return {
-    async convert(_content, _inputFormat, target) {
-      if (target !== "PDF") throw new Error("unexpected conversion target");
-      return { content: pdf, format: "PDF", elapsedMs: 1 };
+    async convert() {
+      throw new Error("DOCX render path must not call LibreOffice");
     },
   };
 }
 
+function createLegacyDoc(): Buffer {
+  const container = CFB.utils.cfb_new();
+  const fib = Buffer.alloc(32);
+  fib.writeUInt16LE(0xa5ec, 0);
+  fib.writeUInt16LE(0x00c1, 2);
+  CFB.utils.cfb_add(container, "WordDocument", fib);
+  CFB.utils.cfb_add(container, "1Table", Buffer.alloc(16));
+  return Buffer.from(CFB.write(container, { type: "buffer", fileType: "cfb" }));
+}
+
 describe("DocumentReviewRendererV1", () => {
-  it("creates opaque page tokens and keeps the PDF/text mapping in main-private state", async () => {
-    const renderer = new DocumentReviewRendererV1({
-      converter: fakePdfConverter(),
-      pdfManifestBuilder: mappedPdf,
-    });
-    const result = await renderer.prepare(await createSafeDocx(), "DOCX");
-
-    expect(result.render).toMatchObject({
-      mode: "PDF",
-      pageCount: 1,
-      warnings: [],
-    });
-    expect(result.render.pages[0]).toMatchObject({
-      pageNumber: 1,
-      widthPoints: 595,
-      heightPoints: 842,
-      textLayerAvailable: true,
-    });
-    expect(result.render.pages[0].pageToken).not.toContain("\\");
-    expect(result.render.pages[0].pageToken).not.toContain("/");
-
-    const asset = renderer.readPageAsset(
-      result.manifestId,
-      result.render.pages[0].pageToken,
-    );
-    expect(Buffer.from(asset.pdfBytes).toString()).toBe("%PDF-xiaogui");
-    expect(asset.text).toBe("姓名：张三");
-    expect(renderer.locateExactText(result.manifestId, "张三")).toEqual([
-      { pageNumber: 1, x: 40, y: 20, width: 20, height: 12 },
+  it("serves a safe DOCX through an opaque document token without converting to PDF", async () => {
+    const renderer = new DocumentReviewRendererV1({ converter: neverConvert() });
+    const result = await renderer.prepare(await createSafeDocx(), "DOCX", undefined, [
+      {
+        targetId: "xgt_1",
+        kind: "TEXT",
+        preview: "姓名：张三",
+        sourceAnchor: { part: "BODY", sectionIndex: 1, paragraphIndex: 1 },
+      },
     ]);
-    expect(renderer.countExactTextOccurrences(result.manifestId, "张三")).toBe(1);
+
+    expect(result.render.mode).toBe("DOCX_HTML");
+    expect(result.render.documentToken).toBeTruthy();
+    expect(result.render.approximatePageCount).toBe(1);
+    expect(result.projections[0]).toMatchObject({
+      targetId: "xgt_1",
+      status: "PROJECTED",
+      textSelectionAllowed: true,
+    });
+
+    const asset = renderer.readDocumentAssetByToken(result.render.documentToken!);
+    const projected = await JSZip.loadAsync(Buffer.from(asset.docxBytes));
+    const xml = await projected.file("word/document.xml")!.async("string");
+    expect(xml).toContain(result.projections[0].startBookmark!);
+    expect(xml).toContain(result.projections[0].endBookmark!);
+    expect(asset.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(result)).not.toContain("source.docx");
 
     expect(renderer.release(result.manifestId)).toBe(true);
     expect(() =>
-      renderer.readPageAsset(
-        result.manifestId,
-        result.render.pages[0].pageToken,
-      ),
-    ).toThrow("TEMPLATE_REVIEW_PAGE_TOKEN_INVALID");
+      renderer.readDocumentAssetByToken(result.render.documentToken!),
+    ).toThrow("TEMPLATE_REVIEW_DOCUMENT_TOKEN_INVALID");
   });
 
-  it("returns an explicit structured fallback when LibreOffice is unavailable", async () => {
+  it("marks unsupported drawings as unmapped instead of guessing a highlight", async () => {
+    const renderer = new DocumentReviewRendererV1({ converter: neverConvert() });
+    const result = await renderer.prepare(await createSafeDocx(), "DOCX", undefined, [
+      {
+        targetId: "xgt_image",
+        kind: "IMAGE",
+        preview: "图片或图件 1",
+        sourceAnchor: { part: "DRAWING", drawingIndex: 1 },
+      },
+    ]);
+
+    expect(result.render.mode).toBe("DOCX_HTML");
+    expect(result.projections[0]).toMatchObject({
+      targetId: "xgt_image",
+      status: "UNMAPPED",
+      warningCode: "TARGET_OBJECT_UNSUPPORTED",
+    });
+    expect(result.render.warnings.map((warning) => warning.code)).toContain("TARGET_OBJECT_UNSUPPORTED");
+  });
+
+  it("keeps paragraph anchors aligned when a drawing paragraph contains a text box", async () => {
+    const renderer = new DocumentReviewRendererV1({ converter: neverConvert() });
+    const content = await createSafeDocxFromBody([
+      '<w:p><w:r><w:object><w:txbxContent><w:p><w:r><w:t>浮动文字</w:t></w:r></w:p></w:txbxContent></w:object></w:r></w:p>',
+      '<w:p><w:r><w:t>正文第一段</w:t></w:r></w:p>',
+    ].join(""));
+    const result = await renderer.prepare(content, "DOCX", undefined, [
+      {
+        targetId: "xgt_body_1",
+        kind: "TEXT",
+        preview: "正文第一段",
+        sourceAnchor: { part: "BODY", sectionIndex: 1, paragraphIndex: 1 },
+      },
+      {
+        targetId: "xgt_text_box",
+        kind: "TEXT",
+        preview: "浮动文字",
+        sourceAnchor: { part: "TEXT_BOX", drawingIndex: 1 },
+      },
+    ]);
+
+    expect(result.projections).toEqual([
+      expect.objectContaining({
+        targetId: "xgt_body_1",
+        status: "PROJECTED",
+      }),
+      expect.objectContaining({
+        targetId: "xgt_text_box",
+        status: "UNMAPPED",
+        warningCode: "TARGET_OBJECT_UNSUPPORTED",
+      }),
+    ]);
+  });
+
+  it("reuses one safe legacy DOC conversion across review and materialization prepares", async () => {
+    const convertedDocx = await createSafeDocx("旧版文档正文");
+    let conversionCount = 0;
     const renderer = new DocumentReviewRendererV1({
       converter: {
         async convert() {
-          throw new LibreOfficeConversionErrorV1("LIBREOFFICE_UNAVAILABLE");
+          conversionCount += 1;
+          return { content: convertedDocx, format: "DOCX", elapsedMs: 1 };
         },
       },
-      pdfManifestBuilder: mappedPdf,
     });
-    const result = await renderer.prepare(await createSafeDocx(), "DOCX");
+    const source = createLegacyDoc();
 
-    expect(result.render.mode).toBe("STRUCTURED_FALLBACK");
-    expect(result.normalizedDocxAvailable).toBe(true);
-    expect(result.render.pages).toEqual([]);
-    expect(result.render.warnings.map((warning) => warning.code)).toEqual([
-      "LIBREOFFICE_UNAVAILABLE",
-      "STRUCTURED_FALLBACK_ACTIVE",
-    ]);
-    expect(renderer.readNormalizedDocx(result.manifestId)).not.toBeNull();
-  });
+    const first = await renderer.prepare(source, "DOC");
+    renderer.release(first.manifestId);
+    const second = await renderer.prepare(source, "DOC");
 
-  it("counts repeated page text so callers can reject ambiguous highlights", async () => {
-    const renderer = new DocumentReviewRendererV1({
-      converter: fakePdfConverter(),
-      pdfManifestBuilder: async () => [{
-        pageNumber: 1,
-        widthPoints: 595,
-        heightPoints: 842,
-        text: "项目名称 项目名称",
-        textSpans: [],
-      }],
-    });
-    const result = await renderer.prepare(await createSafeDocx(), "DOCX");
-
-    expect(renderer.countExactTextOccurrences(result.manifestId, "项目名称")).toBe(2);
-    expect(renderer.release(result.manifestId)).toBe(true);
-  });
-
-  it("falls back instead of publishing partial pages when PDF text mapping fails", async () => {
-    const renderer = new DocumentReviewRendererV1({
-      converter: fakePdfConverter(),
-      pdfManifestBuilder: async () => {
-        throw new Error("mapping failed");
-      },
-    });
-    const result = await renderer.prepare(await createSafeDocx(), "DOCX");
-    expect(result.render.mode).toBe("STRUCTURED_FALLBACK");
-    expect(result.render.warnings[0].code).toBe("PDF_TEXT_MAPPING_FAILED");
+    expect(conversionCount).toBe(1);
+    expect(second.render.mode).toBe("DOCX_HTML");
+    renderer.close();
   });
 });
 
@@ -188,18 +193,18 @@ describe("LibreOfficePrivateConverterV1", () => {
         const outputFlagIndex = args.indexOf("--outdir");
         const outputRoot = args[outputFlagIndex + 1];
         const sourcePath = args.at(-1)!;
-        const outputName = `${basename(sourcePath, extname(sourcePath))}.pdf`;
+        const outputName = `${basename(sourcePath, extname(sourcePath))}.docx`;
         await mkdir(outputRoot, { recursive: true });
         await writeFile(
           join(outputRoot, outputName),
-          Buffer.from("%PDF-private"),
+          Buffer.from("docx-private"),
         );
         return { exitCode: 0, stderr: "" };
       },
     });
 
-    const result = await converter.convert(Buffer.from("docx"), "DOCX", "PDF");
-    expect(result.content.toString()).toBe("%PDF-private");
+    const result = await converter.convert(Buffer.from("doc"), "DOC", "DOCX");
+    expect(result.content.toString()).toBe("docx-private");
     expect(observedProfile).toContain("xiaogui-lo-review-");
     expect(await readdir(privateRoot)).toEqual([]);
     expect(JSON.stringify(result)).not.toContain(testRoot);

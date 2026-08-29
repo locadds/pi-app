@@ -409,7 +409,7 @@ export class WorkDocxTemplateMaterializeServiceV1 {
       preview: {
         previewVersion: 1,
         document: {
-          reviewVersion: 2,
+          reviewVersion: 3,
           reviewId: record.operationId,
           status: 'PREVIEWING',
           source: {
@@ -420,8 +420,8 @@ export class WorkDocxTemplateMaterializeServiceV1 {
           },
           render: prepared?.render ?? {
             mode: 'STRUCTURED_FALLBACK',
-            pageCount: null,
-            pages: [],
+            paginationBasis: 'UNKNOWN',
+            approximatePageCount: null,
             warnings: [{
               code: 'STRUCTURED_FALLBACK_ACTIVE',
               message: '当前环境未接入内置页面渲染，已打开只读文档预览。',

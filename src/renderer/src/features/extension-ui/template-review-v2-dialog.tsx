@@ -3,21 +3,24 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   TemplateReviewActionV2,
   TemplateReviewRequestV2,
+  TemplateReviewRequestV3,
   TemplateReviewResultV2,
   TemplateReviewTargetV2,
+  TemplateReviewTargetV3,
   TemplateReviewTextRangeV2,
 } from '@shared/xiaogui-work-template-review'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { cn } from '@renderer/lib/utils'
 import {
   AlertTriangle,
-  ChevronLeft,
-  ChevronRight,
   FileText,
   Search,
   X,
 } from '@renderer/components/icons'
+import { DocxHtmlViewer, type DocxHtmlViewerHandleV1 } from '@renderer/components/docx-html-viewer'
 
+type TemplateReviewRequest = TemplateReviewRequestV2 | TemplateReviewRequestV3
+type TemplateReviewTarget = TemplateReviewTargetV2 | TemplateReviewTargetV3
 type ActionKind = TemplateReviewActionV2['kind']
 type ActionState = Record<string, TemplateReviewActionV2[]>
 
@@ -45,107 +48,9 @@ const HIGH_RISK_LABELS: Record<string, string> = {
 }
 
 const draftByRequestId = new Map<string, ActionState>()
-const PAGE_TARGET_COUNT = 20
 
-type PageAssetV1 = {
-  pageNumber: number
-  pdfBytes: Uint8Array
-  text: string
-}
-
-function PdfReviewPage({
-  pageNumber,
-  pageToken,
-  widthPoints,
-  heightPoints,
-  targets,
-  selectedId,
-  onSelect,
-}: {
-  pageNumber: number
-  pageToken: string
-  widthPoints: number
-  heightPoints: number
-  targets: readonly TemplateReviewTargetV2[]
-  selectedId: string
-  onSelect: (target: TemplateReviewTargetV2) => void
-}) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let disposed = false
-    let loadingTask: { destroy(): Promise<void> } | null = null
-    const render = async () => {
-      try {
-        setError(null)
-        const asset = await ipcClient.invoke(
-          'xiaogui.templateReview.page.read',
-          { pageToken },
-        ) as PageAssetV1
-        const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-        const task = pdfjs.getDocument({ data: new Uint8Array(asset.pdfBytes) })
-        loadingTask = task
-        const document = await task.promise
-        const pdfPage = await document.getPage(asset.pageNumber)
-        const viewport = pdfPage.getViewport({ scale: 1.35 })
-        const canvas = canvasRef.current
-        if (!canvas || disposed) return
-        const context = canvas.getContext('2d')
-        if (!context) throw new Error('CANVAS_UNAVAILABLE')
-        canvas.width = Math.ceil(viewport.width)
-        canvas.height = Math.ceil(viewport.height)
-        canvas.style.width = '100%'
-        canvas.style.height = 'auto'
-        await pdfPage.render({ canvas, canvasContext: context, viewport }).promise
-        pdfPage.cleanup()
-      } catch {
-        if (!disposed) setError('本页暂时无法显示，请使用右侧待处理清单继续复核。')
-      }
-    }
-    void render()
-    return () => {
-      disposed = true
-      void loadingTask?.destroy()
-    }
-  }, [pageToken])
-
-  return (
-    <div
-      className="relative mx-auto w-full max-w-[920px] overflow-hidden bg-white shadow-sm"
-      style={{ aspectRatio: `${widthPoints} / ${heightPoints}` }}
-      aria-label={`文档第 ${pageNumber} 页`}
-    >
-      <canvas ref={canvasRef} className="block h-auto w-full" />
-      {targets.flatMap((target) =>
-        target.pageRegions
-          .filter((region) => region.pageNumber === pageNumber)
-          .map((region, index) => (
-            <button
-              key={`${target.targetId}-${index}`}
-              type="button"
-              aria-label={`复核：${target.preview.slice(0, 30)}`}
-              title={target.preview}
-              onClick={() => onSelect(target)}
-              className={cn(
-                'absolute border outline-none transition-colors',
-                target.highlight === 'YELLOW'
-                  ? 'border-amber-500 bg-amber-300/45 hover:bg-amber-300/65'
-                  : 'border-transparent bg-transparent hover:border-primary/50 hover:bg-primary/10',
-                selectedId === target.targetId && 'ring-2 ring-primary ring-offset-1',
-              )}
-              style={{
-                left: `${region.x / widthPoints * 100}%`,
-                top: `${region.y / heightPoints * 100}%`,
-                width: `${Math.max(region.width / widthPoints * 100, 0.6)}%`,
-                height: `${Math.max(region.height / heightPoints * 100, 0.8)}%`,
-              }}
-            />
-          )),
-      )}
-      {error && <div className="absolute inset-x-6 top-6 rounded-md border border-amber-300 bg-amber-50 p-3 text-center text-xs text-amber-800">{error}</div>}
-    </div>
-  )
+function isV3(payload: TemplateReviewRequest): payload is TemplateReviewRequestV3 {
+  return payload.reviewVersion === 3
 }
 
 function groupActions(actions: readonly TemplateReviewActionV2[]): ActionState {
@@ -156,25 +61,23 @@ function groupActions(actions: readonly TemplateReviewActionV2[]): ActionState {
   return grouped
 }
 
-function defaultActions(payload: TemplateReviewRequestV2): ActionState {
+function requiresExplicitDecision(target: TemplateReviewTarget): boolean {
+  return target.highlight === 'YELLOW' || target.highRisk || target.kind === 'UNMAPPED'
+}
+
+function defaultActions(payload: TemplateReviewRequest): ActionState {
   const state = groupActions(payload.draftActions)
   for (const target of payload.targets) {
     if (state[target.targetId]?.length) continue
-    // 未标黄内容不要求用户逐段点选；仍可在文档中主动点击修改。
     if (!requiresExplicitDecision(target)) state[target.targetId] = [{ targetId: target.targetId, kind: 'KEEP' }]
   }
   return state
 }
 
-function requiresExplicitDecision(target: TemplateReviewTargetV2): boolean {
-  return target.highlight === 'YELLOW' || target.highRisk || target.kind === 'UNMAPPED'
-}
-
 function needsHighRiskOverride(
-  target: TemplateReviewTargetV2 | undefined,
+  target: TemplateReviewTarget | undefined,
   action: TemplateReviewActionV2,
 ): boolean {
-  // 局部移除仍会保留目标其余部分，因此也属于“覆盖默认移除”。
   return !!target?.highRisk && (action.kind !== 'REMOVE' || !!action.range)
 }
 
@@ -190,10 +93,6 @@ function selectedTextRange(container: HTMLElement | null): TemplateReviewTextRan
   const startUtf16 = prefix.toString().length
   const endUtf16Exclusive = startUtf16 + range.toString().length
   return endUtf16Exclusive > startUtf16 ? { startUtf16, endUtf16Exclusive } : null
-}
-
-function targetPageNumber(target: TemplateReviewTargetV2, index: number): number {
-  return target.pageRegions[0]?.pageNumber ?? Math.floor(index / PAGE_TARGET_COUNT) + 1
 }
 
 function actionForRange(
@@ -218,6 +117,23 @@ function rangeOverlaps(left: TemplateReviewTextRangeV2, right: TemplateReviewTex
   return left.startUtf16 < right.endUtf16Exclusive && right.startUtf16 < left.endUtf16Exclusive
 }
 
+function asV3Target(target: TemplateReviewTarget): TemplateReviewTargetV3 {
+  if ('renderAnchor' in target) return target
+  return {
+    ...target,
+    renderAnchor: { status: 'UNMAPPED', textSelectionAllowed: false },
+  }
+}
+
+function canSplitTarget(target: TemplateReviewTarget | null): boolean {
+  if (!target || target.kind === 'IMAGE') return false
+  return !('renderAnchor' in target) || target.renderAnchor.textSelectionAllowed
+}
+
+function isDirectDocxReview(payload: TemplateReviewRequest): payload is TemplateReviewRequestV3 {
+  return isV3(payload) && payload.document.render.mode === 'DOCX_HTML'
+}
+
 export function TemplateReviewV2Dialog({
   requestId,
   payload,
@@ -226,7 +142,7 @@ export function TemplateReviewV2Dialog({
   onSubmit,
 }: {
   requestId: string
-  payload: TemplateReviewRequestV2
+  payload: TemplateReviewRequest
   onSuspend: () => void
   onCancel: (result: Extract<TemplateReviewResultV2, { cancelled: true }>) => void
   onSubmit: (result: TemplateReviewResultV2) => void
@@ -238,10 +154,6 @@ export function TemplateReviewV2Dialog({
       ?? payload.targets[0]?.targetId
       ?? '',
   )
-  const [page, setPage] = useState(() => {
-    const index = payload.targets.findIndex((target) => target.targetId === selectedId)
-    return index >= 0 ? targetPageNumber(payload.targets[index], index) : 1
-  })
   const [query, setQuery] = useState('')
   const [chosenRange, setChosenRange] = useState<TemplateReviewTextRangeV2 | null>(null)
   const [editKind, setEditKind] = useState<ActionKind | null>(null)
@@ -250,7 +162,9 @@ export function TemplateReviewV2Dialog({
   const [overrideReason, setOverrideReason] = useState('')
   const [message, setMessage] = useState<string | null>(null)
   const [confirmingHighRisk, setConfirmingHighRisk] = useState(false)
+  const [viewerMappedIds, setViewerMappedIds] = useState<readonly string[]>([])
   const targetElement = useRef<HTMLDivElement | null>(null)
+  const viewerRef = useRef<DocxHtmlViewerHandleV1 | null>(null)
 
   useEffect(() => {
     draftByRequestId.set(requestId, actions)
@@ -266,34 +180,30 @@ export function TemplateReviewV2Dialog({
     return () => window.removeEventListener('keydown', onKey)
   }, [confirmingHighRisk, onSuspend])
 
-  const indexedTargets = useMemo(
-    () => payload.targets.map((target, index) => ({ target, pageNumber: targetPageNumber(target, index) })),
-    [payload.targets],
-  )
-  const pageCount = Math.max(
-    payload.document.render.pageCount ?? 0,
-    ...indexedTargets.map((item) => item.pageNumber),
-    1,
-  )
-  const visibleTargets = indexedTargets.filter(({ target, pageNumber }) => {
-    if (pageNumber !== page) return false
-    const normalized = query.trim().toLocaleLowerCase('zh-CN')
-    return !normalized || `${target.preview}\n${target.reason}`.toLocaleLowerCase('zh-CN').includes(normalized)
-  })
-  const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
-  const pdfTargets = payload.targets.filter((target) =>
-    target.pageRegions.some((region) => region.pageNumber === page)
-    && (!normalizedQuery || `${target.preview}\n${target.reason}`.toLocaleLowerCase('zh-CN').includes(normalizedQuery)),
-  )
   const selectedTarget = payload.targets.find((target) => target.targetId === selectedId) ?? null
+  const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
+  const filteredTargets = useMemo(() => payload.targets.filter((target) =>
+    !normalizedQuery ||
+    `${target.preview}\n${target.reason}`.toLocaleLowerCase('zh-CN').includes(normalizedQuery),
+  ), [normalizedQuery, payload.targets])
   const pendingTargets = payload.targets.filter(
     (target) => requiresExplicitDecision(target) && !(actions[target.targetId]?.length),
   )
+  const unresolvedInViewer = useMemo(
+    () => new Set(
+      isV3(payload)
+        ? payload.targets
+            .filter((target) => target.renderAnchor.status !== 'PROJECTED' || !viewerMappedIds.includes(target.targetId))
+            .map((target) => target.targetId)
+        : payload.targets.map((target) => target.targetId),
+    ),
+    [payload, viewerMappedIds],
+  )
   const resolvedCount = payload.targets.length - pendingTargets.length
 
-  const selectTarget = (target: TemplateReviewTargetV2, targetPage: number) => {
+  const selectTarget = (target: TemplateReviewTarget) => {
     setSelectedId(target.targetId)
-    setPage(targetPage)
+    if (isDirectDocxReview(payload)) viewerRef.current?.focus(target.targetId)
     setChosenRange(null)
     setEditKind(null)
     setEditValue('')
@@ -303,6 +213,32 @@ export function TemplateReviewV2Dialog({
   }
 
   const captureRange = () => {
+    if (!canSplitTarget(selectedTarget)) {
+      setChosenRange(null)
+      if (selectedTarget && 'renderAnchor' in selectedTarget && selectedTarget.renderAnchor.status === 'PROJECTED') {
+        setMessage('此处已在文档中定位，但文字范围不能可靠换算；请整段处理。')
+      }
+      return
+    }
+    if (isV3(payload) && !isDirectDocxReview(payload)) {
+      setChosenRange(null)
+      setMessage('当前是结构化复核视图，不能可靠框选拆分；请整项处理。')
+      return
+    }
+    const selection = isDirectDocxReview(payload)
+      ? viewerRef.current?.readSelection() ?? null
+      : null
+    if (selection) {
+      setSelectedId(selection.targetId)
+      setChosenRange(selection.range)
+      setMessage(`已选择第 ${selection.range.startUtf16 + 1} 至 ${selection.range.endUtf16Exclusive} 个字符，可只处理这部分。`)
+      return
+    }
+    if (isDirectDocxReview(payload)) {
+      setChosenRange(null)
+      setMessage('请先在左侧文档标黄内容中框选一段文字。')
+      return
+    }
     const range = selectedTextRange(targetElement.current)
     setChosenRange(range)
     if (range) setMessage(`已选择第 ${range.startUtf16 + 1} 至 ${range.endUtf16Exclusive} 个字符，可只处理这部分。`)
@@ -376,8 +312,7 @@ export function TemplateReviewV2Dialog({
     const missingReason = highRiskActions.find((action) => !action.highRiskOverrideReason?.trim())
     if (missingReason) {
       const target = payload.targets.find((item) => item.targetId === missingReason.targetId)
-      const item = indexedTargets.find((entry) => entry.target.targetId === missingReason.targetId)
-      if (target && item) selectTarget(target, item.pageNumber)
+      if (target) selectTarget(target)
       setMessage('高风险内容需要填写保留或修改原因后才能继续。')
       return
     }
@@ -428,59 +363,64 @@ export function TemplateReviewV2Dialog({
         <div className="flex min-h-0 flex-1">
           <main className="flex min-w-0 basis-[70%] flex-col bg-muted/30">
             <div className="flex h-12 items-center gap-2 border-b border-border bg-background px-4">
-              <button type="button" onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1} className="rounded-md border p-1.5 disabled:opacity-30"><ChevronLeft className="h-4 w-4" /></button>
-              <span className="text-[12px]">第 {page} / {pageCount} 页</span>
-              <button type="button" onClick={() => setPage(Math.min(pageCount, page + 1))} disabled={page >= pageCount} className="rounded-md border p-1.5 disabled:opacity-30"><ChevronRight className="h-4 w-4" /></button>
+              <span className="text-[12px] text-muted-foreground">
+                {isV3(payload)
+                  ? `页面视图（近似分页）${payload.document.render.approximatePageCount ? ` · ${payload.document.render.approximatePageCount} 个页面段` : ''}`
+                  : '结构化视图'}
+              </span>
               <label className="ml-auto flex items-center gap-2 rounded-md border bg-background px-2 py-1.5">
                 <Search className="h-3.5 w-3.5 text-muted-foreground" />
-                <input value={query} onChange={(event) => setQuery(event.target.value)} className="w-44 bg-transparent text-[12px] outline-none" placeholder="在当前页查找" />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} className="w-44 bg-transparent text-[12px] outline-none" placeholder="筛选待处理内容" />
               </label>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-7">
-              {payload.document.render.mode === 'STRUCTURED_FALLBACK' && (
-                <div className="mx-auto mb-4 max-w-[820px] rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
-                  当前无法还原完整页面版式，正在使用结构化文档视图。所有无法定位的内容仍会列入待处理清单，不会静默跳过。
+            <div className="min-h-0 flex-1">
+              {isV3(payload) && payload.document.render.mode === 'DOCX_HTML' ? (
+                <div onMouseUp={captureRange} className="h-full">
+                  <DocxHtmlViewer
+                    ref={viewerRef}
+                    documentToken={payload.document.render.documentToken}
+                    targets={payload.targets.map(asV3Target)}
+                    selectedId={selectedId}
+                    onSelectTarget={(target) => {
+                      const original = payload.targets.find((item) => item.targetId === target.targetId)
+                      if (original) selectTarget(original)
+                    }}
+                    onMappedTargetsChange={setViewerMappedIds}
+                  />
+                </div>
+              ) : (
+                <div className="h-full overflow-auto p-7">
+                  <div className="mx-auto max-w-[820px] bg-white px-16 py-14 text-[#1b1b1b] shadow-sm">
+                    {filteredTargets.length ? filteredTargets.map((target) => {
+                      const chosen = target.targetId === selectedId
+                      const handled = !!actions[target.targetId]?.length
+                      return (
+                        <div
+                          key={target.targetId}
+                          data-target-id={target.targetId}
+                          onClick={() => selectTarget(target)}
+                          className={cn(
+                            'relative mb-3 cursor-text whitespace-pre-wrap rounded-sm px-1 py-0.5 text-[14px] leading-7 outline outline-1 outline-transparent transition-colors',
+                            target.highlight === 'YELLOW' && !handled && 'bg-amber-200/75',
+                            target.highlight === 'YELLOW' && handled && 'bg-emerald-100/60',
+                            chosen && 'outline-primary/70',
+                            target.kind === 'IMAGE' && 'flex min-h-40 items-center justify-center border border-dashed text-muted-foreground',
+                          )}
+                        >
+                          {target.preview || (target.kind === 'IMAGE' ? '文档图片' : '空白内容')}
+                        </div>
+                      )
+                    }) : <div className="py-20 text-center text-sm text-muted-foreground">没有匹配内容</div>}
+                  </div>
                 </div>
               )}
-              {payload.document.render.mode === 'PDF' && payload.document.render.pages[page - 1]
-                ? <PdfReviewPage
-                    pageNumber={payload.document.render.pages[page - 1].pageNumber}
-                    pageToken={payload.document.render.pages[page - 1].pageToken}
-                    widthPoints={payload.document.render.pages[page - 1].widthPoints}
-                    heightPoints={payload.document.render.pages[page - 1].heightPoints}
-                    targets={pdfTargets}
-                    selectedId={selectedId}
-                    onSelect={(target) => selectTarget(target, page)}
-                  />
-                : <div className="mx-auto min-h-[960px] max-w-[820px] bg-white px-16 py-14 text-[#1b1b1b] shadow-sm">
-                {visibleTargets.length ? visibleTargets.map(({ target, pageNumber }) => {
-                  const chosen = target.targetId === selectedId
-                  const handled = !!actions[target.targetId]?.length
-                  return (
-                    <div
-                      key={target.targetId}
-                      data-target-id={target.targetId}
-                      onClick={() => selectTarget(target, pageNumber)}
-                      className={cn(
-                        'relative mb-3 cursor-text whitespace-pre-wrap rounded-sm px-1 py-0.5 text-[14px] leading-7 outline outline-1 outline-transparent transition-colors',
-                        target.highlight === 'YELLOW' && !handled && 'bg-amber-200/75',
-                        target.highlight === 'YELLOW' && handled && 'bg-emerald-100/60',
-                        chosen && 'outline-primary/70',
-                        target.kind === 'IMAGE' && 'flex min-h-40 items-center justify-center border border-dashed text-muted-foreground',
-                      )}
-                    >
-                      {target.preview || (target.kind === 'IMAGE' ? '文档图片' : '空白内容')}
-                    </div>
-                  )
-                }) : <div className="py-20 text-center text-sm text-muted-foreground">当前页没有匹配内容</div>}
-              </div>}
             </div>
           </main>
 
           <aside className="flex min-w-[330px] basis-[30%] flex-col border-l border-border bg-background">
             <div className="border-b border-border px-5 py-4">
               <h2 className="text-[13px] font-semibold">处理当前内容</h2>
-              <p className="mt-1 text-[11px] leading-5 text-muted-foreground">黄色表示需要人工判断。未标黄内容也可以直接点击修改。</p>
+              <p className="mt-1 text-[11px] leading-5 text-muted-foreground">黄色表示需要人工判断。未标黄内容也可以从清单中选择后修改。</p>
             </div>
             <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
               {!selectedTarget ? <p className="text-[12px] text-muted-foreground">请在左侧选择一处内容。</p> : <>
@@ -492,6 +432,11 @@ export function TemplateReviewV2Dialog({
                   {selectedTarget.preview || '图片或绘图对象'}
                 </div>
                 <p className="mt-3 text-[11px] leading-5 text-muted-foreground">{selectedTarget.reason}</p>
+                {unresolvedInViewer.has(selectedTarget.targetId) ? (
+                  <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+                    此处无法在左侧文档中可靠标黄，仍需在这里人工处理。
+                  </p>
+                ) : null}
                 {!!selectedTarget.riskFlags.length && <div className="mt-2 flex flex-wrap gap-1">
                   {selectedTarget.riskFlags.map((flag) => <span key={flag} className="inline-flex items-center gap-1 rounded border border-amber-400 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700"><AlertTriangle className="h-3 w-3" />{HIGH_RISK_LABELS[flag] ?? flag}</span>)}
                 </div>}
@@ -502,7 +447,7 @@ export function TemplateReviewV2Dialog({
                   <button type="button" onClick={() => applyAction('KEEP')} className="rounded-md border px-3 py-2 text-[12px] hover:bg-muted">原样保留</button>
                   <button type="button" onClick={() => selectedTarget.kind === 'IMAGE' ? void chooseReplacementImage() : beginEdit('REPLACE_TEXT')} className="rounded-md border px-3 py-2 text-[12px] hover:bg-muted">修改</button>
                   <button type="button" onClick={() => applyAction('REMOVE')} className="rounded-md border px-3 py-2 text-[12px] hover:bg-muted">移除</button>
-                  <button type="button" disabled={!chosenRange || selectedTarget.kind === 'IMAGE'} onClick={() => beginEdit('REPLACE_TEXT')} className="rounded-md border px-3 py-2 text-[12px] hover:bg-muted disabled:opacity-40">拆分后修改</button>
+                  <button type="button" disabled={!chosenRange || !canSplitTarget(selectedTarget)} onClick={() => beginEdit('REPLACE_TEXT')} className="rounded-md border px-3 py-2 text-[12px] hover:bg-muted disabled:opacity-40">拆分后修改</button>
                 </div>
 
                 {editKind && <div className="mt-4 rounded-lg border p-3">
@@ -541,7 +486,7 @@ export function TemplateReviewV2Dialog({
             </div>
             <div className="border-t border-border p-4">
               <div className="mb-3 flex max-h-28 flex-wrap gap-1 overflow-auto">
-                {pendingTargets.slice(0, 30).map((target) => <button key={target.targetId} type="button" title={target.preview} onClick={() => { const item = indexedTargets.find((entry) => entry.target.targetId === target.targetId); if (item) selectTarget(target, item.pageNumber) }} className="max-w-full truncate rounded border border-amber-400 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">待处理：{target.preview || '图片或无法定位内容'}</button>)}
+                {pendingTargets.slice(0, 30).map((target) => <button key={target.targetId} type="button" title={target.preview} onClick={() => selectTarget(target)} className="max-w-full truncate rounded border border-amber-400 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">待处理：{target.preview || '图片或无法定位内容'}</button>)}
               </div>
               <div className="flex gap-2"><button type="button" onClick={cancel} className="rounded-md border px-3 py-2 text-[12px]">关闭并保存草稿</button><button type="button" onClick={() => submit(false)} disabled={pendingTargets.length > 0} className="ml-auto rounded-md bg-primary px-3 py-2 text-[12px] text-primary-foreground disabled:opacity-40">完成复核并预览</button></div>
             </div>

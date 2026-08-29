@@ -67,17 +67,13 @@ describe('TemplateLibraryPreviewServiceV1', () => {
       sourceSha256: 'a'.repeat(64),
       normalizedDocxAvailable: true,
       render: {
-        mode: 'PDF',
-        pageCount: 1,
-        pages: [{
-          pageNumber: 1,
-          pageToken: 'opaque-page-token-without-a-path',
-          widthPoints: 600,
-          heightPoints: 800,
-          textLayerAvailable: true,
-        }],
+        mode: 'DOCX_HTML',
+        documentToken: 'opaque-docx-token-without-a-path',
+        paginationBasis: 'DOCX_STORED_BREAKS',
+        approximatePageCount: 1,
         warnings: [],
       },
+      projections: [],
     }
     const prepare: DocumentReviewRendererV1['prepare'] = vi.fn(async (content, inputFormat) => {
       expect(inputFormat).toBe('DOCX')
@@ -100,7 +96,7 @@ describe('TemplateLibraryPreviewServiceV1', () => {
       entryName: '项目周报模板',
       versionId: version.versionId,
       versionNumber: 1,
-      render: { mode: 'PDF', pageCount: 1 },
+      render: { mode: 'DOCX_HTML', documentToken: 'opaque-docx-token-without-a-path' },
     })
     expect(JSON.stringify(preview)).not.toContain(assetPath)
     expect(JSON.stringify(preview)).not.toContain(sourceBytes.toString())

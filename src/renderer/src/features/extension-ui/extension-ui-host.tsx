@@ -8,7 +8,7 @@ import { TemplateIntakeReviewDialog } from './template-intake-review-dialog'
 import { TemplateReviewV2Dialog } from './template-review-v2-dialog'
 import { TemplateMaterializePreviewDialog } from './template-materialize-preview-dialog'
 import type { TemplateIntakeReviewRequestV1 } from '@shared/xiaogui-work-docx-template-intake'
-import type { TemplateReviewRequestV2 } from '@shared/xiaogui-work-template-review'
+import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from '@shared/xiaogui-work-template-review'
 import { ExtensionDialogShell } from './extension-dialog-shell'
 import {
   useExtensionUIStore,
@@ -119,10 +119,10 @@ export function ExtensionUIHost() {
           }}
         />
       ) : pending.method === 'template_intake_review' ? (
-        'reviewVersion' in pending.payload && pending.payload.reviewVersion === 2 ? (
+        'reviewVersion' in pending.payload && (pending.payload.reviewVersion === 2 || pending.payload.reviewVersion === 3) ? (
           <TemplateReviewV2Dialog
             requestId={pending.id}
-            payload={pending.payload as TemplateReviewRequestV2}
+            payload={pending.payload as TemplateReviewRequestV2 | TemplateReviewRequestV3}
             onSuspend={suspendActiveDialog}
             onCancel={(result) => {
               const tid = findToolContextForUi().timelineItemId

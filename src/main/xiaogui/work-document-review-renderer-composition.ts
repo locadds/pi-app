@@ -10,6 +10,7 @@ import { TemplateReviewReplacementImageStoreV1 } from './work-document-review-im
 
 let defaultRenderer: DocumentReviewRendererV1 | null = null
 let defaultImageStore: TemplateReviewReplacementImageStoreV1 | null = null
+let rendererShutdownRegistered = false
 
 function libreOfficeExecutablePath(): string {
   const executable = process.platform === 'win32' ? 'soffice.exe' : 'soffice'
@@ -33,15 +34,25 @@ function libreOfficeExecutablePath(): string {
 }
 
 export function getDefaultDocumentReviewRendererV1(): DocumentReviewRendererV1 {
-  defaultRenderer ??= new DocumentReviewRendererV1({
-    converter: new LibreOfficePrivateConverterV1({
-      executablePath: libreOfficeExecutablePath(),
-      privateRoot:
-        process.env.XIAOGUI_DOCUMENT_REVIEW_TEMP_ROOT ??
-        join(app.getPath('temp'), 'xiaogui-document-review', 'v1'),
-      timeoutMs: 120_000,
-    }),
-  })
+  if (!defaultRenderer) {
+    defaultRenderer = new DocumentReviewRendererV1({
+      converter: new LibreOfficePrivateConverterV1({
+        executablePath: libreOfficeExecutablePath(),
+        privateRoot:
+          process.env.XIAOGUI_DOCUMENT_REVIEW_TEMP_ROOT ??
+          join(app.getPath('temp'), 'xiaogui-document-review', 'v1'),
+        timeoutMs: 120_000,
+      }),
+    })
+  }
+  if (!rendererShutdownRegistered) {
+    rendererShutdownRegistered = true
+    app.once('before-quit', () => {
+      defaultRenderer?.close()
+      defaultRenderer = null
+      rendererShutdownRegistered = false
+    })
+  }
   return defaultRenderer
 }
 

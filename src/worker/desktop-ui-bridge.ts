@@ -8,7 +8,9 @@ import type {
 } from '@shared/xiaogui-work-docx-template-intake'
 import type {
   TemplateReviewRequestV2,
+  TemplateReviewRequestV3,
   TemplateReviewResultV2,
+  TemplateReviewResultV3,
 } from '@shared/xiaogui-work-template-review'
 import type {
   TemplateMaterializePreviewRequestV1,
@@ -45,7 +47,7 @@ export type ExtensionUIRequest =
       id: string
       method: 'custom'
       kind: 'template_intake_review'
-      payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2
+      payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2 | TemplateReviewRequestV3
       toolCallId: string
     }
   | {
@@ -73,9 +75,9 @@ export type DesktopUIBridge = {
   ) => Promise<ExtensionUIQuestionnaireResult>
   requestTemplateIntakeReview: (
     toolCallId: string,
-    payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2,
+    payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2 | TemplateReviewRequestV3,
     signal?: AbortSignal,
-  ) => Promise<TemplateIntakeReviewResultV1 | TemplateReviewResultV2>
+  ) => Promise<TemplateIntakeReviewResultV1 | TemplateReviewResultV2 | TemplateReviewResultV3>
   requestTemplateMaterializePreview: (
     toolCallId: string,
     payload: TemplateMaterializePreviewRequestV1,

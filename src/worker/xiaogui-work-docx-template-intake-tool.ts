@@ -19,6 +19,7 @@ import { summarizeTemplateReviewActionsV2 } from '@shared/xiaogui-template-revie
 import type {
   TemplateReviewActionV2,
   TemplateReviewRequestV2,
+  TemplateReviewRequestV3,
   TemplateReviewResultV2,
   TemplateReviewRiskFlagV2,
   TemplateReviewSourceAnchorV2,
@@ -600,7 +601,8 @@ export function addXiaoguiWorkDocxTemplateIntakeTool(
             return { content: [{ type: 'text', text: publicText(details) }], details, isError: true }
           }
           const report = outcome.value.report
-          const payload = outcome.value.reviewRequestV2
+          const payload: TemplateReviewRequestV2 | TemplateReviewRequestV3 = outcome.value.reviewRequestV3
+            ?? outcome.value.reviewRequestV2
             ?? buildTemplateReviewRequestV2(report, outcome.value.draftDecisions)
           const reviewed = await bridge.requestTemplateIntakeReview(toolCallId, payload, signal)
           if (reviewed.cancelled) {

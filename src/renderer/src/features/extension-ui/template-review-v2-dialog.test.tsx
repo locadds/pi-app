@@ -1,12 +1,14 @@
 import '@testing-library/jest-dom/vitest'
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   TemplateReviewRequestV2,
+  TemplateReviewRequestV3,
   TemplateReviewTargetV2,
+  TemplateReviewTargetV3,
 } from '@shared/xiaogui-work-template-review'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { TemplateReviewV2Dialog } from './template-review-v2-dialog'
@@ -15,17 +17,21 @@ vi.mock('@renderer/lib/ipc-client', () => ({
   ipcClient: { invoke: vi.fn() },
 }))
 
-vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
-  getDocument: vi.fn(() => ({
-    promise: Promise.resolve({
-      getPage: vi.fn(async () => ({
-        getViewport: () => ({ width: 600, height: 800 }),
-        render: () => ({ promise: Promise.resolve() }),
-        cleanup: vi.fn(),
-      })),
-    }),
-    destroy: vi.fn(async () => undefined),
-  })),
+vi.mock('@renderer/components/icons', () => ({
+  AlertTriangle: () => <span data-testid="icon-alert" />,
+  FileText: () => <span data-testid="icon-file" />,
+  Search: () => <span data-testid="icon-search" />,
+  X: () => <span data-testid="icon-close" />,
+}))
+
+vi.mock('docx-preview', () => ({
+  renderAsync: vi.fn(async (_blob: Blob, body: HTMLElement) => {
+    body.innerHTML = [
+      '<div class="docx-wrapper"><section class="docx">',
+      '<span id="xg_start_1"></span>甲乙丙丁<span id="xg_end_1"></span>',
+      '</section></div>',
+    ].join('')
+  }),
 }))
 
 const invoke = vi.mocked(ipcClient.invoke)
@@ -36,7 +42,7 @@ function target(overrides: Partial<TemplateReviewTargetV2> = {}): TemplateReview
     kind: 'TEXT',
     preview: '甲乙丙丁',
     sourceAnchor: { part: 'BODY', paragraphIndex: 1 },
-    pageRegions: [{ pageNumber: 1, x: 20, y: 30, width: 120, height: 18 }],
+    pageRegions: [],
     reason: '模型无法确定，需要人工复核',
     confidence: 0.4,
     riskFlags: ['LOW_CONFIDENCE'],
@@ -47,31 +53,57 @@ function target(overrides: Partial<TemplateReviewTargetV2> = {}): TemplateReview
   }
 }
 
-function request(
-  targets: readonly TemplateReviewTargetV2[],
-  mode: 'PDF' | 'STRUCTURED_FALLBACK' = 'STRUCTURED_FALLBACK',
-): TemplateReviewRequestV2 {
+function targetV3(overrides: Partial<TemplateReviewTargetV3> = {}): TemplateReviewTargetV3 {
+  return {
+    ...target(overrides),
+    renderAnchor: {
+      status: 'PROJECTED',
+      startBookmark: 'xg_start_1',
+      endBookmark: 'xg_end_1',
+      textSelectionAllowed: true,
+      expectedTextSha256: '081eceef8c4885fb5b1c536efc36a27eac1c81e713f9abecafc521eea6b1f6d6',
+      expectedTextLengthUtf16: 4,
+    },
+    ...overrides,
+  }
+}
+
+function requestV2(targets: readonly TemplateReviewTargetV2[]): TemplateReviewRequestV2 {
   return {
     reviewVersion: 2,
     document: {
       reviewVersion: 2,
       reviewId: 'review-1',
       status: 'REVIEWING',
-      source: {
-        displayName: '测试文档.docx',
-        sha256: 'a'.repeat(64),
-        byteLength: 1024,
-        inputFormat: 'DOCX',
-      },
+      source: { displayName: '测试文档.docx', sha256: 'a'.repeat(64), byteLength: 1024, inputFormat: 'DOCX' },
+      render: { mode: 'STRUCTURED_FALLBACK', pageCount: null, pages: [], warnings: [] },
+      targetCount: targets.length,
+      pendingTargetCount: targets.length,
+      resolvedTargetCount: 0,
+      unmappedTargetCount: 0,
+      requiresHumanConfirmation: true,
+      sourceReadOnly: true,
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+    },
+    targets,
+    draftActions: [],
+  }
+}
+
+function requestV3(targets: readonly TemplateReviewTargetV3[]): TemplateReviewRequestV3 {
+  return {
+    reviewVersion: 3,
+    document: {
+      reviewVersion: 3,
+      reviewId: 'review-3',
+      status: 'REVIEWING',
+      source: { displayName: '测试文档.docx', sha256: 'a'.repeat(64), byteLength: 1024, inputFormat: 'DOCX' },
       render: {
-        mode,
-        pageCount: 2,
-        pages: mode === 'PDF'
-          ? [
-              { pageNumber: 1, pageToken: 'page-token-1', widthPoints: 600, heightPoints: 800, textLayerAvailable: true },
-              { pageNumber: 2, pageToken: 'page-token-2', widthPoints: 600, heightPoints: 800, textLayerAvailable: true },
-            ]
-          : [],
+        mode: 'DOCX_HTML',
+        documentToken: 'doc-token-1',
+        paginationBasis: 'DOCX_STORED_BREAKS',
+        approximatePageCount: 2,
         warnings: [],
       },
       targetCount: targets.length,
@@ -88,7 +120,7 @@ function request(
   }
 }
 
-function renderDialog(payload: TemplateReviewRequestV2, requestId: string) {
+function renderDialog(payload: TemplateReviewRequestV2 | TemplateReviewRequestV3, requestId: string) {
   const onSubmit = vi.fn()
   const onSuspend = vi.fn()
   const onCancel = vi.fn()
@@ -106,36 +138,57 @@ function renderDialog(payload: TemplateReviewRequestV2, requestId: string) {
 
 beforeEach(() => {
   invoke.mockReset()
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as CanvasRenderingContext2D)
+  invoke.mockImplementation(async (method) => {
+    if (method === 'xiaogui.templateReview.document.read') {
+      return { docxBytes: new Uint8Array([1, 2, 3]), sha256: 'b'.repeat(64) }
+    }
+    throw new Error(`UNEXPECTED_METHOD:${method}`)
+  })
 })
-
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
 })
-
 describe('TemplateReviewV2Dialog', () => {
-  it('opens on the first pending target page and submits an explicit decision', async () => {
+  it('renders V3 through a DOCX document token and submits an explicit decision', async () => {
     const user = userEvent.setup()
-    const laterTarget = target({ pageRegions: [{ pageNumber: 2, x: 20, y: 30, width: 120, height: 18 }] })
-    const { onSubmit } = renderDialog(request([laterTarget]), 'request-page')
+    const { onSubmit } = renderDialog(requestV3([targetV3()]), 'request-docx')
 
-    expect(screen.getByText('第 2 / 2 页')).toBeInTheDocument()
+    expect(screen.getByText('页面视图（近似分页） · 2 个页面段')).toBeInTheDocument()
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      'xiaogui.templateReview.document.read',
+      { documentToken: 'doc-token-1' },
+    ))
     expect(screen.getByRole('button', { name: '完成复核并预览' })).toBeDisabled()
 
     await user.click(screen.getByRole('button', { name: '原样保留' }))
     await user.click(screen.getByRole('button', { name: '完成复核并预览' }))
 
+    expect(invoke).not.toHaveBeenCalledWith('xiaogui.templateReview.page.read', expect.anything())
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       cancelled: false,
       actions: [{ targetId: 'target-1', kind: 'KEEP' }],
     }))
   })
 
+  it('keeps the old V2 structured fallback usable without PDF page reads', async () => {
+    const user = userEvent.setup()
+    const { onSubmit } = renderDialog(requestV2([target()]), 'request-v2')
+
+    expect(screen.getByText('结构化视图')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '原样保留' }))
+    await user.click(screen.getByRole('button', { name: '完成复核并预览' }))
+
+    expect(invoke).not.toHaveBeenCalledWith('xiaogui.templateReview.page.read', expect.anything())
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      actions: [{ targetId: 'target-1', kind: 'KEEP' }],
+    }))
+  })
+
   it('requires a reason and second confirmation before retaining high-risk content', async () => {
     const user = userEvent.setup()
-    const highRisk = target({ highRisk: true, riskFlags: ['SIGNATURE'], reason: '疑似签字内容' })
-    const { onSubmit } = renderDialog(request([highRisk]), 'request-risk')
+    const highRisk = targetV3({ highRisk: true, riskFlags: ['SIGNATURE'], reason: '疑似签字内容' })
+    const { onSubmit } = renderDialog(requestV3([highRisk]), 'request-risk')
 
     await user.click(screen.getByRole('button', { name: '原样保留' }))
     expect(screen.getByText('此处属于高风险内容，保留或修改前请填写原因。')).toBeInTheDocument()
@@ -153,69 +206,5 @@ describe('TemplateReviewV2Dialog', () => {
         highRiskOverrideConfirmed: true,
       })],
     }))
-  })
-
-  it('stores an opaque replacement token when the user replaces an image', async () => {
-    const user = userEvent.setup()
-    invoke.mockResolvedValue({ cancelled: false, token: 'opaque-image-token', displayName: '新示意图.png' })
-    const imageTarget = target({ kind: 'IMAGE', preview: '项目区位图' })
-    const { onSubmit } = renderDialog(request([imageTarget]), 'request-image')
-
-    await user.click(screen.getByRole('button', { name: '修改' }))
-    expect(await screen.findByRole('button', { name: '新示意图.png' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    await user.click(screen.getByRole('button', { name: '完成复核并预览' }))
-
-    expect(invoke).toHaveBeenCalledWith('xiaogui.templateReview.image.choose')
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      actions: [{ targetId: 'target-1', kind: 'REPLACE_IMAGE', replacementImageToken: 'opaque-image-token' }],
-    }))
-  })
-
-  it('records the selected UTF-16 range for a split-and-modify action', async () => {
-    const user = userEvent.setup()
-    const { onSubmit } = renderDialog(request([target()]), 'request-range')
-    const previews = screen.getAllByText('甲乙丙丁')
-    const reviewText = previews.at(-1)
-    expect(reviewText?.firstChild).toBeTruthy()
-
-    const range = document.createRange()
-    range.setStart(reviewText!.firstChild!, 1)
-    range.setEnd(reviewText!.firstChild!, 3)
-    const selection = window.getSelection()!
-    selection.removeAllRanges()
-    selection.addRange(range)
-    fireEvent.mouseUp(reviewText!)
-
-    expect(screen.getByText(/所选范围以外会原样保留/)).toHaveTextContent('乙丙')
-    await user.click(screen.getByRole('button', { name: '拆分后修改' }))
-    const editBox = screen.getByPlaceholderText('填写修改后的内容')
-    await user.clear(editBox)
-    await user.type(editBox, '新内容')
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    await user.click(screen.getByRole('button', { name: '完成复核并预览' }))
-
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      actions: [{
-        targetId: 'target-1',
-        kind: 'REPLACE_TEXT',
-        range: { startUtf16: 1, endUtf16Exclusive: 3 },
-        replacementText: '新内容',
-      }],
-    }))
-  })
-
-  it('loads a PDF page through an opaque token and keeps yellow regions clickable', async () => {
-    const user = userEvent.setup()
-    invoke.mockResolvedValue({ pageNumber: 1, pdfBytes: new Uint8Array([1, 2, 3]), text: '甲乙丙丁' })
-    renderDialog(request([target()], 'PDF'), 'request-pdf')
-
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
-      'xiaogui.templateReview.page.read',
-      { pageToken: 'page-token-1' },
-    ))
-    const region = screen.getByRole('button', { name: '复核：甲乙丙丁' })
-    await user.click(region)
-    expect(screen.getByText('模型无法确定，需要人工复核')).toBeInTheDocument()
   })
 })

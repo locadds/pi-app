@@ -8,16 +8,23 @@
 - 安装包：`LibreOffice_26.2.5_Win_x86-64.msi`
 - 固定 SHA-256：`f15ba07bfcb0186986cf3171063506f5d207c11f8cc051ba0d135209e9e915f9`
 - 许可证：MPL 2.0；官方发行包中的第三方许可证与说明随运行时一并装配。
-- 用途：仅在本机无界面、独立用户配置目录中把通过基础检查的 DOC/DOCX 转为内部 DOCX 或预览 PDF。
+- 用途：仅在本机无界面、独立用户配置目录中把通过基础检查的旧版 DOC 转为内部 DOCX。DOCX 复核和模板预览不再转 PDF。
 - 装配：二进制不进入 Git。Windows 阶段封版时由 `scripts/prepare-libreoffice-runtime.mjs` 下载到 D 盘缓存、校验官方摘要，再加入安装包；对应固定版本源码获取地址为 https://download.documentfoundation.org/libreoffice/src/26.2.5/ 。
-- 运行边界：转换设固定超时，可中止并终止进程树；生成的 PDF 只是小规自己的本机预览中间件，不承担外部 PDF 文件安全检测。
+- 运行边界：转换设固定超时，可中止并终止进程树；不用于 DOCX 复核、模板预览或普通 PDF 阅读。
 
-## cfb 1.2.2 与 pdfjs-dist 6.1.200
+## cfb 1.2.2
 
-- 来源：https://github.com/SheetJS/js-cfb 与 https://github.com/mozilla/pdf.js
-- 许可证：均为 Apache-2.0，许可证原文随 npm 包发布。
-- 用途：`cfb` 只读识别旧版 DOC 的复合文件结构；`pdfjs-dist` 只渲染小规由 LibreOffice 生成的本机预览 PDF 并建立文字位置映射。
-- 运行边界：不把文档路径、PDF 字节、原始 OOXML 或全文写入模型会话与公开工具结果；Renderer 只能通过短期页面令牌读取当前预览。
+- 来源：https://github.com/SheetJS/js-cfb
+- 许可证：Apache-2.0，许可证原文随 npm 包发布。
+- 用途：只读识别旧版 DOC 的复合文件结构；含 VBA、ActiveX、嵌入对象、加密或异常结构时拒绝处理。
+- 运行边界：不把文档路径、原始二进制、原始 OOXML 或全文写入模型会话与公开工具结果。
+
+## docx-preview 0.4.0
+
+- 来源：https://github.com/VolodymyrBaydalka/docxjs
+- 许可证：Apache-2.0，许可证原文随 npm 包发布。
+- 用途：在小规内只读渲染通过安全门的 DOCX 展示副本，用于模板复核、修改后预览和本机模板库预览。
+- 运行边界：只读取主进程通过短期文档令牌签发的临时 DOCX 字节；不读取本机路径，不启用外部 HTML、批注、修订或实验接口。页面数量仅作为 HTML 近似视图，不冒充 Word 实际分页。
 
 ## officeparser 7.8.0
 

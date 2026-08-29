@@ -1,6 +1,5 @@
 import type {
-  TemplateReviewPageV2,
-  TemplateReviewRenderWarningV2,
+  TemplateReviewRenderV3,
 } from './xiaogui-work-template-review'
 
 /** 小规本机个人模板库公开契约。公开数据永远不包含本机路径。 */
@@ -81,8 +80,8 @@ export interface TemplateLibraryUsageV1 {
 }
 
 /**
- * 单次本机模板预览会话。manifestId 和 pageToken 都是不透明临时令牌；
- * 文件路径、DOCX/PDF 二进制以及 LibreOffice 私有工作目录不得进入此对象。
+ * 单次本机模板预览会话。manifestId 和 documentToken 都是不透明临时令牌；
+ * 文件路径、DOCX 二进制以及 LibreOffice 私有工作目录不得进入此对象。
  */
 export interface TemplateLibraryPreviewV1 {
   previewVersion: typeof TEMPLATE_LIBRARY_PREVIEW_VERSION_V1
@@ -91,12 +90,7 @@ export interface TemplateLibraryPreviewV1 {
   entryName: string
   versionId: string
   versionNumber: number
-  render: {
-    mode: 'PDF' | 'STRUCTURED_FALLBACK'
-    pageCount: number | null
-    pages: readonly TemplateReviewPageV2[]
-    warnings: readonly TemplateReviewRenderWarningV2[]
-  }
+  render: TemplateReviewRenderV3
 }
 
 export interface TemplateLibraryPreviewReleaseResultV1 {

@@ -35,9 +35,11 @@ import type {
 import {
   isValidTemplateReviewTextRangeV2,
   type TemplateReviewActionV2,
-  type TemplateReviewPageRegionV2,
-  type TemplateReviewRequestV2,
+  type TemplateReviewActionV3,
+  type TemplateReviewRenderAnchorV3,
+  type TemplateReviewRequestV3,
   type TemplateReviewRiskFlagV2,
+  type TemplateReviewTargetV3,
 } from '@shared/xiaogui-work-template-review'
 import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import {
@@ -93,7 +95,7 @@ export interface WorkDocxTemplateIntakeServiceOptionsV1 {
   semanticParser?: TemplateIntakeSemanticParserV1
   reviewRenderer?: Pick<
     DocumentReviewRendererV1,
-    'prepare' | 'locateExactText' | 'countExactTextOccurrences' | 'readNormalizedDocx' | 'release'
+    'prepare' | 'readNormalizedDocx' | 'release'
   >
   now?: () => Date
   parseTimeoutMs?: number
@@ -935,11 +937,11 @@ export class WorkDocxTemplateIntakeServiceV1 {
     }
   }
 
-  private async prepareReviewRequestV2(
+  private async prepareReviewRequestV3(
     record: StoredTemplateIntakeRecordV1,
     source: PrivateSourceV1,
     signal?: AbortSignal,
-  ): Promise<TemplateReviewRequestV2 | undefined> {
+  ): Promise<TemplateReviewRequestV3 | undefined> {
     const renderer = this.options.reviewRenderer
     if (!renderer) return undefined
     let cached = this.reviewManifests.get(record.report.reportId)
@@ -948,8 +950,38 @@ export class WorkDocxTemplateIntakeServiceV1 {
       this.reviewManifests.delete(record.report.reportId)
       cached = undefined
     }
+    const projectionTargets = record.report.candidates.map((candidate) => {
+      const sourcePart = candidate.sourceAnchors[0]?.part
+      return {
+        targetId: candidate.candidateId,
+        kind: sourcePart === 'DRAWING'
+          ? ('IMAGE' as const)
+          : sourcePart === 'TABLE'
+            ? ('TABLE_CELL' as const)
+            : sourcePart
+              ? ('TEXT' as const)
+              : ('UNMAPPED' as const),
+        preview: candidate.preview,
+        sourceAnchor: reviewAnchorV2(candidate.sourceAnchors[0]),
+      }
+    })
+    if (cached && cached.prepared.projections.length !== record.report.candidates.length) {
+      const normalized = renderer.readNormalizedDocx(cached.manifestId)
+      renderer.release(cached.manifestId)
+      this.reviewManifests.delete(record.report.reportId)
+      cached = undefined
+      if (normalized) {
+        const prepared = await renderer.prepare(normalized, 'DOCX', signal, projectionTargets)
+        cached = {
+          sourceSha256: source.sha256,
+          manifestId: prepared.manifestId,
+          prepared,
+        }
+        this.reviewManifests.set(record.report.reportId, cached)
+      }
+    }
     if (!cached) {
-      const prepared = await renderer.prepare(source.content, source.inputFormat, signal)
+      const prepared = await renderer.prepare(source.content, source.inputFormat, signal, projectionTargets)
       cached = {
         sourceSha256: source.sha256,
         manifestId: prepared.manifestId,
@@ -959,15 +991,9 @@ export class WorkDocxTemplateIntakeServiceV1 {
     }
 
     const draftById = new Map(record.draftDecisions.map((item) => [item.candidateId, item]))
-    const candidatePreviewCounts = new Map<string, number>()
-    for (const candidate of record.report.candidates) {
-      candidatePreviewCounts.set(
-        candidate.preview,
-        (candidatePreviewCounts.get(candidate.preview) ?? 0) + 1,
-      )
-    }
     const unmappedTargetIds: string[] = []
-    const targets = record.report.candidates.map((candidate) => {
+    const projectionById = new Map(cached.prepared.projections.map((projection) => [projection.targetId, projection]))
+    const targets: TemplateReviewTargetV3[] = record.report.candidates.map((candidate) => {
       const sourcePart = candidate.sourceAnchors[0]?.part
       const kind = sourcePart === 'DRAWING'
         ? ('IMAGE' as const)
@@ -976,21 +1002,24 @@ export class WorkDocxTemplateIntakeServiceV1 {
           : sourcePart
             ? ('TEXT' as const)
             : ('UNMAPPED' as const)
-      const previewIsUntruncated = Array.from(candidate.preview).length < TEMPLATE_INTAKE_MAX_PREVIEW_CHARS_V1
-      const previewIsUniqueInReport = candidatePreviewCounts.get(candidate.preview) === 1
-      const exactPageMatchCount =
-        cached!.prepared.render.mode === 'PDF' && kind !== 'IMAGE' && previewIsUntruncated
-          ? renderer.countExactTextOccurrences(cached!.manifestId, candidate.preview)
-          : 0
-      const pageRegions: readonly TemplateReviewPageRegionV2[] =
-        cached!.prepared.render.mode === 'PDF' &&
-        kind !== 'IMAGE' &&
-        previewIsUntruncated &&
-        previewIsUniqueInReport &&
-        exactPageMatchCount === 1
-          ? renderer.locateExactText(cached!.manifestId, candidate.preview, 1)
-          : []
-      if (cached!.prepared.render.mode === 'PDF' && pageRegions.length === 0) {
+      const projection = projectionById.get(candidate.candidateId)
+      const renderAnchor: TemplateReviewRenderAnchorV3 = projection
+        ? {
+            status: projection.status,
+            ...(projection.startBookmark ? { startBookmark: projection.startBookmark } : {}),
+            ...(projection.endBookmark ? { endBookmark: projection.endBookmark } : {}),
+            textSelectionAllowed: projection.textSelectionAllowed,
+            ...(projection.expectedTextSha256 ? { expectedTextSha256: projection.expectedTextSha256 } : {}),
+            ...(projection.expectedTextLengthUtf16 ? { expectedTextLengthUtf16: projection.expectedTextLengthUtf16 } : {}),
+            ...(projection.expectedCompactTextSha256
+              ? { expectedCompactTextSha256: projection.expectedCompactTextSha256 }
+              : {}),
+            ...(projection.expectedCompactTextLengthUtf16 != null
+              ? { expectedCompactTextLengthUtf16: projection.expectedCompactTextLengthUtf16 }
+              : {}),
+          }
+        : { status: 'UNMAPPED', textSelectionAllowed: false }
+      if (renderAnchor.status !== 'PROJECTED') {
         unmappedTargetIds.push(candidate.candidateId)
       }
       const riskFlags = reviewRiskFlagsV2(candidate)
@@ -999,13 +1028,13 @@ export class WorkDocxTemplateIntakeServiceV1 {
         candidate.kind === 'UNRESOLVED' ||
         riskFlags.length > 0 ||
         kind === 'UNMAPPED' ||
-        (cached!.prepared.render.mode === 'PDF' && pageRegions.length === 0)
+        renderAnchor.status !== 'PROJECTED'
       return {
         targetId: candidate.candidateId,
         kind,
         preview: candidate.preview,
         sourceAnchor: reviewAnchorV2(candidate.sourceAnchors[0]),
-        pageRegions,
+        renderAnchor,
         reason: candidate.reason,
         confidence: candidate.confidence,
         riskFlags,
@@ -1034,9 +1063,9 @@ export class WorkDocxTemplateIntakeServiceV1 {
       (target) => target.highlight === 'NONE' || target.status === 'RESOLVED',
     ).length
     return {
-      reviewVersion: 2,
+      reviewVersion: 3,
       document: {
-        reviewVersion: 2,
+        reviewVersion: 3,
         reviewId: record.report.reportId,
         status: 'REVIEWING',
         source: {
@@ -1109,14 +1138,14 @@ export class WorkDocxTemplateIntakeServiceV1 {
       return failure('TEMPLATE_INTAKE_SOURCE_CHANGED')
     }
     if (!submission) {
-      const reviewRequestV2 = await this.prepareReviewRequestV2(record, source, signal)
+      const reviewRequestV3 = await this.prepareReviewRequestV3(record, source, signal)
       return {
         ok: true,
         value: {
           kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_REQUIRED',
           report: record.report,
           draftDecisions: record.draftDecisions,
-          ...(reviewRequestV2 ? { reviewRequestV2 } : {}),
+          ...(reviewRequestV3 ? { reviewRequestV3 } : {}),
         },
       }
     }

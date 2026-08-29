@@ -72,6 +72,12 @@
     },
     {
       "type": "library",
+      "name": "docx-preview",
+      "version": "0.4.0",
+      "bom-ref": "pkg:npm/docx-preview@0.4.0"
+    },
+    {
+      "type": "library",
       "name": "docxtemplater",
       "version": "3.69.3",
       "bom-ref": "pkg:npm/docxtemplater@3.69.3"
@@ -164,12 +170,6 @@
       "name": "officeparser",
       "version": "7.8.0",
       "bom-ref": "pkg:npm/officeparser@7.8.0"
-    },
-    {
-      "type": "library",
-      "name": "pdfjs-dist",
-      "version": "6.1.200",
-      "bom-ref": "pkg:npm/pdfjs-dist@6.1.200"
     },
     {
       "type": "library",

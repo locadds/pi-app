@@ -14,11 +14,11 @@ describe('generate-release-sbom (F-10)', () => {
         JSON.stringify({
           name: 't',
           version: '1.0.0',
-          dependencies: { 'pdfjs-dist': '6.1.200', zod: '^3.0.0' },
+          dependencies: { 'docx-preview': '0.4.0', zod: '^3.0.0' },
           devDependencies: { officeparser: '7.8.0' },
           xiaoguiBuild: {
             productName: 'Small Rules',
-            bundledRuntimeDependencies: ['officeparser'],
+            bundledRuntimeDependencies: ['officeparser', 'docx-preview'],
             bundledExternalRuntimes: [{
               type: 'application',
               name: 'LibreOffice Windows x64 private runtime',
@@ -42,7 +42,7 @@ describe('generate-release-sbom (F-10)', () => {
             'node_modules/officeparser/node_modules/pdfjs-dist': { version: '6.2.108' },
             'node_modules/zod': { version: '3.24.1' },
             'node_modules/officeparser': { version: '7.8.0', dev: true },
-            'node_modules/pdfjs-dist': { version: '6.1.200' },
+            'node_modules/docx-preview': { version: '0.4.0' },
           },
         }),
       )
@@ -58,10 +58,8 @@ describe('generate-release-sbom (F-10)', () => {
       assert.ok(r.componentCount >= 1)
       assert.ok(bom.components.some((c) => c.name === 'zod'))
       assert.ok(bom.components.some((c) => c.name === 'officeparser'))
-      assert.equal(
-        bom.components.find((c) => c.name === 'pdfjs-dist')?.version,
-        '6.1.200',
-      )
+      assert.equal(bom.components.find((c) => c.name === 'docx-preview')?.version, '0.4.0')
+      assert.equal(bom.components.find((c) => c.name === 'pdfjs-dist')?.version, undefined)
       assert.deepEqual(
         bom.components.find((c) => c.name === 'LibreOffice Windows x64 private runtime'),
         {

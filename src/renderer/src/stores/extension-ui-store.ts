@@ -4,7 +4,7 @@ import { useUIStore } from '@renderer/stores/ui-store'
 import type { AskQuestionPayload } from '@renderer/features/extension-ui/questionnaire-dialog'
 import type { ImageReviewPayload } from '@renderer/features/extension-ui/image-review-dialog'
 import type { TemplateIntakeReviewRequestV1 } from '@shared/xiaogui-work-docx-template-intake'
-import type { TemplateReviewRequestV2 } from '@shared/xiaogui-work-template-review'
+import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from '@shared/xiaogui-work-template-review'
 import type { TemplateMaterializePreviewRequestV1 } from '@shared/xiaogui-work-docx-template-materialize'
 
 export type ExtensionUIPending =
@@ -16,7 +16,7 @@ export type ExtensionUIPending =
   | {
       id: string
       method: 'template_intake_review'
-      payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2
+      payload: TemplateIntakeReviewRequestV1 | TemplateReviewRequestV2 | TemplateReviewRequestV3
       origin?: 'DIRECT'
     }
   | {

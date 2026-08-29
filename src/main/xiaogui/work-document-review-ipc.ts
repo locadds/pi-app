@@ -7,13 +7,13 @@ import {
   getDefaultTemplateReviewReplacementImageStoreV1,
 } from './work-document-review-renderer-composition'
 
-const PageRequestSchema = z.object({ pageToken: z.string().min(16).max(256) }).strict()
+const DocumentRequestSchema = z.object({ documentToken: z.string().min(16).max(256) }).strict()
 
 export function registerDocumentReviewHandlersV1(): void {
   registerHandlerWithSchema(
-    'ipc:xiaogui.templateReview.page.read',
-    PageRequestSchema,
-    async ({ pageToken }) => getDefaultDocumentReviewRendererV1().readPageAssetByToken(pageToken),
+    'ipc:xiaogui.templateReview.document.read',
+    DocumentRequestSchema,
+    async ({ documentToken }) => getDefaultDocumentReviewRendererV1().readDocumentAssetByToken(documentToken),
   )
   registerHandler('ipc:xiaogui.templateReview.image.choose', async () => {
     const options: OpenDialogOptions = {

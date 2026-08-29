@@ -71,9 +71,9 @@ const fallbackPreview: TemplateLibraryPreviewV1 = {
   versionNumber: version.versionNumber,
   render: {
     mode: 'STRUCTURED_FALLBACK',
-    pageCount: null,
-    pages: [],
-    warnings: [{ code: 'LIBREOFFICE_UNAVAILABLE', message: '本机文档渲染组件不可用' }],
+    paginationBasis: 'UNKNOWN',
+    approximatePageCount: null,
+    warnings: [{ code: 'DOCX_HTML_RENDER_FAILED', message: '本机文档渲染组件不可用' }],
   },
 }
 
