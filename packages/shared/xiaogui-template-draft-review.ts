@@ -3,6 +3,7 @@ import type {
   TemplateIssueActionV2,
 } from './xiaogui-template-field-graph-v2'
 import type {
+  TemplateReviewIssueChoiceV2,
   TemplateReviewActionV2,
   TemplateReviewDocumentV3,
   TemplateReviewRequestV3,
@@ -19,11 +20,8 @@ export interface TemplateDraftTargetBindingV2 {
   recommendedAction: TemplateReviewActionV2
 }
 
-export interface TemplateDraftIssueChoiceV2 {
-  issueId: string
+export interface TemplateDraftIssueChoiceV2 extends TemplateReviewIssueChoiceV2 {
   action: TemplateIssueActionV2
-  /** 高风险内容选择保留时必填。 */
-  reason?: string
 }
 
 export interface TemplateDraftReviewRequestV2 {
@@ -37,4 +35,3 @@ export interface TemplateDraftReviewRequestV2 {
   /** 现有逐段复核完整保留，只作为“高级检查”打开。 */
   advancedReview: TemplateReviewRequestV3
 }
-

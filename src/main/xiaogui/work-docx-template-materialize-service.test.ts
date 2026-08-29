@@ -113,6 +113,37 @@ async function makeConfirmedSource(sourcePath: string): Promise<ConfirmedTemplat
       { candidateId: 'project-name', decision: 'VARIABLE', fieldName: '项目名称' },
       { candidateId: 'fixed', decision: 'FIXED' },
     ],
+    fieldGraphV2: {
+      graphVersion: 2,
+      graphId: 'xggraph2_service',
+      source: report.file,
+      fields: [{
+        fieldId: 'xgfield2_project_name',
+        canonicalKey: 'project.name',
+        displayName: '项目名称',
+        valueType: 'TEXT',
+        structureKind: 'SIMPLE',
+        required: true,
+        sampleValue: '旧项目名称',
+        aliases: [],
+        occurrenceIds: ['xgocc2_project_name'],
+        confidence: 1,
+        status: 'CONFIRMED',
+      }],
+      occurrences: [{
+        occurrenceId: 'xgocc2_project_name',
+        fieldId: 'xgfield2_project_name',
+        sourceAnchor: { part: 'BODY', sectionIndex: 1, paragraphIndex: 1 },
+        originalText: '旧项目名称',
+        confidence: 1,
+        riskFlags: [],
+        status: 'MAPPED',
+      }],
+      issues: [],
+      analysisEvidenceId: 'xgevidence2_service',
+      createdAt: report.createdAt,
+      updatedAt: report.updatedAt,
+    },
     confirmedAtLocal: '2026-08-24T16:00:00.000+08:00',
     confirmedBy: 'LOCAL_USER',
   }
@@ -377,6 +408,7 @@ describe('WORK 模板物化服务', () => {
     expect(detail.versions.map((version) => version.versionNumber)).toEqual([1])
     expect(detail.latestVersion.fields).toEqual([
       expect.objectContaining({
+        fieldId: 'xgfield2_project_name',
         name: '项目名称',
         kind: 'TEXT',
         required: true,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_DOCUMENT_PARAGRAPH_LINE_SPACING,
+  CustomDecorationType,
   DocumentFlavor,
   LocaleType,
   LogLevel,
@@ -13,7 +14,7 @@ import {
 import { FUniver } from '@univerjs/core/facade'
 import UniverDesignZhCN from '@univerjs/design/locale/zh-CN'
 import { UniverDocsPlugin } from '@univerjs/docs'
-import { UniverDocsUIPlugin } from '@univerjs/docs-ui'
+import { addCustomDecorationFactory, UniverDocsUIPlugin } from '@univerjs/docs-ui'
 import '@univerjs/docs-ui/facade'
 import UniverDocsUIZhCN from '@univerjs/docs-ui/locale/zh-CN'
 import { UniverRenderEnginePlugin } from '@univerjs/engine-render'
@@ -40,13 +41,9 @@ import {
 type ViewerStatus = '正在载入' | '可以编辑' | '有未保存修改' | '正在保存' | '已保存' | '载入失败'
 type ProjectionMetadataV1 = OfficeUniverWorktreeEnvelopeV1['projection']
 
-export function OfficeViewerApp({
-  parentBridge,
-}: {
-  parentBridge: OfficeParentBridgeV1 | null
-}): React.JSX.Element {
+export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBridgeV1 | null }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
-  const saveRef = useRef<(() => Promise<void>) | null>(null)
+  const saveRef = useRef<(() => Promise<string>) | null>(null)
   const reloadRef = useRef<(() => Promise<void>) | null>(null)
   const [status, setStatus] = useState<ViewerStatus>('正在载入')
   const [error, setError] = useState<string | null>(null)
@@ -113,13 +110,17 @@ export function OfficeViewerApp({
       } else if (Object.keys(envelope.snapshot).length > 0) {
         document = univerAPI.createUniverDoc(envelope.snapshot as Partial<IDocumentData>)
       } else {
-        document = univerAPI.createUniverDoc(createBlankDocument('xiaogui-office-spike', '小规 Office Surface 验证文档'))
-        await document.insertParagraph([
-          '小规文档界面验证',
-          '',
-          '这是独立 Office Surface 的合成文档。',
-          '本轮只验证中文编辑、快照保存和工作副本边界，不代表已经支持 DOCX 导入导出。',
-        ].join('\n'))
+        document = univerAPI.createUniverDoc(
+          createBlankDocument('xiaogui-office-spike', '小规 Office Surface 验证文档'),
+        )
+        await document.insertParagraph(
+          [
+            '小规文档界面验证',
+            '',
+            '这是独立 Office Surface 的合成文档。',
+            '本轮只验证中文编辑、快照保存和工作副本边界，不代表已经支持 DOCX 导入导出。',
+          ].join('\n'),
+        )
         const decoration = await ensureSyntheticFieldDecorationV1(document, univerAPI)
         if (!decoration.verified) throw new Error(decoration.reason ?? '非破坏性字段标记验证失败。')
         await gateway.save(document.getSnapshot() as unknown as OfficeSnapshotV1)
@@ -131,11 +132,14 @@ export function OfficeViewerApp({
       const verified = fieldDecorationVerifiedFromDocument(document)
       setFieldDecorationVerified(verified)
       setStatus('可以编辑')
-      parentBridge?.post({ type: 'VIEWER_READY', capabilities: capabilities() })
+      parentBridge?.post({
+        type: 'VIEWER_READY',
+        capabilities: capabilities(),
+      })
     }
 
-    const save = async (): Promise<void> => {
-      if (!document) return
+    const save = async (): Promise<string> => {
+      if (!document) throw new Error('OFFICE_DOCUMENT_NOT_READY')
       setStatus('正在保存')
       suppressDirty = true
       const snapshot = activeProjection
@@ -149,7 +153,161 @@ export function OfficeViewerApp({
       const headSha256 = await gateway.save(snapshot as unknown as OfficeSnapshotV1)
       suppressDirty = false
       setStatus('已保存')
-      parentBridge?.post({ type: 'VIEWER_DIRTY_STATE', dirty: false, headSha256 })
+      parentBridge?.post({
+        type: 'VIEWER_DIRTY_STATE',
+        dirty: false,
+        headSha256,
+      })
+      return headSha256
+    }
+
+    const updateField = async (message: Extract<OfficeSurfaceParentMessageV1, { type: 'PARENT_UPDATE_FIELD' }>) => {
+      if (!document || !activeProjection) throw new Error('当前文档没有可同步的业务字段。')
+      const field = activeProjection.fields.find((item) => item.fieldId === message.fieldId)
+      if (!field) throw new Error('没有找到要同步的业务字段。')
+      const allowedOccurrenceIds = new Set(field.occurrenceIds)
+      const requestedIds = [...new Set(message.occurrenceIds)].filter((id) => allowedOccurrenceIds.has(id))
+      if (!requestedIds.length) throw new Error('业务字段没有可同步的位置。')
+
+      const before = document.getSnapshot()
+      const dataStream = before.body?.dataStream ?? ''
+      const decorations = before.body?.customDecorations ?? []
+      const plans = requestedIds.map((occurrenceId) => {
+        const decoration = decorations.find((item) => item.id === occurrenceDecorationIdV1(occurrenceId))
+        if (!decoration) return null
+        return {
+          occurrenceId,
+          start: decoration.startIndex,
+          end: decoration.endIndex + 1,
+        }
+      })
+      const missingIds = requestedIds.filter((_, index) => !plans[index])
+      const validPlans = plans
+        .filter((item): item is NonNullable<typeof item> => Boolean(item))
+        .sort((left, right) => left.start - right.start)
+      const overlaps = validPlans.some((item, index) => index > 0 && item.start < validPlans[index - 1].end)
+      if (missingIds.length || overlaps) {
+        const failedOccurrenceIds = overlaps ? requestedIds : missingIds
+        parentBridge?.post({
+          type: 'VIEWER_FIELD_UPDATE_RESULT',
+          requestId: message.requestId,
+          fieldId: message.fieldId,
+          updatedOccurrenceIds: [],
+          failedOccurrenceIds,
+          headSha256: gateway.getHeadSha256(),
+        })
+        return
+      }
+
+      suppressDirty = true
+      const executedIds: string[] = []
+      let executedCommandCount = 0
+      try {
+        for (const plan of [...validPlans].sort((left, right) => right.start - left.start)) {
+          const executed = await document.insertText(message.value, {
+            startOffset: plan.start,
+            endOffset: plan.end,
+            cursorOffset: message.value.length,
+          })
+          if (!executed) break
+          executedIds.push(plan.occurrenceId)
+          executedCommandCount += 1
+        }
+
+        const expectedRanges = expectedRangesAfterReplacement(validPlans, message.value)
+        const textAfter = document.getSnapshot().body?.dataStream ?? ''
+        let verified =
+          executedIds.length === validPlans.length &&
+          validPlans.every((plan) => {
+            const expected = expectedRanges.get(plan.occurrenceId)
+            return !!expected && textAfter.slice(expected.start, expected.end) === message.value
+          })
+
+        if (verified) {
+          for (const plan of validPlans) {
+            const expected = expectedRanges.get(plan.occurrenceId)
+            if (!expected) {
+              verified = false
+              break
+            }
+            const mutation = addCustomDecorationFactory({
+              unitId: document.getId(),
+              id: occurrenceDecorationIdV1(plan.occurrenceId),
+              type: CustomDecorationType.COMMENT,
+              ranges: [
+                {
+                  startOffset: expected.start,
+                  endOffset: expected.end,
+                  collapsed: false,
+                },
+              ],
+            })
+            const decorated = await univerAPI.executeCommand(mutation.id, mutation.params)
+            if (!decorated) {
+              verified = false
+              break
+            }
+            executedCommandCount += 1
+          }
+        }
+
+        if (verified) {
+          const after = document.getSnapshot()
+          const afterText = after.body?.dataStream ?? ''
+          const afterDecorations = after.body?.customDecorations ?? []
+          verified = validPlans.every((plan) => {
+            const expected = expectedRanges.get(plan.occurrenceId)
+            const decoration = afterDecorations.find((item) => item.id === occurrenceDecorationIdV1(plan.occurrenceId))
+            return (
+              !!expected &&
+              !!decoration &&
+              decoration.startIndex === expected.start &&
+              decoration.endIndex + 1 === expected.end &&
+              afterText.slice(expected.start, expected.end) === message.value
+            )
+          })
+        }
+
+        if (!verified) {
+          for (let index = 0; index < executedCommandCount; index += 1) await document.undo()
+          const headSha256 = await save()
+          parentBridge?.post({
+            type: 'VIEWER_FIELD_UPDATE_RESULT',
+            requestId: message.requestId,
+            fieldId: message.fieldId,
+            updatedOccurrenceIds: [],
+            failedOccurrenceIds: requestedIds,
+            headSha256,
+          })
+          return
+        }
+
+        activeProjection = {
+          ...activeProjection,
+          occurrences: activeProjection.occurrences.map((occurrence) => {
+            const expected = expectedRanges.get(occurrence.occurrenceId)
+            if (!expected) return occurrence
+            return {
+              ...occurrence,
+              originalText: message.value,
+              startUtf16: expected.start,
+              endUtf16Exclusive: expected.end,
+            }
+          }),
+        }
+        setProjectionMetadata(activeProjection)
+        const headSha256 = await save()
+        parentBridge?.post({
+          type: 'VIEWER_FIELD_UPDATE_RESULT',
+          requestId: message.requestId,
+          fieldId: message.fieldId,
+          updatedOccurrenceIds: requestedIds,
+          failedOccurrenceIds: [],
+          headSha256,
+        })
+      } finally {
+        suppressDirty = false
+      }
     }
 
     const scheduleAutosave = () => {
@@ -162,9 +320,9 @@ export function OfficeViewerApp({
 
     const focusOccurrence = (occurrenceId: string) => {
       if (!document) return
-      const decoration = document.getSnapshot().body?.customDecorations?.find(
-        (item) => item.id === occurrenceDecorationIdV1(occurrenceId),
-      )
+      const decoration = document
+        .getSnapshot()
+        .body?.customDecorations?.find((item) => item.id === occurrenceDecorationIdV1(occurrenceId))
       if (decoration) document.setSelection(decoration.startIndex, decoration.endIndex + 1)
     }
 
@@ -180,24 +338,34 @@ export function OfficeViewerApp({
       })
       scheduleAutosave()
     })
-    parentSubscription = parentBridge?.subscribe((message: OfficeSurfaceParentMessageV1) => {
-      if (message.type === 'PARENT_SAVE') void save().catch(handleError)
-      else if (message.type === 'PARENT_RELOAD') window.location.reload()
-      else if (message.type === 'PARENT_DISPOSE') univer.dispose()
-      else if (message.type === 'PARENT_FOCUS_OCCURRENCE') focusOccurrence(message.occurrenceId)
-      else if (message.type === 'PARENT_FOCUS_FIELD') {
-        const occurrenceId = activeProjection?.fields.find((field) => field.fieldId === message.fieldId)?.occurrenceIds[0]
-        if (occurrenceId) focusOccurrence(occurrenceId)
-      } else if (message.type === 'PARENT_PING' && loaded) {
-        parentBridge.post({ type: 'VIEWER_READY', capabilities: capabilities() })
-      }
-    }) ?? null
+    parentSubscription =
+      parentBridge?.subscribe((message: OfficeSurfaceParentMessageV1) => {
+        if (message.type === 'PARENT_SAVE') void save().catch(handleError)
+        else if (message.type === 'PARENT_RELOAD') window.location.reload()
+        else if (message.type === 'PARENT_DISPOSE') univer.dispose()
+        else if (message.type === 'PARENT_FOCUS_OCCURRENCE') focusOccurrence(message.occurrenceId)
+        else if (message.type === 'PARENT_UPDATE_FIELD') void updateField(message).catch(handleError)
+        else if (message.type === 'PARENT_FOCUS_FIELD') {
+          const occurrenceId = activeProjection?.fields.find((field) => field.fieldId === message.fieldId)
+            ?.occurrenceIds[0]
+          if (occurrenceId) focusOccurrence(occurrenceId)
+        } else if (message.type === 'PARENT_PING' && loaded) {
+          parentBridge.post({
+            type: 'VIEWER_READY',
+            capabilities: capabilities(),
+          })
+        }
+      }) ?? null
 
     const handleError = (reason: unknown): void => {
       const message = reason instanceof Error ? reason.message : '文档界面出现未知错误。'
       setError(message)
       setStatus('载入失败')
-      parentBridge?.post({ type: 'VIEWER_ERROR', code: 'OFFICE_VIEWER_FAILED', message })
+      parentBridge?.post({
+        type: 'VIEWER_ERROR',
+        code: 'OFFICE_VIEWER_FAILED',
+        message,
+      })
     }
     void load().catch(handleError)
 
@@ -224,8 +392,12 @@ export function OfficeViewerApp({
         </div>
         <div className="office-viewer-actions">
           <span className="office-viewer-status">{status}</span>
-          <button type="button" onClick={() => void reloadRef.current?.()}>重新载入</button>
-          <button type="button" className="primary" onClick={() => void saveRef.current?.()}>保存工作副本</button>
+          <button type="button" onClick={() => void reloadRef.current?.()}>
+            重新载入
+          </button>
+          <button type="button" className="primary" onClick={() => void saveRef.current?.()}>
+            保存工作副本
+          </button>
         </div>
       </header>
       {projectionMetadata?.warnings[0] ? (
@@ -274,14 +446,16 @@ function createBlankDocument(id: string, title: string): IDocumentData {
     body: {
       dataStream: '\r\n',
       textRuns: [],
-      paragraphs: [{
-        startIndex: 0,
-        paragraphStyle: {
-          spaceAbove: { v: 0 },
-          lineSpacing: DEFAULT_DOCUMENT_PARAGRAPH_LINE_SPACING,
-          spaceBelow: { v: 8 },
+      paragraphs: [
+        {
+          startIndex: 0,
+          paragraphStyle: {
+            spaceAbove: { v: 0 },
+            lineSpacing: DEFAULT_DOCUMENT_PARAGRAPH_LINE_SPACING,
+            spaceBelow: { v: 8 },
+          },
         },
-      }],
+      ],
       sectionBreaks: [{ startIndex: 1 }],
       customBlocks: [],
       customRanges: [],
@@ -290,13 +464,28 @@ function createBlankDocument(id: string, title: string): IDocumentData {
   }
 }
 
+function expectedRangesAfterReplacement(
+  plans: readonly { occurrenceId: string; start: number; end: number }[],
+  value: string,
+): Map<string, { start: number; end: number }> {
+  const ranges = new Map<string, { start: number; end: number }>()
+  let shift = 0
+  for (const plan of [...plans].sort((left, right) => left.start - right.start)) {
+    const start = plan.start + shift
+    const end = start + value.length
+    ranges.set(plan.occurrenceId, { start, end })
+    shift += value.length - (plan.end - plan.start)
+  }
+  return ranges
+}
+
 function withoutPlainText(projection: OfficeStructuredDocumentProjectionV1): ProjectionMetadataV1 {
   const { plainText: _plainText, ...metadata } = projection
   return metadata
 }
 
 function fieldDecorationVerifiedFromDocument(document: ReturnType<FUniver['getActiveDocument']>): boolean {
-  return document?.getSnapshot().body?.customDecorations?.some(
-    (decoration) => decoration.id.startsWith('xiaogui.'),
-  ) ?? false
+  return (
+    document?.getSnapshot().body?.customDecorations?.some((decoration) => decoration.id.startsWith('xiaogui.')) ?? false
+  )
 }

@@ -408,8 +408,25 @@ function buildActions(
   const byAnchor = new Map<string, AnchorAction>()
   const textBoxActions = new Map<number, AnchorAction>()
   const drawingActions = new Map<number, AnchorAction>()
-  const dynamics: TemplateMaterializeDynamicItemV1[] = []
-  const dynamicNames = new Set<string>()
+  const dynamicsByName = new Map<string, TemplateMaterializeDynamicItemV1>()
+  const addDynamic = (
+    name: string,
+    kind: TemplateMaterializeDynamicItemV1['kind'],
+    sourceAnchors: readonly TemplateIntakeSourceAnchorV1[],
+  ) => {
+    if (!FIELD_NAME_RE.test(name) || RESERVED_NAMES.has(name)) {
+      fail('TEMPLATE_MATERIALIZE_DYNAMIC_NAME_INVALID')
+    }
+    const existing = dynamicsByName.get(name)
+    if (existing) {
+      if (existing.kind !== kind) fail('TEMPLATE_MATERIALIZE_DYNAMIC_NAME_INVALID')
+      const anchors = new Map(existing.sourceAnchors.map((anchor) => [anchorKey(anchor), anchor]))
+      for (const anchor of sourceAnchors) anchors.set(anchorKey(anchor), anchor)
+      dynamicsByName.set(name, { ...existing, sourceAnchors: [...anchors.values()] })
+      return
+    }
+    dynamicsByName.set(name, { name, kind, sourceAnchors })
+  }
   const reviewActionsV2ByCandidate = new Map<string, readonly TemplateReviewActionV2[]>()
   let excludedCount = 0
   let retainedHighRiskCount = 0
@@ -454,15 +471,7 @@ function buildActions(
           }
         }
         if (!dynamic) continue
-        if (!FIELD_NAME_RE.test(dynamic.name) || RESERVED_NAMES.has(dynamic.name) || dynamicNames.has(dynamic.name)) {
-          fail('TEMPLATE_MATERIALIZE_DYNAMIC_NAME_INVALID')
-        }
-        dynamicNames.add(dynamic.name)
-        dynamics.push({
-          name: dynamic.name,
-          kind: dynamic.kind,
-          sourceAnchors: candidate.sourceAnchors,
-        })
+        addDynamic(dynamic.name, dynamic.kind, candidate.sourceAnchors)
       }
 
       const fullAction = reviewActions.length === 1 && !reviewActions[0].range
@@ -512,9 +521,11 @@ function buildActions(
     }
     const action: AnchorAction = { candidate, decision: item, ...(name ? { name } : {}) }
     if (name) {
-      if (dynamicNames.has(name)) fail('TEMPLATE_MATERIALIZE_DYNAMIC_NAME_INVALID')
-      dynamicNames.add(name)
-      dynamics.push({ name, kind: item.decision as TemplateMaterializeDynamicItemV1['kind'], sourceAnchors: candidate.sourceAnchors })
+      addDynamic(
+        name,
+        item.decision as TemplateMaterializeDynamicItemV1['kind'],
+        candidate.sourceAnchors,
+      )
     }
     for (const anchor of candidate.sourceAnchors) {
       if (anchor.part === 'DRAWING') {
@@ -562,7 +573,7 @@ function buildActions(
     byAnchor,
     drawingActions,
     textBoxActions,
-    dynamics,
+    dynamics: [...dynamicsByName.values()],
     excludedCount,
     retainedHighRiskCount,
     reviewActionsV2ByCandidate,
@@ -1032,20 +1043,20 @@ export async function materializeConfirmedTemplateV1(
         break
       case 'REPLACE_TEXT':
       case 'FIELD': {
-        if (candidateTargets.length !== 1) fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
-        const target = candidateTargets[0]
-        const part = parts.find((item) => item.name === target.partName)
-        if (!part) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
         const replacement = reviewAction.kind === 'REPLACE_TEXT'
           ? reviewAction.replacementText
           : `{{${reviewAction.fieldName.normalize('NFKC').trim()}}}`
-        const edits = textEdits.get(target.partName) ?? []
-        edits.push({
-          start: target.start,
-          end: target.end,
-          replacement: replaceVisibleText(part.xml.slice(target.start, target.end), replacement),
-        })
-        textEdits.set(target.partName, edits)
+        for (const target of candidateTargets) {
+          const part = parts.find((item) => item.name === target.partName)
+          if (!part) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+          const edits = textEdits.get(target.partName) ?? []
+          edits.push({
+            start: target.start,
+            end: target.end,
+            replacement: replaceVisibleText(part.xml.slice(target.start, target.end), replacement),
+          })
+          textEdits.set(target.partName, edits)
+        }
         break
       }
       case 'REPEAT':

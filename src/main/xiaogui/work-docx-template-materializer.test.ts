@@ -70,6 +70,19 @@ async function makeTwoImageSource(): Promise<Buffer> {
   return zip.generateAsync({ type: 'nodebuffer' })
 }
 
+async function makeRepeatedFieldSource(): Promise<Buffer> {
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+  )
+  zip.file(
+    'word/document.xml',
+    '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>旧项目名称</w:t></w:r></w:p><w:p><w:r><w:t>固定说明</w:t></w:r></w:p><w:p><w:r><w:t>旧项目名称</w:t></w:r></w:p><w:sectPr/></w:body></w:document>',
+  )
+  return zip.generateAsync({ type: 'nodebuffer' })
+}
+
 function candidate(
   candidateId: string,
   kind: TemplateIntakeCandidateV1['kind'],
@@ -241,6 +254,34 @@ describe('WORK 已确认整理报告物化', () => {
     await expect(materializeConfirmedTemplateV1({ source, report, decision: guessedDrawing })).rejects.toMatchObject({
       code: 'TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT',
     } satisfies Partial<TemplateMaterializerErrorV1>)
+  })
+
+  it('同一业务字段的多个位置一次写入同名占位符且只形成一个模板字段', async () => {
+    const source = await makeRepeatedFieldSource()
+    const base = reportFor(source)
+    const report: TemplateIntakeReportV1 = {
+      ...base,
+      profile: { ...base.profile, mediaCount: 0, inlineDrawingCount: 0 },
+      candidates: [
+        {
+          ...candidate('project-name', 'VARIABLE', [
+            { part: 'BODY', sectionIndex: 1, paragraphIndex: 1 },
+            { part: 'BODY', sectionIndex: 1, paragraphIndex: 3 },
+          ], '项目名称'),
+          preview: '旧项目名称',
+        },
+      ],
+    }
+    const decision = decisionFor(report)
+    decision.reviewActionsV2 = [{ targetId: 'project-name', kind: 'FIELD', fieldName: '项目名称' }]
+
+    const result = await materializeConfirmedTemplateV1({ source, report, decision })
+    const output = await JSZip.loadAsync(result.content)
+    const xml = await output.file('word/document.xml')!.async('string')
+
+    expect(xml.match(/\{\{项目名称\}\}/g)).toHaveLength(2)
+    expect(result.plan.variables).toHaveLength(1)
+    expect(result.plan.variables[0].sourceAnchors).toHaveLength(2)
   })
 
   it('按 V2 人工框选范围跨多个文字运行局部替换，范围外文字和格式保持不变', async () => {

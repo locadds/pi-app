@@ -122,10 +122,24 @@ describe('buildTemplateFieldGraphV2', () => {
       }),
     ]))
 
-    expect(result.fieldGraph.issues).toHaveLength(2)
+    expect(result.fieldGraph.issues).toHaveLength(1)
     const risk = result.fieldGraph.issues.find((item) => item.kind === 'HIGH_RISK_CONTENT')
     expect(risk?.question).toContain('2 处联系方式')
     expect(result.targetBindings.filter((item) => item.issueIds.includes(risk!.issueId))).toHaveLength(2)
+  })
+
+  it('允许没有动态字段的文档作为纯固定模板继续保存', () => {
+    const result = buildTemplateFieldGraphV2(report([
+      candidate('fixed-title'),
+      candidate('fixed-body', {
+        preview: '这是一份每次都保持不变的标准说明。',
+        sourceAnchors: [{ part: 'BODY', sectionIndex: 1, paragraphIndex: 2 }],
+      }),
+    ]))
+
+    expect(result.fieldGraph.fields).toHaveLength(0)
+    expect(result.fieldGraph.issues).toHaveLength(0)
+    expect(result.recommendedActions.map((action) => action.kind)).toEqual(['KEEP', 'KEEP'])
   })
 
   it('模型失败只生成一个明确阻断问题，而不是把全文变成黄色候选', () => {
@@ -167,4 +181,3 @@ describe('buildTemplateFieldGraphV2', () => {
     expect(second.fieldGraph.occurrences[0].occurrenceId).toBe(first.fieldGraph.occurrences[0].occurrenceId)
   })
 })
-

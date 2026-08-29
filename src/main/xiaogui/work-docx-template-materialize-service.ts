@@ -540,8 +540,31 @@ export class WorkDocxTemplateMaterializeServiceV1 {
     }
   }
 
-  private libraryFields(record: StoredTemplateMaterializeRecordV1): TemplateLibraryFieldSummaryV1[] {
-    return [
+  private libraryFields(
+    record: StoredTemplateMaterializeRecordV1,
+    source: ConfirmedTemplateIntakeMaterializationSourceV1,
+  ): TemplateLibraryFieldSummaryV1[] {
+    const plannedKinds = new Map<string, TemplateLibraryFieldSummaryV1['kind']>([
+      ...record.plan.variables.map((item) => [item.name, 'TEXT' as const] as const),
+      ...record.plan.repeatBlocks.map((item) => [item.name, 'REPEAT' as const] as const),
+      ...record.plan.conditionalBlocks.map((item) => [item.name, 'CONDITIONAL' as const] as const),
+    ])
+    const stableFields = (source.decision.fieldGraphV2?.fields ?? [])
+      .filter((field) => field.status !== 'REMOVED' && plannedKinds.has(field.displayName))
+      .map((field) => ({
+        fieldId: field.fieldId,
+        name: field.displayName,
+        kind: field.structureKind === 'REPEAT'
+          ? 'REPEAT' as const
+          : field.structureKind === 'CONDITIONAL'
+            ? 'CONDITIONAL' as const
+            : field.valueType === 'IMAGE'
+              ? 'IMAGE' as const
+              : 'TEXT' as const,
+        required: field.required,
+      }))
+    const stableNames = new Set(stableFields.map((field) => field.name))
+    const compatibilityFields: TemplateLibraryFieldSummaryV1[] = [
       ...record.plan.variables.map((item, index) => ({
         fieldId: `text-${index + 1}`,
         name: item.name,
@@ -560,7 +583,8 @@ export class WorkDocxTemplateMaterializeServiceV1 {
         kind: 'CONDITIONAL' as const,
         required: false,
       })),
-    ]
+    ].filter((field) => !stableNames.has(field.name))
+    return [...stableFields, ...compatibilityFields]
   }
 
   private async saveToLibrary(
@@ -586,7 +610,7 @@ export class WorkDocxTemplateMaterializeServiceV1 {
       name: metadata.templateName?.trim() || fallbackName,
       ...(metadata.purpose?.trim() ? { purpose: metadata.purpose.trim() } : {}),
       ...(metadata.tags?.length ? { tags: metadata.tags } : {}),
-      fields: this.libraryFields(record),
+      fields: this.libraryFields(record, source),
     }
     try {
       const saved = await library.saveFromBuffer(built.content, saveMetadata)

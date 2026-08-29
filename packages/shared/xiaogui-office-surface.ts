@@ -4,10 +4,7 @@ export type OfficeSurfaceModeV1 = 'OFF' | 'UNIVER_EXPERIMENTAL' | 'UNIVER_PREFER
 
 export type OfficeSnapshotV1 = Record<string, unknown>
 
-export type OfficeSurfacePurposeV1 =
-  | 'TEMPLATE_DRAFT'
-  | 'MATERIALIZED_PREVIEW'
-  | 'TEMPLATE_LIBRARY_PREVIEW'
+export type OfficeSurfacePurposeV1 = 'TEMPLATE_DRAFT' | 'MATERIALIZED_PREVIEW' | 'TEMPLATE_LIBRARY_PREVIEW'
 
 export interface OfficeSurfaceSourceAnchorV1 {
   readonly part: 'BODY' | 'HEADER' | 'FOOTER' | 'TABLE_CELL' | 'TEXT_BOX' | 'DRAWING'
@@ -100,6 +97,14 @@ export interface OfficeSurfaceCapabilityV1 {
   readonly structuredDocxProjection: boolean
 }
 
+export interface OfficeSurfaceFieldUpdateResultV1 {
+  readonly requestId: string
+  readonly fieldId: string
+  readonly updatedOccurrenceIds: readonly string[]
+  readonly failedOccurrenceIds: readonly string[]
+  readonly headSha256: string
+}
+
 interface OfficeSurfaceMessageBaseV1 {
   readonly protocol: typeof OFFICE_SURFACE_PROTOCOL_V1
   readonly channelNonce: string
@@ -120,6 +125,9 @@ export type OfficeSurfaceViewerMessageV1 =
       readonly code: string
       readonly message: string
     })
+  | (OfficeSurfaceMessageBaseV1 & {
+      readonly type: 'VIEWER_FIELD_UPDATE_RESULT'
+    } & OfficeSurfaceFieldUpdateResultV1)
 
 export interface OfficeSurfacePortOfferV1 extends OfficeSurfaceMessageBaseV1 {
   readonly type: 'OFFICE_PORT_OFFER'
@@ -139,6 +147,13 @@ export type OfficeSurfaceParentMessageV1 =
       readonly type: 'PARENT_FOCUS_OCCURRENCE'
       readonly occurrenceId: string
     })
+  | (OfficeSurfaceMessageBaseV1 & {
+      readonly type: 'PARENT_UPDATE_FIELD'
+      readonly requestId: string
+      readonly fieldId: string
+      readonly value: string
+      readonly occurrenceIds: readonly string[]
+    })
 
 export function readOfficeSurfaceModeV1(
   value = typeof process === 'undefined' ? undefined : process.env.XIAOGUI_OFFICE_SURFACE,
@@ -156,6 +171,15 @@ export function isOfficeSurfaceViewerMessageV1(value: unknown): value is OfficeS
   if (message.type === 'VIEWER_ERROR') {
     return typeof message.code === 'string' && typeof message.message === 'string'
   }
+  if (message.type === 'VIEWER_FIELD_UPDATE_RESULT') {
+    return (
+      isIdentifier(message.requestId) &&
+      isIdentifier(message.fieldId) &&
+      isIdentifierList(message.updatedOccurrenceIds, 2_000) &&
+      isIdentifierList(message.failedOccurrenceIds, 2_000) &&
+      isDigest(message.headSha256)
+    )
+  }
   return false
 }
 
@@ -167,42 +191,57 @@ export function isOfficeSurfaceParentMessageV1(value: unknown): value is OfficeS
   if (type === 'PARENT_FOCUS_OCCURRENCE') {
     return typeof message.occurrenceId === 'string' && message.occurrenceId.length > 0
   }
+  if (type === 'PARENT_UPDATE_FIELD') {
+    return (
+      isIdentifier(message.requestId) &&
+      isIdentifier(message.fieldId) &&
+      typeof message.value === 'string' &&
+      message.value.length > 0 &&
+      message.value.length <= 10_000 &&
+      isIdentifierList(message.occurrenceIds, 2_000) &&
+      message.occurrenceIds.length > 0
+    )
+  }
   return type === 'PARENT_PING' || type === 'PARENT_SAVE' || type === 'PARENT_RELOAD' || type === 'PARENT_DISPOSE'
 }
 
 export function isOfficeSurfacePortOfferV1(value: unknown): value is OfficeSurfacePortOfferV1 {
   if (!isMessageBase(value)) return false
   const message = value as Record<string, unknown>
-  return message.type === 'OFFICE_PORT_OFFER'
-    && typeof message.gatewayAccessToken === 'string'
-    && message.gatewayAccessToken.length >= 32
-    && message.gatewayAccessToken.length <= 512
+  return (
+    message.type === 'OFFICE_PORT_OFFER' &&
+    typeof message.gatewayAccessToken === 'string' &&
+    message.gatewayAccessToken.length >= 32 &&
+    message.gatewayAccessToken.length <= 512
+  )
 }
 
-export function isOfficeStructuredDocumentProjectionV1(
-  value: unknown,
-): value is OfficeStructuredDocumentProjectionV1 {
+export function isOfficeStructuredDocumentProjectionV1(value: unknown): value is OfficeStructuredDocumentProjectionV1 {
   if (!value || typeof value !== 'object') return false
   const projection = value as Record<string, unknown>
-  return projection.projectionVersion === 1
-    && projection.kind === 'XIAOGUI_DOCX_STRUCTURED_PROJECTION'
-    && typeof projection.documentId === 'string'
-    && typeof projection.title === 'string'
-    && typeof projection.sourceSha256 === 'string'
-    && /^[a-f0-9]{64}$/.test(projection.sourceSha256)
-    && typeof projection.plainText === 'string'
-    && Array.isArray(projection.fields)
-    && Array.isArray(projection.occurrences)
-    && Array.isArray(projection.warnings)
+  return (
+    projection.projectionVersion === 1 &&
+    projection.kind === 'XIAOGUI_DOCX_STRUCTURED_PROJECTION' &&
+    typeof projection.documentId === 'string' &&
+    typeof projection.title === 'string' &&
+    typeof projection.sourceSha256 === 'string' &&
+    /^[a-f0-9]{64}$/.test(projection.sourceSha256) &&
+    typeof projection.plainText === 'string' &&
+    Array.isArray(projection.fields) &&
+    Array.isArray(projection.occurrences) &&
+    Array.isArray(projection.warnings)
+  )
 }
 
 function isMessageBase(value: unknown): value is OfficeSurfaceMessageBaseV1 & Record<string, unknown> {
   if (!value || typeof value !== 'object') return false
   const message = value as Record<string, unknown>
-  return message.protocol === OFFICE_SURFACE_PROTOCOL_V1
-    && typeof message.channelNonce === 'string'
-    && message.channelNonce.length >= 32
-    && message.channelNonce.length <= 256
+  return (
+    message.protocol === OFFICE_SURFACE_PROTOCOL_V1 &&
+    typeof message.channelNonce === 'string' &&
+    message.channelNonce.length >= 32 &&
+    message.channelNonce.length <= 256
+  )
 }
 
 function isCapabilities(value: unknown): value is OfficeSurfaceCapabilityV1 {
@@ -221,4 +260,12 @@ function isCapabilities(value: unknown): value is OfficeSurfaceCapabilityV1 {
 
 function isDigest(value: unknown): value is string {
   return typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value)
+}
+
+function isIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200
+}
+
+function isIdentifierList(value: unknown, limit: number): value is readonly string[] {
+  return Array.isArray(value) && value.length <= limit && value.every((item) => isIdentifier(item))
 }

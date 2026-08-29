@@ -74,6 +74,17 @@ const ReviewActionSchema = z.discriminatedUnion('kind', [
   z.object({ ...ReviewActionBaseSchema, kind: z.literal('REPEAT'), blockName: z.string().trim().min(1).max(120) }).strict(),
   z.object({ ...ReviewActionBaseSchema, kind: z.literal('CONDITIONAL'), conditionName: z.string().trim().min(1).max(120) }).strict(),
 ])
+const IssueChoiceSchema = z.object({
+  issueId: z.string().min(1).max(160),
+  action: z.enum([
+    'ACCEPT_SUGGESTION',
+    'KEEP_ORIGINAL',
+    'REMOVE_CONTENT',
+    'OPEN_ADVANCED_REVIEW',
+    'RETRY_ANALYSIS',
+  ]),
+  reason: z.string().trim().min(1).max(1_000).optional(),
+}).strict()
 const ModelSuggestionSchema = z
   .object({
     fragmentIds: z.array(z.string().min(1).max(160)).min(1).max(200),
@@ -164,6 +175,7 @@ const PayloadBaseSchema = z.discriminatedUnion('action', [
       .object({
         decisions: z.array(FinalDecisionItemSchema).max(200),
         reviewActionsV2: z.array(ReviewActionSchema).max(400).optional(),
+        issueChoicesV2: z.array(IssueChoiceSchema).max(400).optional(),
       })
       .strict()
       .optional(),

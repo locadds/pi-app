@@ -178,6 +178,17 @@ export interface TemplateReviewSplitOperationV2 {
   ranges: readonly TemplateReviewTextRangeV2[];
 }
 
+export interface TemplateReviewIssueChoiceV2 {
+  issueId: string;
+  action:
+    | "ACCEPT_SUGGESTION"
+    | "KEEP_ORIGINAL"
+    | "REMOVE_CONTENT"
+    | "OPEN_ADVANCED_REVIEW"
+    | "RETRY_ANALYSIS";
+  reason?: string;
+}
+
 export interface TemplateReviewRequestV2 {
   reviewVersion: typeof TEMPLATE_REVIEW_VERSION_V2;
   document: TemplateReviewDocumentV2;
@@ -193,6 +204,7 @@ export type TemplateReviewResultV2 =
   | {
       cancelled: false;
       actions: readonly TemplateReviewActionV2[];
+      issueChoicesV2?: readonly TemplateReviewIssueChoiceV2[];
       confirmedAtLocal: string;
       confirmedBy: "LOCAL_USER";
     };

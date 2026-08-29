@@ -288,16 +288,6 @@ export function buildTemplateFieldGraphV2(
       occurrenceIds: [],
       suggestedActions: ['RETRY_ANALYSIS', 'OPEN_ADVANCED_REVIEW'],
     }))
-  } else if (fields.length === 0) {
-    issues.push(issue(report.file.sha256, {
-      kind: 'VALIDATION_FAILED',
-      severity: 'BLOCKING',
-      title: '尚未识别到业务字段',
-      question: '当前文档没有形成可复用字段。请进入高级检查补充字段，或关闭后重新说明希望复用的内容。',
-      fieldIds: [],
-      occurrenceIds: [],
-      suggestedActions: ['OPEN_ADVANCED_REVIEW'],
-    }))
   }
 
   const issueIdsByTarget = new Map<string, string[]>()
@@ -346,4 +336,3 @@ export function buildTemplateFieldGraphV2(
     recommendedActions: targetBindings.map((binding) => binding.recommendedAction),
   }
 }
-

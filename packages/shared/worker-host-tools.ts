@@ -162,6 +162,7 @@ export type TemplateIntakeModelAnalysisV1 =
 export interface TemplateIntakeReviewSubmissionV1 {
   decisions: readonly TemplateIntakeFinalDecisionItemV1[]
   reviewActionsV2?: readonly import('./xiaogui-work-template-review').TemplateReviewActionV2[]
+  issueChoicesV2?: readonly import('./xiaogui-work-template-review').TemplateReviewIssueChoiceV2[]
 }
 
 type XiaoguiWorkDocxTemplateIntakeCommonPayloadV1 = {

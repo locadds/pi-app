@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TemplateIntakeFinalDecisionItemV1 } from '@shared/xiaogui-work-docx-template-intake'
 import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { DocxSafetyErrorV1 } from './docx-safety'
+import { buildTemplateFieldGraphV2 } from './template-intelligence/template-field-graph-builder-v2'
 import { parseTemplateIntakeSourceV1 } from './work-docx-template-intake-parser'
 import { WorkDocxTemplateIntakeServiceV1 } from './work-docx-template-intake-service'
 import { WorkDocxTemplateIntakeStoreV1 } from './work-docx-template-intake-store'
@@ -300,10 +301,15 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
       ...item,
       ...(item.highRiskOverrideReason ? { highRiskOverrideConfirmed: true as const } : {}),
     }))
+    const issueChoicesV2 = buildTemplateFieldGraphV2(report).fieldGraph.issues.map((issue) => ({
+      issueId: issue.issueId,
+      action: issue.suggestedActions[0],
+      reason: '已由本机用户逐项确认',
+    }))
     const confirmed = await service.execute(ADDRESS, {
       action: 'REVIEW',
       ...COMMON,
-      submission: { decisions: confirmedDecisions },
+      submission: { decisions: confirmedDecisions, issueChoicesV2 },
     })
     expect(confirmed.ok && confirmed.value.kind).toBe(
       'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CONFIRMED',
@@ -333,7 +339,16 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
     ).toBe(true)
     expect(store.get(ADDRESS, report.reportId)).toMatchObject({
       report: { status: 'CONFIRMED' },
-      decision: { reportId: report.reportId },
+      decision: {
+        reportId: report.reportId,
+        fieldGraphV2: {
+          issues: issueChoicesV2.map((choice) => ({
+            issueId: choice.issueId,
+            status: 'RESOLVED',
+            resolution: { action: choice.action, reason: choice.reason },
+          })),
+        },
+      },
     })
     const reopenedRecord = store.get(ADDRESS, reopened.value.report.reportId)
     expect(reopenedRecord).toMatchObject({ report: { status: 'DRAFT' } })

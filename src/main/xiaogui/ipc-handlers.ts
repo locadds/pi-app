@@ -99,11 +99,23 @@ const DirectReviewActionSchema = z.discriminatedUnion('kind', [
   z.object({ ...DirectReviewActionBase, kind: z.literal('REPEAT'), blockName: z.string().trim().min(1).max(120) }).strict(),
   z.object({ ...DirectReviewActionBase, kind: z.literal('CONDITIONAL'), conditionName: z.string().trim().min(1).max(120) }).strict(),
 ])
+const DirectReviewIssueChoiceSchema = z.object({
+  issueId: z.string().min(1).max(160),
+  action: z.enum([
+    'ACCEPT_SUGGESTION',
+    'KEEP_ORIGINAL',
+    'REMOVE_CONTENT',
+    'OPEN_ADVANCED_REVIEW',
+    'RETRY_ANALYSIS',
+  ]),
+  reason: z.string().trim().min(1).max(1_000).optional(),
+}).strict()
 const DirectReviewResultSchema = z.discriminatedUnion('cancelled', [
   z.object({ cancelled: z.literal(true), draftActions: z.array(DirectReviewActionSchema).max(400) }).strict(),
   z.object({
     cancelled: z.literal(false),
     actions: z.array(DirectReviewActionSchema).max(400),
+    issueChoicesV2: z.array(DirectReviewIssueChoiceSchema).max(400).optional(),
     confirmedAtLocal: z.string().min(1).max(80),
     confirmedBy: z.literal('LOCAL_USER'),
   }).strict(),
@@ -262,6 +274,9 @@ export function registerXiaoguiHandlers(): void {
           submission: {
             decisions: summarizeTemplateReviewActionsV2(report, reviewed.data.actions),
             reviewActionsV2: reviewed.data.actions,
+            ...(reviewed.data.issueChoicesV2
+              ? { issueChoicesV2: reviewed.data.issueChoicesV2 }
+              : {}),
           },
         })
         if (!confirmed.ok) return directReviewFailure(confirmed.error.code)

@@ -6,6 +6,7 @@ import type {
   OfficeSurfaceOccurrenceV1,
   OfficeSurfacePurposeV1,
   OfficeSurfaceSessionReadyV1,
+  OfficeSurfaceFieldUpdateResultV1,
 } from '@shared/xiaogui-office-surface'
 import type { TemplateReviewTargetV3 } from '@shared/xiaogui-work-template-review'
 import {
@@ -24,6 +25,11 @@ export interface DocumentSurfaceViewerHandleV1 {
   focusTarget(targetId: string): boolean
   focusField(fieldId: string): void
   focusOccurrence(occurrenceId: string): void
+  updateField(input: {
+    fieldId: string
+    value: string
+    occurrenceIds: readonly string[]
+  }): Promise<OfficeSurfaceFieldUpdateResultV1>
   readSelection(): DocxHtmlViewerSelectionV1 | null
   dispose(): void
 }
@@ -33,37 +39,43 @@ const EMPTY_FIELDS: readonly OfficeSurfaceFieldV1[] = []
 const EMPTY_OCCURRENCES: readonly OfficeSurfaceOccurrenceV1[] = []
 const EMPTY_TARGETS: readonly TemplateReviewTargetV3[] = []
 
-export const DocumentSurfaceViewerV1 = forwardRef<DocumentSurfaceViewerHandleV1, {
-  purpose: OfficeSurfacePurposeV1
-  documentToken: string | undefined
-  title: string
-  fields?: readonly OfficeSurfaceFieldV1[]
-  occurrences?: readonly OfficeSurfaceOccurrenceV1[]
-  activeFieldId?: string
-  activeOccurrenceId?: string
-  targets?: readonly TemplateReviewTargetV3[]
-  selectedId?: string
-  readonlyLabel?: string
-  onSelectTarget?: (target: TemplateReviewTargetV3) => void
-  onStateChange?: (state: DocxHtmlViewerStateV1, pageCount: number | null) => void
-  onMappedTargetsChange?: (targetIds: readonly string[]) => void
-  className?: string
-}>(function DocumentSurfaceViewerV1({
-  purpose,
-  documentToken,
-  title,
-  fields = EMPTY_FIELDS,
-  occurrences = EMPTY_OCCURRENCES,
-  activeFieldId,
-  activeOccurrenceId,
-  targets = EMPTY_TARGETS,
-  selectedId,
-  readonlyLabel,
-  onSelectTarget,
-  onStateChange,
-  onMappedTargetsChange,
-  className,
-}, ref) {
+export const DocumentSurfaceViewerV1 = forwardRef<
+  DocumentSurfaceViewerHandleV1,
+  {
+    purpose: OfficeSurfacePurposeV1
+    documentToken: string | undefined
+    title: string
+    fields?: readonly OfficeSurfaceFieldV1[]
+    occurrences?: readonly OfficeSurfaceOccurrenceV1[]
+    activeFieldId?: string
+    activeOccurrenceId?: string
+    targets?: readonly TemplateReviewTargetV3[]
+    selectedId?: string
+    readonlyLabel?: string
+    onSelectTarget?: (target: TemplateReviewTargetV3) => void
+    onStateChange?: (state: DocxHtmlViewerStateV1, pageCount: number | null) => void
+    onMappedTargetsChange?: (targetIds: readonly string[]) => void
+    className?: string
+  }
+>(function DocumentSurfaceViewerV1(
+  {
+    purpose,
+    documentToken,
+    title,
+    fields = EMPTY_FIELDS,
+    occurrences = EMPTY_OCCURRENCES,
+    activeFieldId,
+    activeOccurrenceId,
+    targets = EMPTY_TARGETS,
+    selectedId,
+    readonlyLabel,
+    onSelectTarget,
+    onStateChange,
+    onMappedTargetsChange,
+    className,
+  },
+  ref,
+) {
   const officeRef = useRef<OfficeSurfaceFrameHandleV1 | null>(null)
   const htmlRef = useRef<DocxHtmlViewerHandleV1 | null>(null)
   const onStateChangeRef = useRef(onStateChange)
@@ -75,25 +87,36 @@ export const DocumentSurfaceViewerV1 = forwardRef<DocumentSurfaceViewerHandleV1,
   const [officeReady, setOfficeReady] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
-  useImperativeHandle(ref, () => ({
-    focusTarget: (targetId: string) => htmlRef.current?.focus(targetId) ?? false,
-    focusField: (fieldId: string) => officeRef.current?.focusField(fieldId),
-    focusOccurrence: (occurrenceId: string) => officeRef.current?.focusOccurrence(occurrenceId),
-    readSelection: () => htmlRef.current?.readSelection() ?? null,
-    dispose: () => htmlRef.current?.dispose(),
-  }), [])
+  useImperativeHandle(
+    ref,
+    () => ({
+      focusTarget: (targetId: string) => htmlRef.current?.focus(targetId) ?? false,
+      focusField: (fieldId: string) => officeRef.current?.focusField(fieldId),
+      focusOccurrence: (occurrenceId: string) => officeRef.current?.focusOccurrence(occurrenceId),
+      updateField: (input) =>
+        officeRef.current?.updateField(input) ??
+        Promise.reject(new Error('请切换到“工作表面（试验）”后再同步业务字段。')),
+      readSelection: () => htmlRef.current?.readSelection() ?? null,
+      dispose: () => htmlRef.current?.dispose(),
+    }),
+    [],
+  )
 
   useEffect(() => {
     let cancelled = false
-    void Promise.resolve(ipcClient.invoke('xiaogui.officeSurface.mode.get')).then((value: unknown) => {
-      if (cancelled) return
-      const next = readMode(value)
-      setMode(next)
-      setSurface(next === 'OFF' ? 'HTML' : 'OFFICE')
-    }).catch(() => {
-      if (!cancelled) setSurface('HTML')
-    })
-    return () => { cancelled = true }
+    void Promise.resolve(ipcClient.invoke('xiaogui.officeSurface.mode.get'))
+      .then((value: unknown) => {
+        if (cancelled) return
+        const next = readMode(value)
+        setMode(next)
+        setSurface(next === 'OFF' ? 'HTML' : 'OFFICE')
+      })
+      .catch(() => {
+        if (!cancelled) setSurface('HTML')
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -104,28 +127,40 @@ export const DocumentSurfaceViewerV1 = forwardRef<DocumentSurfaceViewerHandleV1,
     setOfficeReady(false)
     setMessage(null)
     onStateChangeRef.current?.('LOADING', null)
-    void Promise.resolve(ipcClient.invoke('xiaogui.officeSurface.session.prepare', {
-      purpose,
-      documentToken,
-      title,
-      fields,
-      occurrences,
-    })).then((ready: OfficeSurfaceSessionReadyV1) => {
-      openedSessionId = ready.sessionId
-      if (cancelled) {
-        return Promise.resolve(ipcClient.invoke('xiaogui.officeSurface.session.release', { sessionId: ready.sessionId }))
-      }
-      setSession(ready)
-      setMessage(ready.warnings[0] ?? null)
-    }).catch((error: unknown) => {
-      if (cancelled) return
-      setMessage(`文档工作表面暂时不可用，已切换到兼容视图。${readErrorMessage(error)}`)
-      setSurface('HTML')
-    })
+    void Promise.resolve(
+      ipcClient.invoke('xiaogui.officeSurface.session.prepare', {
+        purpose,
+        documentToken,
+        title,
+        fields,
+        occurrences,
+      }),
+    )
+      .then((ready: OfficeSurfaceSessionReadyV1) => {
+        openedSessionId = ready.sessionId
+        if (cancelled) {
+          return Promise.resolve(
+            ipcClient.invoke('xiaogui.officeSurface.session.release', {
+              sessionId: ready.sessionId,
+            }),
+          )
+        }
+        setSession(ready)
+        setMessage(ready.warnings[0] ?? null)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setMessage(`文档工作表面暂时不可用，已切换到兼容视图。${readErrorMessage(error)}`)
+        setSurface('HTML')
+      })
     return () => {
       cancelled = true
       if (openedSessionId) {
-        void Promise.resolve(ipcClient.invoke('xiaogui.officeSurface.session.release', { sessionId: openedSessionId }))
+        void Promise.resolve(
+          ipcClient.invoke('xiaogui.officeSurface.session.release', {
+            sessionId: openedSessionId,
+          }),
+        )
       }
     }
   }, [documentToken, fields, occurrences, purpose, surface, title])
@@ -137,7 +172,9 @@ export const DocumentSurfaceViewerV1 = forwardRef<DocumentSurfaceViewerHandleV1,
   }, [activeFieldId, activeOccurrenceId, officeReady])
 
   if (!documentToken) {
-    return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">没有可显示的文档。</div>
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">没有可显示的文档。</div>
+    )
   }
 
   return (
@@ -162,7 +199,11 @@ export const DocumentSurfaceViewerV1 = forwardRef<DocumentSurfaceViewerHandleV1,
             </button>
           </div>
         ) : null}
-        {message ? <span className="min-w-0 flex-1 truncate text-amber-700" title={message}>{message}</span> : null}
+        {message ? (
+          <span className="min-w-0 flex-1 truncate text-amber-700" title={message}>
+            {message}
+          </span>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1">
         {surface === 'OFFICE' ? (
@@ -185,7 +226,9 @@ export const DocumentSurfaceViewerV1 = forwardRef<DocumentSurfaceViewerHandleV1,
               }}
             />
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">正在准备文档工作表面…</div>
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              正在准备文档工作表面…
+            </div>
           )
         ) : surface === 'HTML' ? (
           <DocxHtmlViewer
@@ -199,7 +242,9 @@ export const DocumentSurfaceViewerV1 = forwardRef<DocumentSurfaceViewerHandleV1,
             onMappedTargetsChange={onMappedTargetsChange}
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">正在选择文档显示方式…</div>
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            正在选择文档显示方式…
+          </div>
         )}
       </div>
     </div>

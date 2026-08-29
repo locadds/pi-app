@@ -39,6 +39,7 @@ import {
   isValidTemplateReviewTextRangeV2,
   type TemplateReviewActionV2,
   type TemplateReviewActionV3,
+  type TemplateReviewIssueChoiceV2,
   type TemplateReviewRenderAnchorV3,
   type TemplateReviewRequestV3,
   type TemplateReviewRiskFlagV2,
@@ -1150,10 +1151,11 @@ export class WorkDocxTemplateIntakeServiceV1 {
   private confirmedFieldGraphV2(
     report: TemplateIntakeReportV1,
     actions: readonly TemplateReviewActionV2[] | undefined,
+    issueChoices: readonly TemplateReviewIssueChoiceV2[] | undefined,
   ): TemplateFieldGraphV2 {
     const built = buildTemplateFieldGraphV2(report)
-    if (!actions?.length) return built.fieldGraph
-    const actionByTarget = new Map(actions.map((action) => [action.targetId, action]))
+    if (!actions?.length && !issueChoices?.length) return built.fieldGraph
+    const actionByTarget = new Map((actions ?? []).map((action) => [action.targetId, action]))
     const namesByField = new Map<string, Set<string>>()
     for (const binding of built.targetBindings) {
       if (!binding.fieldId) continue
@@ -1170,11 +1172,14 @@ export class WorkDocxTemplateIntakeServiceV1 {
       names.add(name.trim())
       namesByField.set(binding.fieldId, names)
     }
+    const choicesByIssue = new Map(issueChoices?.map((choice) => [choice.issueId, choice]) ?? [])
+    const resolvedAtLocal = this.nowIso()
     return {
       ...built.fieldGraph,
       fields: built.fieldGraph.fields.map((field) => {
+        if (!actions?.length) return field
         const names = namesByField.get(field.fieldId)
-        if (!names?.size) return field
+        if (!names?.size) return { ...field, status: 'REMOVED' as const }
         const displayName = [...names][0]
         return {
           ...field,
@@ -1185,7 +1190,21 @@ export class WorkDocxTemplateIntakeServiceV1 {
           status: 'CONFIRMED' as const,
         }
       }),
-      updatedAt: this.nowIso(),
+      issues: built.fieldGraph.issues.map((issue) => {
+        const choice = choicesByIssue.get(issue.issueId)
+        if (!choice) return issue
+        return {
+          ...issue,
+          status: 'RESOLVED' as const,
+          resolution: {
+            action: choice.action,
+            ...(choice.reason?.trim() ? { reason: choice.reason.trim() } : {}),
+            resolvedAtLocal,
+            resolvedBy: 'LOCAL_USER' as const,
+          },
+        }
+      }),
+      updatedAt: resolvedAtLocal,
     }
   }
 
@@ -1313,6 +1332,22 @@ export class WorkDocxTemplateIntakeServiceV1 {
         return failure('TEMPLATE_INTAKE_REPORT_NOT_CONFIRMABLE')
       }
     }
+    if (submission.issueChoicesV2) {
+      const graphIssues = new Map(
+        buildTemplateFieldGraphV2(record.report).fieldGraph.issues.map((issue) => [issue.issueId, issue]),
+      )
+      const seenIssues = new Set<string>()
+      for (const choice of submission.issueChoicesV2) {
+        const issue = graphIssues.get(choice.issueId)
+        if (!issue || seenIssues.has(choice.issueId) || !issue.suggestedActions.includes(choice.action)) {
+          return failure('TEMPLATE_INTAKE_REPORT_NOT_CONFIRMABLE')
+        }
+        seenIssues.add(choice.issueId)
+      }
+      if ([...graphIssues.keys()].some((issueId) => !seenIssues.has(issueId))) {
+        return failure('TEMPLATE_INTAKE_REPORT_NOT_CONFIRMABLE')
+      }
+    }
     const confirmedAt = localIso(this.now())
     const decision: TemplateIntakeDecisionV1 = {
       decisionVersion: 1,
@@ -1320,7 +1355,11 @@ export class WorkDocxTemplateIntakeServiceV1 {
       reportSummary: createTemplateIntakeReportSummaryV1(record.report),
       decisions: submission.decisions,
       ...(submission.reviewActionsV2 ? { reviewActionsV2: submission.reviewActionsV2 } : {}),
-      fieldGraphV2: this.confirmedFieldGraphV2(record.report, submission.reviewActionsV2),
+      fieldGraphV2: this.confirmedFieldGraphV2(
+        record.report,
+        submission.reviewActionsV2,
+        submission.issueChoicesV2,
+      ),
       confirmedAtLocal: confirmedAt,
       confirmedBy: 'LOCAL_USER',
     }
