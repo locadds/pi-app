@@ -261,7 +261,7 @@ function batchPrompt(batch: TemplateIntakeAnalysisBatchV1): string {
 - EXCLUDE：签字、印章、联系方式、旧项目图件、扫描附件等不应继承的内容；
 - UNRESOLVED：结合全文仍无法可靠判断，必须交给人工。
 
-必须让每个 fragment id 在 suggestions 中恰好出现一次；同类且理由相同的片段可以合并到同一项。只输出 JSON。
+必须让每个 fragment id 在 suggestions 中恰好出现一次。默认每个片段单独给出建议；只有确属同一字段的多处重复位置，或同一个重复块、条件块时才允许合并，并且每一项最多包含 20 个 fragment id。只输出 JSON。
 
 ${fragments}`
 }

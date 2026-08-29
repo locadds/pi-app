@@ -325,6 +325,7 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     const prompt = String(complete.mock.calls[0]?.[1]?.messages?.[0]?.content?.[0]?.text)
     expect(prompt).toContain('F001')
     expect(prompt).toContain('F131')
+    expect(prompt).toContain('最多包含 20 个')
     expect(prompt).not.toContain(fragmentIds[0])
     expect(complete.mock.calls[0]?.[2]?.maxTokens).toBeGreaterThan(4_096)
     expect(

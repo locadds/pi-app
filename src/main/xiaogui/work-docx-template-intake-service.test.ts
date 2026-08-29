@@ -50,6 +50,22 @@ async function makeDocx(longText = '项目概况'): Promise<Buffer> {
   return zip.generateAsync({ type: 'nodebuffer' })
 }
 
+async function makeParagraphDocx(paragraphs: readonly string[]): Promise<Buffer> {
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+  )
+  const body = paragraphs
+    .map((text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`)
+    .join('')
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}<w:sectPr/></w:body></w:document>`,
+  )
+  return zip.generateAsync({ type: 'nodebuffer' })
+}
+
 function lookup(): SessionScopeLookupV1 {
   return {
     lookup: vi.fn(async (address: SessionAddressV1) => ({
@@ -334,5 +350,62 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
       error: { code: 'TEMPLATE_INTAKE_SOURCE_CHANGED' },
     })
     service.close()
+  })
+
+  it('把超过 20 个位置的有效模型分组拆成可追溯建议而不是全部降级人工判断', async () => {
+    const root = await fixtureRoot()
+    const sourcePath = join(root, '长分组.docx')
+    const paragraphs = Array.from({ length: 21 }, (_, index) => `通用固定说明第 ${index + 1} 段`)
+    await writeFile(sourcePath, await makeParagraphDocx(paragraphs))
+    const store = new WorkDocxTemplateIntakeStoreV1(join(root, 'private', 'template-intake.sqlite'))
+    const service = new WorkDocxTemplateIntakeServiceV1({
+      lookup: lookup(),
+      dialogs: { chooseSource: vi.fn(async () => sourcePath) },
+      handoffs: { consumeTemplateIntakeHandoff: vi.fn(() => null) },
+      store,
+      semanticParser: vi.fn(async () => ({
+        mainText: paragraphs.join('\n'),
+        headerText: '',
+        footerText: '',
+        tableCount: 0,
+        warningCount: 0,
+      })),
+    })
+
+    const started = await service.execute(ADDRESS, { action: 'START', ...COMMON })
+    if (!started.ok || started.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_ANALYSIS_REQUIRED') {
+      throw new Error('expected analysis request')
+    }
+    const fragments = started.value.analysisBatches.flatMap((batch) => batch.fragments)
+    expect(fragments).toHaveLength(21)
+
+    const completed = await service.execute(ADDRESS, {
+      action: 'START',
+      ...COMMON,
+      reportId: started.value.reportId,
+      analysis: {
+        status: 'COMPLETE',
+        modelVersion: 'test/model',
+        suggestions: [
+          {
+            fragmentIds: fragments.map((fragment) => fragment.fragmentId),
+            kind: 'FIXED',
+            reason: '这些是跨项目通用的固定说明',
+            confidence: 0.9,
+          },
+        ],
+      },
+    })
+    if (!completed.ok || completed.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY') {
+      throw new Error('expected report')
+    }
+    service.close()
+
+    expect(completed.value.report.candidates).toHaveLength(21)
+    expect(completed.value.report.candidates.every((candidate) => candidate.kind === 'FIXED')).toBe(true)
+    expect(
+      completed.value.report.candidates.every((candidate) => candidate.sourceAnchors.length === 1),
+    ).toBe(true)
+    expect(JSON.stringify(completed.value.report)).not.toContain('模型未给出可验证建议')
   })
 })

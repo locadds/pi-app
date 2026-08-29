@@ -329,9 +329,15 @@ function buildCandidates(
       if (fragments.length !== ids.length || fragments.some((fragment) => used.has(fragment.fragmentId))) {
         continue
       }
-      // 过大的模型分组会削弱逐项可追溯性并放大报告体积，降级为逐片段人工判断。
-      if (ids.length > 20) continue
       if (fragments.some((fragment) => !fragment.semanticAligned)) continue
+      // 过大的模型分组仍保留模型语义判断，但必须拆成逐位置候选，避免削弱可追溯性。
+      if (ids.length > 20) {
+        for (const fragment of fragments) {
+          used.add(fragment.fragmentId)
+          candidates.push(candidateFromSuggestion(suggestion, [fragment]))
+        }
+        continue
+      }
       fragments.forEach((fragment) => used.add(fragment.fragmentId))
       candidates.push(candidateFromSuggestion(suggestion, fragments))
     }
