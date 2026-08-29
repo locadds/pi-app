@@ -92,9 +92,12 @@ describe("DocumentReviewRendererV1", () => {
     ).toThrow("TEMPLATE_REVIEW_DOCUMENT_TOKEN_INVALID");
   });
 
-  it("marks unsupported drawings as unmapped instead of guessing a highlight", async () => {
+  it("projects a reliably indexed inline image for in-document highlighting", async () => {
     const renderer = new DocumentReviewRendererV1({ converter: neverConvert() });
-    const result = await renderer.prepare(await createSafeDocx(), "DOCX", undefined, [
+    const content = await createSafeDocxFromBody(
+      '<w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rIdImage1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>',
+    );
+    const result = await renderer.prepare(content, "DOCX", undefined, [
       {
         targetId: "xgt_image",
         kind: "IMAGE",
@@ -106,10 +109,36 @@ describe("DocumentReviewRendererV1", () => {
     expect(result.render.mode).toBe("DOCX_HTML");
     expect(result.projections[0]).toMatchObject({
       targetId: "xgt_image",
+      status: "PROJECTED",
+      textSelectionAllowed: false,
+      objectSelectionAllowed: true,
+    });
+    const asset = renderer.readDocumentAssetByToken(result.render.documentToken!);
+    const projected = await JSZip.loadAsync(Buffer.from(asset.docxBytes));
+    const xml = await projected.file("word/document.xml")!.async("string");
+    expect(xml.indexOf(result.projections[0].startBookmark!)).toBeLessThan(xml.indexOf("<w:drawing>"));
+    expect(xml.indexOf(result.projections[0].endBookmark!)).toBeGreaterThan(xml.indexOf("</w:drawing>"));
+  });
+
+  it("keeps floating drawings in the explicit manual list", async () => {
+    const renderer = new DocumentReviewRendererV1({ converter: neverConvert() });
+    const content = await createSafeDocxFromBody(
+      '<w:p><w:r><w:drawing><wp:anchor><a:graphic><a:graphicData><a:blip r:embed="rIdImage1"/></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>',
+    );
+    const result = await renderer.prepare(content, "DOCX", undefined, [
+      {
+        targetId: "xgt_floating",
+        kind: "IMAGE",
+        preview: "浮动图件 1",
+        sourceAnchor: { part: "DRAWING", drawingIndex: 1 },
+      },
+    ]);
+
+    expect(result.projections[0]).toMatchObject({
+      targetId: "xgt_floating",
       status: "UNMAPPED",
       warningCode: "TARGET_OBJECT_UNSUPPORTED",
     });
-    expect(result.render.warnings.map((warning) => warning.code)).toContain("TARGET_OBJECT_UNSUPPORTED");
   });
 
   it("keeps paragraph anchors aligned when a drawing paragraph contains a text box", async () => {

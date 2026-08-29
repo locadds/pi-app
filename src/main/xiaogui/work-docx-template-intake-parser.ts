@@ -194,25 +194,42 @@ function textBoxCandidates(xmlParts: readonly string[]): TemplateIntakeCandidate
   return candidates
 }
 
+type DrawingCandidateKindV1 = 'INLINE' | 'FLOATING' | 'UNSUPPORTED'
+
+function drawingCandidateKinds(xmlParts: readonly string[]): DrawingCandidateKindV1[] {
+  return xmlParts.flatMap((xml) =>
+    collectMatches(xml, /<w:drawing\b[\s\S]*?<\/w:drawing>/g).flatMap((drawing) => {
+      const uses = drawing.value.match(/<a:blip\b[^>]*\br:embed=["'][^"']+["']/g)?.length ?? 0
+      const kind: DrawingCandidateKindV1 = /<wp:anchor\b/.test(drawing.value)
+        ? 'FLOATING'
+        : /<wp:inline\b/.test(drawing.value)
+          ? 'INLINE'
+          : 'UNSUPPORTED'
+      return Array.from({ length: uses }, () => kind)
+    }),
+  )
+}
+
 function drawingCandidates(
-  imageUseCount: number,
+  kinds: readonly DrawingCandidateKindV1[],
   inlineDrawingCount: number,
   floatingDrawingCount: number,
 ): TemplateIntakeCandidateV1[] {
-  if (imageUseCount === 0) return []
-  const risks: TemplateIntakeRiskFlagV1[] = ['OLD_PROJECT_DRAWING']
-  risks.push('SCANNED_ATTACHMENT')
-  if (floatingDrawingCount > 0) risks.push('FLOATING_OBJECT')
-  return Array.from({ length: imageUseCount }, (_, index) => ({
+  if (kinds.length === 0) return []
+  return kinds.map((kind, index) => {
+    const risks: TemplateIntakeRiskFlagV1[] = ['OLD_PROJECT_DRAWING', 'SCANNED_ATTACHMENT']
+    if (kind === 'FLOATING') risks.push('FLOATING_OBJECT')
+    return {
       candidateId: `xgtic1_${randomUUID()}`,
       kind: 'EXCLUDE',
-      preview: `图片或图件 ${index + 1}（共 ${imageUseCount} 项；行内 ${inlineDrawingCount}，浮动 ${floatingDrawingCount}）`,
+      preview: `图片或图件 ${index + 1}（共 ${kinds.length} 项；行内 ${inlineDrawingCount}，浮动 ${floatingDrawingCount}）`,
       sourceAnchors: [{ part: 'DRAWING', drawingIndex: index + 1 }],
       reason: '图片、扫描附件和旧项目图件无法仅凭文本可靠区分，首期按高风险规则默认排除并交由人工确认',
       confidence: 1,
       riskFlags: risks,
       defaultDecision: 'EXCLUDE',
-    }))
+    }
+  })
 }
 
 function nodeText(nodes: readonly OfficeContentNode[] | undefined): string {
@@ -362,6 +379,14 @@ export async function parseTemplateIntakeSourceV1(
     (name) => /^word\/media\/[^/]+$/i.test(name) && !zip.files[name].dir,
   ).length
   const imageUseCount = countMatches(wordXml, /<a:blip\b[^>]*\br:embed=["'][^"']+["']/g)
+  const detectedDrawingKinds = drawingCandidateKinds(wordXml)
+  const drawingKinds = [
+    ...detectedDrawingKinds,
+    ...Array.from(
+      { length: Math.max(0, imageUseCount - detectedDrawingKinds.length) },
+      () => 'UNSUPPORTED' as const,
+    ),
+  ]
   const warnings: TemplateIntakeWarningV1[] = [
     ...(pageCount === null
       ? [{ code: 'PAGE_COUNT_UNKNOWN' as const, message: '无法从文档属性可靠取得页数' }]
@@ -435,7 +460,7 @@ export async function parseTemplateIntakeSourceV1(
     fragments,
     deterministicCandidates: [
       ...textBoxCandidates(wordXml),
-      ...drawingCandidates(imageUseCount, inlineDrawingCount, floatingDrawingCount),
+      ...drawingCandidates(drawingKinds, inlineDrawingCount, floatingDrawingCount),
     ],
     warnings,
   }

@@ -313,6 +313,8 @@ export interface TemplateReviewRenderAnchorV3 {
   endBookmark?: string;
   /** 仅简单文字目标允许把 DOM 选区换算为源 DOCX UTF-16 范围。 */
   textSelectionAllowed: boolean;
+  /** 仅主进程已按 DrawingML 顺序确认的行内对象允许在文档中点击复核。 */
+  objectSelectionAllowed?: boolean;
   expectedTextSha256?: string;
   expectedTextLengthUtf16?: number;
   /** 仅用于容忍 DOCX 渲染器添加的视觉空白；命中时仍禁止局部拆分。 */

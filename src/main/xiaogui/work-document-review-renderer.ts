@@ -317,6 +317,7 @@ export interface DocumentReviewProjectionV1 {
   startBookmark?: string;
   endBookmark?: string;
   textSelectionAllowed: boolean;
+  objectSelectionAllowed?: boolean;
   expectedTextSha256?: string;
   expectedTextLengthUtf16?: number;
   expectedCompactTextSha256?: string;
@@ -409,6 +410,9 @@ const TABLE_RE = /<w:tbl\b[\s\S]*?<\/w:tbl>/g;
 const ROW_RE = /<w:tr\b[\s\S]*?<\/w:tr>/g;
 const CELL_RE = /<w:tc\b[\s\S]*?<\/w:tc>/g;
 const TEXT_BOX_RE = /<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/g;
+const RUN_RE = /<w:r\b[\s\S]*?<\/w:r>/g;
+const DRAWING_RE = /<w:drawing\b[\s\S]*?<\/w:drawing>/g;
+const IMAGE_USE_RE = /<a:blip\b[^>]*\br:embed=["'][^"']+["']/g;
 const LEGACY_DOCX_CACHE_LIMIT = 4;
 
 function collectMatches(text: string, pattern: RegExp): XmlMatch[] {
@@ -507,6 +511,52 @@ function selectedHeaderFooterPath(
   return paths.find((path) => path.startsWith(`word/${prefix}`) && path.endsWith(".xml")) ?? null;
 }
 
+function selectedDrawingRun(
+  xmlByPath: ReadonlyMap<string, string>,
+  orderedPaths: readonly string[],
+  drawingIndex: number | undefined,
+): { path: string; run: XmlMatch; floating: boolean } | null {
+  if (!drawingIndex || drawingIndex < 1) return null;
+  let currentIndex = 0;
+  for (const path of orderedPaths) {
+    const xml = xmlByPath.get(path);
+    if (!xml) continue;
+    const runs = collectMatches(xml, RUN_RE);
+    for (const drawing of collectMatches(xml, DRAWING_RE)) {
+      const imageUseCount = drawing.value.match(IMAGE_USE_RE)?.length ?? 0;
+      if (imageUseCount === 0) continue;
+      const firstIndex = currentIndex + 1;
+      currentIndex += imageUseCount;
+      if (drawingIndex < firstIndex || drawingIndex > currentIndex) continue;
+      const run = runs.find(
+        (candidate) =>
+          candidate.index <= drawing.index &&
+          candidate.index + candidate.value.length >= drawing.index + drawing.value.length,
+      );
+      if (!run || /<w:txbxContent\b/.test(run.value)) return null;
+      return {
+        path,
+        run,
+        floating: /<wp:anchor\b/.test(drawing.value) || !/<wp:inline\b/.test(drawing.value),
+      };
+    }
+  }
+  return null;
+}
+
+function wrapRunWithBookmarks(
+  runXml: string,
+  startBookmark: string,
+  endBookmark: string,
+  firstBookmarkId: number,
+): string {
+  return [
+    zeroLengthBookmark(firstBookmarkId, startBookmark),
+    runXml,
+    zeroLengthBookmark(firstBookmarkId + 1, endBookmark),
+  ].join("");
+}
+
 function bookmarkName(targetId: string, side: "start" | "end"): string {
   const digest = createHash("sha256")
     .update(`${side}:${targetId}`)
@@ -582,6 +632,9 @@ async function projectDocxForReviewV1(
   const projections: DocumentReviewProjectionV1[] = [];
   const warnings: TemplateReviewRenderWarningV3[] = [];
   const usedContainers = new Set<string>();
+  const usedRanges: Array<{ path: string; start: number; end: number }> = [];
+  const hasRangeConflict = (path: string, start: number, end: number): boolean =>
+    usedRanges.some((range) => range.path === path && start < range.end && end > range.start);
   let bookmarkId = 1;
   for (const path of xmlPaths) {
     const xml = xmlByPath.get(path) ?? await zip.file(path)?.async("string");
@@ -589,8 +642,81 @@ async function projectDocxForReviewV1(
     xmlByPath.set(path, xml);
     bookmarkId = Math.max(bookmarkId, maxBookmarkId(xml) + 1);
   }
+  const drawingPaths = [
+    mainPath,
+    ...xmlPaths.filter((path) => /^word\/header[^/]*\.xml$/i.test(path)).sort(),
+    ...xmlPaths.filter((path) => /^word\/footer[^/]*\.xml$/i.test(path)).sort(),
+  ];
 
   for (const target of targets) {
+    if (
+      (target.kind === "IMAGE" || target.kind === "DRAWING") &&
+      target.sourceAnchor.part === "DRAWING"
+    ) {
+      const selected = selectedDrawingRun(
+        xmlByPath,
+        drawingPaths,
+        target.sourceAnchor.drawingIndex,
+      );
+      if (!selected || selected.floating) {
+        projections.push({
+          targetId: target.targetId,
+          status: "UNMAPPED",
+          textSelectionAllowed: false,
+          warningCode: "TARGET_OBJECT_UNSUPPORTED",
+        });
+        warnings.push(projectionWarning("TARGET_OBJECT_UNSUPPORTED", target.targetId));
+        continue;
+      }
+      const containerKey = `${selected.path}:${selected.run.index}:${selected.run.value.length}`;
+      if (
+        usedContainers.has(containerKey) ||
+        hasRangeConflict(
+          selected.path,
+          selected.run.index,
+          selected.run.index + selected.run.value.length,
+        )
+      ) {
+        projections.push({
+          targetId: target.targetId,
+          status: "UNMAPPED",
+          textSelectionAllowed: false,
+          warningCode: "TARGET_LOCATION_UNMAPPED",
+        });
+        warnings.push(projectionWarning("TARGET_LOCATION_UNMAPPED", target.targetId));
+        continue;
+      }
+      const startBookmark = bookmarkName(target.targetId, "start");
+      const endBookmark = bookmarkName(target.targetId, "end");
+      const replacement = wrapRunWithBookmarks(
+        selected.run.value,
+        startBookmark,
+        endBookmark,
+        bookmarkId,
+      );
+      bookmarkId += 2;
+      usedContainers.add(containerKey);
+      usedRanges.push({
+        path: selected.path,
+        start: selected.run.index,
+        end: selected.run.index + selected.run.value.length,
+      });
+      edits.push({
+        path: selected.path,
+        start: selected.run.index,
+        end: selected.run.index + selected.run.value.length,
+        replacement,
+      });
+      projections.push({
+        targetId: target.targetId,
+        status: "PROJECTED",
+        startBookmark,
+        endBookmark,
+        textSelectionAllowed: false,
+        objectSelectionAllowed: true,
+      });
+      continue;
+    }
     if (
       target.kind === "IMAGE" ||
       target.kind === "DRAWING" ||
@@ -660,7 +786,10 @@ async function projectDocxForReviewV1(
       continue;
     }
     const containerKey = `${path}:${match.index}:${match.value.length}`;
-    if (usedContainers.has(containerKey)) {
+    if (
+      usedContainers.has(containerKey) ||
+      hasRangeConflict(path, match.index, match.index + match.value.length)
+    ) {
       projections.push({
         targetId: target.targetId,
         status: "UNMAPPED",
@@ -701,6 +830,7 @@ async function projectDocxForReviewV1(
       continue;
     }
     usedContainers.add(containerKey);
+    usedRanges.push({ path, start: match.index, end: match.index + match.value.length });
     edits.push({ path, start: match.index, end: match.index + match.value.length, replacement });
     projections.push({
       targetId: target.targetId,

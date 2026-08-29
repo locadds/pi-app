@@ -1009,6 +1009,9 @@ export class WorkDocxTemplateIntakeServiceV1 {
             ...(projection.startBookmark ? { startBookmark: projection.startBookmark } : {}),
             ...(projection.endBookmark ? { endBookmark: projection.endBookmark } : {}),
             textSelectionAllowed: projection.textSelectionAllowed,
+            ...(projection.objectSelectionAllowed
+              ? { objectSelectionAllowed: true }
+              : {}),
             ...(projection.expectedTextSha256 ? { expectedTextSha256: projection.expectedTextSha256 } : {}),
             ...(projection.expectedTextLengthUtf16 ? { expectedTextLengthUtf16: projection.expectedTextLengthUtf16 } : {}),
             ...(projection.expectedCompactTextSha256
@@ -1022,7 +1025,11 @@ export class WorkDocxTemplateIntakeServiceV1 {
       if (renderAnchor.status !== 'PROJECTED') {
         unmappedTargetIds.push(candidate.candidateId)
       }
-      const riskFlags = reviewRiskFlagsV2(candidate)
+      // 兼容旧报告：旧解析器曾在“文档内存在任一浮动对象”时给全部图片
+      // 都加上 FLOATING_OBJECT。主进程已可靠投影的行内图片在复核视图中纠正该标记。
+      const riskFlags = reviewRiskFlagsV2(candidate).filter(
+        (flag) => !(flag === 'FLOATING_OBJECT' && renderAnchor.objectSelectionAllowed),
+      )
       const draftActions = draftReviewActionsV2(candidate, draftById.get(candidate.candidateId))
       const needsReview =
         candidate.kind === 'UNRESOLVED' ||

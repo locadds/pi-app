@@ -361,7 +361,7 @@ export function TemplateReviewV2Dialog({
         </header>
 
         <div className="flex min-h-0 flex-1">
-          <main className="flex min-w-0 basis-[70%] flex-col bg-muted/30">
+          <main className="flex min-h-0 min-w-0 basis-[70%] flex-col overflow-hidden bg-muted/30">
             <div className="flex h-12 items-center gap-2 border-b border-border bg-background px-4">
               <span className="text-[12px] text-muted-foreground">
                 {isV3(payload)
@@ -375,7 +375,7 @@ export function TemplateReviewV2Dialog({
             </div>
             <div className="min-h-0 flex-1">
               {isV3(payload) && payload.document.render.mode === 'DOCX_HTML' ? (
-                <div onMouseUp={captureRange} className="h-full">
+                <div onMouseUp={captureRange} className="h-full min-h-0 overflow-hidden">
                   <DocxHtmlViewer
                     ref={viewerRef}
                     documentToken={payload.document.render.documentToken}
@@ -434,7 +434,9 @@ export function TemplateReviewV2Dialog({
                 <p className="mt-3 text-[11px] leading-5 text-muted-foreground">{selectedTarget.reason}</p>
                 {unresolvedInViewer.has(selectedTarget.targetId) ? (
                   <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
-                    此处无法在左侧文档中可靠标黄，仍需在这里人工处理。
+                    {selectedTarget.riskFlags.some((flag) => flag === 'FLOATING_OBJECT' || flag === 'TEXT_BOX')
+                      ? '这是 Word 浮动图形或文本框，当前文档视图无法稳定定位；请在右侧处理。可定位的行内图片会直接在左侧标黄。'
+                      : '此处无法在左侧文档中可靠定位，仍需在这里人工处理。'}
                   </p>
                 ) : null}
                 {!!selectedTarget.riskFlags.length && <div className="mt-2 flex flex-wrap gap-1">

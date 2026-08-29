@@ -31,6 +31,7 @@ type RenderedTargetV1 = {
   range: Range
   text: string
   textSelectionAllowed: boolean
+  visualElements: HTMLElement[]
 }
 
 async function sha256Hex(text: string): Promise<string> {
@@ -80,6 +81,20 @@ function rangeOffsetInTarget(targetRange: Range, selectedRange: Range): Template
   const selectedText = selectedRange.toString()
   const endUtf16Exclusive = startUtf16 + selectedText.length
   return endUtf16Exclusive > startUtf16 ? { startUtf16, endUtf16Exclusive } : null
+}
+
+function visualElementsInRange(range: Range): HTMLElement[] {
+  const common = range.commonAncestorContainer
+  const root = common instanceof Element ? common : common.parentElement
+  if (!root) return []
+  return Array.from(root.querySelectorAll<HTMLElement>('img, svg, canvas'))
+    .filter((element) => {
+      try {
+        return range.intersectsNode(element)
+      } catch {
+        return false
+      }
+    })
 }
 
 export const DocxHtmlViewer = forwardRef<DocxHtmlViewerHandleV1, {
@@ -136,7 +151,10 @@ export const DocxHtmlViewer = forwardRef<DocxHtmlViewerHandleV1, {
     for (const rendered of renderedTargetsRef.current.values()) {
       mappedTargetIds.push(rendered.target.targetId)
       if (rendered.target.highlight !== 'YELLOW') continue
-      for (const rect of Array.from(rendered.range.getClientRects())) {
+      const rects = rendered.visualElements.length > 0
+        ? rendered.visualElements.map((element) => element.getBoundingClientRect())
+        : Array.from(rendered.range.getClientRects())
+      for (const rect of rects) {
         if (rect.width < 1 || rect.height < 1) continue
         const highlight = document.createElement('div')
         highlight.className = 'xiaogui-docx-highlight'
@@ -156,7 +174,8 @@ export const DocxHtmlViewer = forwardRef<DocxHtmlViewerHandleV1, {
     focus(targetId: string) {
       const rendered = renderedTargetsRef.current.get(targetId)
       if (!rendered) return false
-      rendered.start.scrollIntoView({ block: 'center', inline: 'nearest' })
+      const focusTarget = rendered.visualElements[0] ?? rendered.start
+      focusTarget.scrollIntoView({ block: 'center', inline: 'nearest' })
       return true
     },
     readSelection() {
@@ -202,8 +221,17 @@ export const DocxHtmlViewer = forwardRef<DocxHtmlViewerHandleV1, {
     overlay.className = 'xiaogui-docx-overlay'
     shell.className = 'xiaogui-docx-shell'
     localStyle.textContent = `
-      :host { display: block; min-height: 100%; }
-      .xiaogui-docx-shell { position: relative; min-height: 100%; overflow: auto; }
+      :host { display: block; height: 100%; min-height: 0; overflow: hidden; }
+      .xiaogui-docx-shell {
+        position: relative;
+        height: 100%;
+        min-height: 0;
+        overflow-x: auto;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        touch-action: pan-x pan-y;
+      }
       .xiaogui-docx-body { position: relative; color: #111827; }
       .xiaogui-docx-body a { color: inherit; text-decoration: none; pointer-events: none; }
       .xiaogui-docx-overlay { position: absolute; inset: 0; pointer-events: none; }
@@ -241,8 +269,12 @@ export const DocxHtmlViewer = forwardRef<DocxHtmlViewerHandleV1, {
         range.setStartAfter(start)
         range.setEndBefore(end)
         const text = range.toString()
-        const digest = await sha256Hex(text)
-        const match = await textAnchorMatch(target, text, digest)
+        const visualElements = target.renderAnchor.objectSelectionAllowed
+          ? visualElementsInRange(range)
+          : []
+        const match = visualElements.length > 0
+          ? 'OBJECT'
+          : await textAnchorMatch(target, text, await sha256Hex(text))
         if (!match) {
           range.detach()
           continue
@@ -255,6 +287,7 @@ export const DocxHtmlViewer = forwardRef<DocxHtmlViewerHandleV1, {
           text,
           textSelectionAllowed:
             target.renderAnchor.textSelectionAllowed && match === 'EXACT',
+          visualElements,
         })
       }
       if (disposed) {
@@ -354,7 +387,7 @@ export const DocxHtmlViewer = forwardRef<DocxHtmlViewerHandleV1, {
   }, [selectedId])
 
   return (
-    <div ref={hostRef} className={cn('relative min-h-[520px] w-full', className)}>
+    <div ref={hostRef} className={cn('relative h-full min-h-0 w-full overflow-hidden', className)}>
       {readonlyLabel ? <span className="sr-only">{readonlyLabel}</span> : null}
       {state === 'LOADING' && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/70 text-[12px] text-muted-foreground">

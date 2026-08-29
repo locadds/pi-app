@@ -21,6 +21,7 @@ vi.mock('docx-preview', () => ({
     body.innerHTML = [
       '<div class="xiaogui-docx-wrapper"><section class="xiaogui-docx">',
       '<span id="xg_start"></span><span data-testid="content">甲\u2003乙</span><span id="xg_end"></span>',
+      '<span id="xg_img_start"></span><img data-testid="image" alt="图件"><span id="xg_img_end"></span>',
       '</section></div>',
     ].join('')
   }),
@@ -58,6 +59,27 @@ afterEach(() => {
 })
 
 describe('DocxHtmlViewer', () => {
+  it('creates a bounded native scroll container for mouse-wheel document navigation', async () => {
+    const { container } = render(
+      <div className="h-[600px] min-h-0">
+        <DocxHtmlViewer documentToken="opaque-token" className="h-full" />
+      </div>,
+    )
+
+    const host = container.querySelector('.relative') as HTMLElement
+    await waitFor(() => expect(host.shadowRoot).toBeTruthy())
+
+    const shadow = host.shadowRoot!
+    const shell = shadow.querySelector<HTMLElement>('.xiaogui-docx-shell')
+    const css = shadow.querySelector('style')?.textContent ?? ''
+
+    expect(host).toHaveClass('h-full', 'min-h-0', 'overflow-hidden')
+    expect(shell).toBeTruthy()
+    expect(css).toContain('height: 100%')
+    expect(css).toContain('min-height: 0')
+    expect(css).toContain('overflow-y: auto')
+  })
+
   it('maps whitespace-equivalent rendered text but keeps local split disabled', async () => {
     const target: TemplateReviewTargetV3 = {
       targetId: 'target-1',
@@ -107,5 +129,43 @@ describe('DocxHtmlViewer', () => {
     selection.removeAllRanges()
     selection.addRange(range)
     expect(viewerRef.current?.readSelection()).toBeNull()
+  })
+
+  it('maps and selects a projected inline image without pretending it is text', async () => {
+    const target: TemplateReviewTargetV3 = {
+      targetId: 'target-image',
+      kind: 'IMAGE',
+      preview: '图片或图件 1',
+      sourceAnchor: { part: 'DRAWING', drawingIndex: 1 },
+      renderAnchor: {
+        status: 'PROJECTED',
+        startBookmark: 'xg_img_start',
+        endBookmark: 'xg_img_end',
+        textSelectionAllowed: false,
+        objectSelectionAllowed: true,
+      },
+      reason: '图件需要人工确认',
+      confidence: 1,
+      riskFlags: ['OLD_PROJECT_DRAWING'],
+      highlight: 'YELLOW',
+      status: 'PENDING',
+      highRisk: true,
+    }
+    const onMappedTargetsChange = vi.fn()
+    const onSelectTarget = vi.fn()
+    const { container } = render(
+      <DocxHtmlViewer
+        documentToken="opaque-token"
+        targets={[target]}
+        onMappedTargetsChange={onMappedTargetsChange}
+        onSelectTarget={onSelectTarget}
+      />,
+    )
+
+    await waitFor(() => expect(onMappedTargetsChange).toHaveBeenCalledWith(['target-image']))
+    const image = container.firstElementChild?.shadowRoot?.querySelector<HTMLElement>('[data-testid="image"]')
+    expect(image).toBeTruthy()
+    image!.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }))
+    expect(onSelectTarget).toHaveBeenCalledWith(target)
   })
 })
