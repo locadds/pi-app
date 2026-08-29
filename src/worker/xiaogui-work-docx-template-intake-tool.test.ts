@@ -79,18 +79,21 @@ function loadTool() {
   return result.extensions[0]?.tools.get(XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_TOOL_NAME)?.definition
 }
 
-function modelResponse(text: string) {
+function modelResponse(text: string, stopReason = 'stop') {
   return {
     content: [{ type: 'text', text }],
-    stopReason: 'stop',
+    stopReason,
     usage: {},
   }
 }
 
-function context(complete = vi.fn()): ExtensionContext {
+function context(
+  complete = vi.fn(),
+  model: Record<string, unknown> = { provider: 'test', id: 'model' },
+): ExtensionContext {
   return {
     ui: {},
-    model: { provider: 'test', id: 'model' },
+    model,
     modelRegistry: { complete },
   } as unknown as ExtensionContext
 }
@@ -162,7 +165,7 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
           JSON.stringify({
             suggestions: [
               {
-                fragmentIds: ['signed-fragment-1'],
+                fragmentIds: ['F001'],
                 kind: 'VARIABLE',
                 reason: '不同项目需要替换',
                 confidence: 0.9,
@@ -253,6 +256,135 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
         message: '模型输出经一次修复后仍不符合要求，已安全降级',
       },
     })
+  })
+
+  it('uses compact aliases and one whole-document call when the selected model can hold it', async () => {
+    const fragmentIds = Array.from(
+      { length: 131 },
+      (_, index) => `xgtif1_${String(index + 1).padStart(3, '0')}_${'a'.repeat(48)}`,
+    )
+    const fragments = fragmentIds.map((fragmentId, index) => ({
+      fragmentId,
+      kind: 'PARAGRAPH' as const,
+      anchor: { part: 'BODY' as const, paragraphIndex: index + 1 },
+      text: `第 ${index + 1} 段项目内容`,
+    }))
+    requestWorkerHostToolMock
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_ANALYSIS_REQUIRED',
+          reportId: 'report-large',
+          fileDisplayName: '长篇方案.docx',
+          deterministicWarnings: [],
+          analysisBatches: [
+            { batchIndex: 1, characterCount: 1_000, fragments: fragments.slice(0, 80) },
+            { batchIndex: 2, characterCount: 800, fragments: fragments.slice(80) },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY',
+          report: REPORT,
+          draftDecisions: [],
+        },
+      })
+    const aliases = fragmentIds.map((_, index) => `F${String(index + 1).padStart(3, '0')}`)
+    const complete = vi.fn().mockResolvedValue(
+      modelResponse(
+        JSON.stringify({
+          suggestions: [
+            {
+              fragmentIds: aliases,
+              kind: 'FIXED',
+              reason: '全文结构中的通用固定内容',
+              confidence: 0.9,
+            },
+          ],
+        }),
+      ),
+    )
+    const execute = loadTool()?.execute as unknown as Execute
+
+    await execute(
+      'call-large',
+      { action: 'START' },
+      new AbortController().signal,
+      undefined,
+      context(complete, {
+        provider: 'kimi-coding',
+        id: 'k3-256k',
+        contextWindow: 262_144,
+        maxTokens: 131_072,
+      }),
+    )
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    const prompt = String(complete.mock.calls[0]?.[1]?.messages?.[0]?.content?.[0]?.text)
+    expect(prompt).toContain('F001')
+    expect(prompt).toContain('F131')
+    expect(prompt).not.toContain(fragmentIds[0])
+    expect(complete.mock.calls[0]?.[2]?.maxTokens).toBeGreaterThan(4_096)
+    expect(
+      requestWorkerHostToolMock.mock.calls[1]?.[0]?.payload.analysis.suggestions[0].fragmentIds,
+    ).toEqual(fragmentIds)
+  })
+
+  it('classifies length-truncated JSON as invalid model output instead of unavailable model', async () => {
+    requestWorkerHostToolMock
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_ANALYSIS_REQUIRED',
+          reportId: 'report-truncated',
+          fileDisplayName: '方案文本.docx',
+          deterministicWarnings: [],
+          analysisBatches: [
+            {
+              batchIndex: 1,
+              characterCount: 4,
+              fragments: [
+                {
+                  fragmentId: 'fragment-1',
+                  kind: 'PARAGRAPH',
+                  anchor: { part: 'BODY', paragraphIndex: 1 },
+                  text: '正文',
+                },
+              ],
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY',
+          report: REPORT,
+          draftDecisions: [],
+        },
+      })
+    const truncated =
+      '{"suggestions":[{"fragmentIds":["F001"],"kind":"FIXED","reason":"固定","confidence":0.9}'
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(modelResponse(truncated, 'length'))
+      .mockResolvedValueOnce(modelResponse(truncated, 'length'))
+    const execute = loadTool()?.execute as unknown as Execute
+
+    await execute(
+      'call-truncated',
+      { action: 'START' },
+      new AbortController().signal,
+      undefined,
+      context(complete),
+    )
+
+    expect(complete).toHaveBeenCalledTimes(2)
+    expect(requestWorkerHostToolMock.mock.calls[1]?.[0]?.payload.analysis.warning.code).toBe(
+      'MODEL_OUTPUT_INVALID',
+    )
   })
 
   it('opens review only on REVIEW and submits the complete UI result', async () => {
