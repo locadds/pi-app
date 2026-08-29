@@ -5,7 +5,8 @@ import type {
   TemplateMaterializePreviewResultV1 as SharedTemplateMaterializePreviewResultV1,
 } from '@shared/xiaogui-work-docx-template-materialize'
 import { FileText } from '@renderer/components/icons'
-import { DocxHtmlViewer, type DocxHtmlViewerStateV1 } from '@renderer/components/docx-html-viewer'
+import type { DocxHtmlViewerStateV1 } from '@renderer/components/docx-html-viewer'
+import { DocumentSurfaceViewerV1 } from '@renderer/features/document-surface/document-surface-viewer'
 
 export type TemplateMaterializePreviewPayloadV1 = TemplateMaterializePreviewRequestV1
 export type TemplateMaterializePreviewResultV1 = SharedTemplateMaterializePreviewResultV1
@@ -36,8 +37,10 @@ export function TemplateMaterializePreviewDialog({
 
       <main className="min-h-0 flex-1 bg-muted/30">
         {payload.document.render.mode === 'DOCX_HTML' ? (
-          <DocxHtmlViewer
+          <DocumentSurfaceViewerV1
+            purpose="MATERIALIZED_PREVIEW"
             documentToken={payload.document.render.documentToken}
+            title={payload.plan.source.displayName}
             readonlyLabel="修改后模板只读预览"
             onStateChange={(nextState) => setViewerState(nextState)}
           />

@@ -8,6 +8,7 @@ interface UtilityParentPort {
 const cookieName = process.env.XIAOGUI_OFFICE_GATEWAY_COOKIE_NAME
 const sessionToken = process.env.XIAOGUI_OFFICE_GATEWAY_SESSION_TOKEN
 const viewerRoot = process.env.XIAOGUI_OFFICE_VIEWER_ROOT
+const snapshotPersistencePath = process.env.XIAOGUI_OFFICE_SNAPSHOT_PATH
 const parentPort = (process as NodeJS.Process & { parentPort?: UtilityParentPort }).parentPort
 
 if (!cookieName || !sessionToken || !viewerRoot || !parentPort) {
@@ -19,6 +20,7 @@ const handle = await startOfficeGatewayV1({
   sessionToken,
   viewerRoot,
   initialSnapshot: {},
+  snapshotPersistencePath,
 })
 
 parentPort.postMessage({

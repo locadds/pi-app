@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import { startOfficeGatewayV1 } from './server'
 
 const COOKIE = 'xiaogui_office_test'
@@ -43,6 +45,54 @@ describe('Office Gateway V1', () => {
       expect(await viewer.text()).toContain('小规文档界面')
     } finally {
       await gateway.close()
+    }
+  })
+
+  it('restores the private worktree after the gateway restarts', async () => {
+    const evidenceRoot = 'D:\\CodexTemp'
+    await mkdir(evidenceRoot, { recursive: true })
+    const temporaryRoot = await mkdtemp(join(evidenceRoot, 'xiaogui-office-gateway-'))
+    const persistencePath = join(temporaryRoot, 'worktree.json')
+    const headers = { Cookie: `${COOKIE}=${TOKEN}` }
+    let firstGateway: Awaited<ReturnType<typeof startOfficeGatewayV1>> | null = null
+    let secondGateway: Awaited<ReturnType<typeof startOfficeGatewayV1>> | null = null
+    try {
+      firstGateway = await startOfficeGatewayV1({
+        sessionCookieName: COOKIE,
+        sessionToken: TOKEN,
+        initialSnapshot: { title: '初始工作副本' },
+        snapshotPersistencePath: persistencePath,
+      })
+      const before = await fetch(`${firstGateway.origin}/api/v1/snapshot`, { headers })
+        .then((response) => response.json()) as { headSha256: string }
+      const saved = await fetch(`${firstGateway.origin}/api/v1/snapshot`, {
+        method: 'PUT',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedHeadSha256: before.headSha256,
+          snapshot: { title: '重启后应恢复的工作副本', fields: ['项目名称'] },
+        }),
+      })
+      expect(saved.status).toBe(200)
+      await firstGateway.close()
+      firstGateway = null
+
+      secondGateway = await startOfficeGatewayV1({
+        sessionCookieName: COOKIE,
+        sessionToken: TOKEN,
+        initialSnapshot: { title: '不应覆盖已保存工作副本' },
+        snapshotPersistencePath: persistencePath,
+      })
+      const restored = await fetch(`${secondGateway.origin}/api/v1/snapshot`, { headers })
+        .then((response) => response.json()) as { snapshot: Record<string, unknown> }
+      expect(restored.snapshot).toEqual({
+        title: '重启后应恢复的工作副本',
+        fields: ['项目名称'],
+      })
+    } finally {
+      await firstGateway?.close().catch(() => {})
+      await secondGateway?.close().catch(() => {})
+      await rm(temporaryRoot, { recursive: true, force: true })
     }
   })
 })

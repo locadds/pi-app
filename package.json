@@ -33,7 +33,7 @@
     "sync:fonts": "node scripts/sync-geist-mono-font.mjs",
     "dev": "npm run sync:fonts && electron-vite dev",
     "dev:alert-trace": "set PI_ALERT_TRACE=1&& set PI_AUDIO_TRACE=1&& electron-vite dev",
-    "build": "npm run sync:fonts && electron-vite build",
+    "build": "npm run sync:fonts && electron-vite build && npm run build:office",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "test:scripts": "node scripts/run-contract-tests.mjs",
@@ -54,6 +54,7 @@
     "build:office-viewer": "vite build --config vite.office-viewer.config.ts",
     "build:office-gateway": "node scripts/build-office-gateway.mjs",
     "build:office": "npm run build:office-viewer && npm run build:office-gateway",
+    "dev:office-test": "npm run build:office && node scripts/run-office-surface-test.mjs",
     "smoke:office-browser": "node scripts/smoke-office-viewer-browser.mjs",
     "smoke:office": "electron scripts/smoke-office-viewer-electron.mjs",
     "test:office": "vitest run packages/shared/xiaogui-office-worktree.test.ts src/office-gateway/server.test.ts"

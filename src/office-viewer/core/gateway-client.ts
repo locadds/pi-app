@@ -7,9 +7,19 @@ export interface OfficeGatewaySnapshotV1 {
 
 export class OfficeGatewayClientV1 {
   private headSha256 = ''
+  private accessToken = ''
+
+  authorize(accessToken: string): void {
+    if (accessToken.length < 32 || accessToken.length > 512) throw new Error('文档工作副本授权无效。')
+    this.accessToken = accessToken
+  }
 
   async load(): Promise<OfficeGatewaySnapshotV1> {
-    const response = await fetch('/api/v1/snapshot', { credentials: 'same-origin', cache: 'no-store' })
+    const response = await fetch('/api/v1/snapshot', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: this.authorizationHeaders(),
+    })
     if (!response.ok) throw new Error(`读取文档工作副本失败（${response.status}）。`)
     const envelope = await response.json() as OfficeGatewaySnapshotV1
     if (!isSnapshotEnvelope(envelope)) throw new Error('本机文档网关返回了无效快照。')
@@ -22,7 +32,7 @@ export class OfficeGatewayClientV1 {
     const response = await fetch('/api/v1/snapshot', {
       method: 'PUT',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...this.authorizationHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ expectedHeadSha256: this.headSha256, snapshot }),
     })
     if (response.status === 409) throw new Error('文档工作副本已经变化，请重新载入。')
@@ -35,6 +45,10 @@ export class OfficeGatewayClientV1 {
 
   getHeadSha256(): string {
     return this.headSha256
+  }
+
+  private authorizationHeaders(): Record<string, string> {
+    return this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}
   }
 }
 

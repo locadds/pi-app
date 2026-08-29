@@ -31,6 +31,10 @@ extraFiles:
 
 # 可选：运行 scripts/fetch-codex-asr 后放入 resources/codex-asr；缺失时回退 PATH 中的 codex-asr
 extraResources:
+  - from: artifacts/office-viewer
+    to: office-viewer
+    filter:
+      - "**/*"
   - from: resources/codex-asr
     to: codex-asr
     filter:

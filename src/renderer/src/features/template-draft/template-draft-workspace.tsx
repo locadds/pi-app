@@ -2,7 +2,10 @@ import { useMemo, useRef, useState } from 'react'
 
 import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
 import type { TemplateReviewActionV2, TemplateReviewResultV2 } from '@shared/xiaogui-work-template-review'
-import { DocxHtmlViewer, type DocxHtmlViewerHandleV1 } from '@renderer/components/docx-html-viewer'
+import {
+  DocumentSurfaceViewerV1,
+  type DocumentSurfaceViewerHandleV1,
+} from '@renderer/features/document-surface/document-surface-viewer'
 import { FileText, X } from '@renderer/components/icons'
 import { TemplateFieldPanel } from './template-field-panel'
 import { TemplateIssuePanel, type TemplateIssueChoiceStateV2 } from './template-issue-panel'
@@ -37,22 +40,47 @@ export function TemplateDraftWorkspace({
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(payload.fieldGraph.fields[0]?.fieldId ?? null)
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(payload.fieldGraph.issues[0]?.issueId ?? null)
   const [message, setMessage] = useState<string | null>(null)
-  const viewerRef = useRef<DocxHtmlViewerHandleV1 | null>(null)
+  const viewerRef = useRef<DocumentSurfaceViewerHandleV1 | null>(null)
 
   const visibleIssues = payload.fieldGraph.issues.slice(0, payload.quickIssueLimit)
   const overflowIssues = Math.max(0, payload.fieldGraph.issues.length - visibleIssues.length)
   const bindingByTarget = useMemo(() => new Map(payload.targetBindings.map((binding) => [binding.targetId, binding])), [payload.targetBindings])
   const pendingIssues = payload.fieldGraph.issues.filter((issue) => !choices[issue.issueId])
+  const officeFields = useMemo(() => payload.fieldGraph.fields.map((field) => ({
+    fieldId: field.fieldId,
+    displayName: field.displayName,
+    occurrenceIds: field.occurrenceIds,
+  })), [payload.fieldGraph.fields])
+  const blockingOccurrenceIds = useMemo(() => new Set(payload.fieldGraph.issues
+    .filter((issue) => issue.severity === 'BLOCKING')
+    .flatMap((issue) => issue.occurrenceIds)), [payload.fieldGraph.issues])
+  const officeOccurrences = useMemo(() => payload.fieldGraph.occurrences.map((occurrence) => ({
+    occurrenceId: occurrence.occurrenceId,
+    fieldId: occurrence.fieldId,
+    originalText: occurrence.originalText,
+    sourceAnchor: occurrence.sourceAnchor,
+    ...(occurrence.textRange ? { textRange: occurrence.textRange } : {}),
+    state: blockingOccurrenceIds.has(occurrence.occurrenceId)
+      ? 'BLOCKING' as const
+      : occurrence.riskFlags.length > 0 || occurrence.confidence < 0.9
+        ? 'WARNING' as const
+        : 'FIELD' as const,
+  })), [blockingOccurrenceIds, payload.fieldGraph.occurrences])
+  const selectedIssueOccurrenceId = useMemo(() => payload.fieldGraph.issues
+    .find((issue) => issue.issueId === selectedIssueId)?.occurrenceIds[0], [payload.fieldGraph.issues, selectedIssueId])
 
   const focusField = (fieldId: string) => {
     setSelectedFieldId(fieldId)
+    viewerRef.current?.focusField(fieldId)
     const binding = payload.targetBindings.find((item) => item.fieldId === fieldId)
-    if (binding) viewerRef.current?.focus(binding.targetId)
+    if (binding) viewerRef.current?.focusTarget(binding.targetId)
   }
   const focusIssue = (issueId: string) => {
     setSelectedIssueId(issueId)
+    const occurrenceId = payload.fieldGraph.issues.find((issue) => issue.issueId === issueId)?.occurrenceIds[0]
+    if (occurrenceId) viewerRef.current?.focusOccurrence(occurrenceId)
     const binding = payload.targetBindings.find((item) => item.issueIds.includes(issueId))
-    if (binding) viewerRef.current?.focus(binding.targetId)
+    if (binding) viewerRef.current?.focusTarget(binding.targetId)
   }
 
   const effectiveActions = (): TemplateReviewActionV2[] => payload.recommendedActions.map((recommended) => {
@@ -121,9 +149,15 @@ export function TemplateDraftWorkspace({
         <div className="flex min-h-0 flex-1">
           <main className="min-h-0 min-w-0 basis-[68%] bg-muted/30">
             {payload.document.render.mode === 'DOCX_HTML' ? (
-              <DocxHtmlViewer
+              <DocumentSurfaceViewerV1
                 ref={viewerRef}
+                purpose="TEMPLATE_DRAFT"
                 documentToken={payload.document.render.documentToken}
+                title={payload.document.source.displayName}
+                fields={officeFields}
+                occurrences={officeOccurrences}
+                activeFieldId={tab === 'FIELDS' ? selectedFieldId ?? undefined : undefined}
+                activeOccurrenceId={tab === 'ISSUES' ? selectedIssueOccurrenceId : undefined}
                 targets={payload.advancedReview.targets}
                 readonlyLabel="模板草稿预览；黄色位置需要确认"
                 onSelectTarget={(target) => {

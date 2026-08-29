@@ -5,7 +5,7 @@ import type {
   TemplateLibraryVersionSummaryV1,
 } from '@shared/xiaogui-template-library'
 import { ipcClient } from '@renderer/lib/ipc-client'
-import { DocxHtmlViewer } from '@renderer/components/docx-html-viewer'
+import { DocumentSurfaceViewerV1 } from '@renderer/features/document-surface/document-surface-viewer'
 
 export function TemplateLibraryPreviewDialog({
   entryName,
@@ -101,8 +101,10 @@ export function TemplateLibraryPreviewDialog({
         </main>
       ) : preview ? (
         <main className="min-h-0 flex-1 bg-muted/30">
-          <DocxHtmlViewer
+          <DocumentSurfaceViewerV1
+            purpose="TEMPLATE_LIBRARY_PREVIEW"
             documentToken={preview.render.documentToken}
+            title={`${entryName} 第 ${version.versionNumber} 版`}
             readonlyLabel="模板库版本只读预览"
           />
         </main>

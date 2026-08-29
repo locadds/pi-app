@@ -1,8 +1,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { access, stat } from 'node:fs/promises'
+import { access, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { extname, resolve, sep } from 'node:path'
+import { dirname, extname, resolve, sep } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import type { OfficeSnapshotV1 } from '../../packages/shared/xiaogui-office-surface'
 
@@ -26,6 +26,8 @@ export interface OfficeGatewayOptionsV1 {
   readonly viewerRoot?: string
   readonly viewerFallbackHtml?: string
   readonly bodyLimitBytes?: number
+  /** 主进程签发的私有工作副本路径，不通过 HTTP 返回。 */
+  readonly snapshotPersistencePath?: string
 }
 
 export interface OfficeGatewayHandleV1 {
@@ -41,9 +43,11 @@ interface SnapshotEnvelopeV1 {
 
 export async function startOfficeGatewayV1(options: OfficeGatewayOptionsV1): Promise<OfficeGatewayHandleV1> {
   assertSessionConfiguration(options.sessionCookieName, options.sessionToken)
+  const persisted = await readPersistedSnapshot(options.snapshotPersistencePath)
+  const initial = persisted ?? options.initialSnapshot
   const state: SnapshotEnvelopeV1 = {
-    headSha256: digestSnapshot(options.initialSnapshot),
-    snapshot: structuredClone(options.initialSnapshot),
+    headSha256: digestSnapshot(initial),
+    snapshot: structuredClone(initial),
   }
   const server = createServer((request, response) => {
     void handleRequest(request, response, options, state).catch((error: unknown) => {
@@ -92,6 +96,11 @@ async function handleRequest(
     writeJson(response, 200, { ok: true, service: 'xiaogui-office-gateway', version: 1 })
     return
   }
+  // Viewer 只包含静态代码，不含文档数据。真正的快照 API 仍需随机会话授权。
+  if (request.method === 'GET' && (url.pathname === '/viewer' || url.pathname.startsWith('/viewer/'))) {
+    await serveViewerAsset(response, url.pathname, options)
+    return
+  }
   if (!isAuthorized(request, options.sessionCookieName, options.sessionToken)) {
     writeJson(response, 401, { error: 'OFFICE_GATEWAY_UNAUTHORIZED', message: '文档会话未授权。' })
     return
@@ -121,16 +130,32 @@ async function handleRequest(
     }
     state.snapshot = structuredClone(payload.snapshot)
     state.headSha256 = digestSnapshot(state.snapshot)
+    await persistSnapshot(options.snapshotPersistencePath, state.snapshot)
     writeJson(response, 200, { headSha256: state.headSha256 })
     return
   }
 
-  if (request.method === 'GET' && (url.pathname === '/viewer' || url.pathname.startsWith('/viewer/'))) {
-    await serveViewerAsset(response, url.pathname, options)
-    return
-  }
-
   writeJson(response, 404, { error: 'OFFICE_GATEWAY_NOT_FOUND', message: '请求的本机文档资源不存在。' })
+}
+
+async function readPersistedSnapshot(path: string | undefined): Promise<OfficeSnapshotV1 | null> {
+  if (!path) return null
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as OfficeSnapshotV1
+      : null
+  } catch {
+    return null
+  }
+}
+
+async function persistSnapshot(path: string | undefined, snapshot: OfficeSnapshotV1): Promise<void> {
+  if (!path) return
+  await mkdir(dirname(path), { recursive: true })
+  const temporary = `${path}.tmp-${process.pid}`
+  await writeFile(temporary, stableJson(snapshot), 'utf8')
+  await rename(temporary, path)
 }
 
 async function serveViewerAsset(
@@ -220,10 +245,20 @@ function stableJson(value: unknown): string {
 }
 
 function isAuthorized(request: IncomingMessage, cookieName: string, token: string): boolean {
+  const bearer = readBearerToken(request.headers.authorization)
+  if (bearer && safeTokenEquals(bearer, token)) return true
   const cookieValue = readCookie(request.headers.cookie, cookieName)
-  if (!cookieValue) return false
-  const actual = Buffer.from(cookieValue)
-  const expected = Buffer.from(token)
+  return cookieValue ? safeTokenEquals(cookieValue, token) : false
+}
+
+function readBearerToken(header: string | undefined): string | null {
+  const match = /^Bearer ([A-Za-z0-9_-]{32,512})$/.exec(header ?? '')
+  return match?.[1] ?? null
+}
+
+function safeTokenEquals(actualValue: string, expectedValue: string): boolean {
+  const actual = Buffer.from(actualValue)
+  const expected = Buffer.from(expectedValue)
   return actual.length === expected.length && timingSafeEqual(actual, expected)
 }
 
@@ -255,7 +290,7 @@ function applySecurityHeaders(response: ServerResponse): void {
   response.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
   response.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors file: http://127.0.0.1:*",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors file: http://127.0.0.1:* http://localhost:*",
   )
 }
 
