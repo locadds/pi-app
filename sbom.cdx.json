@@ -48,6 +48,42 @@
     },
     {
       "type": "library",
+      "name": "@univerjs/core",
+      "version": "0.25.1",
+      "bom-ref": "pkg:npm/@univerjs/core@0.25.1"
+    },
+    {
+      "type": "library",
+      "name": "@univerjs/design",
+      "version": "0.25.1",
+      "bom-ref": "pkg:npm/@univerjs/design@0.25.1"
+    },
+    {
+      "type": "library",
+      "name": "@univerjs/docs",
+      "version": "0.25.1",
+      "bom-ref": "pkg:npm/@univerjs/docs@0.25.1"
+    },
+    {
+      "type": "library",
+      "name": "@univerjs/docs-ui",
+      "version": "0.25.1",
+      "bom-ref": "pkg:npm/@univerjs/docs-ui@0.25.1"
+    },
+    {
+      "type": "library",
+      "name": "@univerjs/engine-render",
+      "version": "0.25.1",
+      "bom-ref": "pkg:npm/@univerjs/engine-render@0.25.1"
+    },
+    {
+      "type": "library",
+      "name": "@univerjs/ui",
+      "version": "0.25.1",
+      "bom-ref": "pkg:npm/@univerjs/ui@0.25.1"
+    },
+    {
+      "type": "library",
       "name": "better-sqlite3",
       "version": "12.11.1",
       "bom-ref": "pkg:npm/better-sqlite3@12.11.1"
@@ -230,6 +266,12 @@
       "name": "shell-env",
       "version": "4.0.3",
       "bom-ref": "pkg:npm/shell-env@4.0.3"
+    },
+    {
+      "type": "library",
+      "name": "rxjs",
+      "version": "7.8.2",
+      "bom-ref": "pkg:npm/rxjs@7.8.2"
     },
     {
       "type": "library",

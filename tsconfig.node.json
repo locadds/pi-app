@@ -11,8 +11,10 @@
     "src/main/**/*",
     "src/preload/**/*",
     "src/worker/**/*",
+    "src/office-gateway/**/*",
     "src/extension-compat/*.ts",
     "packages/shared/**/*",
-    "electron.vite.config.ts"
+    "electron.vite.config.ts",
+    "vite.office-viewer.config.ts"
   ]
 }

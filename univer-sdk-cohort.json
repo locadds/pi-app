@@ -1,0 +1,15 @@
+{
+  "univerSdkVersion": "0.25.1",
+  "testedAt": "2026-08-30",
+  "licenseMode": "CORE_ONLY",
+  "fidelityCorpusVersion": "not-started",
+  "packages": [
+    "@univerjs/core",
+    "@univerjs/design",
+    "@univerjs/docs",
+    "@univerjs/docs-ui",
+    "@univerjs/engine-render",
+    "@univerjs/ui"
+  ],
+  "proPackages": []
+}

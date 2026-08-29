@@ -9,6 +9,7 @@ test/
 # Build / pack output (regenerate: npm run build, npm run icon:export)
 out/
 dist/
+/artifacts/office-viewer/
 build/icon.png
 build/icon.ico
 
