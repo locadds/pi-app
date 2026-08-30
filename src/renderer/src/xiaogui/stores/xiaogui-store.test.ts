@@ -33,11 +33,24 @@ afterEach(() => {
 
 describe('useXiaoguiStore.switchMode', () => {
   it('returns true only for an acknowledged matching target mode', async () => {
-    mocks.invoke.mockResolvedValue({ ok: true, mode: 'CODING' })
+    mocks.invoke.mockResolvedValue({ ok: true, mode: 'CODING', promptContextStatus: 'REBUILT' })
 
     await expect(useXiaoguiStore.getState().switchMode('CODING')).resolves.toBe(true)
     expect(useXiaoguiStore.getState().mode).toBe('CODING')
     expect(mocks.invoke).toHaveBeenCalledOnce()
+  })
+
+  it('rejects an acknowledgement that does not prove Prompt Context safety', async () => {
+    mocks.invoke.mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'xiaogui.mode.switch'
+          ? { ok: true, mode: 'CODING' }
+          : { mode: 'WORK' },
+      ),
+    )
+
+    await expect(useXiaoguiStore.getState().switchMode('CODING')).resolves.toBe(false)
+    expect(useXiaoguiStore.getState().mode).toBe('WORK')
   })
 
   it.each([

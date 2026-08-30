@@ -74,6 +74,9 @@ describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
       }),
     }))
     const resolvedState = resolved.mock.calls[0]?.[0]
+    expect(resolvedState.productPrompt).toContain('# 小规 Agent')
+    expect(resolvedState.productPrompt).not.toContain('USER SYSTEM')
+    expect(resolvedState.productPrompt).not.toContain('<project_context>facts</project_context>')
     expect(result.systemPrompt.length)
       .toBe(resolvedState.diagnostics.manifest.completePromptCharacterCount)
     expect(createHash('sha256').update(result.systemPrompt, 'utf8').digest('hex'))
@@ -151,4 +154,31 @@ describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
       expect(state.diagnostics.manifest.projectTrusted).toBe(projectTrusted)
     },
   )
+
+  it('fails closed when Session trust cannot be established', () => {
+    const candidate = {
+      schemaVersion: 1 as const,
+      mode: 'WORK' as const,
+      phase: 'ASK' as const,
+      workspaceAvailable: true,
+      projectTrusted: true,
+      enabledCapabilities: ['work.file-organize' as const],
+      availableToolNames: ['read'],
+    }
+    const session = {
+      settingsManager: {},
+      systemPrompt: 'PI base',
+      getActiveToolNames: () => ['read'],
+      getToolDefinition: () => ({ promptSnippet: 'read files', promptGuidelines: [] }),
+    } as unknown as AgentSession
+    const services = {
+      resourceLoader: { getSystemPrompt: () => undefined },
+    } as unknown as AgentSessionServices
+
+    const state = buildXiaoguiPromptSessionStateV1(session, services, candidate)
+
+    expect(state.context.projectTrusted).toBe(false)
+    expect(state.diagnostics.manifest.projectTrusted).toBe(false)
+    expect(state.productPrompt).toContain('项目信任：未信任')
+  })
 })

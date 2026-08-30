@@ -20,6 +20,8 @@ import { freezeXiaoguiPromptContextV1 } from './session-binding'
 export interface XiaoguiEffectivePromptSessionStateV1 {
   /** Worker-only body from the same Builder invocation as `diagnostics`. */
   readonly prompt: string
+  /** Code-owned product Layers only; the only body eligible for diagnostics. */
+  readonly productPrompt: string
   readonly context: XiaoguiPromptContextV1
   readonly diagnostics: XiaoguiEffectivePromptDiagnosticsV1
 }
@@ -31,6 +33,10 @@ export interface XiaoguiPromptInlineExtensionV1 {
   readonly hidden: true
   readonly factory: ExtensionFactory
 }
+
+export type XiaoguiPromptContextSourceV1 =
+  | XiaoguiPromptContextV1
+  | (() => XiaoguiPromptContextV1)
 
 type PiToolFacts = Pick<BuildSystemPromptOptions, 'selectedTools' | 'toolSnippets' | 'promptGuidelines'>
 
@@ -63,11 +69,6 @@ function withActualTools(
   projectTrusted: boolean,
 ): XiaoguiPromptContextV1 {
   const actualNames = [...new Set(tools.map((tool) => tool.name).filter(Boolean))].sort()
-  for (const requiredName of context.availableToolNames) {
-    if (!actualNames.includes(requiredName)) {
-      throw new Error('XIAOGUI_PROMPT_CONTEXT_TOOL_MISMATCH')
-    }
-  }
   return freezeXiaoguiPromptContextV1({
     ...context,
     projectTrusted,
@@ -92,21 +93,26 @@ function build(
 
 /**
  * Last inline Pi extension. Pi invokes it after project/user extensions and
- * passes its real 0.84.1 assembled Prompt. The captured Context is immutable,
- * so a running Turn cannot observe a later Main-process mode/phase change.
+ * passes its real 0.84.1 assembled Prompt. The Worker supplies a frozen turn
+ * snapshot, so a running Turn cannot observe later capability or mode changes.
  */
 export function createXiaoguiPromptSessionExtensionV1(
-  rawContext: XiaoguiPromptContextV1,
+  contextSource: XiaoguiPromptContextSourceV1,
   onState: XiaoguiPromptStateSinkV1,
   onFailure: (error: unknown) => void = () => {},
 ): XiaoguiPromptInlineExtensionV1 {
-  const context = freezeXiaoguiPromptContextV1(rawContext)
+  const readContext = (): XiaoguiPromptContextV1 => freezeXiaoguiPromptContextV1(
+    typeof contextSource === 'function' ? contextSource() : contextSource,
+  )
   return {
     name: 'xiaogui-prompt-context-v1',
     hidden: true,
     factory(pi) {
       pi.on('before_agent_start', async (event, extensionContext) => {
         try {
+          // The Worker freezes this snapshot before it changes active tools.
+          // A queued/streaming turn continues to observe the same object.
+          const context = readContext()
           const tools = normalizeToolsFromPromptOptions(event.systemPromptOptions)
           const result = build(
             context,
@@ -117,6 +123,7 @@ export function createXiaoguiPromptSessionExtensionV1(
           )
           onState({
             prompt: result.prompt,
+            productPrompt: result.productPrompt,
             context: result.effectiveContext,
             diagnostics: result.diagnostics,
           })
@@ -148,6 +155,7 @@ export function buildXiaoguiPromptSessionStateV1(
   )
   return {
     prompt: result.prompt,
+    productPrompt: result.productPrompt,
     context: result.effectiveContext,
     diagnostics: result.diagnostics,
   }

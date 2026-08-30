@@ -71,4 +71,3 @@ export interface DocumentSurfaceV1 {
   prepareReview(): Promise<DocumentReviewReceiptV1>
   exportDraft(): Promise<DocumentExportReceiptV1>
 }
-

@@ -14,6 +14,7 @@ import {
   prepareDocxUniverDrawingPackageV1,
   prepareDocxUniverDrawingPartContextV1,
   readDocxUniverDrawingV1,
+  selectDocxUniverAlternateContentV1,
   type DocxUniverDrawingPackageV1,
   type DocxUniverDrawingPartContextV1,
   type UniverImageDrawingV1,
@@ -132,6 +133,29 @@ interface VisibleAccumulatorV1 {
   offsets: number[]
 }
 
+type HeaderFooterReferenceTypeV1 = 'default' | 'first' | 'even'
+
+interface PackageRelationshipV1 {
+  readonly id: string
+  readonly target: string
+  readonly packagePath?: string
+  readonly type?: string
+  readonly external: boolean
+}
+
+interface SectionHeaderFooterReferencesV1 {
+  readonly headers: Partial<Record<HeaderFooterReferenceTypeV1, string>>
+  readonly footers: Partial<Record<HeaderFooterReferenceTypeV1, string>>
+}
+
+type UniverHeaderSnapshotWithTablesV1 = NonNullable<IDocumentData['headers']>[string] & {
+  readonly tableSource?: NonNullable<IDocumentData['tableSource']>
+}
+
+type UniverFooterSnapshotWithTablesV1 = NonNullable<IDocumentData['footers']>[string] & {
+  readonly tableSource?: NonNullable<IDocumentData['tableSource']>
+}
+
 export async function buildDocxUniverDocumentV1(
   input: BuildDocxUniverDocumentInputV1,
 ): Promise<DocxUniverDocumentBuildResultV1> {
@@ -153,7 +177,22 @@ export async function buildDocxUniverDocumentV1(
       drawingSequence,
     }),
   )
-  const sectionProperties = firstElement(input.mainXml, 'w:sectPr') ?? ''
+  const sectionPropertiesList = collectElements(input.mainXml, 'w:sectPr')
+  const sectionProperties = sectionPropertiesList.at(-1) ?? ''
+  const settingsXml = await input.zip.file('word/settings.xml')?.async('string') ?? ''
+  const documentRelationshipsXml = await input.zip.file('word/_rels/document.xml.rels')?.async('string') ?? ''
+  const documentRelationships = readPackageRelationships(documentRelationshipsXml, 'word/document.xml')
+  const sectionWarnings: string[] = []
+  if (sectionPropertiesList.length > 1) {
+    sectionWarnings.push(
+      `文档包含 ${sectionPropertiesList.length} 个分节；当前 Univer 文档样式只能等价表达一个页眉页脚集合，已仅绑定末节引用，其余分节需人工复核。`,
+    )
+  }
+  const sectionReferences = readSectionHeaderFooterReferences(
+    sectionProperties,
+    documentRelationships,
+    sectionWarnings,
+  )
   const headerPaths = Object.keys(input.zip.files)
     .filter((path) => /^word\/header\d+\.xml$/i.test(path))
     .sort(numericPartSort)
@@ -166,6 +205,8 @@ export async function buildDocxUniverDocumentV1(
   const tableSource: NonNullable<IDocumentData['tableSource']> = { ...body.tableSource }
   const drawingsOrder = [...body.drawingsOrder]
   const headerFooterDrawingsOrder: string[] = []
+  const headerIdsByPath = new Map<string, string>()
+  const footerIdsByPath = new Map<string, string>()
   let headerParagraphCount = 0
   let footerParagraphCount = 0
   let totalDrawingCount = body.drawingCount
@@ -192,7 +233,13 @@ export async function buildDocxUniverDocumentV1(
       }),
     )
     const headerId = `xiaogui-header-${index + 1}`
-    headers[headerId] = { headerId, body: toDocumentBody(built) }
+    const headerSnapshot: UniverHeaderSnapshotWithTablesV1 = {
+      headerId,
+      body: toDocumentBody(built),
+      tableSource: Object.keys(built.tableSource).length ? built.tableSource : undefined,
+    }
+    headers[headerId] = headerSnapshot
+    headerIdsByPath.set(normalizePackagePath(headerPaths[index]), headerId)
     Object.assign(drawings, built.drawings)
     Object.assign(tableSource, built.tableSource)
     headerFooterDrawingsOrder.push(...built.drawingsOrder)
@@ -221,7 +268,13 @@ export async function buildDocxUniverDocumentV1(
       }),
     )
     const footerId = `xiaogui-footer-${index + 1}`
-    footers[footerId] = { footerId, body: toDocumentBody(built) }
+    const footerSnapshot: UniverFooterSnapshotWithTablesV1 = {
+      footerId,
+      body: toDocumentBody(built),
+      tableSource: Object.keys(built.tableSource).length ? built.tableSource : undefined,
+    }
+    footers[footerId] = footerSnapshot
+    footerIdsByPath.set(normalizePackagePath(footerPaths[index]), footerId)
     Object.assign(drawings, built.drawings)
     Object.assign(tableSource, built.tableSource)
     headerFooterDrawingsOrder.push(...built.drawingsOrder)
@@ -236,7 +289,7 @@ export async function buildDocxUniverDocumentV1(
 
   const page = readPageStyle(sectionProperties)
   const mediaCount = drawingPackage.mediaCount
-  const warnings: string[] = [...tableWarnings]
+  const warnings: string[] = [...tableWarnings, ...sectionWarnings]
   if (totalRenderedDrawingCount > 0) {
     warnings.push(`已从原文档导入 ${totalRenderedDrawingCount} 个图片对象；图片内容保留在本机私有工作副本中。`)
   }
@@ -257,8 +310,42 @@ export async function buildDocxUniverDocumentV1(
   }
   warnings.push(...getDocxUniverDrawingWarningsV1(drawingPackage))
 
-  const defaultHeaderId = Object.keys(headers)[0] ?? ''
-  const defaultFooterId = Object.keys(footers)[0] ?? ''
+  const defaultHeaderId = resolveHeaderFooterSnapshotId(
+    sectionReferences.headers.default,
+    headerIdsByPath,
+    '默认页眉',
+    warnings,
+  )
+  const firstPageHeaderId = resolveHeaderFooterSnapshotId(
+    sectionReferences.headers.first,
+    headerIdsByPath,
+    '首页页眉',
+    warnings,
+  )
+  const evenPageHeaderId = resolveHeaderFooterSnapshotId(
+    sectionReferences.headers.even,
+    headerIdsByPath,
+    '偶数页页眉',
+    warnings,
+  )
+  const defaultFooterId = resolveHeaderFooterSnapshotId(
+    sectionReferences.footers.default,
+    footerIdsByPath,
+    '默认页脚',
+    warnings,
+  )
+  const firstPageFooterId = resolveHeaderFooterSnapshotId(
+    sectionReferences.footers.first,
+    footerIdsByPath,
+    '首页页脚',
+    warnings,
+  )
+  const evenPageFooterId = resolveHeaderFooterSnapshotId(
+    sectionReferences.footers.even,
+    footerIdsByPath,
+    '偶数页页脚',
+    warnings,
+  )
   const allDrawingsOrder = [...drawingsOrder, ...headerFooterDrawingsOrder]
   const drawingResources = createUniverDocDrawingResourcesV1(drawings, allDrawingsOrder)
   const document: IDocumentData = {
@@ -276,12 +363,12 @@ export async function buildDocxUniverDocumentV1(
       marginFooter: page.marginFooter,
       defaultHeaderId,
       defaultFooterId,
-      firstPageHeaderId: defaultHeaderId,
-      firstPageFooterId: defaultFooterId,
-      evenPageHeaderId: defaultHeaderId,
-      evenPageFooterId: defaultFooterId,
-      evenAndOddHeaders: 0,
-      useFirstPageHeaderFooter: 0,
+      firstPageHeaderId,
+      firstPageFooterId,
+      evenPageHeaderId,
+      evenPageFooterId,
+      evenAndOddHeaders: wordBoolean(settingsXml, 'w:evenAndOddHeaders') ? 1 : 0,
+      useFirstPageHeaderFooter: wordBoolean(sectionProperties, 'w:titlePg') ? 1 : 0,
       paragraphLineGapDefault: 0,
       renderConfig: {
         zeroWidthParagraphBreak: 0,
@@ -356,12 +443,13 @@ type RunContentItemV1 =
     }
 
 function readRunContent(runXml: string, context: BodyBuildContextV1): RunContentItemV1[] {
+  const normalizedRunXml = selectDocxUniverAlternateContentV1(runXml)
   const result: RunContentItemV1[] = []
   const token = /<w:(t|instrText)\b[^>]*>([\s\S]*?)<\/w:\1>|<w:(tab|br|cr|lastRenderedPageBreak)\b([^>]*)\/?\s*>|<(w:drawing|w:pict|w:object)\b/g
   let cursor = 0
-  while (cursor < runXml.length) {
+  while (cursor < normalizedRunXml.length) {
     token.lastIndex = cursor
-    const match = token.exec(runXml)
+    const match = token.exec(normalizedRunXml)
     if (!match) break
     if (match[1]) {
       result.push({ kind: 'TEXT', text: decodeXmlText(match[2]).replace(/\r\n?/g, '\n') })
@@ -381,7 +469,7 @@ function readRunContent(runXml: string, context: BodyBuildContextV1): RunContent
       continue
     }
     const qualifiedTag = match[5]
-    const element = balancedElementAt(runXml, match.index, qualifiedTag)
+    const element = balancedElementAt(normalizedRunXml, match.index, qualifiedTag)
     if (!element) {
       cursor = token.lastIndex
       continue
@@ -599,7 +687,8 @@ function parseParagraph(xml: string, context: BodyBuildContextV1): ParsedParagra
   )
   const textBoxes = collectElements(xml, 'w:txbxContent')
   const withoutTextBoxes = stripElements(xml, ['w:txbxContent'])
-  const runXmls = collectElements(withoutTextBoxes, 'w:r')
+  const normalizedXml = selectDocxUniverAlternateContentV1(withoutTextBoxes)
+  const runXmls = collectElements(normalizedXml, 'w:r')
   let streamText = ''
   const textRuns: Array<{ start: number; end: number; style: ITextStyle }> = []
   const drawings: ParsedDrawingV1[] = []
@@ -633,9 +722,9 @@ function parseParagraph(xml: string, context: BodyBuildContextV1): ParsedParagra
     paragraphStyle,
     textBoxes,
     drawingCount:
-      countOpeningTags(xml, 'w:drawing')
-      + countOpeningTags(xml, 'w:pict')
-      + countOpeningTags(xml, 'w:object'),
+      countOpeningTags(normalizedXml, 'w:drawing')
+      + countOpeningTags(normalizedXml, 'w:pict')
+      + countOpeningTags(normalizedXml, 'w:object'),
     drawings,
   }
 }
@@ -936,6 +1025,107 @@ function wordBoolean(xml: string, tag: string): boolean | undefined {
   if (!openTag) return undefined
   const value = attribute(openTag, 'w:val')
   return value === undefined || !['0', 'false', 'off', 'none'].includes(value.toLowerCase())
+}
+
+function readPackageRelationships(xml: string, partPath: string): ReadonlyMap<string, PackageRelationshipV1> {
+  const relationships = new Map<string, PackageRelationshipV1>()
+  for (const match of xml.matchAll(/<(?:\w+:)?Relationship\b[^>]*\/?\s*>/gi)) {
+    const openTag = match[0]
+    const id = attribute(openTag, 'Id')
+    const target = attribute(openTag, 'Target')
+    if (!id || !target) continue
+    const external = attribute(openTag, 'TargetMode')?.toLowerCase() === 'external'
+    relationships.set(id, {
+      id,
+      target: decodeXmlText(target),
+      packagePath: external ? undefined : resolvePackagePath(partPath, decodeXmlText(target)),
+      type: attribute(openTag, 'Type'),
+      external,
+    })
+  }
+  return relationships
+}
+
+function readSectionHeaderFooterReferences(
+  sectionProperties: string,
+  relationships: ReadonlyMap<string, PackageRelationshipV1>,
+  warnings: string[],
+): SectionHeaderFooterReferencesV1 {
+  return {
+    headers: readSectionPartReferences(sectionProperties, 'w:headerReference', 'header', relationships, warnings),
+    footers: readSectionPartReferences(sectionProperties, 'w:footerReference', 'footer', relationships, warnings),
+  }
+}
+
+function readSectionPartReferences(
+  sectionProperties: string,
+  tagName: 'w:headerReference' | 'w:footerReference',
+  relationshipKind: 'header' | 'footer',
+  relationships: ReadonlyMap<string, PackageRelationshipV1>,
+  warnings: string[],
+): Partial<Record<HeaderFooterReferenceTypeV1, string>> {
+  const references: Partial<Record<HeaderFooterReferenceTypeV1, string>> = {}
+  for (const referenceXml of collectElements(sectionProperties, tagName)) {
+    const openTag = firstOpenTag(referenceXml, tagName) ?? ''
+    const type = attribute(openTag, 'w:type')
+    const relationshipId = attribute(openTag, 'r:id')
+    if (type !== 'default' && type !== 'first' && type !== 'even') {
+      warnings.push(`${relationshipKind === 'header' ? '页眉' : '页脚'}引用使用未知类型 ${type ?? '(缺失)'}，未绑定到 Univer 文档样式。`)
+      continue
+    }
+    if (!relationshipId) {
+      warnings.push(`${type} ${relationshipKind === 'header' ? '页眉' : '页脚'}引用缺少 r:id，未绑定到 Univer 文档样式。`)
+      continue
+    }
+    const relationship = relationships.get(relationshipId)
+    if (!relationship) {
+      warnings.push(`${type} ${relationshipKind === 'header' ? '页眉' : '页脚'}引用关系 ${relationshipId} 缺失，未显示。`)
+      continue
+    }
+    if (relationship.external || !relationship.packagePath) {
+      warnings.push(`${type} ${relationshipKind === 'header' ? '页眉' : '页脚'}引用外部部件，出于离线边界未加载。`)
+      continue
+    }
+    if (relationship.type && !new RegExp(`/${relationshipKind}$`, 'i').test(relationship.type)) {
+      warnings.push(`${type} ${relationshipKind === 'header' ? '页眉' : '页脚'}引用关系 ${relationshipId} 类型不匹配，未显示。`)
+      continue
+    }
+    if (references[type]) {
+      warnings.push(`末节包含重复的 ${type} ${relationshipKind === 'header' ? '页眉' : '页脚'}引用；已使用最后一个并标记人工复核。`)
+    }
+    references[type] = relationship.packagePath
+  }
+  return references
+}
+
+function resolveHeaderFooterSnapshotId(
+  packagePath: string | undefined,
+  idsByPath: ReadonlyMap<string, string>,
+  label: string,
+  warnings: string[],
+): string {
+  if (!packagePath) return ''
+  const id = idsByPath.get(normalizePackagePath(packagePath))
+  if (id) return id
+  warnings.push(`${label}部件 ${packagePath} 缺失，未显示。`)
+  return ''
+}
+
+function resolvePackagePath(partPath: string, target: string): string {
+  if (target.startsWith('/')) return normalizePackagePath(target.slice(1))
+  const slash = partPath.lastIndexOf('/')
+  const directory = slash >= 0 ? partPath.slice(0, slash + 1) : ''
+  return normalizePackagePath(`${directory}${target}`)
+}
+
+function normalizePackagePath(path: string): string {
+  const output: string[] = []
+  for (const segment of path.replaceAll('\\', '/').split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') output.pop()
+    else output.push(segment)
+  }
+  return output.join('/').toLowerCase()
 }
 
 function countOpeningTags(xml: string, tag: string): number {

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { join, resolve } from 'node:path'
-import { app, session, utilityProcess, type UtilityProcess } from 'electron'
+import { app, utilityProcess, type UtilityProcess } from 'electron'
 import type { OfficeSnapshotV1 } from '@shared/xiaogui-office-surface'
 
 const READY_TYPE = 'XIAOGUI_OFFICE_GATEWAY_READY_V1'
@@ -9,8 +9,9 @@ const CLOSE_TYPE = 'XIAOGUI_OFFICE_GATEWAY_CLOSE_V1'
 export interface OfficeGatewaySessionV1 {
   readonly origin: string
   readonly viewerUrl: string
-  readonly accessToken: string
   readonly headSha256: string
+  readSnapshot(): Promise<{ headSha256: string; snapshot: OfficeSnapshotV1 }>
+  writeSnapshot(expectedHeadSha256: string, snapshot: OfficeSnapshotV1): Promise<string>
   close(): Promise<void>
 }
 
@@ -26,6 +27,7 @@ export interface OfficeGatewaySupervisorOptionsV1 {
 
 export class OfficeGatewaySupervisorV1 {
   private readonly sessions = new Set<OfficeGatewaySessionV1>()
+  private readonly activePersistenceKeys = new Set<string>()
 
   async start(options: OfficeGatewaySupervisorOptionsV1 = {}): Promise<OfficeGatewaySessionV1> {
     const appRoot = app.getAppPath()
@@ -39,36 +41,38 @@ export class OfficeGatewaySupervisorV1 {
     if (persistenceKey && !/^[a-f0-9]{64}$/.test(persistenceKey)) {
       throw new Error('OFFICE_WORKTREE_PERSISTENCE_KEY_INVALID')
     }
+    if (persistenceKey && this.activePersistenceKeys.has(persistenceKey)) {
+      throw new Error('OFFICE_WORKTREE_ALREADY_OPEN')
+    }
+    if (persistenceKey) this.activePersistenceKeys.add(persistenceKey)
     const persistenceRoot = options.persistenceRoot
       ?? process.env.XIAOGUI_OFFICE_WORKTREE_ROOT
       ?? join(app.getPath('userData'), 'xiaogui', 'office-surface', 'v1', 'worktrees')
     const snapshotPath = persistenceKey ? join(persistenceRoot, `${persistenceKey}.json`) : undefined
-    const child = utilityProcess.fork(entryPath, [], {
-      stdio: 'pipe',
-      env: {
-        ...globalThis.process.env,
-        XIAOGUI_OFFICE_GATEWAY_COOKIE_NAME: cookieName,
-        XIAOGUI_OFFICE_GATEWAY_SESSION_TOKEN: sessionToken,
-        XIAOGUI_OFFICE_VIEWER_ROOT: viewerRoot,
-        ...(snapshotPath ? { XIAOGUI_OFFICE_SNAPSHOT_PATH: snapshotPath } : {}),
-      },
-    })
-
-    const ready = await waitForReady(child, options.startupTimeoutMs ?? 15_000)
+    let child: UtilityProcess
     try {
-      await session.defaultSession.cookies.set({
-        url: ready.origin,
-        name: cookieName,
-        value: sessionToken,
-        httpOnly: true,
-        sameSite: 'strict',
-        path: '/',
+      child = utilityProcess.fork(entryPath, [], {
+        stdio: 'pipe',
+        env: {
+          ...globalThis.process.env,
+          XIAOGUI_OFFICE_GATEWAY_COOKIE_NAME: cookieName,
+          XIAOGUI_OFFICE_GATEWAY_SESSION_TOKEN: sessionToken,
+          XIAOGUI_OFFICE_VIEWER_ROOT: viewerRoot,
+          ...(snapshotPath ? { XIAOGUI_OFFICE_SNAPSHOT_PATH: snapshotPath } : {}),
+        },
       })
     } catch (error) {
-      child.kill()
+      if (persistenceKey) this.activePersistenceKeys.delete(persistenceKey)
       throw error
     }
 
+    let ready: ReadyMessageV1
+    try {
+      ready = await waitForReady(child, options.startupTimeoutMs ?? 15_000)
+    } catch (error) {
+      if (persistenceKey) this.activePersistenceKeys.delete(persistenceKey)
+      throw error
+    }
     let headSha256 = ready.headSha256
     try {
       const current = await readGatewaySnapshot(ready.origin, cookieName, sessionToken)
@@ -84,7 +88,7 @@ export class OfficeGatewaySupervisorV1 {
         headSha256 = current.headSha256
       }
     } catch (error) {
-      await session.defaultSession.cookies.remove(ready.origin, cookieName).catch(() => {})
+      if (persistenceKey) this.activePersistenceKeys.delete(persistenceKey)
       child.kill()
       throw error
     }
@@ -93,13 +97,25 @@ export class OfficeGatewaySupervisorV1 {
     const gatewaySession: OfficeGatewaySessionV1 = {
       origin: ready.origin,
       viewerUrl: `${ready.origin}/viewer/`,
-      accessToken: sessionToken,
-      headSha256,
+      get headSha256() {
+        return headSha256
+      },
+      readSnapshot: () => readGatewaySnapshot(ready.origin, cookieName, sessionToken),
+      writeSnapshot: async (expectedHeadSha256, snapshot) => {
+        headSha256 = await writeGatewaySnapshot(
+          ready.origin,
+          cookieName,
+          sessionToken,
+          expectedHeadSha256,
+          snapshot,
+        )
+        return headSha256
+      },
       close: async () => {
         if (closed) return
         closed = true
         this.sessions.delete(gatewaySession)
-        await session.defaultSession.cookies.remove(ready.origin, cookieName).catch(() => {})
+        if (persistenceKey) this.activePersistenceKeys.delete(persistenceKey)
         await closeUtilityProcess(child)
       },
     }
@@ -139,6 +155,7 @@ async function writeGatewaySnapshot(
     },
     body: JSON.stringify({ expectedHeadSha256, snapshot }),
   })
+  if (response.status === 409) throw new Error('OFFICE_WORKTREE_CONFLICT')
   if (!response.ok) throw new Error(`OFFICE_GATEWAY_INITIAL_WRITE_FAILED_${response.status}`)
   const payload = await response.json() as { headSha256?: unknown }
   if (typeof payload.headSha256 !== 'string') throw new Error('OFFICE_GATEWAY_INITIAL_WRITE_INVALID')

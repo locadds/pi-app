@@ -59,8 +59,9 @@ export const XIAOGUI_PHASE_POLICY_MATRIX_V1 = {
 } as const satisfies Readonly<Record<XiaoguiExecutionPhase, XiaoguiPhasePolicyV1>>
 
 /**
- * Target declaration from the next-phase specification. PR1 does not enforce this
- * matrix; current runtime exposure remains documented in the Prompt Inventory.
+ * Versioned source of truth for product Capability policy. Mode-compatible
+ * tools may be registered as candidates, but the live Session activates only
+ * the per-turn Mode x Phase x Capability x Runtime intersection.
  */
 export const XIAOGUI_CAPABILITY_MATRIX_V1 = {
   'collaboration.execution': {
@@ -83,9 +84,6 @@ export const XIAOGUI_CAPABILITY_MATRIX_V1 = {
     },
     tools: [
       { name: 'read', source: 'PI_CORE' },
-      { name: 'bash', source: 'PI_CORE' },
-      { name: 'edit', source: 'PI_CORE' },
-      { name: 'write', source: 'PI_CORE' },
       { name: 'xiaogui_read_pdf', source: 'WORKER_BUILTIN' },
     ],
   },
@@ -168,6 +166,6 @@ export function workerBuiltinToolNamesFromPromptMatrixV1(): readonly string[] {
 
 export const XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1 = {
   WORK: ['work.file-organize'],
-  DESIGN: ['design.analysis'],
-  CODING: ['coding.workspace'],
+  DESIGN: [],
+  CODING: [],
 } as const satisfies Readonly<Record<XiaoguiMode, readonly XiaoguiCapabilityId[]>>

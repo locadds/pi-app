@@ -5,6 +5,9 @@ const mocks = vi.hoisted(() => ({
   closeWorkReportDocxService: vi.fn(),
   registerCollaborationHubHandlers: vi.fn(),
   registerWorkDocxHandlers: vi.fn(),
+  registerTemplateLibraryHandlers: vi.fn(),
+  registerDocumentReviewHandlers: vi.fn(),
+  registerOfficeSurfaceHandlers: vi.fn(),
   registerXiaoguiHandlers: vi.fn(),
   shutdownSidecar: vi.fn(),
   collaborationApplication: { kind: 'collaboration-application' },
@@ -46,6 +49,19 @@ vi.mock('./task-hub/ipc', () => ({
 vi.mock('./work-docx-ipc', () => ({
   getDefaultWorkDocxServiceV1: mocks.getWorkDocxService,
   registerWorkDocxHandlers: mocks.registerWorkDocxHandlers,
+}))
+
+vi.mock('./template-library-ipc', () => ({
+  registerTemplateLibraryHandlersV1: mocks.registerTemplateLibraryHandlers,
+}))
+
+vi.mock('./work-document-review-ipc', () => ({
+  registerDocumentReviewHandlersV1: mocks.registerDocumentReviewHandlers,
+}))
+
+vi.mock('./office-surface/ipc', () => ({
+  closeOfficeSurfaceSessionsV1: vi.fn(),
+  registerOfficeSurfaceHandlersV1: mocks.registerOfficeSurfaceHandlers,
 }))
 
 vi.mock('./task-hub/worker-tool', () => ({

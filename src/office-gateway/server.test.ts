@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { startOfficeGatewayV1 } from './server'
 
@@ -18,6 +18,9 @@ describe('Office Gateway V1', () => {
     try {
       expect((await fetch(`${gateway.origin}/health`)).status).toBe(200)
       expect((await fetch(`${gateway.origin}/api/v1/snapshot`)).status).toBe(401)
+      expect((await fetch(`${gateway.origin}/api/v1/snapshot`, {
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      })).status).toBe(401)
 
       const beforeResponse = await fetch(`${gateway.origin}/api/v1/snapshot`, { headers })
       const before = await beforeResponse.json() as { headSha256: string; snapshot: Record<string, unknown> }
@@ -92,6 +95,24 @@ describe('Office Gateway V1', () => {
     } finally {
       await firstGateway?.close().catch(() => {})
       await secondGateway?.close().catch(() => {})
+      await rm(temporaryRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('fails explicitly when the persisted worktree is corrupt', async () => {
+    const evidenceRoot = 'D:\\CodexTemp'
+    await mkdir(evidenceRoot, { recursive: true })
+    const temporaryRoot = await mkdtemp(join(evidenceRoot, 'xiaogui-office-gateway-corrupt-'))
+    const persistencePath = join(temporaryRoot, 'worktree.json')
+    try {
+      await writeFile(persistencePath, '{not-json', 'utf8')
+      await expect(startOfficeGatewayV1({
+        sessionCookieName: COOKIE,
+        sessionToken: TOKEN,
+        initialSnapshot: { title: '不得静默覆盖损坏快照' },
+        snapshotPersistencePath: persistencePath,
+      })).rejects.toThrow('OFFICE_WORKTREE_SNAPSHOT_CORRUPT')
+    } finally {
       await rm(temporaryRoot, { recursive: true, force: true })
     }
   })

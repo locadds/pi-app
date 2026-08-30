@@ -144,6 +144,8 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.mode.get',
   'ipc:xiaogui.mode.switch',
   'ipc:xiaogui.officeSurface.mode.get',
+  'ipc:xiaogui.officeSurface.gateway.snapshot.read',
+  'ipc:xiaogui.officeSurface.gateway.snapshot.write',
   'ipc:xiaogui.officeSurface.session.prepare',
   'ipc:xiaogui.officeSurface.session.release',
   'ipc:xiaogui.phase.get',

@@ -1,6 +1,7 @@
 import {
   assertStaticXiaoguiPromptLayerV1,
   type XiaoguiCapabilityId,
+  type XiaoguiExecutionPhase,
   type XiaoguiMode,
   type XiaoguiPromptContextV1,
   type XiaoguiPromptLayerV1,
@@ -29,8 +30,12 @@ export interface XiaoguiCapabilityRegistrationV1 {
   readonly version: string
   readonly modes: Readonly<Record<XiaoguiMode, XiaoguiModeCapabilityPolicyV1>>
   readonly tools: readonly XiaoguiCapabilityToolV1[]
+  readonly requiresWorkspace: boolean
   readonly minimumEffect: XiaoguiPhaseEffectV1
   readonly requiredToolNames: readonly string[]
+  readonly requiredToolNamesByPhase?: Partial<
+    Readonly<Record<XiaoguiExecutionPhase, readonly string[]>>
+  >
   readonly promptLayer: XiaoguiPromptLayerV1
   readonly toolDefinitions: Readonly<Record<string, XiaoguiToolPromptDefinitionV1>>
 }
@@ -207,6 +212,7 @@ export const COLLABORATION_EXECUTION_CAPABILITY_V1 = {
   version: '1.0.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['collaboration.execution'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['collaboration.execution'].tools,
+  requiresWorkspace: true,
   minimumEffect: 'CONFIRMATION_GATED_PERSISTENT',
   requiredToolNames: [COLLABORATION_PLAN_TOOL.name],
   promptLayer: promptLayer('collaboration.execution', `# 协作执行协议
@@ -220,6 +226,7 @@ export const WORK_FILE_ORGANIZE_CAPABILITY_V1 = {
   version: '1.0.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['work.file-organize'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['work.file-organize'].tools,
+  requiresWorkspace: false,
   minimumEffect: 'READ_ONLY',
   requiredToolNames: ['read'],
   promptLayer: promptLayer('work.file-organize', `# 文件整理协议
@@ -233,6 +240,7 @@ export const WORK_REPORT_DOCX_CAPABILITY_V1 = {
   version: '1.0.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['work.report-docx'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['work.report-docx'].tools,
+  requiresWorkspace: false,
   minimumEffect: 'CONFIRMATION_GATED_PERSISTENT',
   requiredToolNames: [WORK_REPORT_DOCX_TOOL.name],
   promptLayer: promptLayer('work.report-docx', `# 标准 Word 报告协议
@@ -246,6 +254,7 @@ export const WORK_TEMPLATE_INTAKE_CAPABILITY_V1 = {
   version: '1.0.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['work.template-intake'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['work.template-intake'].tools,
+  requiresWorkspace: false,
   minimumEffect: 'CONFIRMATION_GATED_PERSISTENT',
   requiredToolNames: [TEMPLATE_INTAKE_TOOL.name, TEMPLATE_MATERIALIZE_TOOL.name],
   promptLayer: promptLayer('work.template-intake', `# 模板整理协议
@@ -262,6 +271,7 @@ export const WORK_TEMPLATE_GENERATION_CAPABILITY_V1 = {
   version: '1.0.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['work.template-generation'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['work.template-generation'].tools,
+  requiresWorkspace: false,
   minimumEffect: 'CONFIRMATION_GATED_PERSISTENT',
   requiredToolNames: [WORK_DOCX_TOOL.name, ADVANCED_GENERATION_TOOL.name],
   promptLayer: promptLayer('work.template-generation', `# 模板生成协议
@@ -278,6 +288,7 @@ export const DESIGN_ANALYSIS_CAPABILITY_V1 = {
   version: '1.0.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['design.analysis'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['design.analysis'].tools,
+  requiresWorkspace: true,
   minimumEffect: 'READ_ONLY',
   requiredToolNames: XIAOGUI_CAPABILITY_MATRIX_V1['design.analysis'].tools.map((tool) => tool.name),
   promptLayer: promptLayer('design.analysis', `# 规划设计分析协议
@@ -291,8 +302,13 @@ export const CODING_WORKSPACE_CAPABILITY_V1 = {
   version: '1.0.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['coding.workspace'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['coding.workspace'].tools,
+  requiresWorkspace: true,
   minimumEffect: 'READ_ONLY',
   requiredToolNames: XIAOGUI_CAPABILITY_MATRIX_V1['coding.workspace'].tools.map((tool) => tool.name),
+  requiredToolNamesByPhase: {
+    ASK: ['read'],
+    PLAN: ['read'],
+  },
   promptLayer: promptLayer('coding.workspace', `# 编程工作区协议
 
 先检查仓库约定、相关实现、测试和未提交改动；只修改任务所需范围。根据当前阶段执行只读检查或受控写入，保留已有改动并运行直接相关验证；验证失败时不得宣称完成。`),
@@ -323,6 +339,307 @@ function modeAllowsToolPolicy(policy: XiaoguiModeCapabilityPolicyV1): boolean {
   return policy !== 'HIDDEN' && policy !== 'RECOMMEND_SWITCH'
 }
 
+function modeAutoActivatesCapability(policy: XiaoguiModeCapabilityPolicyV1): boolean {
+  return policy === 'DEFAULT'
+}
+
+function phaseAllowsCapability(
+  phase: XiaoguiExecutionPhase,
+  capability: XiaoguiCapabilityRegistrationV1,
+): boolean {
+  const allowedEffects = XIAOGUI_PHASE_POLICY_MATRIX_V1[phase]
+    .allowedEffects as readonly XiaoguiPhaseEffectV1[]
+  return allowedEffects.includes(capability.minimumEffect)
+}
+
+function requestedOrAutoActivatedCapabilityIds(
+  context: Pick<XiaoguiPromptContextV1, 'mode' | 'enabledCapabilities'>,
+): ReadonlySet<XiaoguiCapabilityId> {
+  const ids = new Set<XiaoguiCapabilityId>(context.enabledCapabilities)
+  for (const capability of Object.values(XIAOGUI_CAPABILITY_REGISTRY_V1)) {
+    if (modeAutoActivatesCapability(capability.modes[context.mode])) ids.add(capability.id)
+  }
+  return ids
+}
+
+export const XIAOGUI_TURN_CAPABILITY_SELECTOR_ID_V1 =
+  'xiaogui.turn-capability-selector.v1' as const
+export const XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1 = '1.0.0' as const
+
+export type XiaoguiTurnCapabilitySelectionDecisionV1 =
+  | 'SELECTED'
+  | 'DEFAULT_ONLY'
+  | 'NO_MATCH'
+  | 'AMBIGUOUS'
+
+export type XiaoguiTurnCapabilitySelectionReasonV1 =
+  | 'EXPLICIT_CONTEXT'
+  | 'MODE_DEFAULT'
+  | 'LOCAL_TEMPLATE_INTAKE'
+  | 'LOCAL_TEMPLATE_GENERATION'
+  | 'LOCAL_STANDARD_REPORT'
+  | 'LOCAL_FILE_ORGANIZE'
+  | 'LOCAL_DESIGN_ANALYSIS'
+  | 'LOCAL_CODING_WORKSPACE'
+  | 'LOCAL_COLLABORATION'
+  | 'ONE_TURN_CONTINUATION'
+  | 'PURE_TEXT_ONLY'
+  | 'MIXED_TASK_ABSTAINED'
+  | 'MODE_BLOCKED'
+  | 'NO_HIGH_RISK_PREACTIVATION'
+
+export interface XiaoguiTurnCapabilitySelectionV1 {
+  readonly schemaVersion: 1
+  readonly selectorId: typeof XIAOGUI_TURN_CAPABILITY_SELECTOR_ID_V1
+  readonly selectorVersion: typeof XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1
+  readonly decision: XiaoguiTurnCapabilitySelectionDecisionV1
+  readonly capabilityIds: readonly XiaoguiCapabilityId[]
+  readonly inferredCapabilityIds: readonly XiaoguiCapabilityId[]
+  readonly continuedCapabilityIds: readonly XiaoguiCapabilityId[]
+  readonly reasonCodes: readonly XiaoguiTurnCapabilitySelectionReasonV1[]
+}
+
+export interface XiaoguiTurnCapabilitySelectionOptionsV1 {
+  /** Capability committed by a successful PREPARE/START tool result in the previous turn. */
+  readonly oneTurnStickyCapabilityIds?: readonly XiaoguiCapabilityId[]
+}
+
+export const XIAOGUI_PROMPT_STICKY_TOOL_GATE_ID_V1 =
+  'xiaogui.prompt-sticky-tool-gate.v1' as const
+
+type XiaoguiPromptStickyToolGateEntryV1 = {
+  readonly capabilityId: XiaoguiCapabilityId
+  readonly successKind: string
+}
+
+const XIAOGUI_PROMPT_STICKY_TOOL_GATE_V1 = {
+  xiaogui_work_report_docx: {
+    PREPARE: {
+      capabilityId: 'work.report-docx',
+      successKind: 'XIAOGUI_WORK_REPORT_DOCX_PREPARED',
+    },
+  },
+  xiaogui_work_docx: {
+    PREPARE: {
+      capabilityId: 'work.template-generation',
+      successKind: 'XIAOGUI_WORK_DOCX_PREPARED',
+    },
+  },
+  xiaogui_work_docx_advanced_generation: {
+    START: {
+      capabilityId: 'work.template-generation',
+      successKind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_SCHEMA_READY',
+    },
+    PREPARE: {
+      capabilityId: 'work.template-generation',
+      successKind: 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_PREPARED',
+    },
+  },
+  xiaogui_work_docx_template_intake: {
+    START: {
+      capabilityId: 'work.template-intake',
+      successKind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY',
+    },
+  },
+  xiaogui_work_docx_template_materialize: {
+    PREPARE: {
+      capabilityId: 'work.template-intake',
+      successKind: 'XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_PREPARED',
+    },
+  },
+} as const satisfies Readonly<Record<string, Readonly<Record<string, XiaoguiPromptStickyToolGateEntryV1>>>>
+
+/**
+ * Return a continuation candidate only for an explicitly registered
+ * confirmation-gated preparation action. This does not commit sticky state;
+ * the matching successful result still has to pass the result gate below.
+ */
+export function xiaoguiPromptStickyCandidateForToolActionV1(
+  toolName: string,
+  action: string,
+): XiaoguiCapabilityId | null {
+  const tool = XIAOGUI_PROMPT_STICKY_TOOL_GATE_V1[
+    toolName as keyof typeof XIAOGUI_PROMPT_STICKY_TOOL_GATE_V1
+  ] as Readonly<Record<string, XiaoguiPromptStickyToolGateEntryV1>> | undefined
+  return tool?.[action]?.capabilityId ?? null
+}
+
+/**
+ * A capability becomes sticky only when the real tool end event proves that
+ * the matching PREPARE/START action succeeded. Failure and cancellation kinds
+ * deliberately return null even when the SDK reports a non-error result.
+ */
+export function xiaoguiPromptStickyCapabilityFromToolResultV1(input: {
+  readonly toolName: string
+  readonly action: string
+  readonly resultKind: string | null
+  readonly isError: boolean
+}): XiaoguiCapabilityId | null {
+  if (input.isError || !input.resultKind) return null
+  const tool = XIAOGUI_PROMPT_STICKY_TOOL_GATE_V1[
+    input.toolName as keyof typeof XIAOGUI_PROMPT_STICKY_TOOL_GATE_V1
+  ] as Readonly<Record<string, XiaoguiPromptStickyToolGateEntryV1>> | undefined
+  const expected = tool?.[input.action]
+  return expected?.successKind === input.resultKind ? expected.capabilityId : null
+}
+
+const ONE_TURN_STICKY_CAPABILITY_IDS_V1 = new Set<XiaoguiCapabilityId>([
+  'work.report-docx',
+  'work.template-intake',
+  'work.template-generation',
+])
+
+function isShortContinuationInput(userInput: string): boolean {
+  const input = userInput.normalize('NFKC').trim().replace(/[。！!？?]+$/g, '')
+  return /^(?:看起来可以|可以|确认|确认生成|生成吧|继续|没问题|就这样|保存|开始复核|复核|打开复核卡)$/.test(input)
+}
+
+function localIntentCandidates(userInput: string): {
+  readonly capabilityIds: readonly XiaoguiCapabilityId[]
+  readonly reasonCodes: readonly XiaoguiTurnCapabilitySelectionReasonV1[]
+  readonly ambiguous: boolean
+} {
+  const input = userInput.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim()
+  if (!input) return { capabilityIds: [], reasonCodes: [], ambiguous: false }
+
+  const ownTemplate = /(?:我自己的|自己的|自有|我的|模板库|历史生成|刚才(?:生成|保存|整理)的).*模板|按.*模板/.test(input)
+  const templateGeneration = ownTemplate && /(?:生成|制作|套用|使用|按|报告|文档)/.test(input)
+  const templateIntake = !templateGeneration && (
+    /(?:普通成品|普通文档|成品文档|这份文档|这个文档|word|docx).{0,24}(?:整理|转换|提取|制作).{0,8}(?:成|为)?模板/.test(input) ||
+    /(?:整理|转换|提取|制作).{0,12}(?:普通成品|普通文档|成品文档|word|docx).{0,8}(?:成|为)?模板/.test(input)
+  )
+  const standardReport = !templateGeneration && !templateIntake && (
+    /(?:生成|导出|做成|另存).{0,16}(?:word|docx|文档)/.test(input) ||
+    /(?:word|docx).{0,12}(?:报告|文档|生成|导出)/.test(input)
+  )
+  const fileOrganize = /(?:读取|查看|整理|归类|汇总).{0,12}(?:pdf|文件|资料|清单)|资料清单/.test(input)
+  const collaboration = /(?:多智能体|多\s*agent|多个\s*agent|并行\s*agent|拆分任务|任务分包|协作计划|交给.{0,8}agent)/i.test(input)
+  const design = /(?:可达性分析|空间分析|选址分析|缓冲区分析|道路断面|管线分析|gis\s*分析|cad\s*分析|坐标转换|图层分析)/i.test(input)
+  const coding = /(?:typescript|python|代码|仓库|bug|报错|单元测试|构建|api|commit|\bpr\b).{0,20}(?:修复|修改|重构|检查|测试|运行|处理)|(?:修复|修改|重构|检查).{0,20}(?:typescript|python|代码|模块|仓库|bug|报错|测试|构建|api)|修复.{0,8}(?:并|和)?测试|重构.{0,12}模块/i.test(input)
+  const pureText = /(?:写|起草|改写|总结).{0,12}(?:报告内容|文字内容|正文|文案)/.test(input) &&
+    !/(?:生成|导出|做成|另存).{0,12}(?:word|docx|文件|文档)/.test(input)
+
+  if (design && (standardReport || templateGeneration || templateIntake)) {
+    return {
+      capabilityIds: [],
+      reasonCodes: ['MIXED_TASK_ABSTAINED', 'NO_HIGH_RISK_PREACTIVATION'],
+      ambiguous: true,
+    }
+  }
+
+  const capabilityIds: XiaoguiCapabilityId[] = []
+  const reasonCodes: XiaoguiTurnCapabilitySelectionReasonV1[] = []
+  if (templateGeneration) {
+    capabilityIds.push('work.template-generation')
+    reasonCodes.push('LOCAL_TEMPLATE_GENERATION')
+  } else if (templateIntake) {
+    capabilityIds.push('work.template-intake')
+    reasonCodes.push('LOCAL_TEMPLATE_INTAKE')
+  } else if (standardReport) {
+    capabilityIds.push('work.report-docx')
+    reasonCodes.push('LOCAL_STANDARD_REPORT')
+  } else if (pureText) {
+    reasonCodes.push('PURE_TEXT_ONLY')
+  } else if (fileOrganize) {
+    capabilityIds.push('work.file-organize')
+    reasonCodes.push('LOCAL_FILE_ORGANIZE')
+  }
+  if (design) {
+    capabilityIds.push('design.analysis')
+    reasonCodes.push('LOCAL_DESIGN_ANALYSIS')
+  }
+  if (coding) {
+    capabilityIds.push('coding.workspace')
+    reasonCodes.push('LOCAL_CODING_WORKSPACE')
+  }
+  if (collaboration) {
+    capabilityIds.push('collaboration.execution')
+    reasonCodes.push('LOCAL_COLLABORATION')
+  }
+  return { capabilityIds, reasonCodes, ambiguous: false }
+}
+
+/**
+ * Deterministic, offline selector for one user turn. `ALLOWED` is never a
+ * default: non-default capabilities require structured Context or an
+ * unambiguous local intent rule. Cross-mode matches are reported but not
+ * activated, so the separate recommendation UI can ask the user first.
+ */
+export function selectXiaoguiTurnCapabilitiesV1(
+  context: Pick<XiaoguiPromptContextV1, 'mode' | 'enabledCapabilities'>,
+  userInput: string,
+  options: XiaoguiTurnCapabilitySelectionOptionsV1 = {},
+): XiaoguiTurnCapabilitySelectionV1 {
+  const selected = new Set<XiaoguiCapabilityId>()
+  const inferred: XiaoguiCapabilityId[] = []
+  const continued: XiaoguiCapabilityId[] = []
+  const reasons: XiaoguiTurnCapabilitySelectionReasonV1[] = []
+
+  for (const capabilityId of context.enabledCapabilities) {
+    const policy = XIAOGUI_CAPABILITY_REGISTRY_V1[capabilityId].modes[context.mode]
+    if (!modeAllowsToolPolicy(policy)) fail('XIAOGUI_PROMPT_CONTEXT_CAPABILITY_MODE_MISMATCH')
+    selected.add(capabilityId)
+  }
+  if (context.enabledCapabilities.length > 0) reasons.push('EXPLICIT_CONTEXT')
+
+  for (const capability of Object.values(XIAOGUI_CAPABILITY_REGISTRY_V1)) {
+    if (!modeAutoActivatesCapability(capability.modes[context.mode])) continue
+    selected.add(capability.id)
+    reasons.push('MODE_DEFAULT')
+  }
+
+  const local = localIntentCandidates(userInput)
+  reasons.push(...local.reasonCodes)
+  if (!local.ambiguous) {
+    for (const capabilityId of local.capabilityIds) {
+      const policy = XIAOGUI_CAPABILITY_REGISTRY_V1[capabilityId].modes[context.mode]
+      if (!modeAllowsToolPolicy(policy)) {
+        reasons.push('MODE_BLOCKED')
+        continue
+      }
+      selected.add(capabilityId)
+      inferred.push(capabilityId)
+    }
+  }
+  if (
+    !local.ambiguous &&
+    local.capabilityIds.length === 0 &&
+    isShortContinuationInput(userInput)
+  ) {
+    for (const capabilityId of options.oneTurnStickyCapabilityIds ?? []) {
+      if (!ONE_TURN_STICKY_CAPABILITY_IDS_V1.has(capabilityId)) continue
+      const policy = XIAOGUI_CAPABILITY_REGISTRY_V1[capabilityId].modes[context.mode]
+      if (!modeAllowsToolPolicy(policy)) continue
+      selected.add(capabilityId)
+      continued.push(capabilityId)
+    }
+    if (continued.length > 0) reasons.push('ONE_TURN_CONTINUATION')
+  }
+
+  const capabilityIds = [...selected].sort()
+  const uniqueReasons = [...new Set(reasons)]
+  const decision: XiaoguiTurnCapabilitySelectionDecisionV1 = local.ambiguous
+    ? 'AMBIGUOUS'
+    : inferred.length > 0 || continued.length > 0
+      ? 'SELECTED'
+      : capabilityIds.length > 0
+        ? 'DEFAULT_ONLY'
+        : 'NO_MATCH'
+  if (decision === 'NO_MATCH' && !uniqueReasons.includes('PURE_TEXT_ONLY')) {
+    uniqueReasons.push('NO_HIGH_RISK_PREACTIVATION')
+  }
+  return {
+    schemaVersion: 1,
+    selectorId: XIAOGUI_TURN_CAPABILITY_SELECTOR_ID_V1,
+    selectorVersion: XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1,
+    decision,
+    capabilityIds,
+    inferredCapabilityIds: [...new Set(inferred)].sort(),
+    continuedCapabilityIds: [...new Set(continued)].sort(),
+    reasonCodes: uniqueReasons,
+  }
+}
+
 export function isKnownXiaoguiCapabilityToolNameV1(toolName: string): boolean {
   return Object.values(XIAOGUI_CAPABILITY_REGISTRY_V1)
     .some((capability) => capability.tools.some((tool) => tool.name === toolName))
@@ -344,8 +661,88 @@ export function workerBuiltinToolNamesForModeV1(mode: XiaoguiMode): readonly str
     .sort()
 }
 
+/**
+ * Worker-owned Host Tool Policy. Unlike the compatibility helper above, this
+ * selection uses the immutable Session phase and only exposes tools whose
+ * owning Capability is explicit or auto-active for the selected mode.
+ */
+export function workerBuiltinToolNamesForPromptContextV1(
+  context: Pick<XiaoguiPromptContextV1, 'mode' | 'phase' | 'workspaceAvailable' | 'enabledCapabilities'>,
+): readonly string[] {
+  const candidateIds = requestedOrAutoActivatedCapabilityIds(context)
+  const names = new Set<string>()
+  for (const capabilityId of candidateIds) {
+    const capability = XIAOGUI_CAPABILITY_REGISTRY_V1[capabilityId]
+    const modePolicy = capability.modes[context.mode]
+    if (!modeAllowsToolPolicy(modePolicy)) {
+      if (context.enabledCapabilities.includes(capabilityId)) {
+        fail('XIAOGUI_PROMPT_CONTEXT_CAPABILITY_MODE_MISMATCH')
+      }
+      continue
+    }
+    if (capability.requiresWorkspace && !context.workspaceAvailable) continue
+    if (!phaseAllowsCapability(context.phase, capability)) continue
+    for (const tool of capability.tools) {
+      if (tool.source === 'WORKER_BUILTIN') names.add(tool.name)
+    }
+  }
+  return [...names].sort()
+}
+
+export function isXiaoguiWorkerBuiltinToolAllowedForPromptContextV1(
+  toolName: string,
+  context: Pick<XiaoguiPromptContextV1, 'mode' | 'phase' | 'workspaceAvailable' | 'enabledCapabilities'>,
+): boolean {
+  if (!(toolName in XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1)) return true
+  return workerBuiltinToolNamesForPromptContextV1(context).includes(toolName)
+}
+
+/**
+ * Final Host Tool Policy for a frozen turn. Registration and activation are
+ * deliberately separate: `registeredToolNames` may contain every candidate
+ * for the mode, while this function returns the only names allowed in the
+ * Provider-facing schema for the current phase and selected capabilities.
+ */
+export function activeToolNamesForPromptContextV1(
+  context: Pick<
+    XiaoguiPromptContextV1,
+    'mode' | 'phase' | 'workspaceAvailable' | 'enabledCapabilities'
+  >,
+  registeredToolNames: readonly string[],
+): readonly string[] {
+  const registered = new Set(registeredToolNames)
+  const names = new Set<string>()
+  if (registered.has('read')) names.add('read')
+
+  const candidateIds = requestedOrAutoActivatedCapabilityIds(context)
+  for (const capabilityId of candidateIds) {
+    const capability = XIAOGUI_CAPABILITY_REGISTRY_V1[capabilityId]
+    if (!modeAllowsToolPolicy(capability.modes[context.mode])) continue
+    if (capability.requiresWorkspace && !context.workspaceAvailable) continue
+    if (!phaseAllowsCapability(context.phase, capability)) continue
+
+    for (const tool of capability.tools) {
+      if (!registered.has(tool.name)) continue
+      if (context.phase !== 'EXECUTE') {
+        const explicitlyReadOnly =
+          tool.name === 'read' ||
+          (tool.source === 'WORKER_BUILTIN' && capability.minimumEffect === 'READ_ONLY')
+        if (!explicitlyReadOnly) continue
+        if (tool.name.startsWith('design_')) continue
+      }
+      names.add(tool.name)
+    }
+  }
+  return [...names].sort()
+}
+
 export function workerPromptContextToolNamesForModeV1(mode: XiaoguiMode): readonly string[] {
-  return ['bash', 'edit', 'read', 'write', ...workerBuiltinToolNamesForModeV1(mode)].sort()
+  const names = new Set<string>(['read'])
+  for (const capability of Object.values(XIAOGUI_CAPABILITY_REGISTRY_V1)) {
+    if (!modeAllowsToolPolicy(capability.modes[mode])) continue
+    for (const tool of capability.tools) names.add(tool.name)
+  }
+  return [...names].sort()
 }
 
 function fail(code: string): never {
@@ -356,18 +753,23 @@ export function resolveEffectiveXiaoguiCapabilitiesV1(
   context: XiaoguiPromptContextV1,
   actualToolNames: readonly string[],
 ): readonly XiaoguiCapabilityRegistrationV1[] {
-  if (!context.workspaceAvailable) return []
   const actual = new Set(actualToolNames)
-  const allowedEffects: readonly XiaoguiPhaseEffectV1[] =
-    XIAOGUI_PHASE_POLICY_MATRIX_V1[context.phase].allowedEffects
-  return context.enabledCapabilities.flatMap((capabilityId) => {
+  const candidateIds = requestedOrAutoActivatedCapabilityIds(context)
+  for (const capabilityId of context.enabledCapabilities) {
     const registration = XIAOGUI_CAPABILITY_REGISTRY_V1[capabilityId]
-    const modePolicy = registration.modes[context.mode]
-    if (!modeAllowsToolPolicy(modePolicy)) {
+    if (!modeAllowsToolPolicy(registration.modes[context.mode])) {
       fail('XIAOGUI_PROMPT_CONTEXT_CAPABILITY_MODE_MISMATCH')
     }
-    if (!allowedEffects.includes(registration.minimumEffect)) return []
-    if (!registration.requiredToolNames.every((name) => actual.has(name))) return []
-    return [registration]
-  })
+  }
+  return [...candidateIds]
+    .map((capabilityId): XiaoguiCapabilityRegistrationV1 =>
+      XIAOGUI_CAPABILITY_REGISTRY_V1[capabilityId])
+    .filter((registration) => modeAllowsToolPolicy(registration.modes[context.mode]))
+    .filter((registration) => !registration.requiresWorkspace || context.workspaceAvailable)
+    .filter((registration) => phaseAllowsCapability(context.phase, registration))
+    .filter((registration) => {
+      const required = registration.requiredToolNamesByPhase?.[context.phase]
+        ?? registration.requiredToolNames
+      return required.every((name) => actual.has(name))
+    })
 }

@@ -214,7 +214,7 @@ export async function handleGetcontextprompts(msg: WorkerIncomingMessage, reply:
             systemPromptFile: systemPromptFile ?? null,
             appendSystemPromptParts: appendParts,
             builtSystemPreview,
-            projectTrusted: st.session?.settingsManager?.isProjectTrusted?.() ?? true,
+            projectTrusted: st.session?.settingsManager?.isProjectTrusted?.() ?? false,
           })
         } catch (e: unknown) {
           reply({ type: 'error', error: `getContextPrompts failed: ${errorMessage(e)}` })
@@ -291,17 +291,6 @@ export async function handleGeteffectivepromptmanifest(
   msg: WorkerIncomingMessage,
   reply: WorkerReply,
 ): Promise<void> {
-  if (
-    st.session &&
-    st.promptPreflight &&
-    !st.agentTurnActive &&
-    !st.session.isStreaming
-  ) {
-    const state = st.promptPreflight()
-    st.promptContext = state.context
-    st.promptDiagnostics = state.diagnostics
-    st.effectivePrompt = state.prompt
-  }
   const includePromptBody = msg.includePromptBody === true
   if (!st.session || !st.promptDiagnostics || (includePromptBody && !st.effectivePrompt)) {
     reply({ type: 'error', error: 'XIAOGUI_PROMPT_MANIFEST_UNAVAILABLE' })

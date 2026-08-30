@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   __test,
   cancelDirectExtensionUI,
+  hasPendingDirectExtensionUI,
   requestDirectExtensionUI,
   respondDirectExtensionUI,
 } from './direct-extension-ui'
@@ -33,6 +34,7 @@ describe('direct extension UI bridge', () => {
       origin: 'xiaogui-direct',
     })
     expect(__test.pendingCount()).toBe(1)
+    expect(hasPendingDirectExtensionUI()).toBe(true)
 
     expect(respondDirectExtensionUI({ id: request.id, result: { cancelled: false } })).toBe(true)
     await expect(resultPromise).resolves.toEqual({
@@ -40,6 +42,7 @@ describe('direct extension UI bridge', () => {
       result: { cancelled: false },
     })
     expect(__test.pendingCount()).toBe(0)
+    expect(hasPendingDirectExtensionUI()).toBe(false)
   })
 
   it('取消直接复核时只结束对应请求', async () => {

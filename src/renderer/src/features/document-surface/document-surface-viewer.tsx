@@ -8,10 +8,13 @@ import type {
   OfficeSurfaceSessionReadyV1,
   OfficeSurfaceFieldUpdateResultV1,
 } from '@shared/xiaogui-office-surface'
+import { officeSurfaceWarningDisplayItemsV1 } from '@shared/xiaogui-office-drawing-degradation'
 import type { TemplateReviewTargetV3 } from '@shared/xiaogui-work-template-review'
-import type {
-  DocxHtmlViewerSelectionV1,
-  DocxHtmlViewerStateV1,
+import {
+  DocxHtmlViewer,
+  type DocxHtmlViewerHandleV1,
+  type DocxHtmlViewerSelectionV1,
+  type DocxHtmlViewerStateV1,
 } from '@renderer/components/docx-html-viewer'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import {
@@ -65,6 +68,8 @@ export const DocumentSurfaceViewerV1 = forwardRef<
     activeFieldId,
     activeOccurrenceId,
     targets = EMPTY_TARGETS,
+    selectedId,
+    readonlyLabel,
     onSelectTarget,
     onSelectOccurrence,
     onStateChange,
@@ -74,12 +79,16 @@ export const DocumentSurfaceViewerV1 = forwardRef<
   ref,
 ) {
   const officeRef = useRef<OfficeSurfaceFrameHandleV1 | null>(null)
+  const htmlRef = useRef<DocxHtmlViewerHandleV1 | null>(null)
   const onStateChangeRef = useRef(onStateChange)
   onStateChangeRef.current = onStateChange
   const [mode, setMode] = useState<OfficeSurfaceModeV1 | null>(null)
   const [session, setSession] = useState<OfficeSurfaceSessionReadyV1 | null>(null)
   const [officeReady, setOfficeReady] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [warnings, setWarnings] = useState<readonly string[]>([])
+  const [fallbackActive, setFallbackActive] = useState(false)
+  const warningItems = officeSurfaceWarningDisplayItemsV1(warnings)
   const reviewProjection = useMemo(
     () => deriveReviewProjection(targets, fields, occurrences),
     [fields, occurrences, targets],
@@ -89,18 +98,34 @@ export const DocumentSurfaceViewerV1 = forwardRef<
     ref,
     () => ({
       focusTarget: (targetId: string) => {
+        if (fallbackActive) return htmlRef.current?.focus(targetId) ?? false
         const occurrenceId = reviewProjection.occurrenceIdByTargetId.get(targetId)
         if (!occurrenceId) return false
         officeRef.current?.focusOccurrence(occurrenceId)
         return true
       },
-      focusField: (fieldId: string) => officeRef.current?.focusField(fieldId),
-      focusOccurrence: (occurrenceId: string) => officeRef.current?.focusOccurrence(occurrenceId),
+      focusField: (fieldId: string) => {
+        if (fallbackActive) {
+          const targetId = fallbackTargetIdForField(reviewProjection, fieldId)
+          if (targetId) htmlRef.current?.focus(targetId)
+          return
+        }
+        officeRef.current?.focusField(fieldId)
+      },
+      focusOccurrence: (occurrenceId: string) => {
+        if (fallbackActive) {
+          const targetId = reviewProjection.targetIdByOccurrenceId.get(occurrenceId)
+          if (targetId) htmlRef.current?.focus(targetId)
+          return
+        }
+        officeRef.current?.focusOccurrence(occurrenceId)
+      },
       updateField: (input) =>
         officeRef.current?.updateField(input) ??
         Promise.reject(new Error('文档界面尚未准备好，暂时不能同步业务字段。')),
-      readSelection: () => null,
+      readSelection: () => fallbackActive ? htmlRef.current?.readSelection() ?? null : null,
       dispose: () => {
+        htmlRef.current?.dispose()
         if (session) {
           void Promise.resolve(
             ipcClient.invoke('xiaogui.officeSurface.session.release', { sessionId: session.sessionId }),
@@ -108,7 +133,7 @@ export const DocumentSurfaceViewerV1 = forwardRef<
         }
       },
     }),
-    [reviewProjection.occurrenceIdByTargetId, session],
+    [fallbackActive, reviewProjection, session],
   )
 
   useEffect(() => {
@@ -119,15 +144,15 @@ export const DocumentSurfaceViewerV1 = forwardRef<
         const next = readMode(value)
         setMode(next)
         if (next === 'OFF') {
-          setMessage('当前运行方式尚未启用小规文档界面。')
-          onStateChangeRef.current?.('FAILED', null)
+          setMessage('当前运行方式尚未启用小规文档界面，已回退到只读 DOCX 预览。')
+          setFallbackActive(true)
         }
       })
       .catch((error: unknown) => {
         if (cancelled) return
         setMode('OFF')
-        setMessage(`无法确认文档界面能力。${readErrorMessage(error)}`)
-        onStateChangeRef.current?.('FAILED', null)
+        setMessage(`无法确认文档界面能力，已回退到只读 DOCX 预览。${readErrorMessage(error)}`)
+        setFallbackActive(true)
       })
     return () => {
       cancelled = true
@@ -141,6 +166,8 @@ export const DocumentSurfaceViewerV1 = forwardRef<
     setSession(null)
     setOfficeReady(false)
     setMessage(null)
+    setWarnings([])
+    setFallbackActive(false)
     onStateChangeRef.current?.('LOADING', null)
     void Promise.resolve(
       ipcClient.invoke('xiaogui.officeSurface.session.prepare', {
@@ -161,7 +188,8 @@ export const DocumentSurfaceViewerV1 = forwardRef<
           )
         }
         setSession(ready)
-        setMessage(ready.warnings[0] ?? null)
+        setMessage(null)
+        setWarnings(ready.warnings)
         onMappedTargetsChange?.(
           ready.mappedOccurrenceIds
             .map((occurrenceId) => reviewProjection.targetIdByOccurrenceId.get(occurrenceId))
@@ -170,8 +198,9 @@ export const DocumentSurfaceViewerV1 = forwardRef<
       })
       .catch((error: unknown) => {
         if (cancelled) return
-        setMessage(`文档界面暂时不可用。${readErrorMessage(error)}`)
-        onStateChangeRef.current?.('FAILED', null)
+        setSession(null)
+        setMessage(`文档界面暂时不可用，已回退到只读 DOCX 预览。${readErrorMessage(error)}`)
+        setFallbackActive(true)
       })
     return () => {
       cancelled = true
@@ -195,10 +224,19 @@ export const DocumentSurfaceViewerV1 = forwardRef<
   ])
 
   useEffect(() => {
+    if (fallbackActive) {
+      const targetId = activeOccurrenceId
+        ? reviewProjection.targetIdByOccurrenceId.get(activeOccurrenceId)
+        : activeFieldId
+          ? fallbackTargetIdForField(reviewProjection, activeFieldId)
+          : undefined
+      if (targetId) htmlRef.current?.focus(targetId)
+      return
+    }
     if (!officeReady) return
     if (activeOccurrenceId) officeRef.current?.focusOccurrence(activeOccurrenceId)
     else if (activeFieldId) officeRef.current?.focusField(activeFieldId)
-  }, [activeFieldId, activeOccurrenceId, officeReady])
+  }, [activeFieldId, activeOccurrenceId, fallbackActive, officeReady, reviewProjection])
 
   if (!documentToken) {
     return (
@@ -215,22 +253,42 @@ export const DocumentSurfaceViewerV1 = forwardRef<
             {message}
           </span>
         ) : null}
+        {warningItems.length > 0 ? (
+          <details className="min-w-0 flex-1 text-amber-700" data-office-warning-count={warningItems.length}>
+            <summary>{warningItems.length} 条导入提示（展开查看全部）</summary>
+            <ol className="max-h-32 overflow-auto pl-5">
+              {warningItems.map((item) => (
+                <li key={item.key} data-drawing-degradation={item.degradation?.reason ?? undefined}>
+                  {item.message}
+                </li>
+              ))}
+            </ol>
+          </details>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1">
-        {mode === null ? (
+        {fallbackActive ? (
+          <DocxHtmlViewer
+            ref={htmlRef}
+            documentToken={documentToken}
+            targets={targets}
+            selectedId={selectedId}
+            readonlyLabel={readonlyLabel ?? 'Office 界面不可用，当前为 DOCX 只读预览'}
+            onSelectTarget={onSelectTarget}
+            onStateChange={onStateChange}
+            onMappedTargetsChange={onMappedTargetsChange}
+            className="h-full"
+          />
+        ) : mode === null ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
             正在准备文档界面…
           </div>
-        ) : mode === 'OFF' ? (
-          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-            {message ?? '文档界面暂时无法打开。'}
-          </div>
-        ) : (
+        ) : mode === 'OFF' ? null : (
           session ? (
             <OfficeSurfaceFrameV1
               ref={officeRef}
+              sessionId={session.sessionId}
               gatewayOrigin={session.gatewayOrigin}
-              gatewayAccessToken={session.gatewayAccessToken}
               onReady={() => {
                 setOfficeReady(true)
                 onStateChangeRef.current?.('READY', null)
@@ -247,8 +305,9 @@ export const DocumentSurfaceViewerV1 = forwardRef<
               }}
               onError={(error) => {
                 setOfficeReady(false)
-                setMessage(error)
-                onStateChangeRef.current?.('FAILED', null)
+                setSession(null)
+                setMessage(`${error} 已回退到只读 DOCX 预览。`)
+                setFallbackActive(true)
               }}
             />
           ) : (
@@ -278,7 +337,29 @@ function deriveReviewProjection(
   occurrenceIdByTargetId: ReadonlyMap<string, string>
   targetIdByOccurrenceId: ReadonlyMap<string, string>
 } {
-  if (fields.length || occurrences.length || !targets.length) {
+  if (fields.length || occurrences.length) {
+    const occurrenceIdByTargetId = new Map<string, string>()
+    const targetIdByOccurrenceId = new Map<string, string>()
+    for (const occurrence of occurrences) {
+      const candidates = targets.filter((target) => sourceAnchorMatchesOccurrence(target, occurrence))
+      const target = candidates.find((candidate) => textRangeMatchesOccurrence(candidate, occurrence))
+        ?? candidates.find((candidate) => candidate.preview.trim() === occurrence.originalText.trim())
+        ?? candidates[0]
+      if (!target) continue
+      targetIdByOccurrenceId.set(occurrence.occurrenceId, target.targetId)
+      if (!occurrenceIdByTargetId.has(target.targetId)) {
+        occurrenceIdByTargetId.set(target.targetId, occurrence.occurrenceId)
+      }
+    }
+    return {
+      fields,
+      occurrences,
+      occurrenceIdByTargetId,
+      targetIdByOccurrenceId,
+    }
+  }
+
+  if (!targets.length) {
     return {
       fields,
       occurrences,
@@ -327,6 +408,46 @@ function deriveReviewProjection(
   }
 }
 
+function sourceAnchorMatchesOccurrence(
+  target: TemplateReviewTargetV3,
+  occurrence: OfficeSurfaceOccurrenceV1,
+): boolean {
+  const targetAnchor = toOfficeSourceAnchor(target)
+  if (!targetAnchor || targetAnchor.part !== occurrence.sourceAnchor.part) return false
+  const keys = [
+    'sectionIndex',
+    'partIndex',
+    'paragraphIndex',
+    'tableIndex',
+    'rowIndex',
+    'cellIndex',
+    'drawingIndex',
+  ] as const
+  return keys.every((key) => targetAnchor[key] === occurrence.sourceAnchor[key])
+}
+
+function textRangeMatchesOccurrence(
+  target: TemplateReviewTargetV3,
+  occurrence: OfficeSurfaceOccurrenceV1,
+): boolean {
+  if (!occurrence.textRange) return false
+  const targetRange = target.sourceAnchor.textRange
+  return targetRange?.startUtf16 === occurrence.textRange.startUtf16
+    && targetRange.endUtf16Exclusive === occurrence.textRange.endUtf16Exclusive
+}
+
+function fallbackTargetIdForField(
+  projection: ReturnType<typeof deriveReviewProjection>,
+  fieldId: string,
+): string | undefined {
+  const field = projection.fields.find((item) => item.fieldId === fieldId)
+  const occurrenceIds = field?.occurrenceIds
+    ?? projection.occurrences.filter((item) => item.fieldId === fieldId).map((item) => item.occurrenceId)
+  return occurrenceIds
+    .map((occurrenceId) => projection.targetIdByOccurrenceId.get(occurrenceId))
+    .find((targetId): targetId is string => Boolean(targetId))
+}
+
 function toOfficeSourceAnchor(target: TemplateReviewTargetV3): OfficeSurfaceOccurrenceV1['sourceAnchor'] | null {
   const anchor = target.sourceAnchor
   if (
@@ -339,13 +460,13 @@ function toOfficeSourceAnchor(target: TemplateReviewTargetV3): OfficeSurfaceOccu
   ) return null
   return {
     part: anchor.part,
-    ...(anchor.sectionIndex ? { sectionIndex: anchor.sectionIndex } : {}),
-    ...(anchor.partIndex ? { partIndex: anchor.partIndex } : {}),
-    ...(anchor.paragraphIndex ? { paragraphIndex: anchor.paragraphIndex } : {}),
-    ...(anchor.tableIndex ? { tableIndex: anchor.tableIndex } : {}),
-    ...(anchor.rowIndex ? { rowIndex: anchor.rowIndex } : {}),
-    ...(anchor.cellIndex ? { cellIndex: anchor.cellIndex } : {}),
-    ...(anchor.drawingIndex ? { drawingIndex: anchor.drawingIndex } : {}),
+    ...(anchor.sectionIndex !== undefined ? { sectionIndex: anchor.sectionIndex } : {}),
+    ...(anchor.partIndex !== undefined ? { partIndex: anchor.partIndex } : {}),
+    ...(anchor.paragraphIndex !== undefined ? { paragraphIndex: anchor.paragraphIndex } : {}),
+    ...(anchor.tableIndex !== undefined ? { tableIndex: anchor.tableIndex } : {}),
+    ...(anchor.rowIndex !== undefined ? { rowIndex: anchor.rowIndex } : {}),
+    ...(anchor.cellIndex !== undefined ? { cellIndex: anchor.cellIndex } : {}),
+    ...(anchor.drawingIndex !== undefined ? { drawingIndex: anchor.drawingIndex } : {}),
   }
 }
 

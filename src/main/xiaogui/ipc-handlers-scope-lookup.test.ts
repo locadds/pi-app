@@ -5,12 +5,26 @@ const mocks = vi.hoisted(() => ({
   lookup: vi.fn(),
   cwd: null as string | null,
   hasActiveTurns: false,
+  directConfirmationPending: false,
+  extensionUiDialogSource: new Map<string, unknown>(),
+  mode: 'WORK' as 'WORK' | 'DESIGN' | 'CODING',
   phase: 'ASK' as 'ASK' | 'PLAN' | 'EXECUTE',
   stop: vi.fn(async () => {}),
   start: vi.fn(async () => ({})),
+  getEffectivePromptManifest: vi.fn(async () => ({
+    manifest: {
+      mode: mocks.mode,
+      capabilityIds: mocks.mode === 'CODING' ? ['coding.workspace'] : ['work.file-organize'],
+      toolNames: mocks.mode === 'CODING' ? ['read', 'write'] : ['read', 'xiaogui_read_pdf'],
+    },
+  })),
   setExecutionPhase: vi.fn((phase: 'ASK' | 'PLAN' | 'EXECUTE') => {
     mocks.phase = phase
     return phase
+  }),
+  setMode: vi.fn((mode: 'WORK' | 'DESIGN' | 'CODING') => {
+    mocks.mode = mode
+    return mode
   }),
 }))
 
@@ -36,9 +50,17 @@ vi.mock('../worker-manager', () => ({
     get hasActiveTurns() { return mocks.hasActiveTurns },
     stop: mocks.stop,
     start: mocks.start,
+    getEffectivePromptManifest: mocks.getEffectivePromptManifest,
   },
 }))
 vi.mock('../config-store', () => ({ configStore: { get: vi.fn() } }))
+vi.mock('../worker-manager-pool', () => ({
+  extensionUiDialogSource: mocks.extensionUiDialogSource,
+}))
+vi.mock('../direct-extension-ui', () => ({
+  requestDirectExtensionUI: vi.fn(),
+  hasPendingDirectExtensionUI: () => mocks.directConfirmationPending,
+}))
 vi.mock('./scope-service', () => ({
   sessionScopeResolverV1: { lookup: mocks.lookup },
 }))
@@ -51,8 +73,8 @@ vi.mock('./scope-store', () => ({
 }))
 vi.mock('./sidecar-bridge', () => ({
   xiaogui: {
-    setMode: vi.fn(),
-    getMode: vi.fn(() => 'WORK'),
+    setMode: mocks.setMode,
+    getMode: vi.fn(() => mocks.mode),
     setExecutionPhase: mocks.setExecutionPhase,
     getExecutionPhase: vi.fn(() => mocks.phase),
     invokeTool: vi.fn(),
@@ -70,10 +92,21 @@ describe('xiaogui canonical scope lookup IPC', () => {
     mocks.lookup.mockReset()
     mocks.cwd = null
     mocks.hasActiveTurns = false
+    mocks.directConfirmationPending = false
+    mocks.extensionUiDialogSource.clear()
+    mocks.mode = 'WORK'
     mocks.phase = 'ASK'
     mocks.stop.mockReset().mockResolvedValue(undefined)
     mocks.start.mockReset().mockResolvedValue({})
+    mocks.getEffectivePromptManifest.mockReset().mockImplementation(async () => ({
+      manifest: {
+        mode: mocks.mode,
+        capabilityIds: mocks.mode === 'CODING' ? ['coding.workspace'] : ['work.file-organize'],
+        toolNames: mocks.mode === 'CODING' ? ['read', 'write'] : ['read', 'xiaogui_read_pdf'],
+      },
+    }))
     mocks.setExecutionPhase.mockClear()
+    mocks.setMode.mockClear()
     registerXiaoguiHandlers()
   })
 
@@ -110,6 +143,86 @@ describe('xiaogui canonical scope lookup IPC', () => {
 
     expect(mocks.phase).toBe('ASK')
     expect(mocks.setExecutionPhase).not.toHaveBeenCalled()
+    expect(mocks.stop).not.toHaveBeenCalled()
+  })
+
+  it('rejects mode switching before mutation while a Turn or Tool confirmation is active', async () => {
+    mocks.cwd = 'C:\\workspace'
+    mocks.hasActiveTurns = true
+
+    await expect(
+      mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
+    ).rejects.toThrow('XIAOGUI_MODE_SWITCH_TURN_ACTIVE')
+
+    expect(mocks.mode).toBe('WORK')
+    expect(mocks.setMode).not.toHaveBeenCalled()
+    expect(mocks.stop).not.toHaveBeenCalled()
+  })
+
+  it('rejects mode switching while a Worker Tool confirmation remains pending', async () => {
+    mocks.extensionUiDialogSource.set('confirmation', {})
+
+    await expect(
+      mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
+    ).rejects.toThrow('XIAOGUI_MODE_SWITCH_TURN_ACTIVE')
+    expect(mocks.setMode).not.toHaveBeenCalled()
+  })
+
+  it('rejects mode switching while a direct confirmation remains pending', async () => {
+    mocks.directConfirmationPending = true
+
+    await expect(
+      mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
+    ).rejects.toThrow('XIAOGUI_MODE_SWITCH_TURN_ACTIVE')
+    expect(mocks.setMode).not.toHaveBeenCalled()
+  })
+
+  it('P16 safe-rebuild: acknowledges WORK to CODING only after the idle Worker Prompt Context is rebuilt', async () => {
+    mocks.cwd = 'C:\\workspace'
+
+    await expect(
+      mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
+    ).resolves.toEqual({ ok: true, mode: 'CODING', promptContextStatus: 'REBUILT' })
+
+    expect(mocks.mode).toBe('CODING')
+    expect(mocks.stop).toHaveBeenCalledOnce()
+    expect(mocks.start).toHaveBeenCalledWith('C:\\workspace')
+    expect(mocks.getEffectivePromptManifest).toHaveBeenCalledOnce()
+  })
+
+  it('P16 fail-closed: rolls back when the rebuilt Worker still reports the WORK Prompt Context', async () => {
+    mocks.cwd = 'C:\\workspace'
+    mocks.getEffectivePromptManifest.mockResolvedValueOnce({
+      manifest: {
+        mode: 'WORK',
+        capabilityIds: ['work.file-organize'],
+        toolNames: ['read', 'xiaogui_read_pdf'],
+      },
+    })
+
+    await expect(
+      mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
+    ).rejects.toThrow('XIAOGUI_MODE_WORKER_REBUILD_FAILED')
+
+    expect(mocks.mode).toBe('WORK')
+  })
+
+  it('fails and rolls mode back when the idle Worker Prompt Context cannot be rebuilt', async () => {
+    mocks.cwd = 'C:\\workspace'
+    mocks.start.mockRejectedValueOnce(new Error('worker start failed'))
+
+    await expect(
+      mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
+    ).rejects.toThrow('XIAOGUI_MODE_WORKER_REBUILD_FAILED')
+
+    expect(mocks.mode).toBe('WORK')
+    expect(mocks.setMode.mock.calls.map(([mode]) => mode)).toEqual(['CODING', 'WORK'])
+  })
+
+  it('marks the switch safe when no Worker Prompt Context is currently bound', async () => {
+    await expect(
+      mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
+    ).resolves.toEqual({ ok: true, mode: 'CODING', promptContextStatus: 'NOT_BOUND' })
     expect(mocks.stop).not.toHaveBeenCalled()
   })
 

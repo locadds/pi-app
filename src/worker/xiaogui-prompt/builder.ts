@@ -11,7 +11,9 @@ import {
 import {
   isKnownXiaoguiCapabilityToolNameV1,
   isXiaoguiCapabilityToolAllowedInModeV1,
+  isXiaoguiWorkerBuiltinToolAllowedForPromptContextV1,
   resolveEffectiveXiaoguiCapabilitiesV1,
+  XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
 } from '@shared/xiaogui-prompt-capabilities'
 
 import { XIAOGUI_PRODUCT_PROMPT_LAYERS_V1 } from './layers'
@@ -20,6 +22,9 @@ const PRODUCT_BEGIN = '<!-- XIAOGUI:PRODUCT:BEGIN -->'
 const PRODUCT_END = '<!-- XIAOGUI:PRODUCT:END -->'
 const LEGACY_DESIGN_BEGIN = '<!-- XIAOGUI:DESIGN:BEGIN -->'
 const LEGACY_DESIGN_END = '<!-- XIAOGUI:DESIGN:END -->'
+
+export const XIAOGUI_RUNTIME_FACTS_MAX_CHARACTERS_V1 = 600 as const
+export const XIAOGUI_PRODUCT_PROMPT_MAX_CHARACTERS_V1 = 7_000 as const
 
 export interface XiaoguiRuntimePromptToolV1 {
   readonly name: string
@@ -39,6 +44,8 @@ export interface BuildEffectiveXiaoguiPromptInputV1 {
 export interface BuiltEffectiveXiaoguiPromptV1 {
   /** Worker-only body. Never serialize this value to Main or ordinary logs. */
   readonly prompt: string
+  /** Code-owned product Layers only; safe for explicit advanced diagnostics. */
+  readonly productPrompt: string
   readonly effectiveContext: XiaoguiPromptContextV1
   readonly diagnostics: XiaoguiEffectivePromptDiagnosticsV1
 }
@@ -115,6 +122,32 @@ function runtimeToolLayer(tools: readonly XiaoguiRuntimePromptToolV1[]): Xiaogui
   }
 }
 
+function runtimeFactsLayer(
+  context: XiaoguiPromptContextV1,
+  effectiveCapabilityIds: readonly string[],
+  actualToolCount: number,
+): XiaoguiPromptLayerV1 {
+  const content = normalize(`# 运行事实
+
+- 当前模式：${context.mode}
+- 当前阶段：${context.phase}
+- 工作区：${context.workspaceAvailable ? '可用' : '不可用'}
+- 项目信任：${context.projectTrusted ? '已信任' : '未信任'}
+- 本轮可用产品能力：${effectiveCapabilityIds.length > 0 ? effectiveCapabilityIds.join('、') : '无'}
+- Runtime 实际加载工具：${actualToolCount} 个
+- 约束：只能使用实际加载且符合当前阶段的工具；未列入可用产品能力的工作不得宣称已完成。`)
+  if (content.length > XIAOGUI_RUNTIME_FACTS_MAX_CHARACTERS_V1) {
+    fail('XIAOGUI_PROMPT_RUNTIME_FACTS_BUDGET_EXCEEDED')
+  }
+  return {
+    id: 'xiaogui.runtime.facts',
+    version: '1.0.0',
+    kind: 'RUNTIME',
+    required: true,
+    content,
+  }
+}
+
 function requiredLayerIds(context: XiaoguiPromptContextV1): readonly string[] {
   return [
     'xiaogui.base',
@@ -138,12 +171,23 @@ export function createXiaoguiPromptBuilderV1(
       const candidateContext = parseXiaoguiPromptContextV1(input.context)
       const toolNames = input.runtimeTools
         ? [...new Set(input.runtimeTools.map((tool) => tool.name.trim()).filter(Boolean))].sort()
-        : [...candidateContext.availableToolNames].sort()
+        : candidateContext.availableToolNames
+            .filter((name) =>
+              !(name in XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1) ||
+              isXiaoguiWorkerBuiltinToolAllowedForPromptContextV1(name, candidateContext),
+            )
+            .sort()
       if (toolNames.some((name) =>
         isKnownXiaoguiCapabilityToolNameV1(name) &&
         !isXiaoguiCapabilityToolAllowedInModeV1(name, candidateContext.mode),
       )) {
         fail('XIAOGUI_PROMPT_TOOL_MODE_MISMATCH')
+      }
+      if (toolNames.some((name) =>
+        name in XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 &&
+        !isXiaoguiWorkerBuiltinToolAllowedForPromptContextV1(name, candidateContext),
+      )) {
+        fail('XIAOGUI_PROMPT_TOOL_PHASE_MISMATCH')
       }
       const capabilities = resolveEffectiveXiaoguiCapabilitiesV1(candidateContext, toolNames)
       const context = parseXiaoguiPromptContextV1({
@@ -151,6 +195,14 @@ export function createXiaoguiPromptBuilderV1(
         enabledCapabilities: capabilities.map((capability) => capability.id),
         availableToolNames: toolNames,
       })
+      const capabilityToolNames = new Set(capabilities.flatMap((capability) =>
+        capability.tools.map((tool) => tool.name),
+      ))
+      if (toolNames.some((name) =>
+        name in XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 && !capabilityToolNames.has(name),
+      )) {
+        fail('XIAOGUI_PROMPT_TOOL_CAPABILITY_MISMATCH')
+      }
       const selected = [
         ...requiredLayerIds(context),
         ...capabilities.map((capability) => capability.promptLayer.id),
@@ -184,17 +236,31 @@ export function createXiaoguiPromptBuilderV1(
       const compatibilityLayer = input.piCustomSystem
         ? runtimeToolLayer(input.runtimeTools ?? [])
         : null
-      const effectiveLayers = [piLayer, ...selected, ...(compatibilityLayer ? [compatibilityLayer] : [])]
-      const productContent = [...selected, ...(compatibilityLayer ? [compatibilityLayer] : [])]
+      const factsLayer = runtimeFactsLayer(
+        context,
+        capabilities.map((capability) => capability.id),
+        toolNames.length,
+      )
+      const productLayers = [...selected, factsLayer]
+      const effectiveLayers = [piLayer, ...productLayers, ...(compatibilityLayer ? [compatibilityLayer] : [])]
+      const productPrompt = productLayers
         .map((layer) => normalize(layer.content))
         .join('\n\n')
+      if (productPrompt.length > XIAOGUI_PRODUCT_PROMPT_MAX_CHARACTERS_V1) {
+        fail('XIAOGUI_PRODUCT_PROMPT_BUDGET_EXCEEDED')
+      }
+      const effectiveProductContent = [
+        productPrompt,
+        ...(compatibilityLayer ? [normalize(compatibilityLayer.content)] : []),
+      ].join('\n\n')
       const prompt = [
         withoutLegacy.content,
-        `${PRODUCT_BEGIN}\n${productContent}\n${PRODUCT_END}`,
+        `${PRODUCT_BEGIN}\n${effectiveProductContent}\n${PRODUCT_END}`,
       ].join('\n\n')
       const completePrompt = normalize(prompt)
       return {
         prompt: completePrompt,
+        productPrompt,
         effectiveContext: context,
         diagnostics: {
           manifest: {

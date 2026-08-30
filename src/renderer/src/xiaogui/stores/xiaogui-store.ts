@@ -115,7 +115,16 @@ export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
     navigateToModeHome()
     try {
       const res = await ipcClient.invoke('xiaogui.mode.switch', { mode })
-      if (res?.ok === true && res.mode === mode) {
+      const promptContextStatus = res?.promptContextStatus
+      if (
+        res?.ok === true &&
+        res.mode === mode &&
+        (
+          promptContextStatus === 'REBUILT' ||
+          promptContextStatus === 'NOT_BOUND' ||
+          promptContextStatus === 'UNCHANGED'
+        )
+      ) {
         set({ mode })
         void refreshWorkspaceSessionLists()
         return true

@@ -470,6 +470,9 @@ describe('worker session event lifecycle', () => {
     const originalPromptPreflight = st.promptPreflight
     const originalPromptContext = st.promptContext
     const originalPromptContextCandidate = st.promptContextCandidate
+    const originalPromptTurnContext = st.promptTurnContext
+    const originalPromptStickyCapabilities = st.promptStickyCapabilities
+    const originalPromptTurnStickyCapabilities = st.promptTurnStickyCapabilities
     const originalPromptDiagnostics = st.promptDiagnostics
     const originalEffectivePrompt = st.effectivePrompt
     const originalRunId = st.currentRunId
@@ -477,10 +480,14 @@ describe('worker session event lifecycle', () => {
     const replies: Record<string, unknown>[] = []
 
     try {
+      let activeTools = ['read']
       st.session = {
         isStreaming: false,
         sessionFile: '/workspace/session.jsonl',
         prompt: vi.fn().mockResolvedValue(undefined),
+        getAllTools: () => [{ name: 'read' }],
+        setActiveToolsByName: (names: string[]) => { activeTools = names },
+        getActiveToolNames: () => activeTools,
       } as never
       st.agentTurnActive = false
       st.promptPreflightActive = false
@@ -498,6 +505,7 @@ describe('worker session event lifecycle', () => {
       st.promptContextCandidate = promptContext
       st.promptPreflight = () => ({
         prompt: 'effective prompt',
+        productPrompt: 'product prompt',
         context: promptContext,
         diagnostics: {} as never,
       })
@@ -521,6 +529,9 @@ describe('worker session event lifecycle', () => {
       st.promptPreflight = originalPromptPreflight
       st.promptContext = originalPromptContext
       st.promptContextCandidate = originalPromptContextCandidate
+      st.promptTurnContext = originalPromptTurnContext
+      st.promptStickyCapabilities = originalPromptStickyCapabilities
+      st.promptTurnStickyCapabilities = originalPromptTurnStickyCapabilities
       st.promptDiagnostics = originalPromptDiagnostics
       st.effectivePrompt = originalEffectivePrompt
       st.currentRunId = originalRunId

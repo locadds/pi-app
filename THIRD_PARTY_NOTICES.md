@@ -26,13 +26,14 @@
 - 用途：在小规内只读渲染通过安全门的 DOCX 展示副本，用于模板复核、修改后预览和本机模板库预览。
 - 运行边界：只读取主进程通过短期文档令牌签发的临时 DOCX 字节；不读取本机路径，不启用外部 HTML、批注、修订或实验接口。页面数量仅作为 HTML 近似视图，不冒充 Word 实际分页。
 
-## Univer Docs SDK 0.25.1（架构验证分支）
+## Univer Docs SDK 0.25.1（单机试用分支）
 
 - 来源：https://github.com/dream-num/univer
 - 许可证：Apache-2.0；各 npm 包内保留许可证原文。
-- 直接包：`@univerjs/core`、`@univerjs/design`、`@univerjs/docs`、`@univerjs/docs-ui`、`@univerjs/engine-render`、`@univerjs/ui`。
-- 用途：构建与小规主 React 树隔离的实验性文档工作表面，验证中文合成文档、Snapshot 保存和本机工作副本边界。
-- 运行边界：默认功能开关为 `OFF`；未接模板主流程，未安装 Univer Pro、DOCX Exchange、协作、打印或编辑历史能力。
+- 直接包：`@univerjs/core`、`@univerjs/design`、`@univerjs/docs`、`@univerjs/docs-drawing`、`@univerjs/docs-drawing-ui`、`@univerjs/docs-ui`、`@univerjs/drawing`、`@univerjs/drawing-ui`、`@univerjs/engine-render`、`@univerjs/ui`。
+- 用途：构建与小规主 React 树隔离的文档工作表面，显示安全解析后的 DOCX 正文、基础表格、页眉页脚和常见栅格图片，并保存本机工作副本。
+- 运行边界：默认功能开关为 `OFF`；单机试用脚本显式启用。未安装 Univer Pro、DOCX Exchange、协作、打印或编辑历史能力；不宣称与 Microsoft Word 像素级一致。
+- 隔离边界：Gateway 会话令牌和授权 Cookie 只存在于 Main 与本机 Gateway。Viewer 通过已校验的 `MessagePort` 向父 Renderer 发起窄请求，再由受控 IPC 交给 Main 代理访问；普通 Renderer、Viewer JavaScript、URL 和消息体均不接触令牌。无法等价映射的对象进入可见降级清单。
 - 供应链边界：使用插件模式，不依赖 `@univerjs/presets` 大型元包。0.25.1 当前经 `@univerjs/core` 依赖存在 `nanoid@5.1.11` 审计告警且 npm 未提供可用修复，故只允许留在独立验证分支，不能据此批准生产装配。
 
 ## officeparser 7.8.0

@@ -100,8 +100,10 @@ export interface XiaoguiEffectivePromptDiagnosticsV1 {
 }
 
 /**
- * Explicit advanced-diagnostic response. The complete Prompt body must never be
- * included in ordinary catalog/list responses or logs.
+ * Explicit advanced-diagnostic response. `prompt` contains code-owned product
+ * Layers only. Pi System, user SYSTEM/Append and project context must never
+ * cross the Worker seam; their contribution remains observable only through
+ * the complete character count and SHA-256 in the Manifest.
  */
 export interface XiaoguiAdvancedPromptDiagnosticsV1
   extends XiaoguiEffectivePromptDiagnosticsV1 {

@@ -585,8 +585,14 @@
   },
   "prompts": {
     "title": "Prompts & Context",
-    "description": "Grouped by how they enter the conversation context: project context (AGENTS.md / CLAUDE.md), global, and per-turn system. When no global SYSTEM.md exists, opening the \"Global\" item prefills the built-in text; saving makes it effective. Items marked \"per-turn system\" are injected into each session.",
+    "description": "Grouped by product layers, user overrides, project context, Slash templates, tool/capability guidelines, and dedicated subtasks. Per-turn System Context membership is shown separately.",
     "groupAgentsContext": "Project context (AGENTS.md etc.)",
+    "productSystemLayers": "Product System Layers",
+    "userSystemAppend": "User System / Append",
+    "groupProjectContext": "Project Context",
+    "slashPromptTemplates": "Slash Prompt Templates",
+    "toolCapabilityGuidelines": "Tool / Capability Guidelines",
+    "subtaskPrompts": "Dedicated Subtask Prompts",
     "loading": "Loading…",
     "empty": "No entries found (open a workspace and refresh)",
     "selectLeftToEdit": "Select an item on the left to edit",
@@ -621,10 +627,11 @@
     "layerKind": "Kind",
     "layerVersion": "Version",
     "layerCharacters": "Characters",
-    "advancedSummary": "Advanced diagnostics: expand Prompt body",
-    "advancedWarning": "The body may contain project context and sensitive information. View it only when explicitly needed for diagnostics.",
-    "advancedLoading": "Loading the body from the current real session…",
-    "advancedTruncated": "The UI shows only the first {{count}} characters. The complete length and SHA-256 above always use the untruncated Prompt.",
+    "advancedSummary": "Advanced diagnostics: view product Prompt layers",
+    "advancedWarning": "",
+    "advancedLoading": "Extracting product-layer text from the current real session…",
+    "advancedTruncated": "The UI shows only the first {{count}} product-layer characters. The complete length and SHA-256 above still describe the full Effective Prompt.",
+    "legacyDesignRuntimeDeduped": "A legacy DESIGN Prompt marker was detected and deduplicated for this runtime only. No project file was modified.",
     "templateTitle": "Template {{command}}",
     "items": {
       "agentsGlobal": {
@@ -645,7 +652,7 @@
       },
       "systemDefaultPreview": {
         "name": "Real Effective Prompt (diagnostics)",
-        "description": "Complete Manifest for the real session; body expands only in advanced diagnostics"
+        "description": "Complete Manifest for the real session; advanced diagnostics show product-layer text only"
       },
       "appendProject": {
         "name": "APPEND_SYSTEM.md (project)",

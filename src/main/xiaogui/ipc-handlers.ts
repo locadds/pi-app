@@ -20,6 +20,7 @@ import { z } from 'zod'
 
 import { registerHandler, registerHandlerWithSchema } from '../ipc/registry'
 import { workerManager } from '../worker-manager'
+import { extensionUiDialogSource } from '../worker-manager-pool'
 import { configStore } from '../config-store'
 import { xiaogui, type ToolInvokePayload } from './sidecar-bridge'
 import { getProjectBaseline, getScope, listScopes, recordProjectBaseline, setScope, type ScopeKind } from './scope-store'
@@ -30,7 +31,7 @@ import { sessionScopeResolverV1 } from './scope-service'
 import { getDefaultWorkDocxTemplateIntakeServiceV1 } from './work-docx-template-intake-composition'
 import { readSessionMetaFromFile } from '../session-file-meta'
 import { normalizeSessionKey } from '../worker-session-key'
-import { requestDirectExtensionUI } from '../direct-extension-ui'
+import { hasPendingDirectExtensionUI, requestDirectExtensionUI } from '../direct-extension-ui'
 import { currentVisibleSessionFile } from '../completion-notification-events'
 import { summarizeTemplateReviewActionsV2 } from '@shared/xiaogui-template-review-decisions'
 import { errorMessage } from '@shared/error-message'
@@ -137,8 +138,40 @@ function directReviewFailure(code: string): { ok: false; code: string; message: 
 
 export function registerXiaoguiHandlers(): void {
   registerHandlerWithSchema('ipc:xiaogui.mode.switch', ModeSwitchSchema, async (req) => {
+    if (
+      workerManager.hasActiveTurns ||
+      extensionUiDialogSource.size > 0 ||
+      hasPendingDirectExtensionUI()
+    ) {
+      throw new Error('XIAOGUI_MODE_SWITCH_TURN_ACTIVE')
+    }
+    const previousMode = xiaogui.getMode()
+    if (previousMode === req.mode) {
+      return { ok: true, mode: previousMode, promptContextStatus: 'UNCHANGED' as const }
+    }
     const mode = xiaogui.setMode(req.mode as XiaoguiMode)
-    return { ok: true, mode }
+    const cwd = workerManager.cwd
+    if (!cwd) {
+      return { ok: true, mode, promptContextStatus: 'NOT_BOUND' as const }
+    }
+    try {
+      await workerManager.stop()
+      await workerManager.start(cwd)
+      const diagnostics = await workerManager.getEffectivePromptManifest()
+      if (diagnostics?.manifest.mode !== mode) {
+        throw new Error('XIAOGUI_MODE_PROMPT_CONTEXT_MISMATCH')
+      }
+    } catch (error) {
+      xiaogui.setMode(previousMode)
+      try {
+        await workerManager.stop()
+        await workerManager.start(cwd)
+      } catch {
+        // The persisted mode is rolled back even when Worker recovery fails.
+      }
+      throw new Error(`XIAOGUI_MODE_WORKER_REBUILD_FAILED: ${errorMessage(error)}`)
+    }
+    return { ok: true, mode, promptContextStatus: 'REBUILT' as const }
   })
 
   registerHandler('ipc:xiaogui.mode.get', async () => {

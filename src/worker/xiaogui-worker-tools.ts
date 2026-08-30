@@ -4,7 +4,7 @@ import {
   isXiaoguiCapabilityToolAllowedInModeV1,
   workerBuiltinToolNamesForModeV1,
 } from '@shared/xiaogui-prompt-capabilities'
-import type { XiaoguiMode } from '@shared/xiaogui-prompt-contract'
+import type { XiaoguiPromptContextV1 } from '@shared/xiaogui-prompt-contract'
 
 import {
   addXiaoguiCollaborationTool,
@@ -25,16 +25,16 @@ export interface XiaoguiWorkerToolOptionsV1 {
   readonly session: XiaoguiWorkDocxTemplateDataToolOptions
 }
 
-function removeKnownModeDisallowedTools(
+function removeKnownContextDisallowedTools(
   result: LoadExtensionsResult,
-  mode: XiaoguiMode,
+  context: Pick<XiaoguiPromptContextV1, 'mode'>,
 ): LoadExtensionsResult {
   return {
     ...result,
     extensions: result.extensions.map((extension) => ({
       ...extension,
       tools: new Map([...extension.tools].filter(([name]) =>
-        isXiaoguiCapabilityToolAllowedInModeV1(name, mode),
+        isXiaoguiCapabilityToolAllowedInModeV1(name, context.mode),
       )),
     })),
   }
@@ -42,11 +42,13 @@ function removeKnownModeDisallowedTools(
 
 export function addXiaoguiWorkerToolsV1(
   result: LoadExtensionsResult,
-  mode: XiaoguiMode,
+  context: Pick<XiaoguiPromptContextV1, 'mode'>,
   options: XiaoguiWorkerToolOptionsV1,
 ): LoadExtensionsResult {
-  const allowed = new Set(workerBuiltinToolNamesForModeV1(mode))
-  let loaded = removeKnownModeDisallowedTools(result, mode)
+  // Register every mode-compatible candidate. The live AgentSession applies
+  // the per-turn Host Tool Policy with setActiveToolsByName().
+  const allowed = new Set(workerBuiltinToolNamesForModeV1(context.mode))
+  let loaded = removeKnownContextDisallowedTools(result, context)
   if (allowed.has('xiaogui_create_collaboration_plan')) {
     loaded = addXiaoguiCollaborationTool(loaded, options.collaboration)
   }

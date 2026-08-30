@@ -58,7 +58,7 @@ function agentsContextDescription(t: TFunction, row: PromptRowLike): string | nu
 }
 
 function pluginInjectDescription(t: TFunction, row: PromptRowLike): string | null {
-  if (row.category !== 'plugin_inject') return null
+  if (!row.id.startsWith('plugin:')) return null
   const parts = row.description.split('·')
   const pkg = (parts.length > 1 ? parts.slice(1).join('·') : row.description).trim()
   return t('settings:prompts.items.pluginInject.description', { pkg })

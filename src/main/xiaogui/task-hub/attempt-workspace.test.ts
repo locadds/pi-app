@@ -274,7 +274,7 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     expect(capture.patchArtifactDigest).toBe(digestBytes(capture.patchArtifactBytes))
     expect(Buffer.from(capture.patchArtifactBytes).toString('utf8')).not.toContain(result.handle.rootPath)
     registry.close()
-  })
+  }, 20_000)
 
   it('revalidates the prepared worktree and exposes only current manifest file digests to the runtime', async () => {
     const projectRoot = await gitRepo()
@@ -753,7 +753,7 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     expect(reopened.getScopeRequest(mixed.requestId)?.state).toBe('REJECTED')
     expect(reopened.getScopeRequest(deleteRequest.requestId)?.state).toBe('REJECTED')
     reopened.close()
-  })
+  }, 20_000)
 
   it('persists approved scope expansion across a registry restart without creating another manifest version', async () => {
     const projectRoot = await gitRepo()

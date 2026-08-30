@@ -147,6 +147,11 @@ export function adaptDocxTableToUniverV1(
   if (resolvedStyles.some((style) => style.conditionalStyleCount > 0)) {
     warnings.push(`表格 ${input.tableId} 使用条件表格样式；首行/带状行列等条件格式尚不能可靠还原，请人工复核。`)
   }
+  appendUnsupportedTableStyleWarnings(
+    input.tableId,
+    [...tablePropertySources, ...rowPropertySources, ...cellPropertySources, input.tableXml],
+    warnings,
+  )
   const widthTag = lastOpenTagInSources(tablePropertySources, 'w:tblW')
   const widthType = attribute(widthTag ?? '', 'w:type') ?? 'auto'
   const widthTwips = numericAttribute(widthTag ?? '', 'w:w')
@@ -513,6 +518,45 @@ function readBorder(openTag: string): ITableCellBorder {
     color: { rgb: color && color !== 'auto' ? normalizeColor(color) : '#000000' },
     width: { v: Math.max(0.5, size / 8 * POINTS_TO_PIXELS) },
     dashStyle: style.includes('dot') ? 2 : style.includes('dash') ? 3 : 1,
+  }
+}
+
+function appendUnsupportedTableStyleWarnings(
+  tableId: string,
+  sources: readonly string[],
+  warnings: string[],
+): void {
+  const supportedBorderStyles = new Set(['single', 'nil', 'none', 'dashed', 'dotted'])
+  for (const source of sources) {
+    for (const match of source.matchAll(/<w:(top|bottom|left|right|start|end|insideH|insideV|tl2br|tr2bl)\b[^>]*\/?\s*>/gi)) {
+      const openTag = match[0]
+      const edge = match[1].toLowerCase()
+      const style = (attribute(openTag, 'w:val') ?? 'single').toLowerCase()
+      if (edge === 'tl2br' || edge === 'tr2bl') {
+        warnings.push(`表格 ${tableId} 使用斜线边框 ${match[1]}；Univer 0.25.1 文档表格无法等价显示，已保留复核告警。`)
+      }
+      if (!supportedBorderStyles.has(style)) {
+        warnings.push(`表格 ${tableId} 使用复杂边框样式 ${style}；当前仅能近似为基础实线或虚线，请人工复核。`)
+      }
+      if (attribute(openTag, 'w:themeColor')) {
+        warnings.push(`表格 ${tableId} 使用主题边框颜色；当前未解析 DOCX 主题色，已按显式颜色或黑色近似，请人工复核。`)
+      }
+    }
+    for (const match of source.matchAll(/<w:shd\b[^>]*\/?\s*>/gi)) {
+      const openTag = match[0]
+      if (
+        attribute(openTag, 'w:themeFill')
+        || attribute(openTag, 'w:themeFillTint')
+        || attribute(openTag, 'w:themeFillShade')
+        || attribute(openTag, 'w:themeColor')
+      ) {
+        warnings.push(`表格 ${tableId} 使用主题底纹；当前未解析 DOCX 主题色，仅保留可用的显式 fill 并标记人工复核。`)
+      }
+      const pattern = attribute(openTag, 'w:val')
+      if (pattern && !['clear', 'solid', 'nil'].includes(pattern.toLowerCase())) {
+        warnings.push(`表格 ${tableId} 使用图案底纹 ${pattern}；Univer 当前仅显示纯色背景，请人工复核。`)
+      }
+    }
   }
 }
 

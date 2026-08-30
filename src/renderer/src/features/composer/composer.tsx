@@ -31,7 +31,7 @@ import {
   isViewingWorkerBoundSession,
   composerTurnActive,
 } from '@renderer/lib/session-worker-sync'
-import { useSessionChrome } from '@renderer/lib/session-chrome'
+import { selectSessionChromeFromUiState, useSessionChrome } from '@renderer/lib/session-chrome'
 import { useExtensionUIStore } from '@renderer/stores/extension-ui-store'
 import { insertTextAtCursor } from './composer-editor-caret'
 import { makeComposerEditorAdapter } from './composer-editor-adapter'
@@ -238,6 +238,7 @@ export function Composer() {
     recommendation: modeRecommendation,
     sessionPhase: sessionChrome.phase,
     canPreserveDraft: canPreserveModeRecommendationDraft,
+    hasPendingConfirmation: extensionDialogOpen,
     draftFingerprint,
     dismissedDraftFingerprint,
   })
@@ -288,6 +289,24 @@ export function Composer() {
     const segments = currentSegments()
     if (!canPreserveComposerSegments(segments)) return
 
+    const hasPendingConfirmation = useExtensionUIStore.getState().activePending != null
+    const liveSessionChrome = selectSessionChromeFromUiState({
+      ...useUIStore.getState(),
+      extensionDialogOpen: hasPendingConfirmation,
+    })
+    if (
+      useXiaoguiStore.getState().mode !== modeRecommendation.currentMode ||
+      !shouldShowModeRecommendationV1({
+        enabled: XIAOGUI_MODE_RECOMMENDATION_ENABLED,
+        recommendation: modeRecommendation,
+        sessionPhase: liveSessionChrome.phase,
+        canPreserveDraft: true,
+        hasPendingConfirmation,
+        draftFingerprint,
+        dismissedDraftFingerprint,
+      })
+    ) return
+
     setModeSwitching(true)
     try {
       const switched = await switchModePreservingComposerDraftV1({
@@ -315,6 +334,7 @@ export function Composer() {
   }, [
     applySegmentsChange,
     currentSegments,
+    dismissedDraftFingerprint,
     draftFingerprint,
     modeRecommendation,
     modeSwitching,

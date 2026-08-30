@@ -49,7 +49,7 @@ describe('shouldShowModeRecommendationV1', () => {
     },
   )
 
-  it('stays hidden when attachments cannot be preserved or the same draft was dismissed', () => {
+  it('P15: stays hidden when attachments cannot be preserved or the same draft was dismissed', () => {
     expect(
       shouldShowModeRecommendationV1({
         enabled: true,
@@ -79,6 +79,33 @@ describe('shouldShowModeRecommendationV1', () => {
         recommendation,
         sessionPhase: 'idle',
         canPreserveDraft: true,
+        draftFingerprint,
+        dismissedDraftFingerprint: null,
+      }),
+    ).toBe(false)
+  })
+
+  it('never displays a MEDIUM-confidence recommendation', () => {
+    expect(
+      shouldShowModeRecommendationV1({
+        enabled: true,
+        recommendation: { ...recommendation, confidence: 'MEDIUM' },
+        sessionPhase: 'idle',
+        canPreserveDraft: true,
+        draftFingerprint,
+        dismissedDraftFingerprint: null,
+      }),
+    ).toBe(false)
+  })
+
+  it('stays hidden while the user is answering a pending confirmation, even if chrome is briefly idle', () => {
+    expect(
+      shouldShowModeRecommendationV1({
+        enabled: true,
+        recommendation,
+        sessionPhase: 'idle',
+        canPreserveDraft: true,
+        hasPendingConfirmation: true,
         draftFingerprint,
         dismissedDraftFingerprint: null,
       }),

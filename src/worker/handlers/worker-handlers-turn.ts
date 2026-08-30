@@ -11,6 +11,9 @@ import {
   emit,
   currentSessionModelKey,
   runXiaoguiPromptPreflightV1,
+  prepareXiaoguiPromptTurnV1,
+  clearXiaoguiPromptTurnV1,
+  completeXiaoguiPromptTurnV1,
   createXiaoguiPromptAssemblyGateV1,
   resetXiaoguiPromptAssemblyGateV1,
 } from '../worker-runtime.js'
@@ -55,9 +58,12 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
         const promptSession = st.session
         if (!promptSession) { reply({ type: 'error', error: 'No session' }); return }
         const promptText = String(msg.text ?? '').trim()
+        const alreadyStreaming = promptSession.isStreaming || st.agentTurnActive
         try {
+          if (!alreadyStreaming) prepareXiaoguiPromptTurnV1(promptText)
           runXiaoguiPromptPreflightV1()
         } catch (error) {
+          if (!alreadyStreaming) clearXiaoguiPromptTurnV1()
           reply({ type: 'error', error: `prompt preflight failed: ${errorMessage(error)}` })
           return
         }
@@ -73,7 +79,6 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
         }
         st.promptSent = true
         // 在首个 stream 事件前就标 busy，避免切会话/evict 误杀；streamingBehavior 须用标记前的状态
-        const alreadyStreaming = promptSession.isStreaming || st.agentTurnActive
         if (!alreadyStreaming) {
           beginRunIdentity()
           st.agentTurnActive = true
@@ -82,6 +87,7 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
         }
         reply({ type: 'prompt-done' })
         void (async () => {
+          let turnCompleted = false
           try {
             const extra = msg.options as Parameters<typeof promptSession.prompt>[1]
             const gated = {
@@ -95,6 +101,7 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
                 ? { ...gated, streamingBehavior: 'followUp' as const }
                 : gated
             await promptSession.prompt(promptText, merged)
+            turnCompleted = true
             if (!alreadyStreaming && st.promptPreflightActive) {
               st.promptPreflightActive = false
               st.agentTurnActive = false
@@ -134,6 +141,10 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
               })
             }
           } finally {
+            if (!alreadyStreaming) {
+              if (turnCompleted) completeXiaoguiPromptTurnV1()
+              else clearXiaoguiPromptTurnV1()
+            }
             resetXiaoguiPromptAssemblyGateV1()
           }
         })()
@@ -242,6 +253,10 @@ export async function handleDispose(msg: WorkerIncomingMessage, reply: WorkerRep
         st.runtime = null
         st.promptContext = null
         st.promptContextCandidate = null
+        st.promptTurnContext = null
+        st.promptStickyCapabilities = []
+        st.promptTurnStickyCapabilities = []
+        st.promptTurnStickyToolCalls.clear()
         st.pendingPromptContext = null
         st.promptDiagnostics = null
         st.effectivePrompt = null

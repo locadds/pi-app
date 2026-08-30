@@ -60,6 +60,13 @@ describe('recommendXiaoguiModeV1', () => {
         text: '不要切换模式，请修复仓库里的 TypeScript 构建报错并补单元测试',
       }),
     ).toBeNull()
+
+    expect(
+      recommendXiaoguiModeV1({
+        currentMode: 'WORK',
+        text: '别换模式，帮我修这个 TypeScript bug 并跑测试',
+      }),
+    ).toBeNull()
   })
 
   it('does not guess when planning and document-delivery signals are both sufficient', () => {
@@ -118,5 +125,40 @@ describe('recommendXiaoguiModeV1', () => {
     ])
     expect(recommendation?.matchedSignals.join(' ')).not.toContain('private-module.ts')
     expect(recommendation?.matchedSignals.join(' ')).not.toContain('请修复仓库')
+  })
+
+  it('P07: recommends CODING with HIGH confidence for a concrete bug-fix and test task', () => {
+    expect(
+      recommendXiaoguiModeV1({
+        currentMode: 'WORK',
+        text: '帮我修这个 TypeScript bug 并跑测试',
+      }),
+    ).toMatchObject({
+      currentMode: 'WORK',
+      recommendedMode: 'CODING',
+      confidence: 'HIGH',
+    })
+  })
+
+  it('P08: recommends WORK with HIGH confidence for converting a Word document into a template', () => {
+    expect(
+      recommendXiaoguiModeV1({
+        currentMode: 'CODING',
+        text: '把这个 Word 整理成模板',
+      }),
+    ).toMatchObject({
+      currentMode: 'CODING',
+      recommendedMode: 'WORK',
+      confidence: 'HIGH',
+    })
+  })
+
+  it('P14: declines to recommend a single mode for a site-analysis Word-report task', () => {
+    expect(
+      recommendXiaoguiModeV1({
+        currentMode: 'WORK',
+        text: '做选址分析并写成 Word 报告',
+      }),
+    ).toBeNull()
   })
 })

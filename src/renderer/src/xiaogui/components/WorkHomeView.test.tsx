@@ -37,7 +37,7 @@ describe('WorkHomeView', () => {
     expect(screen.getByText('试试这样说')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /填写示例提示词/ })).toHaveLength(3)
     expect(
-      screen.getByText('把我选择的普通成品 Word 整理成可复用模板，先给我一份候选内容报告'),
+      screen.getByText('把我选择的普通成品文档整理成可复用模板，先给我一份候选内容报告'),
     ).toBeInTheDocument()
   })
 
@@ -55,10 +55,10 @@ describe('WorkHomeView', () => {
     const examples = screen.getAllByRole('button', { name: /填写示例提示词/ })
     expect(examples).toHaveLength(3)
 
-    await user.click(screen.getByRole('button', { name: '填写示例提示词：整理普通 Word' }))
+    await user.click(screen.getByRole('button', { name: '填写示例提示词：整理普通文档' }))
 
     expect(useUIStore.getState().composerPrefill).toBe(
-      '把我选择的普通成品 Word 整理成可复用模板，先给我一份候选内容报告',
+      '把我选择的普通成品文档整理成可复用模板，先给我一份候选内容报告',
     )
     expect(useUIStore.getState().runState.status).toBe(uiSnapshot.runState.status)
   })

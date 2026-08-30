@@ -13,10 +13,15 @@ import {
   listAgentsContextFiles,
   listPiBuiltinPromptFiles,
   listPluginInjectedPromptFiles,
+  listCodeOwnedPromptCatalogFiles,
   groupPromptCatalog,
   getGlobalSystemMd,
   type PromptCatalogItem,
 } from '../../pi-prompt-catalog'
+import {
+  readCodeOwnedPromptCatalogResourceV1,
+  XIAOGUI_PRODUCT_SYSTEM_LAYERS_PREVIEW_URI,
+} from '../../pi-prompt-catalog-virtual-resources'
 import { listRevisions, pushRevision, restoreRevision, readRevision } from '../../resource-revisions'
 import type { ResourceSource } from '../../pi-resources-editor'
 import { errorMessage } from '@shared/error-message'
@@ -145,10 +150,11 @@ export function registerSkillsResourceHandlers(): void {
     for (const a of listAgentsContextFiles(cwd)) push(a)
     for (const b of listPiBuiltinPromptFiles(cwd, projectTrusted)) {
       if (b.id === 'builtin:system:default' && effectivePromptDiagnostics) {
-        push({ ...b, description: '当前会话真实 Effective Prompt 诊断（默认不显示正文）' })
+        push({ ...b, description: '当前会话真实 Effective Prompt 诊断（高级模式只显示产品层正文）' })
       } else push(b)
     }
     for (const plug of listPluginInjectedPromptFiles(cwd)) push(plug)
+    for (const resource of listCodeOwnedPromptCatalogFiles()) push(resource)
 
     const disk = listPromptsOnDisk(cwd)
     const tplByPath = new Map<string, (typeof disk)[0]>()
@@ -178,7 +184,7 @@ export function registerSkillsResourceHandlers(): void {
     for (const p of tplByPath.values()) {
       push({
         id: `template:${p.path}`,
-        category: 'prompt_template',
+        category: 'slash_prompt_templates',
         name: p.name,
         description: p.description,
         path: p.path,
@@ -194,14 +200,14 @@ export function registerSkillsResourceHandlers(): void {
       prompts,
       groups: groupPromptCatalog(prompts),
       effectivePromptDiagnostics,
-      virtualSystemPreviewPath: 'pi-desktop://system-prompt-preview',
+      virtualSystemPreviewPath: XIAOGUI_PRODUCT_SYSTEM_LAYERS_PREVIEW_URI,
     }
   })
 
   registerHandler('ipc:resource.read', async (req) => {
     const path = String(req.path || '')
     if (!path) return { error: 'missing path' }
-    if (path === 'pi-desktop://system-prompt-preview') {
+    if (path === XIAOGUI_PRODUCT_SYSTEM_LAYERS_PREVIEW_URI) {
       try {
         const cwd = configStore.get('currentProject') || workerManager.cwd || process.cwd()
         if (
@@ -226,6 +232,10 @@ export function registerSkillsResourceHandlers(): void {
       } catch (e: unknown) {
         return { error: errorMessage(e) }
       }
+    }
+    const codeOwnedResource = readCodeOwnedPromptCatalogResourceV1(path)
+    if (codeOwnedResource) {
+      return { content: codeOwnedResource.content, path, revisions: [] }
     }
     const resolved = resolve(path)
     const isGlobalSystem = resolved.toLowerCase() === resolve(getGlobalSystemMd()).toLowerCase()
@@ -269,7 +279,9 @@ export function registerSkillsResourceHandlers(): void {
 
   registerHandler('ipc:resource.write', async (req) => {
     const path = String(req.path || '')
-    if (path.startsWith('pi-desktop://')) return { ok: false, error: '只读预览不可保存' }
+    if (path.startsWith('xiaogui://') || path.startsWith('pi-desktop://')) {
+      return { ok: false, error: '只读预览不可保存' }
+    }
     const content = String(req.content ?? '')
     if (!path) return { ok: false, error: 'missing path' }
     try {

@@ -56,6 +56,8 @@ await run('scripts/prepare-libreoffice-runtime.mjs')
 await run('scripts/verify-libreoffice-runtime.mjs')
 if (!prebuilt) {
   await run('scripts/export-app-icon.mjs')
+  await run('node_modules/vite/bin/vite.js', ['build', '--config', 'vite.office-viewer.config.ts'])
+  await run('scripts/build-office-gateway.mjs')
   await run('node_modules/electron-vite/bin/electron-vite.js', ['build'])
 }
 await run('node_modules/electron-builder/cli.js', ['--win', '--publish', 'never'])

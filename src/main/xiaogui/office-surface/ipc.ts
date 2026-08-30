@@ -55,6 +55,16 @@ const PrepareSchema = z.object({
 }).strict()
 
 const ReleaseSchema = z.object({ sessionId: z.string().uuid() }).strict()
+const SnapshotSchema = z.custom<OfficeSnapshotV1>(
+  (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+  '文档工作副本格式无效。',
+)
+const GatewayReadSchema = z.object({ sessionId: z.string().uuid() }).strict()
+const GatewayWriteSchema = z.object({
+  sessionId: z.string().uuid(),
+  expectedHeadSha256: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  snapshot: SnapshotSchema,
+}).strict()
 
 const sessions = new Map<string, OfficeGatewaySessionV1>()
 
@@ -108,7 +118,6 @@ export function registerOfficeSurfaceHandlersV1(): void {
           sessionId,
           mode,
           gatewayOrigin: gateway.origin,
-          gatewayAccessToken: gateway.accessToken,
           sourceSha256: projection.sourceSha256,
           readOnly: projection.readOnly,
           mappedOccurrenceIds: projection.occurrences.map((occurrence) => occurrence.occurrenceId),
@@ -132,6 +141,20 @@ export function registerOfficeSurfaceHandlersV1(): void {
       return { released: true }
     },
   )
+
+  registerHandlerWithSchema(
+    'ipc:xiaogui.officeSurface.gateway.snapshot.read',
+    GatewayReadSchema,
+    async ({ sessionId }) => requireSession(sessionId).readSnapshot(),
+  )
+
+  registerHandlerWithSchema(
+    'ipc:xiaogui.officeSurface.gateway.snapshot.write',
+    GatewayWriteSchema,
+    async ({ sessionId, expectedHeadSha256, snapshot }) => ({
+      headSha256: await requireSession(sessionId).writeSnapshot(expectedHeadSha256, snapshot),
+    }),
+  )
 }
 
 export async function closeOfficeSurfaceSessionsV1(): Promise<void> {
@@ -139,4 +162,10 @@ export async function closeOfficeSurfaceSessionsV1(): Promise<void> {
   sessions.clear()
   await Promise.allSettled(active.map((session) => session.close()))
   await officeGatewaySupervisorV1.closeAll()
+}
+
+function requireSession(sessionId: string): OfficeGatewaySessionV1 {
+  const gateway = sessions.get(sessionId)
+  if (!gateway) throw new Error('OFFICE_SURFACE_SESSION_NOT_FOUND')
+  return gateway
 }

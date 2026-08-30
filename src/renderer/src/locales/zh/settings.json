@@ -585,8 +585,14 @@
   },
   "prompts": {
     "title": "提示词与上下文",
-    "description": "按进入对话上下文的方式分组：项目上下文（AGENTS.md / CLAUDE.md）、全局与每轮 system。未创建全局 SYSTEM.md 时，打开「全局」项会预填当前内置文案，保存后即生效；带「每轮 system」标记的会随会话注入。",
+    "description": "按产品层、用户追加、项目上下文、Slash 模板、工具能力准则和专用子任务分组；是否进入每轮 System Context 另行标注。",
     "groupAgentsContext": "项目上下文（AGENTS.md 等）",
+    "productSystemLayers": "产品 System Layers",
+    "userSystemAppend": "用户 System / Append",
+    "groupProjectContext": "项目上下文",
+    "slashPromptTemplates": "Slash Prompt 模板",
+    "toolCapabilityGuidelines": "Tool / Capability Guidelines",
+    "subtaskPrompts": "专用 Subtask Prompts",
     "loading": "加载中…",
     "empty": "未发现条目（打开工作区后刷新）",
     "selectLeftToEdit": "选择左侧一项以编辑",
@@ -621,10 +627,11 @@
     "layerKind": "类型",
     "layerVersion": "版本",
     "layerCharacters": "字符数",
-    "advancedSummary": "高级诊断：展开 Prompt 正文",
-    "advancedWarning": "正文可能包含项目上下文和敏感信息；仅在明确需要诊断时查看。",
-    "advancedLoading": "正在从当前真实会话读取正文…",
-    "advancedTruncated": "界面仅显示前 {{count}} 个字符；上方完整长度与 SHA-256 始终基于未截断 Prompt。",
+    "advancedSummary": "高级诊断：查看产品层 Prompt",
+    "advancedWarning": "",
+    "advancedLoading": "正在从当前真实会话提取产品层正文…",
+    "advancedTruncated": "界面仅显示产品层正文前 {{count}} 个字符；上方完整长度与 SHA-256 仍对应当前会话的完整 Effective Prompt。",
+    "legacyDesignRuntimeDeduped": "检测到旧版 DESIGN Prompt 标记，本次仅在运行时去重，没有修改项目文件。",
     "templateTitle": "模板 {{command}}",
     "items": {
       "agentsGlobal": {
@@ -645,7 +652,7 @@
       },
       "systemDefaultPreview": {
         "name": "当前真实 Effective Prompt（诊断）",
-        "description": "当前真实会话的完整 Manifest；正文仅在高级诊断中显式展开"
+        "description": "当前真实会话的完整 Manifest；高级诊断只显示产品层正文"
       },
       "appendProject": {
         "name": "APPEND_SYSTEM.md（项目）",

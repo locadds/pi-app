@@ -62,6 +62,10 @@ export function cancelDirectExtensionUI(id: string | undefined): boolean {
   return true
 }
 
+export function hasPendingDirectExtensionUI(): boolean {
+  return pending.size > 0
+}
+
 export const __test = {
   pendingCount: () => pending.size,
 }

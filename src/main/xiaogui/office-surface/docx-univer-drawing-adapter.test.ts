@@ -1,8 +1,16 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 
+import { parseOfficeDrawingDegradationV1 } from '@shared/xiaogui-office-drawing-degradation'
 import { buildDocxUniverDocumentV1 } from './docx-univer-document-adapter'
-import type { UniverImageDrawingV1 } from './docx-univer-drawing-adapter'
+import {
+  getDocxUniverDrawingWarningsV1,
+  prepareDocxUniverDrawingPackageV1,
+  prepareDocxUniverDrawingPartContextV1,
+  readDocxUniverDrawingV1,
+  selectDocxUniverAlternateContentV1,
+  type UniverImageDrawingV1,
+} from './docx-univer-drawing-adapter'
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Xcw6WQAAAABJRU5ErkJggg==',
@@ -129,6 +137,233 @@ describe('DOCX Univer 图片适配', () => {
     expect(built.warnings.join('\n')).toMatch(/组合图形/)
     expect(built.warnings.join('\n')).toMatch(/嵌入对象/)
     expect(built.warnings.join('\n')).toMatch(/仅显示其浏览器可用的栅格预览/)
+  })
+
+  it('映射 VML left/top 与可可靠读取的 DrawingML/VML rotation、flip、crop', async () => {
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types/>')
+    zip.file('word/media/image.png', PNG_1X1)
+    zip.file('word/_rels/document.xml.rels', `<Relationships>${relationship('rPng', 'media/image.png')}</Relationships>`)
+    const drawingPackage = await prepareDocxUniverDrawingPackageV1(zip)
+    const context = await prepareDocxUniverDrawingPartContextV1(zip, drawingPackage, {
+      part: 'BODY',
+      partIndex: 1,
+      partPath: 'word/document.xml',
+      documentId: 'transform-fixture',
+      drawingSequence: { value: 0 },
+    })
+
+    const vml = readDocxUniverDrawingV1(
+      '<w:pict><v:shape style="position:absolute;left:18pt;top:-9pt;width:72pt;height:36pt;rotation:90;flip:x"><v:imagedata r:id="rPng"/></v:shape></w:pict>',
+      context,
+    )?.drawing
+    expect(vml?.transform).toMatchObject({
+      left: 24,
+      top: -12,
+      width: 96,
+      height: 48,
+      angle: 90,
+      flipX: true,
+      flipY: false,
+    })
+    expect(vml?.docTransform).toMatchObject({
+      positionH: { posOffset: 24 },
+      positionV: { posOffset: -12 },
+      angle: 90,
+    })
+
+    const drawingMl = readDocxUniverDrawingV1(
+      '<w:drawing><wp:inline><wp:extent cx="952500" cy="476250"/><a:graphic><pic:pic><pic:blipFill><a:blip r:embed="rPng"/><a:srcRect l="10000" t="20000" r="30000" b="40000"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000" flipH="1" flipV="true"/></pic:spPr></pic:pic></a:graphic></wp:inline></w:drawing>',
+      context,
+    )?.drawing
+    expect(drawingMl?.transform).toMatchObject({ angle: 90, flipX: true, flipY: true })
+    expect(drawingMl?.docTransform.angle).toBe(90)
+    expect(drawingMl?.srcRect).toEqual({
+      left: expect.closeTo(100 / 6),
+      top: expect.closeTo(25),
+      right: expect.closeTo(50),
+      bottom: expect.closeTo(50),
+    })
+
+    const invalidCrop = readDocxUniverDrawingV1(
+      '<w:drawing><wp:inline><wp:extent cx="952500" cy="476250"/><a:graphic><pic:pic><pic:blipFill><a:blip r:embed="rPng"/><a:srcRect l="90000" r="20000"/></pic:blipFill></pic:pic></a:graphic></wp:inline></w:drawing>',
+      context,
+    )?.drawing
+    expect(invalidCrop?.srcRect).toBeUndefined()
+    expect(getDocxUniverDrawingWarningsV1(drawingPackage)
+      .map(parseOfficeDrawingDegradationV1))
+      .toContainEqual(expect.objectContaining({ reason: 'CROP_NOT_APPLIED', sequence: 3 }))
+  })
+
+  it('把缺失/不支持图片对象输出为可显示的结构化降级记录', async () => {
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types/>')
+    zip.file('word/media/image.emf', Buffer.from([0xd7, 0xcd, 0xc6, 0x9a]))
+    zip.file('word/_rels/document.xml.rels', `<Relationships>${relationship('rEmf', 'media/image.emf')}</Relationships>`)
+    const drawingPackage = await prepareDocxUniverDrawingPackageV1(zip)
+    const context = await prepareDocxUniverDrawingPartContextV1(zip, drawingPackage, {
+      part: 'BODY',
+      partIndex: 1,
+      partPath: 'word/document.xml',
+      documentId: 'degradation-fixture',
+      drawingSequence: { value: 0 },
+    })
+
+    expect(readDocxUniverDrawingV1('<w:drawing><a:blip r:embed="rEmf"/></w:drawing>', context)).toBeUndefined()
+    expect(readDocxUniverDrawingV1('<w:drawing><a:blip r:embed="rMissing"/></w:drawing>', context)).toBeUndefined()
+
+    const records = getDocxUniverDrawingWarningsV1(drawingPackage)
+      .map(parseOfficeDrawingDegradationV1)
+      .filter((item) => item !== null)
+    expect(records).toEqual([
+      expect.objectContaining({
+        part: 'BODY',
+        sequence: 1,
+        reason: 'UNSUPPORTED_FORMAT',
+        relationshipId: 'rEmf',
+        format: 'WMF',
+      }),
+      expect.objectContaining({
+        part: 'BODY',
+        sequence: 2,
+        reason: 'RELATIONSHIP_NOT_FOUND',
+        relationshipId: 'rMissing',
+      }),
+    ])
+  })
+
+  it('外链图片降级不会把 file URI、UNC、HTTPS 路径或凭据带入投影消息', async () => {
+    const fileTarget = 'file:///C:/Users/Alice/private/client-logo.png'
+    const uncTarget = String.raw`\\fileserver\finance\budget-2026.png`
+    const httpsTarget = 'https://alice:supersecret@example.com/private/logo.png?token=abc123'
+    const externalDrawing = (relationshipId: string) => `<w:p><w:r><w:drawing><wp:inline>
+      <wp:extent cx="952500" cy="476250"/><a:graphic><pic:pic><pic:blipFill>
+      <a:blip r:link="${relationshipId}"/>
+      </pic:blipFill></pic:pic></a:graphic>
+    </wp:inline></w:drawing></w:r></w:p>`
+    const mainXml = `<w:document xmlns:w="w" xmlns:r="r" xmlns:wp="wp" xmlns:a="a" xmlns:pic="pic">
+      <w:body>
+        ${externalDrawing('rFile')}
+        ${externalDrawing('rUnc')}
+        ${externalDrawing('rHttps')}
+        <w:sectPr/>
+      </w:body>
+    </w:document>`
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types/>')
+    zip.file('word/document.xml', mainXml)
+    zip.file('word/_rels/document.xml.rels', `<Relationships>
+      <Relationship Id="rFile" Target="${fileTarget}" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"/>
+      <Relationship Id="rUnc" Target="${uncTarget}" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"/>
+      <Relationship Id="rHttps" Target="${httpsTarget}" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"/>
+    </Relationships>`)
+
+    const built = await buildDocxUniverDocumentV1({
+      zip,
+      mainXml,
+      documentId: 'external-image-fixture',
+      title: 'external-image.docx',
+    })
+    const records = built.warnings
+      .map(parseOfficeDrawingDegradationV1)
+      .filter((item) => item !== null)
+    expect(records).toEqual([
+      expect.objectContaining({ reason: 'EXTERNAL_IMAGE', relationshipId: 'rFile', format: 'EXTERNAL_FILE_URI' }),
+      expect.objectContaining({ reason: 'EXTERNAL_IMAGE', relationshipId: 'rUnc', format: 'EXTERNAL_UNC_PATH' }),
+      expect.objectContaining({ reason: 'EXTERNAL_IMAGE', relationshipId: 'rHttps', format: 'EXTERNAL_HTTPS_URL' }),
+    ])
+    for (const record of records) {
+      expect(record).not.toHaveProperty('target')
+      expect(record).not.toHaveProperty('packagePath')
+    }
+
+    const transported = JSON.stringify({ warnings: built.warnings, document: built.document })
+    for (const secret of [
+      fileTarget,
+      uncTarget,
+      httpsTarget,
+      'C:/Users/Alice',
+      'fileserver',
+      'supersecret',
+      'abc123',
+    ]) expect(transported).not.toContain(secret)
+  })
+
+  it('对未映射的 tight/through 环绕多边形逐对象输出结构化降级记录', async () => {
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types/>')
+    zip.file('word/media/image.png', PNG_1X1)
+    zip.file('word/_rels/document.xml.rels', `<Relationships>${relationship('rPng', 'media/image.png')}</Relationships>`)
+    const drawingPackage = await prepareDocxUniverDrawingPackageV1(zip)
+    const context = await prepareDocxUniverDrawingPartContextV1(zip, drawingPackage, {
+      part: 'BODY',
+      partIndex: 1,
+      partPath: 'word/document.xml',
+      documentId: 'wrap-fixture',
+      drawingSequence: { value: 0 },
+    })
+
+    const tight = readDocxUniverDrawingV1(
+      '<w:drawing><wp:anchor><wp:extent cx="952500" cy="476250"/><wp:wrapTight wrapText="bothSides"><wp:wrapPolygon edited="1"><wp:start x="0" y="0"/><wp:lineTo x="21600" y="0"/><wp:lineTo x="21600" y="21600"/></wp:wrapPolygon></wp:wrapTight><a:graphic><pic:pic><pic:blipFill><a:blip r:embed="rPng"/></pic:blipFill></pic:pic></a:graphic></wp:anchor></w:drawing>',
+      context,
+    )
+    const through = readDocxUniverDrawingV1(
+      '<w:drawing><wp:anchor><wp:extent cx="952500" cy="476250"/><wp:wrapThrough wrapText="largest"><wp:wrapPolygon><wp:start x="0" y="0"/><wp:lineTo x="21600" y="21600"/></wp:wrapPolygon></wp:wrapThrough><a:graphic><pic:pic><pic:blipFill><a:blip r:embed="rPng"/></pic:blipFill></pic:pic></a:graphic></wp:anchor></w:drawing>',
+      context,
+    )
+
+    expect(tight?.drawing.layoutType).toBe(5)
+    expect(through?.drawing.layoutType).toBe(4)
+    expect(getDocxUniverDrawingWarningsV1(drawingPackage)
+      .map(parseOfficeDrawingDegradationV1))
+      .toEqual([
+        expect.objectContaining({
+          reason: 'COMPLEX_WRAP_APPROXIMATION',
+          relationshipId: 'rPng',
+          sequence: 1,
+        }),
+        expect.objectContaining({
+          reason: 'COMPLEX_WRAP_APPROXIMATION',
+          relationshipId: 'rPng',
+          sequence: 2,
+        }),
+      ])
+  })
+
+  it('提供 mc:AlternateContent 单分支选择接缝，避免 Choice/Fallback 重复投影', () => {
+    const xml = '<w:r><mc:AlternateContent><mc:Choice Requires="wp"><w:drawing><a:blip r:embed="rChoice"/></w:drawing></mc:Choice><mc:Fallback><w:pict><v:imagedata r:id="rFallback"/></w:pict></mc:Fallback></mc:AlternateContent></w:r>'
+    const selected = selectDocxUniverAlternateContentV1(xml)
+    expect(selected).toContain('rChoice')
+    expect(selected).not.toContain('rFallback')
+    expect(selected.match(/r:(?:embed|id)=/g)).toHaveLength(1)
+  })
+
+  it('Choice 需要不可解析能力时选择可读 Fallback，并按归一化分支只计一个对象', async () => {
+    const zip = new JSZip()
+    const mainXml = `<w:document xmlns:w="w" xmlns:r="r" xmlns:mc="mc" xmlns:wps="wps" xmlns:wp="wp" xmlns:a="a" xmlns:v="v">
+      <w:body><w:p><w:r><mc:AlternateContent>
+        <mc:Choice Requires="wps"><w:drawing><wp:inline><a:graphic><a:graphicData><wps:wsp/></a:graphicData></a:graphic></wp:inline></w:drawing></mc:Choice>
+        <mc:Fallback><w:pict><v:shape style="width:72pt;height:36pt"><v:imagedata r:id="rFallback"/></v:shape></w:pict></mc:Fallback>
+      </mc:AlternateContent></w:r></w:p><w:sectPr/></w:body>
+    </w:document>`
+    zip.file('[Content_Types].xml', '<Types/>')
+    zip.file('word/document.xml', mainXml)
+    zip.file('word/_rels/document.xml.rels', `<Relationships>${relationship('rFallback', 'media/fallback.png')}</Relationships>`)
+    zip.file('word/media/fallback.png', PNG_1X1)
+
+    const built = await buildDocxUniverDocumentV1({
+      zip,
+      mainXml,
+      documentId: 'alternate-fallback-fixture',
+      title: 'alternate-fallback.docx',
+    })
+
+    expect(built.statistics.drawingCount).toBe(1)
+    expect(built.document.drawingsOrder).toHaveLength(1)
+    expect(Object.values(built.document.drawings ?? {})[0]).toMatchObject({
+      source: expect.stringMatching(/^data:image\/png;base64,/),
+    })
+    expect(built.warnings.join('\n')).not.toMatch(/另有 1 个绘图对象/)
   })
 
 })

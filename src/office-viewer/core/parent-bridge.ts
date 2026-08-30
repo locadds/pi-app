@@ -9,7 +9,7 @@ import {
 export interface OfficeParentBridgeV1 {
   post(message: OfficeSurfaceViewerPayloadV1): void
   subscribe(listener: (message: OfficeSurfaceParentMessageV1) => void): () => void
-  waitForAuthorization(): Promise<string>
+  waitForConnection(): Promise<void>
   dispose(): void
 }
 
@@ -30,10 +30,10 @@ export function createOfficeParentBridgeV1(locationUrl = window.location.href): 
   if (!channelNonce || channelNonce.length < 32 || channelNonce.length > 256) return null
 
   let port: MessagePort | null = null
-  let gatewayAccessToken: string | null = null
-  let resolveAuthorization: ((token: string) => void) | null = null
-  const authorization = new Promise<string>((resolve) => {
-    resolveAuthorization = resolve
+  let connected = false
+  let resolveConnection: (() => void) | null = null
+  const connection = new Promise<void>((resolve) => {
+    resolveConnection = resolve
   })
   const listeners = new Set<(message: OfficeSurfaceParentMessageV1) => void>()
   const queued: OfficeSurfaceViewerPayloadV1[] = []
@@ -48,9 +48,9 @@ export function createOfficeParentBridgeV1(locationUrl = window.location.href): 
     if (event.source !== window.parent || port || event.ports.length !== 1) return
     if (!isOfficeSurfacePortOfferV1(event.data) || event.data.channelNonce !== channelNonce) return
     port = event.ports[0]
-    gatewayAccessToken = event.data.gatewayAccessToken
-    resolveAuthorization?.(gatewayAccessToken)
-    resolveAuthorization = null
+    connected = true
+    resolveConnection?.()
+    resolveConnection = null
     port.onmessage = (portEvent: MessageEvent<unknown>) => {
       if (!isOfficeSurfaceParentMessageV1(portEvent.data)) return
       if (portEvent.data.channelNonce !== channelNonce) return
@@ -67,8 +67,8 @@ export function createOfficeParentBridgeV1(locationUrl = window.location.href): 
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
-    waitForAuthorization() {
-      return gatewayAccessToken ? Promise.resolve(gatewayAccessToken) : authorization
+    waitForConnection() {
+      return connected ? Promise.resolve() : connection
     },
     dispose() {
       window.removeEventListener('message', onBootstrap)

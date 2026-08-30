@@ -88,8 +88,6 @@ export interface OfficeSurfaceSessionReadyV1 {
   readonly sessionId: string
   readonly mode: Exclude<OfficeSurfaceModeV1, 'OFF'>
   readonly gatewayOrigin: string
-  /** 仅由可信 Renderer 经 MessagePort 交给 Viewer，不得写入 URL 或会话。 */
-  readonly gatewayAccessToken: string
   readonly sourceSha256: string
   readonly readOnly: boolean
   readonly mappedOccurrenceIds: readonly string[]
@@ -143,10 +141,19 @@ export type OfficeSurfaceViewerMessageV1 =
       readonly occurrenceId: string
       readonly fieldId: string
     })
+  | (OfficeSurfaceMessageBaseV1 & {
+      readonly type: 'VIEWER_GATEWAY_READ_REQUEST'
+      readonly requestId: string
+    })
+  | (OfficeSurfaceMessageBaseV1 & {
+      readonly type: 'VIEWER_GATEWAY_WRITE_REQUEST'
+      readonly requestId: string
+      readonly expectedHeadSha256: string
+      readonly snapshot: OfficeSnapshotV1
+    })
 
 export interface OfficeSurfacePortOfferV1 extends OfficeSurfaceMessageBaseV1 {
   readonly type: 'OFFICE_PORT_OFFER'
-  readonly gatewayAccessToken: string
 }
 
 export type OfficeSurfaceParentMessageV1 =
@@ -168,6 +175,20 @@ export type OfficeSurfaceParentMessageV1 =
       readonly fieldId: string
       readonly value: string
       readonly occurrenceIds: readonly string[]
+    })
+  | (OfficeSurfaceMessageBaseV1 & {
+      readonly type: 'PARENT_GATEWAY_RESPONSE'
+      readonly requestId: string
+      readonly ok: true
+      readonly headSha256: string
+      readonly snapshot?: OfficeSnapshotV1
+    })
+  | (OfficeSurfaceMessageBaseV1 & {
+      readonly type: 'PARENT_GATEWAY_RESPONSE'
+      readonly requestId: string
+      readonly ok: false
+      readonly errorCode: string
+      readonly message: string
     })
 
 export function readOfficeSurfaceModeV1(
@@ -198,6 +219,12 @@ export function isOfficeSurfaceViewerMessageV1(value: unknown): value is OfficeS
   if (message.type === 'VIEWER_OCCURRENCE_SELECTED') {
     return isIdentifier(message.occurrenceId) && isIdentifier(message.fieldId)
   }
+  if (message.type === 'VIEWER_GATEWAY_READ_REQUEST') return isIdentifier(message.requestId)
+  if (message.type === 'VIEWER_GATEWAY_WRITE_REQUEST') {
+    return isIdentifier(message.requestId)
+      && isDigest(message.expectedHeadSha256)
+      && isSnapshot(message.snapshot)
+  }
   return false
 }
 
@@ -220,18 +247,26 @@ export function isOfficeSurfaceParentMessageV1(value: unknown): value is OfficeS
       message.occurrenceIds.length > 0
     )
   }
+  if (type === 'PARENT_GATEWAY_RESPONSE') {
+    if (!isIdentifier(message.requestId) || typeof message.ok !== 'boolean') return false
+    if (message.ok) {
+      return isDigest(message.headSha256)
+        && (message.snapshot === undefined || isSnapshot(message.snapshot))
+    }
+    return typeof message.errorCode === 'string'
+      && message.errorCode.length > 0
+      && message.errorCode.length <= 120
+      && typeof message.message === 'string'
+      && message.message.length > 0
+      && message.message.length <= 500
+  }
   return type === 'PARENT_PING' || type === 'PARENT_SAVE' || type === 'PARENT_RELOAD' || type === 'PARENT_DISPOSE'
 }
 
 export function isOfficeSurfacePortOfferV1(value: unknown): value is OfficeSurfacePortOfferV1 {
   if (!isMessageBase(value)) return false
   const message = value as Record<string, unknown>
-  return (
-    message.type === 'OFFICE_PORT_OFFER' &&
-    typeof message.gatewayAccessToken === 'string' &&
-    message.gatewayAccessToken.length >= 32 &&
-    message.gatewayAccessToken.length <= 512
-  )
+  return message.type === 'OFFICE_PORT_OFFER'
 }
 
 export function isOfficeStructuredDocumentProjectionV1(value: unknown): value is OfficeStructuredDocumentProjectionV1 {
@@ -297,4 +332,8 @@ function isIdentifier(value: unknown): value is string {
 
 function isIdentifierList(value: unknown, limit: number): value is readonly string[] {
   return Array.isArray(value) && value.length <= limit && value.every((item) => isIdentifier(item))
+}
+
+function isSnapshot(value: unknown): value is OfficeSnapshotV1 {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }

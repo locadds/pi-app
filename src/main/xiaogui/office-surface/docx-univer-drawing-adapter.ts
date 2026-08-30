@@ -5,7 +5,13 @@ import type {
   IDocumentData,
   IObjectPositionH,
   IObjectPositionV,
+  ISrcRect,
 } from '@univerjs/core'
+import {
+  encodeOfficeDrawingDegradationV1,
+  type OfficeDrawingDegradationReasonV1,
+  type OfficeDrawingDegradationV1,
+} from '@shared/xiaogui-office-drawing-degradation'
 
 const DOCS_DRAWING_RESOURCE_NAME = 'DOC_DRAWING_PLUGIN'
 const EMU_PER_PIXEL = 9_525
@@ -34,6 +40,7 @@ export interface DocxUniverDrawingPackageV1 {
   readonly mediaCount: number
   readonly assets: ReadonlyMap<string, MediaAssetV1>
   readonly warnings: Set<string>
+  readonly degradations: Map<string, OfficeDrawingDegradationV1>
 }
 
 export interface DocxUniverDrawingPartContextV1 {
@@ -49,6 +56,7 @@ export interface DocxUniverDrawingPartContextV1 {
 export interface UniverImageDrawingV1 extends IDocDrawingBase {
   readonly imageSourceType: 'BASE64'
   readonly source: string
+  readonly srcRect?: ISrcRect
 }
 
 export interface ParsedDocxUniverDrawingV1 {
@@ -89,6 +97,7 @@ export async function prepareDocxUniverDrawingPackageV1(
     mediaCount: Object.keys(zip.files).filter((path) => /^word\/media\//i.test(path) && !zip.files[path].dir).length,
     assets,
     warnings: new Set<string>(),
+    degradations: new Map<string, OfficeDrawingDegradationV1>(),
   }
 }
 
@@ -118,7 +127,7 @@ export function readDocxUniverDrawingV1(
     || hasElement(xml, 'a:grpSp')
     || /<a:graphicData\b[^>]*\buri\s*=\s*["'][^"']*(?:wordprocessingGroup|group)[^"']*["']/i.test(xml)
   if (groupDrawing) {
-    context.drawingPackage.warnings.add(`${location} 是组合图形，当前不会伪装成已还原图片。`)
+    recordDrawingDegradationV1(context, sequence, 'GROUP_DRAWING', `${location} 是组合图形，当前不会伪装成已还原图片。`)
     return undefined
   }
 
@@ -135,58 +144,121 @@ export function readDocxUniverDrawingV1(
 
   if (!relationshipId) {
     if (embeddedObject) {
-      context.drawingPackage.warnings.add(`${location} 是嵌入对象，未发现可安全显示的图片关系。`)
+      recordDrawingDegradationV1(context, sequence, 'MISSING_RELATIONSHIP', `${location} 是嵌入对象，未发现可安全显示的图片关系。`)
     } else if (vmlImage || hasElement(xml, 'w:pict')) {
-      context.drawingPackage.warnings.add(`${location} 是 VML 图形，未发现可安全显示的图片关系。`)
+      recordDrawingDegradationV1(context, sequence, 'MISSING_RELATIONSHIP', `${location} 是 VML 图形，未发现可安全显示的图片关系。`)
     } else {
-      context.drawingPackage.warnings.add(`${location} 未包含可读取的图片关系，已保留为待处理对象。`)
+      recordDrawingDegradationV1(context, sequence, 'MISSING_RELATIONSHIP', `${location} 未包含可读取的图片关系，已保留为待处理对象。`)
     }
     return undefined
   }
 
   const relationship = context.relationships.get(relationshipId)
   if (!relationship) {
-    context.drawingPackage.warnings.add(`${location} 引用缺失的关系 ${relationshipId}，图片未显示。`)
+    recordDrawingDegradationV1(
+      context,
+      sequence,
+      'RELATIONSHIP_NOT_FOUND',
+      `${location} 引用缺失的关系 ${relationshipId}，图片未显示。`,
+      { relationshipId },
+    )
     return undefined
   }
   if (linkedRelationshipId || relationship.external) {
-    context.drawingPackage.warnings.add(`${location} 引用外部图片，出于离线和数据边界要求未自动加载。`)
+    recordDrawingDegradationV1(
+      context,
+      sequence,
+      'EXTERNAL_IMAGE',
+      `${location} 引用外部图片，出于离线和数据边界要求未自动加载。`,
+      { relationshipId, format: summarizeExternalReferenceV1(relationship.target) },
+    )
     return undefined
   }
   if (relationship.type && !/\/image$/i.test(relationship.type)) {
-    context.drawingPackage.warnings.add(`${location} 是嵌入对象而非图片关系，当前不会伪装成已还原图片。`)
+    recordDrawingDegradationV1(
+      context,
+      sequence,
+      'NON_IMAGE_RELATIONSHIP',
+      `${location} 是嵌入对象而非图片关系，当前不会伪装成已还原图片。`,
+      { relationshipId },
+    )
     return undefined
   }
   const asset = relationship.packagePath
     ? context.drawingPackage.assets.get(normalizePackagePath(relationship.packagePath))
     : undefined
   if (!asset) {
-    context.drawingPackage.warnings.add(`${location} 的媒体文件 ${relationship.target} 缺失，图片未显示。`)
+    recordDrawingDegradationV1(
+      context,
+      sequence,
+      'MEDIA_MISSING',
+      `${location} 的媒体文件缺失，图片未显示。`,
+      { relationshipId },
+    )
     return undefined
   }
   if (!asset.dataUrl || !asset.mimeType) {
-    context.drawingPackage.warnings.add(
-      `${location} 使用暂不可靠支持的 ${asset.format} 图片（${asset.packagePath}），已明确标记但不伪装成功。`,
+    recordDrawingDegradationV1(
+      context,
+      sequence,
+      'UNSUPPORTED_FORMAT',
+      `${location} 使用暂不可靠支持的 ${asset.format} 图片，已明确标记但不伪装成功。`,
+      {
+        relationshipId,
+        format: asset.format,
+      },
     )
     return undefined
   }
   if (svgBlip) {
-    context.drawingPackage.warnings.add(`${location} 包含 SVG；当前显示其浏览器可用的栅格回退图，请在正式模板前核对。`)
+    recordDrawingDegradationV1(
+      context,
+      sequence,
+      'SVG_RASTER_FALLBACK',
+      `${location} 包含 SVG；当前显示其浏览器可用的栅格回退图，请在正式模板前核对。`,
+      { relationshipId, format: 'SVG' },
+    )
   }
   if (embeddedObject) {
-    context.drawingPackage.warnings.add(`${location} 是嵌入对象；仅显示其浏览器可用的栅格预览，交互对象本身未还原。`)
+    recordDrawingDegradationV1(
+      context,
+      sequence,
+      'OLE_RASTER_PREVIEW',
+      `${location} 是嵌入对象；仅显示其浏览器可用的栅格预览，交互对象本身未还原。`,
+      { relationshipId, format: asset.format },
+    )
   }
 
   const drawingId = `xiaogui-${context.part.toLowerCase()}-${context.partIndex}-drawing-${sequence}`
   const inline = hasElement(xml, 'wp:inline')
     || (!hasElement(xml, 'wp:anchor') && !vmlIsFloating(xml))
   const size = readDrawingSize(xml)
+  const vmlPosition = readVmlPosition(xml)
   const horizontal = inline
     ? { relativeFrom: 2, posOffset: 0 }
-    : readDrawingHorizontalPosition(xml)
+    : vmlPosition?.horizontal ?? readDrawingHorizontalPosition(xml)
   const vertical = inline
     ? { relativeFrom: 2, posOffset: 0 }
-    : readDrawingVerticalPosition(xml)
+    : vmlPosition?.vertical ?? readDrawingVerticalPosition(xml)
+  const drawingTransform = readDrawingTransform(xml, size)
+  if (hasUnmappedWrapPolygon(xml)) {
+    recordDrawingDegradationV1(
+      context,
+      sequence,
+      'COMPLEX_WRAP_APPROXIMATION',
+      `${location} 使用未完整映射的紧密/穿越型多边形环绕；当前仅保留近似环绕类型和位置，请人工核对。`,
+      { relationshipId, format: asset.format },
+    )
+  }
+  if (drawingTransform.cropWarning) {
+    recordDrawingDegradationV1(
+      context,
+      sequence,
+      'CROP_NOT_APPLIED',
+      `${location} 的裁剪参数无法可靠映射，已保留原图并明确告警。`,
+      { relationshipId, format: asset.format },
+    )
+  }
   const docProperties = firstOpenTag(xml, 'wp:docPr')
   const anchorTag = firstOpenTag(xml, 'wp:anchor')
   const transform = {
@@ -194,7 +266,9 @@ export function readDocxUniverDrawingV1(
     top: vertical.posOffset ?? 0,
     width: size.width,
     height: size.height,
-    angle: 0,
+    angle: drawingTransform.angle,
+    flipX: drawingTransform.flipX,
+    flipY: drawingTransform.flipY,
   }
   const drawing: UniverImageDrawingV1 = {
     drawingId,
@@ -203,6 +277,7 @@ export function readDocxUniverDrawingV1(
     drawingType: 0,
     imageSourceType: 'BASE64',
     source: asset.dataUrl,
+    ...(drawingTransform.srcRect ? { srcRect: drawingTransform.srcRect } : {}),
     transform,
     ...(context.part === 'BODY'
       ? {}
@@ -211,7 +286,7 @@ export function readDocxUniverDrawingV1(
       size,
       positionH: horizontal,
       positionV: vertical,
-      angle: 0,
+      angle: drawingTransform.angle,
     },
     title: docProperties ? attribute(docProperties, 'name') ?? '' : '',
     description: docProperties ? attribute(docProperties, 'descr') ?? '' : '',
@@ -224,6 +299,70 @@ export function readDocxUniverDrawingV1(
     distB: emuToPixels(numericAttribute(anchorTag ?? '', 'distB')),
   }
   return { drawing, approximateFloating: !inline }
+}
+
+/**
+ * Selects one drawing representation from each common OOXML
+ * mc:AlternateContent container. The document tokenizer must call this before
+ * scanning w:drawing/w:pict nodes; keeping it here makes that integration seam
+ * explicit without coupling the drawing reader to paragraph tokenization.
+ */
+export function selectDocxUniverAlternateContentV1(xml: string): string {
+  let output = xml
+  let searchFrom = 0
+  while (searchFrom < output.length) {
+    const tail = output.slice(searchFrom)
+    const alternate = firstElement(tail, 'mc:AlternateContent')
+    if (!alternate) break
+    const localStart = tail.indexOf(alternate)
+    if (localStart < 0) break
+    const start = searchFrom + localStart
+    const choices = [...alternate.matchAll(/<mc:Choice\b[^>]*>[\s\S]*?<\/mc:Choice\s*>/gi)].map((match) => match[0])
+    const fallback = firstElement(alternate, 'mc:Fallback')
+    const selected = choices.find((choice) => alternateChoiceIsSupported(choice) && drawingBranchIsReadable(choice))
+      ?? (fallback && drawingBranchIsReadable(fallback) ? fallback : undefined)
+      ?? choices.find(alternateChoiceIsSupported)
+      ?? fallback
+      ?? choices[0]
+    const content = selected ? stripOuterElement(selected) : ''
+    output = `${output.slice(0, start)}${content}${output.slice(start + alternate.length)}`
+    searchFrom = start + content.length
+  }
+  return output
+}
+
+const SUPPORTED_ALTERNATE_CONTENT_REQUIREMENTS = new Set([
+  'a',
+  'asvg',
+  'mc',
+  'o',
+  'pic',
+  'r',
+  'v',
+  'w',
+  'wp',
+  'wp14',
+])
+
+function alternateChoiceIsSupported(choice: string): boolean {
+  const opening = firstOpenTag(choice, 'mc:Choice') ?? ''
+  const requires = attribute(opening, 'Requires')?.trim()
+  if (!requires) return true
+  return requires
+    .split(/\s+/)
+    .every((prefix) => SUPPORTED_ALTERNATE_CONTENT_REQUIREMENTS.has(prefix.toLowerCase()))
+}
+
+function drawingBranchIsReadable(branch: string): boolean {
+  if (
+    hasElement(branch, 'wpg:wgp')
+    || hasElement(branch, 'a:grpSp')
+    || /<a:graphicData\b[^>]*\buri\s*=\s*["'][^"']*(?:wordprocessingGroup|group)[^"']*["']/i.test(branch)
+  ) return false
+  const blip = firstOpenTag(branch, 'a:blip')
+  if (blip && (attribute(blip, 'r:embed') || attribute(blip, 'r:link'))) return true
+  const vmlImage = firstOpenTag(branch, 'v:imagedata')
+  return Boolean(vmlImage && (attribute(vmlImage, 'r:id') || attribute(vmlImage, 'o:relid')))
 }
 
 export function getDocxUniverDrawingWarningsV1(
@@ -246,6 +385,30 @@ export function createUniverDocDrawingResourcesV1(
 function drawingLocation(context: DocxUniverDrawingPartContextV1, sequence: number): string {
   const part = context.part === 'BODY' ? '正文' : context.part === 'HEADER' ? `页眉 ${context.partIndex}` : `页脚 ${context.partIndex}`
   return `${part}绘图对象 ${sequence}`
+}
+
+function recordDrawingDegradationV1(
+  context: DocxUniverDrawingPartContextV1,
+  sequence: number,
+  reason: OfficeDrawingDegradationReasonV1,
+  message: string,
+  details: Pick<OfficeDrawingDegradationV1, 'relationshipId' | 'format'> = {},
+): void {
+  const id = `${context.part.toLowerCase()}-${context.partIndex}-${sequence}-${reason.toLowerCase()}`
+  const record: OfficeDrawingDegradationV1 = {
+    kind: 'XIAOGUI_DOCX_DRAWING_DEGRADATION',
+    version: 1,
+    id,
+    part: context.part,
+    partIndex: context.partIndex,
+    sequence,
+    severity: reason === 'SVG_RASTER_FALLBACK' || reason === 'OLE_RASTER_PREVIEW' ? 'INFO' : 'WARNING',
+    reason,
+    message,
+    ...details,
+  }
+  context.drawingPackage.degradations.set(id, record)
+  context.drawingPackage.warnings.add(encodeOfficeDrawingDegradationV1(record))
 }
 
 interface ContentTypesV1 {
@@ -378,11 +541,125 @@ function cssLengthToPixels(value: string | undefined): number | undefined {
   if (!value) return undefined
   const parsed = Number.parseFloat(value)
   if (!Number.isFinite(parsed) || parsed <= 0) return undefined
-  if (/pt\s*$/i.test(value)) return parsed * POINTS_TO_PIXELS
-  if (/in\s*$/i.test(value)) return parsed * 96
-  if (/cm\s*$/i.test(value)) return parsed * (96 / 2.54)
-  if (/mm\s*$/i.test(value)) return parsed * (96 / 25.4)
+  return cssNumericLengthToPixels(parsed, value)
+}
+
+function summarizeExternalReferenceV1(target: string): string {
+  if (/^file:/i.test(target)) return 'EXTERNAL_FILE_URI'
+  if (/^(?:\\\\|\/\/)/.test(target)) return 'EXTERNAL_UNC_PATH'
+  if (/^https:/i.test(target)) return 'EXTERNAL_HTTPS_URL'
+  if (/^http:/i.test(target)) return 'EXTERNAL_HTTP_URL'
+  return 'EXTERNAL_REFERENCE'
+}
+
+function cssPositionToPixels(value: string | undefined): number | undefined {
+  if (!value) return undefined
+  const parsed = Number.parseFloat(value)
+  if (!Number.isFinite(parsed)) return undefined
+  return cssNumericLengthToPixels(parsed, value)
+}
+
+function cssNumericLengthToPixels(parsed: number, source: string): number {
+  if (/pt\s*$/i.test(source)) return parsed * POINTS_TO_PIXELS
+  if (/in\s*$/i.test(source)) return parsed * 96
+  if (/cm\s*$/i.test(source)) return parsed * (96 / 2.54)
+  if (/mm\s*$/i.test(source)) return parsed * (96 / 25.4)
   return parsed
+}
+
+function readVmlPosition(xml: string): {
+  readonly horizontal: IObjectPositionH
+  readonly vertical: IObjectPositionV
+} | undefined {
+  const shape = firstOpenTag(xml, 'v:shape') ?? firstOpenTag(xml, 'v:rect') ?? firstOpenTag(xml, 'v:oval')
+  if (!shape) return undefined
+  const style = attribute(shape, 'style') ?? ''
+  if (!/(?:^|;)\s*position\s*:\s*absolute/i.test(style)) return undefined
+  const left = cssPositionToPixels(readCssProperty(style, 'left') ?? readCssProperty(style, 'margin-left')) ?? 0
+  const top = cssPositionToPixels(readCssProperty(style, 'top') ?? readCssProperty(style, 'margin-top')) ?? 0
+  const horizontalRelative = readCssProperty(style, 'mso-position-horizontal-relative')?.trim().toLowerCase()
+  const verticalRelative = readCssProperty(style, 'mso-position-vertical-relative')?.trim().toLowerCase()
+  return {
+    horizontal: {
+      relativeFrom: horizontalRelative === 'text' || horizontalRelative === 'char' ? 2 : 0,
+      posOffset: left,
+    },
+    vertical: {
+      relativeFrom: verticalRelative === 'text' || verticalRelative === 'line' ? 1 : 0,
+      posOffset: top,
+    },
+  }
+}
+
+function readCssProperty(style: string, name: string): string | undefined {
+  return style.match(new RegExp(`(?:^|;)\\s*${escapeRegExp(name)}\\s*:\\s*([^;]+)`, 'i'))?.[1]
+}
+
+function readDrawingTransform(
+  xml: string,
+  size: { readonly width: number; readonly height: number },
+): {
+  readonly angle: number
+  readonly flipX: boolean
+  readonly flipY: boolean
+  readonly srcRect?: ISrcRect
+  readonly cropWarning: boolean
+} {
+  const drawingMlTransform = firstOpenTag(xml, 'a:xfrm')
+  const vmlShape = firstOpenTag(xml, 'v:shape') ?? firstOpenTag(xml, 'v:rect') ?? firstOpenTag(xml, 'v:oval')
+  const vmlStyle = vmlShape ? attribute(vmlShape, 'style') ?? '' : ''
+  const drawingMlRotation = numericAttribute(drawingMlTransform ?? '', 'rot')
+  const vmlRotation = Number.parseFloat(readCssProperty(vmlStyle, 'rotation') ?? '')
+  const angle = drawingMlRotation !== undefined
+    ? drawingMlRotation / 60_000
+    : Number.isFinite(vmlRotation)
+      ? vmlRotation
+      : 0
+  const vmlFlip = (readCssProperty(vmlStyle, 'flip') ?? attribute(vmlShape ?? '', 'flip') ?? '')
+    .toLowerCase()
+    .replaceAll(/\s+/g, '')
+  const flipX = drawingMlTransform
+    ? booleanAttribute(drawingMlTransform, 'flipH')
+    : vmlFlip.includes('x')
+  const flipY = drawingMlTransform
+    ? booleanAttribute(drawingMlTransform, 'flipV')
+    : vmlFlip.includes('y')
+  const crop = readCropRectangle(xml, size)
+  return {
+    angle,
+    flipX,
+    flipY,
+    ...(crop.srcRect ? { srcRect: crop.srcRect } : {}),
+    cropWarning: crop.warning,
+  }
+}
+
+function readCropRectangle(
+  xml: string,
+  size: { readonly width: number; readonly height: number },
+): { readonly srcRect?: ISrcRect; readonly warning: boolean } {
+  const tag = firstOpenTag(xml, 'a:srcRect')
+  if (!tag) return { warning: false }
+  const raw = ['l', 't', 'r', 'b'].map((name) => numericAttribute(tag, name) ?? 0)
+  if (raw.some((value) => !Number.isFinite(value) || value < 0 || value > 100_000)) return { warning: true }
+  const [leftFraction, topFraction, rightFraction, bottomFraction] = raw.map((value) => value / 100_000)
+  const horizontalVisible = 1 - leftFraction - rightFraction
+  const verticalVisible = 1 - topFraction - bottomFraction
+  if (horizontalVisible <= 0 || verticalVisible <= 0) return { warning: true }
+  return {
+    warning: false,
+    srcRect: {
+      left: size.width * leftFraction / horizontalVisible,
+      top: size.height * topFraction / verticalVisible,
+      right: size.width * rightFraction / horizontalVisible,
+      bottom: size.height * bottomFraction / verticalVisible,
+    },
+  }
+}
+
+function booleanAttribute(tag: string, name: string): boolean {
+  const value = attribute(tag, name)?.trim().toLowerCase()
+  return value === '1' || value === 'true' || value === 'on'
 }
 
 function readDrawingHorizontalPosition(xml: string): IObjectPositionH {
@@ -464,6 +741,22 @@ function firstElement(xml: string, tag: string): string | undefined {
 
 function firstOpenTag(xml: string, tag: string): string | undefined {
   return xml.match(new RegExp(`<${escapeRegExp(tag)}\\b[^>]*>`, 'i'))?.[0]
+}
+
+function hasUnmappedWrapPolygon(xml: string): boolean {
+  if (hasElement(xml, 'wp:wrapPolygon')) return true
+  const vmlShape = firstOpenTag(xml, 'v:shape') ?? firstOpenTag(xml, 'v:rect') ?? firstOpenTag(xml, 'v:oval')
+  if (vmlShape && attribute(vmlShape, 'wrapcoords')) return true
+  const vmlWrap = firstOpenTag(xml, 'w10:wrap')
+  const vmlWrapType = vmlWrap ? attribute(vmlWrap, 'type')?.toLowerCase() : undefined
+  return vmlWrapType === 'tight' || vmlWrapType === 'through'
+}
+
+function stripOuterElement(xml: string): string {
+  const openingEnd = xml.indexOf('>')
+  const closingStart = xml.lastIndexOf('</')
+  if (openingEnd < 0 || closingStart <= openingEnd) return ''
+  return xml.slice(openingEnd + 1, closingStart)
 }
 
 function hasElement(xml: string, tag: string): boolean {

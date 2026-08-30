@@ -80,7 +80,7 @@ describe('DOCX 到 Univer 表格深适配器', () => {
       sourceCellCount: 4,
       logicalColumnCount: 3,
       nestedTableCount: 0,
-      warnings: [],
+      warnings: [expect.stringContaining('double')],
       table: {
         tableId: 'table-1',
         align: 1,
@@ -158,6 +158,38 @@ describe('DOCX 到 Univer 表格深适配器', () => {
       expect.stringContaining('百分比或自动宽度'),
       expect.stringContaining('浮动表格'),
       expect.stringContaining('gridBefore/gridAfter'),
+    ]))
+  })
+
+  it('对无法等价映射的复合边框、斜线边框和主题图案底纹显式告警', () => {
+    const adapted = adaptDocxTableToUniverV1({
+      tableId: 'table-complex-style',
+      styles: createDocxTableStyleCatalogV1(''),
+      tableXml: `
+        <w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:tblPr>
+            <w:tblBorders>
+              <w:top w:val="double" w:sz="12" w:themeColor="accent1"/>
+            </w:tblBorders>
+          </w:tblPr>
+          <w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid>
+          <w:tr><w:tc>
+            <w:tcPr>
+              <w:shd w:val="diagStripe" w:themeFill="accent2" w:themeFillTint="80"/>
+              <w:tcBorders><w:tl2br w:val="single" w:sz="6" w:color="C00000"/></w:tcBorders>
+            </w:tcPr>
+            <w:p><w:r><w:t>复杂样式</w:t></w:r></w:p>
+          </w:tc></w:tr>
+        </w:tbl>
+      `,
+    })
+
+    expect(adapted.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('double'),
+      expect.stringContaining('主题边框颜色'),
+      expect.stringContaining('斜线边框'),
+      expect.stringContaining('主题底纹'),
+      expect.stringContaining('diagStripe'),
     ]))
   })
 })

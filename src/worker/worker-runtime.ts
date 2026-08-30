@@ -8,9 +8,17 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 import type { AppEvent } from '@shared/app-events'
 import type {
+  XiaoguiCapabilityId,
   XiaoguiEffectivePromptDiagnosticsV1,
   XiaoguiPromptContextV1,
 } from '@shared/xiaogui-prompt-contract'
+import {
+  activeToolNamesForPromptContextV1,
+  selectXiaoguiTurnCapabilitiesV1,
+  workerPromptContextToolNamesForModeV1,
+  xiaoguiPromptStickyCandidateForToolActionV1,
+  xiaoguiPromptStickyCapabilityFromToolResultV1,
+} from '@shared/xiaogui-prompt-capabilities'
 import { formatSessionModelKey, type SessionModelRef } from '@shared/worker-model'
 import { createDesktopUIBridge, type DesktopUIBridge } from './desktop-ui-bridge.js'
 import { createDesktopWidgetHost } from './desktop-widget-host.js'
@@ -63,11 +71,23 @@ export type WorkerMutableState = {
   promptContext: XiaoguiPromptContextV1 | null
   /** Main candidate retained separately from Worker-resolved effective facts. */
   promptContextCandidate: XiaoguiPromptContextV1 | null
+  /** Frozen local selection for the currently dispatching user turn. */
+  promptTurnContext: XiaoguiPromptContextV1 | null
+  /** Confirmation-gated Capability available to exactly the next user turn. */
+  promptStickyCapabilities: readonly XiaoguiCapabilityId[]
+  /** Capabilities proven by successful PREPARE/START tool results in this turn. */
+  promptTurnStickyCapabilities: readonly XiaoguiCapabilityId[]
+  /** Preparation calls awaiting their real tool end result in this turn. */
+  promptTurnStickyToolCalls: Map<string, {
+    readonly toolName: string
+    readonly action: string
+    readonly capabilityId: XiaoguiCapabilityId
+  }>
   /** Set only while Pi Runtime is replacing an AgentSession. */
   pendingPromptContext: XiaoguiPromptContextV1 | null
   /** Safe hashes/ids returned by default diagnostics. */
   promptDiagnostics: XiaoguiEffectivePromptDiagnosticsV1 | null
-  /** Worker-memory-only body; returned only by an explicit advanced diagnostic request. */
+  /** Worker-memory-only product Layers; Pi System/project text is never retained here. */
   effectivePrompt: string | null
   promptPreflight: (() => XiaoguiEffectivePromptSessionStateV1) | null
   promptAssemblyStatus: 'IDLE' | 'PENDING' | 'CONFIRMED' | 'FAILED'
@@ -94,6 +114,10 @@ export const st: WorkerMutableState = {
   promptSent: false,
   promptContext: null,
   promptContextCandidate: null,
+  promptTurnContext: null,
+  promptStickyCapabilities: [],
+  promptTurnStickyCapabilities: [],
+  promptTurnStickyToolCalls: new Map(),
   pendingPromptContext: null,
   promptDiagnostics: null,
   effectivePrompt: null,
@@ -139,6 +163,121 @@ export function isSessionBusy(): boolean {
   return !!(st.agentTurnActive || st.session?.isStreaming)
 }
 
+function selectTurnContext(
+  baseContext: XiaoguiPromptContextV1,
+  userInput: string,
+  oneTurnStickyCapabilityIds: readonly XiaoguiCapabilityId[] = [],
+): {
+  readonly context: XiaoguiPromptContextV1
+} {
+  const selection = selectXiaoguiTurnCapabilitiesV1(baseContext, userInput, {
+    oneTurnStickyCapabilityIds,
+  })
+  return {
+    context: freezeXiaoguiPromptContextV1({
+      ...baseContext,
+      enabledCapabilities: selection.capabilityIds,
+      availableToolNames: [],
+    }),
+  }
+}
+
+/**
+ * Freeze the turn Capability selection and apply the Provider-facing Host Tool
+ * Policy before Prompt preflight. The Context cannot change again until this
+ * turn settles.
+ */
+export function prepareXiaoguiPromptTurnV1(userInput: string): XiaoguiPromptContextV1 {
+  const session = st.session
+  const baseContext = st.promptContextCandidate
+  if (!session || !baseContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
+  if (isSessionBusy()) throw new Error('XIAOGUI_PROMPT_CONTEXT_TURN_ACTIVE')
+
+  const selectedTurn = selectTurnContext(
+    baseContext,
+    userInput,
+    st.promptStickyCapabilities,
+  )
+  // Sticky state is single-use. A new clear intent either replaces it with a
+  // tool-confirmed candidate after successful completion or clears it immediately.
+  st.promptStickyCapabilities = []
+  st.promptTurnStickyCapabilities = []
+  st.promptTurnStickyToolCalls.clear()
+  const selected = selectedTurn.context
+  const registered = session.getAllTools().map((tool) => tool.name)
+  const active = activeToolNamesForPromptContextV1(selected, registered)
+  session.setActiveToolsByName([...active])
+  const actual = session.getActiveToolNames()
+  const turnContext = freezeXiaoguiPromptContextV1({
+    ...selected,
+    availableToolNames: actual,
+  })
+  st.promptTurnContext = turnContext
+  return turnContext
+}
+
+export function clearXiaoguiPromptTurnV1(): void {
+  st.promptTurnContext = null
+  st.promptTurnStickyCapabilities = []
+  st.promptTurnStickyToolCalls.clear()
+}
+
+export function completeXiaoguiPromptTurnV1(): void {
+  st.promptStickyCapabilities = [...st.promptTurnStickyCapabilities]
+  clearXiaoguiPromptTurnV1()
+}
+
+function toolResultKind(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null
+  const details = (result as { details?: unknown }).details
+  if (!details || typeof details !== 'object') return null
+  const kind = (details as { kind?: unknown }).kind
+  return typeof kind === 'string' ? kind : null
+}
+
+/** Observe only real Pi tool lifecycle events; an inferred user intent alone never commits sticky state. */
+function observeXiaoguiPromptStickyToolEventV1(event: AgentSessionEvent): void {
+  const turnContext = st.promptTurnContext
+  if (!turnContext) return
+
+  if (event.type === 'tool_execution_start') {
+    const action = typeof event.args?.action === 'string' ? event.args.action : ''
+    const capabilityId = xiaoguiPromptStickyCandidateForToolActionV1(event.toolName, action)
+    if (!capabilityId || !turnContext.enabledCapabilities.includes(capabilityId)) return
+    st.promptTurnStickyToolCalls.set(event.toolCallId, {
+      toolName: event.toolName,
+      action,
+      capabilityId,
+    })
+    return
+  }
+
+  if (event.type !== 'tool_execution_end') return
+  const pending = st.promptTurnStickyToolCalls.get(event.toolCallId)
+  if (!pending) return
+  st.promptTurnStickyToolCalls.delete(event.toolCallId)
+  const resultIsError = !!(
+    event.result &&
+    typeof event.result === 'object' &&
+    (event.result as { isError?: unknown }).isError === true
+  )
+  const capabilityId = xiaoguiPromptStickyCapabilityFromToolResultV1({
+    toolName: pending.toolName,
+    action: pending.action,
+    resultKind: toolResultKind(event.result),
+    isError: event.isError || resultIsError,
+  })
+  if (!capabilityId || capabilityId !== pending.capabilityId) {
+    st.promptTurnStickyCapabilities = st.promptTurnStickyCapabilities
+      .filter((id) => id !== pending.capabilityId)
+    return
+  }
+  st.promptTurnStickyCapabilities = [...new Set([
+    ...st.promptTurnStickyCapabilities,
+    capabilityId,
+  ])]
+}
+
 /** Synchronous hard gate before any call into AgentSession.prompt(). */
 export function runXiaoguiPromptPreflightV1(): XiaoguiEffectivePromptSessionStateV1 {
   if (!st.promptContextCandidate || !st.promptPreflight) {
@@ -158,7 +297,7 @@ export function runXiaoguiPromptPreflightV1(): XiaoguiEffectivePromptSessionStat
   }
   st.promptContext = state.context
   st.promptDiagnostics = state.diagnostics
-  st.effectivePrompt = state.prompt
+  st.effectivePrompt = state.productPrompt
   return state
 }
 
@@ -225,6 +364,10 @@ export async function rebindAfterRuntimeReplace(session: AgentSession): Promise<
   st.currentTurnId = ''
   st.agentTurnActive = false
   st.promptPreflightActive = false
+  st.promptTurnContext = null
+  st.promptStickyCapabilities = []
+  st.promptTurnStickyCapabilities = []
+  st.promptTurnStickyToolCalls.clear()
   try {
     const cwd = session.sessionManager?.getCwd?.()
     if (typeof cwd === 'string' && cwd.length > 0) st.currentCwd = cwd
@@ -265,6 +408,11 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
   return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
     const promptContext = st.pendingPromptContext
     if (!promptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
+    const initialContext = selectTurnContext(promptContext, '').context
+    const initialToolNames = activeToolNamesForPromptContextV1(
+      initialContext,
+      workerPromptContextToolNamesForModeV1(promptContext.mode),
+    )
     const services = await sdk.createAgentSessionServices({
       cwd,
       agentDir,
@@ -272,12 +420,12 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
         eventBus: st.sharedEventBus!,
         extensionFactories: [
           createXiaoguiPromptSessionExtensionV1(
-            promptContext,
+            () => st.promptTurnContext ?? initialContext,
             (state) => {
               if (st.promptContextCandidate === promptContext) {
                 st.promptContext = state.context
                 st.promptDiagnostics = state.diagnostics
-                st.effectivePrompt = state.prompt
+                st.effectivePrompt = state.productPrompt
                 confirmXiaoguiPromptAssemblyV1()
               }
             },
@@ -299,7 +447,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
           }
           const loaded = addXiaoguiWorkerToolsV1(
             decorateQuestionnaireTools(result, cwd),
-            promptContext.mode,
+            promptContext,
             { collaboration: collaborationToolOptions, session: sessionToolOptions },
           )
           return assertXiaoguiModelToolSchemasCompatible(loaded)
@@ -311,20 +459,21 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       services,
       sessionManager,
       sessionStartEvent,
+      tools: [...initialToolNames],
     })
     const initialState = buildXiaoguiPromptSessionStateV1(
       created.session,
       services,
-      promptContext,
+      initialContext,
     )
     st.promptContextCandidate = promptContext
     st.promptContext = initialState.context
     st.promptDiagnostics = initialState.diagnostics
-    st.effectivePrompt = initialState.prompt
+    st.effectivePrompt = initialState.productPrompt
     st.promptPreflight = () => buildXiaoguiPromptSessionStateV1(
       created.session,
       services,
-      promptContext,
+      st.promptTurnContext ?? initialContext,
     )
     return {
       ...created,
@@ -342,15 +491,27 @@ async function withPendingPromptContext<T>(
   const context = freezeXiaoguiPromptContextV1(rawContext)
   const previousContext = st.promptContext
   const previousCandidate = st.promptContextCandidate
+  const previousTurnContext = st.promptTurnContext
+  const previousStickyCapabilities = st.promptStickyCapabilities
+  const previousTurnStickyCapabilities = st.promptTurnStickyCapabilities
+  const previousTurnStickyToolCalls = new Map(st.promptTurnStickyToolCalls)
   const previousDiagnostics = st.promptDiagnostics
   const previousEffectivePrompt = st.effectivePrompt
   const previousPreflight = st.promptPreflight
   st.pendingPromptContext = context
+  st.promptTurnContext = null
+  st.promptStickyCapabilities = []
+  st.promptTurnStickyCapabilities = []
+  st.promptTurnStickyToolCalls.clear()
   try {
     return await operation()
   } catch (error) {
     st.promptContext = previousContext
     st.promptContextCandidate = previousCandidate
+    st.promptTurnContext = previousTurnContext
+    st.promptStickyCapabilities = previousStickyCapabilities
+    st.promptTurnStickyCapabilities = previousTurnStickyCapabilities
+    st.promptTurnStickyToolCalls = previousTurnStickyToolCalls
     st.promptDiagnostics = previousDiagnostics
     st.effectivePrompt = previousEffectivePrompt
     st.promptPreflight = previousPreflight
@@ -367,6 +528,10 @@ function wireRuntimeCallbacks(runtime: AgentSessionRuntime): void {
     st.modelRuntime = null
     st.agentTurnActive = false
     st.promptPreflightActive = false
+    st.promptTurnContext = null
+    st.promptStickyCapabilities = []
+    st.promptTurnStickyCapabilities = []
+    st.promptTurnStickyToolCalls.clear()
     st.promptDiagnostics = null
     st.effectivePrompt = null
   })
@@ -397,6 +562,10 @@ async function disposeRuntimeOrSession(): Promise<void> {
     st.session = null
     st.promptContext = null
     st.promptContextCandidate = null
+    st.promptTurnContext = null
+    st.promptStickyCapabilities = []
+    st.promptTurnStickyCapabilities = []
+    st.promptTurnStickyToolCalls.clear()
     st.promptDiagnostics = null
     st.effectivePrompt = null
     st.promptPreflight = null
@@ -414,6 +583,10 @@ async function disposeRuntimeOrSession(): Promise<void> {
   st.modelRuntime = null
   st.promptContext = null
   st.promptContextCandidate = null
+  st.promptTurnContext = null
+  st.promptStickyCapabilities = []
+  st.promptTurnStickyCapabilities = []
+  st.promptTurnStickyToolCalls.clear()
   st.promptDiagnostics = null
   st.effectivePrompt = null
   st.promptPreflight = null
@@ -657,6 +830,7 @@ function sessionEventDeps() {
 }
 
 export function handleSessionEvent(event: AgentSessionEvent): void {
+  observeXiaoguiPromptStickyToolEventV1(event)
   dispatchSessionEvent(event, sessionEventDeps())
 }
 

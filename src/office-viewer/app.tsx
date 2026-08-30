@@ -40,6 +40,7 @@ import {
   type OfficeSnapshotV1,
   type OfficeStructuredDocumentProjectionV1,
 } from '@shared/xiaogui-office-surface'
+import { officeSurfaceWarningDisplayItemsV1 } from '@shared/xiaogui-office-drawing-degradation'
 import { ensureUniverDocDrawingResourcesV1 } from './core/doc-drawing-resources'
 import { OfficeGatewayClientV1 } from './core/gateway-client'
 import type { OfficeParentBridgeV1 } from './core/parent-bridge'
@@ -63,6 +64,7 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
   const [error, setError] = useState<string | null>(null)
   const [fieldDecorationVerified, setFieldDecorationVerified] = useState(false)
   const [projectionMetadata, setProjectionMetadata] = useState<ProjectionMetadataV1 | null>(null)
+  const warningItems = officeSurfaceWarningDisplayItemsV1(projectionMetadata?.warnings ?? [])
 
   useEffect(() => {
     const container = containerRef.current
@@ -70,7 +72,7 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
     let disposed = false
     let loaded = false
     let autosaveTimer: number | null = null
-    const gateway = new OfficeGatewayClientV1()
+    const gateway = new OfficeGatewayClientV1(parentBridge)
     const univer = new Univer({
       locale: LocaleType.ZH_CN,
       locales: {
@@ -151,7 +153,7 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
     const load = async (): Promise<void> => {
       suppressDirty = true
       setStatus('正在载入')
-      if (parentBridge) gateway.authorize(await parentBridge.waitForAuthorization())
+      if (parentBridge) await parentBridge.waitForConnection()
       const envelope = await gateway.load()
       if (document) throw new Error('当前验证版不支持在同一界面热替换文档，请重新打开界面。')
 
@@ -527,8 +529,20 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
           ) : null}
         </div>
       </header>
-      {projectionMetadata?.warnings[0] ? (
-        <div className="office-viewer-warning">{projectionMetadata.warnings[0]}</div>
+      {warningItems.length > 0 ? (
+        <details
+          className="office-viewer-warning"
+          data-office-warning-count={warningItems.length}
+        >
+          <summary>{warningItems.length} 条导入提示（展开查看全部）</summary>
+          <ol>
+            {warningItems.map((item) => (
+              <li key={item.key} data-drawing-degradation={item.degradation?.reason ?? undefined}>
+                {item.message}
+              </li>
+            ))}
+          </ol>
+        </details>
       ) : null}
       {error ? <div className="office-viewer-error">{error}</div> : null}
       <section ref={containerRef} className="office-viewer-canvas" aria-label="小规文档编辑区域" />

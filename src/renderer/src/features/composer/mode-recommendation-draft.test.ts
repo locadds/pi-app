@@ -28,7 +28,7 @@ afterEach(() => {
 })
 
 describe('mode recommendation draft preservation', () => {
-  it('waits for switchMode, preserves rich input, and never sends it', async () => {
+  it('P15: waits for switchMode, preserves rich input and attachments, and never sends it', async () => {
     let finishSwitch!: (switched: boolean) => void
     const switchPromise = new Promise<boolean>((resolve) => {
       finishSwitch = resolve

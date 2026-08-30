@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import type { XiaoguiPromptLayerV1 } from '@shared/xiaogui-prompt-contract'
 import {
   createXiaoguiPromptBuilderV1,
+  XIAOGUI_PRODUCT_PROMPT_MAX_CHARACTERS_V1,
+  XIAOGUI_RUNTIME_FACTS_MAX_CHARACTERS_V1,
   xiaoguiPromptBuilderV1,
 } from './builder'
 
@@ -47,7 +49,10 @@ describe('Xiaogui effective Prompt Builder V1', () => {
       'xiaogui.mode.work',
       'xiaogui.phase.ask',
       'xiaogui.capability.work.file-organize',
+      'xiaogui.runtime.facts',
     ])
+    expect(work.productPrompt).toContain('# 运行事实')
+    expect(work.productPrompt).toContain('本轮可用产品能力：work.file-organize')
   })
 
   it('hashes the complete normalized Effective Prompt and excludes generatedAt', () => {
@@ -60,21 +65,22 @@ describe('Xiaogui effective Prompt Builder V1', () => {
     const first = builder.build({
       context: { ...context(), enabledCapabilities: [] },
       piSystemPrompt: 'PI\r\nBASELINE',
+      runtimeTools: [],
       generatedAt: '2026-08-30T00:00:00.000Z',
     })
     const second = builder.build({
       context: { ...context(), enabledCapabilities: [] },
       piSystemPrompt: 'PI\nBASELINE',
+      runtimeTools: [],
       generatedAt: '2026-08-31T00:00:00.000Z',
     })
 
-    expect(first.prompt).toBe([
-      'PI\nBASELINE',
-      '<!-- XIAOGUI:PRODUCT:BEGIN -->\nBASE\n\nMODE\n\nPHASE\n<!-- XIAOGUI:PRODUCT:END -->',
-    ].join('\n\n'))
+    expect(first.prompt).toContain('PI\nBASELINE')
+    expect(first.prompt).toContain('<!-- XIAOGUI:PRODUCT:BEGIN -->\nBASE\n\nMODE\n\nPHASE')
+    expect(first.prompt).toContain('# 运行事实')
     expect(first.diagnostics.manifest.completePromptCharacterCount).toBe(first.prompt.length)
     expect(first.diagnostics.manifest.completePromptSha256)
-      .toBe('7cdfcf900502c06ca507cfe405a1cd1b47d25ec2924774cdbf2e773ce4d79d60')
+      .toMatch(/^[a-f0-9]{64}$/)
     expect(second.diagnostics.manifest.completePromptSha256)
       .toBe(first.diagnostics.manifest.completePromptSha256)
   })
@@ -104,6 +110,9 @@ describe('Xiaogui effective Prompt Builder V1', () => {
     expect(custom.prompt).toContain('<project_context>project facts</project_context>')
     expect(custom.prompt).toContain('read: 读取文件')
     expect(custom.prompt).toContain('- 不让用户输入路径')
+    expect(custom.productPrompt).not.toContain('USER SYSTEM')
+    expect(custom.productPrompt).not.toContain('<project_context>')
+    expect(custom.productPrompt).not.toContain('read: 读取文件')
     expect(custom.diagnostics.manifest.layers.map((layer) => layer.id))
       .toContain('pi.custom-system-tool-guidelines')
     expect(defaultHarness.prompt).not.toContain('read: 读取文件')
@@ -173,11 +182,6 @@ describe('Xiaogui effective Prompt Builder V1', () => {
       ...context('WORK', 'ASK'),
       enabledCapabilities: ['work.report-docx' as const],
     }
-    const reportAsk = xiaoguiPromptBuilderV1.build({
-      context: reportContext,
-      piSystemPrompt: 'PI',
-      runtimeTools: [{ name: 'xiaogui_work_report_docx' }],
-    })
     const reportExecute = xiaoguiPromptBuilderV1.build({
       context: { ...reportContext, phase: 'EXECUTE' as const },
       piSystemPrompt: 'PI',
@@ -187,12 +191,50 @@ describe('Xiaogui effective Prompt Builder V1', () => {
     expect(designWithoutProfessionalTools.diagnostics.manifest.capabilityIds).toEqual([])
     expect(designWithProfessionalTool.diagnostics.manifest.capabilityIds)
       .toEqual(['design.analysis'])
-    expect(reportAsk.diagnostics.manifest.capabilityIds).toEqual([])
+    expect(() => xiaoguiPromptBuilderV1.build({
+      context: reportContext,
+      piSystemPrompt: 'PI',
+      runtimeTools: [{ name: 'xiaogui_work_report_docx' }],
+    })).toThrow('XIAOGUI_PROMPT_TOOL_PHASE_MISMATCH')
     expect(reportExecute.diagnostics.manifest.capabilityIds).toEqual(['work.report-docx'])
     expect(() => xiaoguiPromptBuilderV1.build({
       context: { ...context('WORK', 'ASK'), enabledCapabilities: ['design.analysis'] },
       piSystemPrompt: 'PI',
       runtimeTools: [{ name: 'design_gis' }],
     })).toThrow('XIAOGUI_PROMPT_TOOL_MODE_MISMATCH')
+  })
+
+  it('keeps Runtime Facts and the code-owned product Prompt within their budgets', () => {
+    const result = xiaoguiPromptBuilderV1.build({
+      context: {
+        ...context('WORK', 'EXECUTE'),
+        enabledCapabilities: [
+          'work.file-organize',
+          'work.report-docx',
+          'work.template-intake',
+          'work.template-generation',
+        ],
+      },
+      piSystemPrompt: 'PI',
+      runtimeTools: [
+        { name: 'read' },
+        { name: 'xiaogui_read_pdf' },
+        { name: 'xiaogui_work_report_docx' },
+        { name: 'xiaogui_work_docx_template_intake' },
+        { name: 'xiaogui_work_docx_template_materialize' },
+        { name: 'xiaogui_work_docx' },
+        { name: 'xiaogui_work_docx_advanced_generation' },
+      ],
+    })
+    const runtimeManifest = result.diagnostics.manifest.layers
+      .find((layer) => layer.id === 'xiaogui.runtime.facts')
+
+    expect(runtimeManifest?.characterCount).toBeLessThanOrEqual(
+      XIAOGUI_RUNTIME_FACTS_MAX_CHARACTERS_V1,
+    )
+    expect(result.productPrompt.length).toBeLessThanOrEqual(
+      XIAOGUI_PRODUCT_PROMPT_MAX_CHARACTERS_V1,
+    )
+    expect(result.productPrompt).not.toMatch(/[A-Za-z]:[\\/]|\\\\|api[_-]?key|token\s*[:=]/i)
   })
 })

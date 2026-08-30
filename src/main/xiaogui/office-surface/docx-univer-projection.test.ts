@@ -130,6 +130,88 @@ async function makeNestedTableDocx(): Promise<Buffer> {
   return zip.generateAsync({ type: 'nodebuffer' })
 }
 
+async function makeHeaderFooterTableDocx(): Promise<Buffer> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<Types/>')
+  zip.file('word/settings.xml', `
+    <w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:evenAndOddHeaders/>
+    </w:settings>
+  `)
+  zip.file('word/document.xml', `
+    <w:document
+      xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+      xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    >
+      <w:body>
+        <w:p><w:r><w:t>正文</w:t></w:r></w:p>
+        <w:sectPr>
+          <w:headerReference w:type="even" r:id="rIdHeaderEven"/>
+          <w:headerReference w:type="default" r:id="rIdHeaderDefault"/>
+          <w:headerReference w:type="first" r:id="rIdHeaderFirst"/>
+          <w:footerReference w:type="first" r:id="rIdFooterFirst"/>
+          <w:footerReference w:type="default" r:id="rIdFooterDefault"/>
+          <w:footerReference w:type="even" r:id="rIdFooterEven"/>
+          <w:titlePg/>
+        </w:sectPr>
+      </w:body>
+    </w:document>
+  `)
+  zip.file('word/_rels/document.xml.rels', `
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+      <Relationship Id="rIdFooterEven" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer3.xml"/>
+      <Relationship Id="rIdHeaderDefault" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>
+      <Relationship Id="rIdFooterFirst" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
+      <Relationship Id="rIdHeaderEven" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header3.xml"/>
+      <Relationship Id="rIdFooterDefault" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer2.xml"/>
+      <Relationship Id="rIdHeaderFirst" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+    </Relationships>
+  `)
+  for (const [kind, values] of Object.entries({
+    header: ['首页页眉', '默认页眉', '偶数页页眉'],
+    footer: ['首页页脚', '默认页脚', '偶数页页脚'],
+  })) {
+    for (let index = 0; index < values.length; index += 1) {
+      const root = kind === 'header' ? 'hdr' : 'ftr'
+      zip.file(`word/${kind}${index + 1}.xml`, `
+        <w:${root} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:tbl><w:tblGrid><w:gridCol w:w="1800"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>${values[index]}</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        </w:${root}>
+      `)
+    }
+  }
+  return zip.generateAsync({ type: 'nodebuffer' })
+}
+
+async function makeMultiSectionHeaderDocx(): Promise<Buffer> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<Types/>')
+  zip.file('word/document.xml', `
+    <w:document
+      xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+      xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    >
+      <w:body>
+        <w:p>
+          <w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rIdHeaderFirstSection"/></w:sectPr></w:pPr>
+          <w:r><w:t>第一节</w:t></w:r>
+        </w:p>
+        <w:p><w:r><w:t>末节</w:t></w:r></w:p>
+        <w:sectPr><w:headerReference w:type="default" r:id="rIdHeaderLastSection"/></w:sectPr>
+      </w:body>
+    </w:document>
+  `)
+  zip.file('word/_rels/document.xml.rels', `
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+      <Relationship Id="rIdHeaderFirstSection" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+      <Relationship Id="rIdHeaderLastSection" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>
+    </Relationships>
+  `)
+  zip.file('word/header1.xml', '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>第一节页眉</w:t></w:r></w:p></w:hdr>')
+  zip.file('word/header2.xml', '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>末节页眉</w:t></w:r></w:p></w:hdr>')
+  return zip.generateAsync({ type: 'nodebuffer' })
+}
+
 describe('DOCX 到 Office Surface 结构化投影', () => {
   it('保留正文和表格文字，并按逻辑锚点区分重复字段', async () => {
     const projection = await projectDocxToUniverV1({
@@ -338,5 +420,78 @@ describe('DOCX 到 Office Surface 结构化投影', () => {
       expect.stringContaining('百分比或自动宽度'),
       expect.stringContaining('缺少 tblGrid'),
     ]))
+  })
+
+  it('按 document relationships 绑定单节首页、默认和偶数页眉页脚，并让子模型取得表格配置', async () => {
+    const projection = await projectDocxToUniverV1({
+      content: await makeHeaderFooterTableDocx(),
+      title: '页眉页脚表格.docx',
+      purpose: 'TEMPLATE_DRAFT',
+      readOnly: true,
+    })
+    const document = projection.univerDocument as {
+      documentStyle: {
+        defaultHeaderId?: string
+        firstPageHeaderId?: string
+        evenPageHeaderId?: string
+        defaultFooterId?: string
+        firstPageFooterId?: string
+        evenPageFooterId?: string
+        evenAndOddHeaders?: number
+        useFirstPageHeaderFooter?: number
+      }
+      headers: Record<string, {
+        body: { dataStream: string; tables: Array<{ startIndex: number; tableId: string }> }
+        tableSource?: Record<string, unknown>
+      }>
+      footers: Record<string, {
+        body: { dataStream: string; tables: Array<{ startIndex: number; tableId: string }> }
+        tableSource?: Record<string, unknown>
+      }>
+    }
+
+    expect(document.documentStyle).toMatchObject({
+      defaultHeaderId: 'xiaogui-header-2',
+      firstPageHeaderId: 'xiaogui-header-1',
+      evenPageHeaderId: 'xiaogui-header-3',
+      defaultFooterId: 'xiaogui-footer-2',
+      firstPageFooterId: 'xiaogui-footer-1',
+      evenPageFooterId: 'xiaogui-footer-3',
+      evenAndOddHeaders: 1,
+      useFirstPageHeaderFooter: 1,
+    })
+    expect(document.headers['xiaogui-header-2'].body.dataStream).toContain('默认页眉')
+    expect(document.footers['xiaogui-footer-3'].body.dataStream).toContain('偶数页页脚')
+
+    const viewModel = new DocumentViewModel(new DocumentDataModel(projection.univerDocument))
+    for (const [segmentId, segment] of [
+      ['xiaogui-header-2', document.headers['xiaogui-header-2']],
+      ['xiaogui-footer-2', document.footers['xiaogui-footer-2']],
+    ] as const) {
+      const table = segment.body.tables[0]
+      expect(segment.tableSource?.[table.tableId]).toBeDefined()
+      expect(viewModel.getSelfOrHeaderFooterViewModel(segmentId).getTableByStartIndex(table.startIndex)).toMatchObject({
+        tableSource: { tableId: table.tableId },
+      })
+    }
+    viewModel.dispose()
+  })
+
+  it('多节页眉无法等价表达时仅绑定末节并显式告警', async () => {
+    const projection = await projectDocxToUniverV1({
+      content: await makeMultiSectionHeaderDocx(),
+      title: '多节页眉.docx',
+      purpose: 'TEMPLATE_DRAFT',
+      readOnly: true,
+    })
+    const document = projection.univerDocument as {
+      documentStyle: { defaultHeaderId?: string }
+      headers: Record<string, { body: { dataStream: string } }>
+    }
+
+    expect(document.documentStyle.defaultHeaderId).toBe('xiaogui-header-2')
+    expect(document.headers['xiaogui-header-2'].body.dataStream).toContain('末节页眉')
+    expect(projection.warnings).toContainEqual(expect.stringContaining('2 个分节'))
+    expect(projection.warnings).toContainEqual(expect.stringContaining('仅绑定末节'))
   })
 })

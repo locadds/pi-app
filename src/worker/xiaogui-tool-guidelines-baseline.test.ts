@@ -2,13 +2,31 @@ import type { LoadExtensionsResult } from '@earendil-works/pi-coding-agent'
 import { describe, expect, it } from 'vitest'
 
 import {
+  activeToolNamesForPromptContextV1,
+  workerBuiltinToolNamesForPromptContextV1,
   workerBuiltinToolNamesForModeV1,
   XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
 } from '@shared/xiaogui-prompt-capabilities'
-import type { XiaoguiMode } from '@shared/xiaogui-prompt-contract'
+import type { XiaoguiExecutionPhase, XiaoguiMode } from '@shared/xiaogui-prompt-contract'
 import { addXiaoguiWorkerToolsV1 } from './xiaogui-worker-tools'
 
-function loadCurrentWorkerBuiltinTools(mode: XiaoguiMode = 'WORK') {
+function promptContext(mode: XiaoguiMode, phase: XiaoguiExecutionPhase = 'EXECUTE') {
+  return {
+    mode,
+    phase,
+    workspaceAvailable: true,
+    enabledCapabilities: mode === 'WORK'
+      ? ['work.file-organize' as const, 'collaboration.execution' as const]
+      : mode === 'DESIGN'
+        ? ['design.analysis' as const]
+        : ['coding.workspace' as const],
+  }
+}
+
+function loadCurrentWorkerBuiltinTools(
+  mode: XiaoguiMode = 'WORK',
+  phase: XiaoguiExecutionPhase = 'EXECUTE',
+) {
   const collaborationOptions = {
     getSourceSessionId: () => 'session-1',
     getSourceTurnId: () => 'turn-1',
@@ -18,7 +36,7 @@ function loadCurrentWorkerBuiltinTools(mode: XiaoguiMode = 'WORK') {
     getSourceRunId: () => 'run-1',
   }
   let loaded = { extensions: [], errors: [], runtime: {} } as unknown as LoadExtensionsResult
-  loaded = addXiaoguiWorkerToolsV1(loaded, mode, {
+  loaded = addXiaoguiWorkerToolsV1(loaded, promptContext(mode, phase), {
     collaboration: collaborationOptions,
     session: sessionOptions,
   })
@@ -41,7 +59,9 @@ function workerToolOptions() {
 describe('current Xiaogui Worker Tool Guidelines baseline', () => {
   it('matches the Capability Registry for each Runtime mode', () => {
     const tools = loadCurrentWorkerBuiltinTools()
-    expect([...tools.keys()].sort()).toEqual(workerBuiltinToolNamesForModeV1('WORK'))
+    expect([...tools.keys()].sort()).toEqual(
+      workerBuiltinToolNamesForModeV1('WORK'),
+    )
     expect([...loadCurrentWorkerBuiltinTools('CODING').keys()].sort())
       .toEqual(workerBuiltinToolNamesForModeV1('CODING'))
   })
@@ -58,15 +78,15 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
 
   it('removes known mode-disallowed extension tools while preserving unrelated extensions', () => {
     const empty = { extensions: [], errors: [], runtime: {} } as unknown as LoadExtensionsResult
-    const design = addXiaoguiWorkerToolsV1(empty, 'DESIGN', workerToolOptions())
-    const source = design.extensions[0]
+    const work = addXiaoguiWorkerToolsV1(empty, promptContext('WORK'), workerToolOptions())
+    const source = work.extensions[0]
     const registered = source && [...source.tools.values()][0]
     expect(source).toBeDefined()
     expect(registered).toBeDefined()
     const seeded = {
-      ...design,
+      ...work,
       extensions: [
-        ...design.extensions,
+        ...work.extensions,
         {
           ...source!,
           path: '<test:mode-tools>',
@@ -79,11 +99,30 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
       ],
     }
 
-    const coding = addXiaoguiWorkerToolsV1(seeded, 'CODING', workerToolOptions())
+    const coding = addXiaoguiWorkerToolsV1(
+      seeded,
+      promptContext('CODING'),
+      workerToolOptions(),
+    )
     const names = coding.extensions.flatMap((extension) => [...extension.tools.keys()])
     expect(names).not.toContain('design_gis')
     expect(names).not.toContain('xiaogui_work_report_docx')
     expect(names).toContain('third_party_tool')
+  })
+
+  it('registers mode candidates but removes persistent tools from ASK/PLAN activation', () => {
+    for (const phase of ['ASK', 'PLAN'] as const) {
+      const registered = [...loadCurrentWorkerBuiltinTools('WORK', phase).keys()]
+      expect(registered).toContain('xiaogui_work_docx_template_intake')
+      expect(registered).toContain('xiaogui_work_report_docx')
+      const active = activeToolNamesForPromptContextV1(
+        promptContext('WORK', phase),
+        ['read', ...registered],
+      )
+      expect(active).toEqual(['read', 'xiaogui_read_pdf'])
+      expect(workerBuiltinToolNamesForPromptContextV1(promptContext('WORK', phase)))
+        .toEqual(['xiaogui_read_pdf'])
+    }
   })
 
   it('freezes the current snippets and critical stop conditions', () => {

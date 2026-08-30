@@ -259,4 +259,3 @@ export const TemplateFieldGraphV2Schema = z.object({
 export function parseTemplateFieldGraphV2(value: unknown): TemplateFieldGraphV2 {
   return TemplateFieldGraphV2Schema.parse(value) as TemplateFieldGraphV2
 }
-

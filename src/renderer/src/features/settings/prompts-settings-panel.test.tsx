@@ -18,6 +18,9 @@ vi.mock('react-i18next', () => ({
     t: (key: string) => {
       if (key.endsWith('advancedSummary')) return 'Advanced diagnostics: expand Prompt body'
       if (key.endsWith('advancedTruncated')) return 'Prompt preview truncated'
+      if (key.endsWith('legacyDesignRuntimeDeduped')) {
+        return 'Runtime-only dedupe; no project file was modified'
+      }
       return key
     },
     i18n: { language: 'en' },
@@ -70,7 +73,7 @@ describe('EffectivePromptDiagnosticsPanel', () => {
     render(
       <EffectivePromptDiagnosticsPanel
         diagnostics={diagnostics}
-        previewPath="pi-desktop://system-prompt-preview"
+        previewPath="xiaogui://prompt-catalog/product-system-layers-preview"
       />,
     )
 
@@ -86,12 +89,29 @@ describe('EffectivePromptDiagnosticsPanel', () => {
 
     await waitFor(() => {
       expect(ipcClient.invoke).toHaveBeenCalledWith('resource.read', {
-        path: 'pi-desktop://system-prompt-preview',
+        path: 'xiaogui://prompt-catalog/product-system-layers-preview',
         expectedPromptSha256: completeHash,
       })
     })
     expect(await screen.findByText(/advanced-only:/)).toBeInTheDocument()
     expect(screen.getByText(/truncated/i)).toBeInTheDocument()
     expect(screen.getByText(completeHash)).toBeInTheDocument()
+  })
+
+  it('shows the legacy DESIGN migration as runtime-only without claiming a file write', () => {
+    render(
+      <EffectivePromptDiagnosticsPanel
+        diagnostics={{
+          ...diagnostics,
+          migrationNotices: [{
+            code: 'LEGACY_DESIGN_PROMPT_RUNTIME_DEDUPED',
+            fileMutation: false,
+          }],
+        }}
+        previewPath="xiaogui://prompt-catalog/product-system-layers-preview"
+      />,
+    )
+
+    expect(screen.getByText(/Runtime-only dedupe; no project file was modified/)).toBeInTheDocument()
   })
 })

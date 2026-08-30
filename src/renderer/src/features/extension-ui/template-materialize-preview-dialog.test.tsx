@@ -90,7 +90,7 @@ describe('TemplateMaterializePreviewDialog', () => {
     const onResult = vi.fn()
     render(<TemplateMaterializePreviewDialog payload={payload} onResult={onResult} />)
 
-    expect(screen.getByText('修改后模板只读预览')).toBeInTheDocument()
+    expect(screen.getByText('修改后模板预览')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: '生成正式模板' })).toBeEnabled())
     expect(screen.getByRole('button', { name: '需要修改' })).toBeDisabled()
     expect(invoke).not.toHaveBeenCalledWith('xiaogui.templateReview.page.read', expect.anything())

@@ -5,11 +5,13 @@ import {
   type OfficeSurfaceCapabilityV1,
   type OfficeSurfaceFieldUpdateResultV1,
   type OfficeSurfaceParentMessageV1,
+  type OfficeSurfaceViewerMessageV1,
 } from '@shared/xiaogui-office-surface'
+import { ipcClient } from '@renderer/lib/ipc-client'
 
 export interface OfficeSurfaceFramePropsV1 {
+  readonly sessionId: string
   readonly gatewayOrigin: string
-  readonly gatewayAccessToken: string
   readonly onReady?: (capabilities: OfficeSurfaceCapabilityV1) => void
   readonly onDirtyChange?: (dirty: boolean, headSha256: string) => void
   readonly onOccurrenceSelect?: (occurrenceId: string, fieldId: string) => void
@@ -37,7 +39,7 @@ type OfficeSurfaceParentPayloadV1 = OfficeSurfaceParentMessageV1 extends infer M
 
 export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, OfficeSurfaceFramePropsV1>(
   function OfficeSurfaceFrameV1(props, ref): React.JSX.Element {
-    const { gatewayOrigin, gatewayAccessToken, onReady, onDirtyChange, onOccurrenceSelect, onError } = props
+    const { sessionId, gatewayOrigin, onReady, onDirtyChange, onOccurrenceSelect, onError } = props
     const iframeRef = useRef<HTMLIFrameElement>(null)
     const portRef = useRef<MessagePort | null>(null)
     const pendingFieldUpdatesRef = useRef(
@@ -137,6 +139,13 @@ export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, Offic
       const channel = new MessageChannel()
       channel.port1.onmessage = (event: MessageEvent<unknown>) => {
         if (!isOfficeSurfaceViewerMessageV1(event.data) || event.data.channelNonce !== channelNonce) return
+        if (
+          event.data.type === 'VIEWER_GATEWAY_READ_REQUEST'
+          || event.data.type === 'VIEWER_GATEWAY_WRITE_REQUEST'
+        ) {
+          void proxyGatewayRequest(sessionId, event.data).then(post)
+          return
+        }
         if (event.data.type === 'VIEWER_READY') {
           if (readyTimerRef.current !== null) window.clearTimeout(readyTimerRef.current)
           readyTimerRef.current = null
@@ -177,7 +186,6 @@ export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, Offic
           protocol: OFFICE_SURFACE_PROTOCOL_V1,
           channelNonce,
           type: 'OFFICE_PORT_OFFER',
-          gatewayAccessToken,
         },
         normalizedGatewayOrigin,
         [channel.port2],
@@ -223,4 +231,82 @@ function createChannelNonce(): string {
   const bytes = new Uint8Array(32)
   crypto.getRandomValues(bytes)
   return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+type GatewayRequestV1 = Extract<
+  OfficeSurfaceViewerMessageV1,
+  { type: 'VIEWER_GATEWAY_READ_REQUEST' | 'VIEWER_GATEWAY_WRITE_REQUEST' }
+>
+
+async function proxyGatewayRequest(
+  sessionId: string,
+  request: GatewayRequestV1,
+): Promise<OfficeSurfaceParentPayloadV1> {
+  try {
+    if (request.type === 'VIEWER_GATEWAY_READ_REQUEST') {
+      const result = await ipcClient.invoke('xiaogui.officeSurface.gateway.snapshot.read', { sessionId })
+      if (!isGatewayReadResult(result)) throw new Error('OFFICE_GATEWAY_PROXY_INVALID_RESULT')
+      return {
+        type: 'PARENT_GATEWAY_RESPONSE',
+        requestId: request.requestId,
+        ok: true,
+        headSha256: result.headSha256,
+        snapshot: result.snapshot,
+      }
+    }
+    const result = await ipcClient.invoke('xiaogui.officeSurface.gateway.snapshot.write', {
+      sessionId,
+      expectedHeadSha256: request.expectedHeadSha256,
+      snapshot: request.snapshot,
+    })
+    if (!isGatewayWriteResult(result)) throw new Error('OFFICE_GATEWAY_PROXY_INVALID_RESULT')
+    return {
+      type: 'PARENT_GATEWAY_RESPONSE',
+      requestId: request.requestId,
+      ok: true,
+      headSha256: result.headSha256,
+    }
+  } catch (error) {
+    const failure = sanitizeGatewayFailure(error)
+    return {
+      type: 'PARENT_GATEWAY_RESPONSE',
+      requestId: request.requestId,
+      ok: false,
+      errorCode: failure.code,
+      message: failure.message,
+    }
+  }
+}
+
+function isGatewayReadResult(value: unknown): value is {
+  headSha256: string
+  snapshot: Record<string, unknown>
+} {
+  if (!value || typeof value !== 'object') return false
+  const result = value as Record<string, unknown>
+  return isDigest(result.headSha256)
+    && Boolean(result.snapshot)
+    && typeof result.snapshot === 'object'
+    && !Array.isArray(result.snapshot)
+}
+
+function isGatewayWriteResult(value: unknown): value is { headSha256: string } {
+  return Boolean(value)
+    && typeof value === 'object'
+    && isDigest((value as Record<string, unknown>).headSha256)
+}
+
+function isDigest(value: unknown): value is string {
+  return typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value)
+}
+
+function sanitizeGatewayFailure(error: unknown): { code: string; message: string } {
+  const raw = error instanceof Error ? error.message : String(error)
+  if (raw.includes('OFFICE_WORKTREE_CONFLICT')) {
+    return { code: 'OFFICE_WORKTREE_CONFLICT', message: '文档工作副本已经变化，请重新载入。' }
+  }
+  if (raw.includes('OFFICE_SURFACE_SESSION_NOT_FOUND')) {
+    return { code: 'OFFICE_SURFACE_SESSION_NOT_FOUND', message: '文档会话已经关闭，请重新打开。' }
+  }
+  return { code: 'OFFICE_GATEWAY_PROXY_FAILED', message: '主进程文档代理暂时不可用。' }
 }

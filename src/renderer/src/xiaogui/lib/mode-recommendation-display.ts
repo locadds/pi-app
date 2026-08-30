@@ -6,6 +6,7 @@ export interface ModeRecommendationDisplayInputV1 {
   readonly recommendation: ModeRecommendationV1 | null
   readonly sessionPhase: SessionChromePhase
   readonly canPreserveDraft: boolean
+  readonly hasPendingConfirmation?: boolean
   readonly draftFingerprint: string
   readonly dismissedDraftFingerprint: string | null
 }
@@ -26,7 +27,13 @@ export function modeRecommendationDraftFingerprint(
 export function shouldShowModeRecommendationV1(
   input: ModeRecommendationDisplayInputV1,
 ): boolean {
-  if (!input.enabled || !input.recommendation || !input.canPreserveDraft) return false
+  if (
+    !input.enabled ||
+    !input.recommendation ||
+    !input.canPreserveDraft ||
+    input.hasPendingConfirmation === true
+  ) return false
+  if (input.recommendation.confidence !== 'HIGH') return false
   if (input.recommendation.currentMode === input.recommendation.recommendedMode) return false
   if (input.sessionPhase !== 'idle' && input.sessionPhase !== 'failed') return false
   return input.dismissedDraftFingerprint !== input.draftFingerprint

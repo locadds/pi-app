@@ -307,7 +307,6 @@ describe('TemplateReviewV2Dialog', () => {
           sessionId: 'a88d93aa-923b-4d6a-975f-d5b05fe1d5bd',
           mode: 'UNIVER_EXPERIMENTAL',
           gatewayOrigin: 'http://127.0.0.1:32123',
-          gatewayAccessToken: 'x'.repeat(48),
           sourceSha256: 'a'.repeat(64),
           readOnly: true,
           mappedOccurrenceIds: ['review-occurrence:target-1'],

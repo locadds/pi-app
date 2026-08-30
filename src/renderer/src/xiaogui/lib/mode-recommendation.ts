@@ -23,6 +23,7 @@ const MODE_SIGNAL_RULES: Readonly<Record<XiaoguiMode, readonly SignalRule[]>> = 
   WORK: [
     { category: 'DOCUMENT_FORMAT', pattern: /Word|DOCX|成品文档/i },
     { category: 'REPORT_DELIVERABLE', pattern: /报告|模板/i },
+    { category: 'TEMPLATE_CONVERSION', pattern: /整理(?:成|为).{0,4}模板|模板整理/i },
     { category: 'FILE_ORGANIZATION', pattern: /整理文件|资料清单/i },
     { category: 'CONTENT_EDITING', pattern: /改写|总结/i },
     { category: 'TABLE_WORK', pattern: /表格/i },
@@ -37,7 +38,7 @@ const MODE_SIGNAL_RULES: Readonly<Record<XiaoguiMode, readonly SignalRule[]>> = 
   CODING: [
     { category: 'CODE_CHANGE', pattern: /代码|bug|报错|重构/i },
     { category: 'REPOSITORY_WORKFLOW', pattern: /仓库|\bPR\b|commit/i },
-    { category: 'TEST_BUILD', pattern: /单元测试|构建/i },
+    { category: 'TEST_BUILD', pattern: /测试|构建/i },
     { category: 'PROGRAMMING_LANGUAGE', pattern: /TypeScript|Python/i },
     { category: 'API_DEVELOPMENT', pattern: /\bAPI\b/i },
   ],
@@ -85,7 +86,7 @@ const MODE_REASON: Readonly<
 
 const EMBEDDED_CODE_REFERENCE = /(?:报告|文档)(?:中|里).{0,24}(?:Python|TypeScript|代码)/i
 const CODING_ACTION = /修复|调试|开发|编写|实现|重构|测试|构建|报错|bug|仓库|提交|\bPR\b|commit|\bAPI\b/i
-const MODE_SWITCH_OPT_OUT = /(?:不要|不需|不用|不必).{0,8}(?:切换|换).{0,4}模式|保持.{0,8}(?:当前|现有).{0,4}模式/i
+const MODE_SWITCH_OPT_OUT = /(?:不要|不需|不用|不必).{0,8}(?:切换|换).{0,4}模式|别.{0,4}(?:切换|换)(?:.{0,4}模式)?|保持.{0,8}(?:当前|现有).{0,4}模式/i
 
 function matchedTextSignals(mode: XiaoguiMode, text: string): string[] {
   if (mode === 'CODING' && EMBEDDED_CODE_REFERENCE.test(text) && !CODING_ACTION.test(text)) {

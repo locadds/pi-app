@@ -34,7 +34,7 @@ describe('Main Xiaogui Prompt Context Resolver V1', () => {
       projectTrusted: true,
       projectId: 'xgp1_project',
       sessionKey: 'xgs1_session',
-      enabledCapabilities: ['coding.workspace'],
+      enabledCapabilities: [],
     })
     expect(JSON.stringify(result)).not.toContain('D:/project')
     expect(JSON.stringify(result)).not.toContain('D:/sessions')
@@ -54,7 +54,7 @@ describe('Main Xiaogui Prompt Context Resolver V1', () => {
       mode: 'DESIGN',
       phase: 'EXECUTE',
       projectId: 'xgp1_project',
-      enabledCapabilities: ['design.analysis'],
+      enabledCapabilities: [],
     })
     expect((await resolver.forWorkspace('D:/project', 'DESIGN')).sessionKey).toBeUndefined()
   })

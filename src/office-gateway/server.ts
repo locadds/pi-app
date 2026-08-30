@@ -144,11 +144,14 @@ async function readPersistedSnapshot(path: string | undefined): Promise<OfficeSn
   if (!path) return null
   try {
     const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as OfficeSnapshotV1
-      : null
-  } catch {
-    return null
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('OFFICE_WORKTREE_SNAPSHOT_CORRUPT')
+    }
+    return parsed as OfficeSnapshotV1
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    if (error instanceof Error && error.message === 'OFFICE_WORKTREE_SNAPSHOT_CORRUPT') throw error
+    throw new Error('OFFICE_WORKTREE_SNAPSHOT_CORRUPT', { cause: error })
   }
 }
 
@@ -247,15 +250,8 @@ function stableJson(value: unknown): string {
 }
 
 function isAuthorized(request: IncomingMessage, cookieName: string, token: string): boolean {
-  const bearer = readBearerToken(request.headers.authorization)
-  if (bearer && safeTokenEquals(bearer, token)) return true
   const cookieValue = readCookie(request.headers.cookie, cookieName)
   return cookieValue ? safeTokenEquals(cookieValue, token) : false
-}
-
-function readBearerToken(header: string | undefined): string | null {
-  const match = /^Bearer ([A-Za-z0-9_-]{32,512})$/.exec(header ?? '')
-  return match?.[1] ?? null
 }
 
 function safeTokenEquals(actualValue: string, expectedValue: string): boolean {

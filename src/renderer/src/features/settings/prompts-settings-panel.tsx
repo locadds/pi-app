@@ -9,7 +9,13 @@ import { SettingsPageHeader } from '@renderer/features/settings/settings-shell'
 import { resolvePromptRowDisplay } from '@renderer/features/settings/prompt-catalog-i18n'
 import type { XiaoguiEffectivePromptDiagnosticsV1 } from '@shared/xiaogui-prompt-contract'
 
-type PromptCategory = 'plugin_inject' | 'agents_context' | 'pi_builtin' | 'prompt_template'
+type PromptCategory =
+  | 'product_system_layers'
+  | 'user_system_append'
+  | 'project_context'
+  | 'slash_prompt_templates'
+  | 'tool_capability_guidelines'
+  | 'subtask_prompts'
 
 type PromptRow = {
   id: string
@@ -25,10 +31,12 @@ type PromptRow = {
 }
 
 const GROUP_ICON: Record<PromptCategory, typeof FileText> = {
-  agents_context: FolderGit2,
-  pi_builtin: Cpu,
-  prompt_template: MessageSquareText,
-  plugin_inject: Plug,
+  product_system_layers: Cpu,
+  user_system_append: FileText,
+  project_context: FolderGit2,
+  slash_prompt_templates: MessageSquareText,
+  tool_capability_guidelines: Plug,
+  subtask_prompts: FileText,
 }
 
 const ADVANCED_PROMPT_PREVIEW_LIMIT = 12_000
@@ -92,6 +100,13 @@ export function EffectivePromptDiagnosticsPanel({
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        {diagnostics.migrationNotices.some(
+          (notice) => notice.code === 'LEGACY_DESIGN_PROMPT_RUNTIME_DEDUPED',
+        ) ? (
+          <p className="rounded-md border border-brand/25 bg-brand/5 px-3 py-2 text-xs text-foreground/80">
+            {t('settings:prompts.legacyDesignRuntimeDeduped')}
+          </p>
+        ) : null}
         <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {[
             [t('settings:prompts.effectiveMode'), manifest.mode],
@@ -171,16 +186,13 @@ export function EffectivePromptDiagnosticsPanel({
           </div>
         </section>
 
-        <details className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+        <details className="rounded-lg border border-border/60 bg-muted/15 px-3 py-2">
           <summary
             className="cursor-pointer font-medium text-foreground/85"
             onClick={() => void loadPromptBody()}
           >
             {t('settings:prompts.advancedSummary')}
           </summary>
-          <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-            {t('settings:prompts.advancedWarning')}
-          </p>
           {promptLoading ? (
             <p className="mt-3 text-xs text-muted-foreground">{t('settings:prompts.advancedLoading')}</p>
           ) : promptError ? (
@@ -243,12 +255,21 @@ export function PromptsSettingsPanel() {
 
   const displayGroups = useMemo(() => {
     const labels: Record<PromptCategory, string> = {
-      plugin_inject: t('settings:prompts.pluginInject'),
-      agents_context: t('settings:prompts.groupAgentsContext'),
-      pi_builtin: t('settings:prompts.piBuiltin'),
-      prompt_template: t('settings:prompts.promptTemplate'),
+      product_system_layers: t('settings:prompts.productSystemLayers'),
+      user_system_append: t('settings:prompts.userSystemAppend'),
+      project_context: t('settings:prompts.groupProjectContext'),
+      slash_prompt_templates: t('settings:prompts.slashPromptTemplates'),
+      tool_capability_guidelines: t('settings:prompts.toolCapabilityGuidelines'),
+      subtask_prompts: t('settings:prompts.subtaskPrompts'),
     }
-    const order: PromptCategory[] = ['agents_context', 'pi_builtin', 'prompt_template', 'plugin_inject']
+    const order: PromptCategory[] = [
+      'product_system_layers',
+      'user_system_append',
+      'project_context',
+      'slash_prompt_templates',
+      'tool_capability_guidelines',
+      'subtask_prompts',
+    ]
     return order
       .map((category) => ({
         category,
