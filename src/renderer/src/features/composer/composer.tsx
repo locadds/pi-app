@@ -45,18 +45,32 @@ import { useComposerFileSearch } from './use-composer-file-search'
 import { ComposerFilePopover } from './composer-file-popover'
 import { ComposerAgentActivity } from './composer-agent-activity'
 import { ComposerCollaborationButton } from '@renderer/xiaogui/components/ComposerCollaborationButton'
+import { ModeRecommendationBanner } from '@renderer/xiaogui/components/ModeRecommendationBanner'
+import { useXiaoguiStore } from '@renderer/xiaogui/stores/xiaogui-store'
+import { recommendXiaoguiModeV1 } from '@renderer/xiaogui/lib/mode-recommendation'
+import {
+  modeRecommendationDraftFingerprint,
+  shouldShowModeRecommendationV1,
+} from '@renderer/xiaogui/lib/mode-recommendation-display'
+import { XIAOGUI_MODE_RECOMMENDATION_ENABLED } from '@renderer/xiaogui/lib/mode-recommendation-feature'
 import { isSubagentSessionPreview } from '@renderer/lib/subagent-session-preview'
 import {
   composerDraftContextKey,
   readTransientComposerDraft,
   rememberTransientComposerDraft,
 } from './composer-transient-draft'
+import {
+  canPreserveComposerSegments,
+  switchModePreservingComposerDraftV1,
+} from './mode-recommendation-draft'
 
 export function Composer() {
   const { t } = useTranslation()
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<AttachmentMeta[]>([])
   const [isDragActive, setIsDragActive] = useState(false)
+  const [modeSwitching, setModeSwitching] = useState(false)
+  const [dismissedDraftFingerprint, setDismissedDraftFingerprint] = useState<string | null>(null)
   const dragDepth = useRef(0)
   const editorRef = useRef<HTMLDivElement>(null)
   const slashPopoverAnchorRef = useRef<HTMLDivElement>(null)
@@ -67,6 +81,8 @@ export function Composer() {
   const workerLiveSnapshot = useUIStore((s) => s.workerLiveSnapshot)
   const ephemeralSandboxDraft = useUIStore((s) => s.ephemeralSandboxDraft)
   const pendingNew = useUIStore((s) => s.pendingNewSessionPlaceholder)
+  const mode = useXiaoguiStore((s) => s.mode)
+  const switchMode = useXiaoguiStore((s) => s.switchMode)
   const draftContextKey = composerDraftContextKey({
     currentWorkspace,
     currentSessionId,
@@ -99,7 +115,7 @@ export function Composer() {
       readOnlySubagentPreview,
     ],
   )
-  const canSendMessages = canCompose && !sessionPreview
+  const canSendMessages = canCompose && !sessionPreview && !modeSwitching
   const extensionDialogOpen = useExtensionUIStore((s) => s.activePending != null)
   const sessionChrome = useSessionChrome({ extensionDialogOpen })
   const isRunning = sessionChrome.canStop || sessionChrome.showSpinner
@@ -194,6 +210,38 @@ export function Composer() {
     [],
   )
 
+  const attachmentNames = useMemo(() => attachments.map((attachment) => attachment.name), [attachments])
+  const draftFingerprint = useMemo(
+    () => modeRecommendationDraftFingerprint(text, attachmentNames),
+    [attachmentNames, text],
+  )
+  const modeRecommendation = useMemo(
+    () =>
+      XIAOGUI_MODE_RECOMMENDATION_ENABLED
+        ? recommendXiaoguiModeV1({
+            currentMode: mode,
+            text,
+            attachmentNames,
+          })
+        : null,
+    [attachmentNames, mode, text],
+  )
+  const canPreserveModeRecommendationDraft = useMemo(
+    () =>
+      attachments.every(
+        (attachment) => attachment.path.trim().length > 0 && attachment.name.trim().length > 0,
+      ),
+    [attachments],
+  )
+  const showModeRecommendation = shouldShowModeRecommendationV1({
+    enabled: XIAOGUI_MODE_RECOMMENDATION_ENABLED,
+    recommendation: modeRecommendation,
+    sessionPhase: sessionChrome.phase,
+    canPreserveDraft: canPreserveModeRecommendationDraft,
+    draftFingerprint,
+    dismissedDraftFingerprint,
+  })
+
   const slash = useComposerSlash(
     text,
     canSendMessages,
@@ -234,6 +282,44 @@ export function Composer() {
     setIsDragActive,
     dragDepth,
   })
+
+  const handleRecommendedModeSwitch = useCallback(async () => {
+    if (!modeRecommendation || modeSwitching) return
+    const segments = currentSegments()
+    if (!canPreserveComposerSegments(segments)) return
+
+    setModeSwitching(true)
+    try {
+      const switched = await switchModePreservingComposerDraftV1({
+        targetMode: modeRecommendation.recommendedMode,
+        segments,
+        switchMode,
+        getTargetDraftContextKey: () => {
+          const state = useUIStore.getState()
+          return composerDraftContextKey({
+            currentWorkspace: state.currentWorkspace,
+            currentSessionId: state.currentSessionId,
+            historySessionFile: state.historySessionFile,
+            ephemeralSandboxDraft: state.ephemeralSandboxDraft,
+            pendingNewSessionPlaceholder: state.pendingNewSessionPlaceholder,
+          })
+        },
+        restoreSegments: applySegmentsChange,
+      })
+      if (switched) setDismissedDraftFingerprint(draftFingerprint)
+    } catch (error) {
+      console.error('[xiaogui] 推荐模式切换失败:', error)
+    } finally {
+      setModeSwitching(false)
+    }
+  }, [
+    applySegmentsChange,
+    currentSegments,
+    draftFingerprint,
+    modeRecommendation,
+    modeSwitching,
+    switchMode,
+  ])
 
   useEffect(() => {
     if (composerPrefill == null) return
@@ -382,6 +468,14 @@ export function Composer() {
       />
       <ComposerCompactionBanner />
       <ComposerPendingQueue />
+      {showModeRecommendation && modeRecommendation && (
+        <ModeRecommendationBanner
+          recommendation={modeRecommendation}
+          switching={modeSwitching}
+          onSwitch={() => void handleRecommendedModeSwitch()}
+          onDismiss={() => setDismissedDraftFingerprint(draftFingerprint)}
+        />
+      )}
       {sessionPreview && (
         <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-200/90">
           <span className="min-w-0 flex-1">{t('composer:subagentPreviewBanner')}</span>
