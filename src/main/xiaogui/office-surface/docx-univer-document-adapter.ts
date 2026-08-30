@@ -1,6 +1,8 @@
 import type JSZip from 'jszip'
 
 import type {
+  ICustomBlock,
+  IDocDrawingBase,
   IDocumentBody,
   IDocumentData,
   IParagraphStyle,
@@ -21,10 +23,14 @@ const TABLE_CELL_START = '\x1C'
 const TABLE_CELL_END = '\x1D'
 const TABLE_ROW_END = '\x1E'
 const TABLE_END = '\x1F'
+const DRAWING_BLOCK = '\b'
+const EMU_PER_PIXEL = 9_525
+const POINTS_TO_PIXELS = 4 / 3
 
 const DEFAULT_PAGE_WIDTH = 793.7
 const DEFAULT_PAGE_HEIGHT = 1122.5
 const DEFAULT_MARGIN = 96
+const DOCS_DRAWING_RESOURCE_NAME = 'DOC_DRAWING_PLUGIN'
 
 export interface DocxUniverTextAnchorV1 {
   readonly anchorKey: string
@@ -71,6 +77,22 @@ interface BodyBuildContextV1 {
   readonly part: 'BODY' | 'HEADER' | 'FOOTER'
   readonly partIndex: number
   readonly styles: StyleCatalogV1
+  readonly documentId: string
+  readonly partPath: string
+  readonly relationships: ReadonlyMap<string, string>
+  readonly media: ReadonlyMap<string, MediaAssetV1>
+  readonly drawingSequence: { value: number }
+}
+
+interface MediaAssetV1 {
+  readonly packagePath: string
+  readonly dataUrl: string
+  readonly mimeType: string
+}
+
+interface UniverImageDrawingV1 extends IDocDrawingBase {
+  readonly imageSourceType: 'BASE64'
+  readonly source: string
 }
 
 interface MutableBodyV1 {
@@ -80,12 +102,23 @@ interface MutableBodyV1 {
   sectionBreaks: NonNullable<IDocumentBody['sectionBreaks']>
   tables: NonNullable<IDocumentBody['tables']>
   tableSource: Record<string, ITable>
+  customBlocks: ICustomBlock[]
+  drawings: Record<string, UniverImageDrawingV1>
+  drawingsOrder: string[]
   anchors: DocxUniverTextAnchorV1[]
   paragraphCount: number
   tableCount: number
   tableCellCount: number
   textBoxCount: number
   drawingCount: number
+  renderedDrawingCount: number
+  approximateFloatingDrawingCount: number
+}
+
+interface ParsedDrawingV1 {
+  readonly streamOffset: number
+  readonly drawing: UniverImageDrawingV1
+  readonly approximateFloating: boolean
 }
 
 interface ParsedParagraphV1 {
@@ -95,6 +128,7 @@ interface ParsedParagraphV1 {
   readonly paragraphStyle: IParagraphStyle
   readonly textBoxes: readonly string[]
   readonly drawingCount: number
+  readonly drawings: readonly ParsedDrawingV1[]
 }
 
 interface VisibleAccumulatorV1 {
@@ -107,7 +141,20 @@ export async function buildDocxUniverDocumentV1(
 ): Promise<DocxUniverDocumentBuildResultV1> {
   const stylesXml = await input.zip.file('word/styles.xml')?.async('string') ?? ''
   const styles = readStyleCatalog(stylesXml)
-  const body = buildBody(input.mainXml, { part: 'BODY', partIndex: 0, styles })
+  const media = await readMediaAssets(input.zip)
+  const drawingSequence = { value: 0 }
+  const body = buildBody(
+    input.mainXml,
+    await createBodyBuildContext(input.zip, {
+      part: 'BODY',
+      partIndex: 0,
+      partPath: 'word/document.xml',
+      styles,
+      documentId: input.documentId,
+      media,
+      drawingSequence,
+    }),
+  )
   const sectionProperties = firstElement(input.mainXml, 'w:sectPr') ?? ''
   const headerPaths = Object.keys(input.zip.files)
     .filter((path) => /^word\/header\d+\.xml$/i.test(path))
@@ -117,33 +164,81 @@ export async function buildDocxUniverDocumentV1(
     .sort(numericPartSort)
   const headers: NonNullable<IDocumentData['headers']> = {}
   const footers: NonNullable<IDocumentData['footers']> = {}
+  const drawings: NonNullable<IDocumentData['drawings']> = { ...body.drawings }
+  const drawingsOrder = [...body.drawingsOrder]
+  const headerFooterDrawingsOrder: string[] = []
   let headerParagraphCount = 0
   let footerParagraphCount = 0
+  let totalDrawingCount = body.drawingCount
+  let totalRenderedDrawingCount = body.renderedDrawingCount
+  let approximateFloatingDrawingCount = body.approximateFloatingDrawingCount
 
   for (let index = 0; index < headerPaths.length; index += 1) {
     const xml = await input.zip.file(headerPaths[index])?.async('string')
     if (!xml) continue
-    const built = buildBody(xml, { part: 'HEADER', partIndex: index + 1, styles })
+    const built = buildBody(
+      xml,
+      await createBodyBuildContext(input.zip, {
+        part: 'HEADER',
+        partIndex: index + 1,
+        partPath: headerPaths[index],
+        styles,
+        documentId: input.documentId,
+        media,
+        drawingSequence,
+      }),
+    )
     const headerId = `xiaogui-header-${index + 1}`
     headers[headerId] = { headerId, body: toDocumentBody(built) }
+    Object.assign(drawings, built.drawings)
+    headerFooterDrawingsOrder.push(...built.drawingsOrder)
     headerParagraphCount += built.paragraphCount
+    totalDrawingCount += built.drawingCount
+    totalRenderedDrawingCount += built.renderedDrawingCount
+    approximateFloatingDrawingCount += built.approximateFloatingDrawingCount
   }
   for (let index = 0; index < footerPaths.length; index += 1) {
     const xml = await input.zip.file(footerPaths[index])?.async('string')
     if (!xml) continue
-    const built = buildBody(xml, { part: 'FOOTER', partIndex: index + 1, styles })
+    const built = buildBody(
+      xml,
+      await createBodyBuildContext(input.zip, {
+        part: 'FOOTER',
+        partIndex: index + 1,
+        partPath: footerPaths[index],
+        styles,
+        documentId: input.documentId,
+        media,
+        drawingSequence,
+      }),
+    )
     const footerId = `xiaogui-footer-${index + 1}`
     footers[footerId] = { footerId, body: toDocumentBody(built) }
+    Object.assign(drawings, built.drawings)
+    headerFooterDrawingsOrder.push(...built.drawingsOrder)
     footerParagraphCount += built.paragraphCount
+    totalDrawingCount += built.drawingCount
+    totalRenderedDrawingCount += built.renderedDrawingCount
+    approximateFloatingDrawingCount += built.approximateFloatingDrawingCount
   }
 
   const page = readPageStyle(sectionProperties)
   const mediaCount = Object.keys(input.zip.files).filter((path) => path.startsWith('word/media/')).length
   const warnings: string[] = []
-  if (body.drawingCount > 0 || mediaCount > 0) {
+  if (totalRenderedDrawingCount > 0) {
+    warnings.push(`已从原文档导入 ${totalRenderedDrawingCount} 个图片对象；图片内容保留在本机私有工作副本中。`)
+  }
+  const unsupportedDrawingCount = Math.max(0, totalDrawingCount - totalRenderedDrawingCount)
+  if (unsupportedDrawingCount > 0) {
     warnings.push(
-      `原文中的 ${body.drawingCount} 个绘图对象和 ${mediaCount} 个媒体文件尚不能由当前开源 Univer 完整还原；正文、段落和表格按原结构显示，复杂对象会进入待处理清单。`,
+      `另有 ${unsupportedDrawingCount} 个绘图对象无法可靠映射为浏览器图片，已明确保留为待处理项，不会冒充还原成功。`,
     )
+  }
+  if (approximateFloatingDrawingCount > 0) {
+    warnings.push(`其中 ${approximateFloatingDrawingCount} 个浮动图片按原锚点近似定位；请在生成正式模板前核对版式。`)
+  }
+  if (mediaCount > totalRenderedDrawingCount) {
+    warnings.push(`文档包含 ${mediaCount} 个媒体文件；未被正文、页眉或页脚引用的媒体不会显示。`)
   }
   if (body.textBoxCount > 0) {
     warnings.push(`检测到 ${body.textBoxCount} 个文本框；已保留其中可读取文字，但浮动位置只能近似显示。`)
@@ -151,6 +246,13 @@ export async function buildDocxUniverDocumentV1(
 
   const defaultHeaderId = Object.keys(headers)[0] ?? ''
   const defaultFooterId = Object.keys(footers)[0] ?? ''
+  const allDrawingsOrder = [...drawingsOrder, ...headerFooterDrawingsOrder]
+  const drawingResources = allDrawingsOrder.length > 0
+    ? [{
+        name: DOCS_DRAWING_RESOURCE_NAME,
+        data: JSON.stringify({ data: drawings, order: allDrawingsOrder }),
+      }]
+    : []
   const document: IDocumentData = {
     id: input.documentId,
     title: input.title,
@@ -185,7 +287,13 @@ export async function buildDocxUniverDocumentV1(
     tableSource: Object.keys(body.tableSource).length ? body.tableSource : undefined,
     headers: Object.keys(headers).length ? headers : undefined,
     footers: Object.keys(footers).length ? footers : undefined,
-    resources: [],
+    drawings: Object.keys(drawings).length ? drawings : undefined,
+    drawingsOrder: allDrawingsOrder.length ? allDrawingsOrder : undefined,
+    headerFooterDrawingsOrder: headerFooterDrawingsOrder.length ? headerFooterDrawingsOrder : undefined,
+    // Univer hydrates its drawing manager from this plugin resource during
+    // the first document render. The typed fields above remain the portable
+    // source of truth for later snapshots and non-rendering consumers.
+    resources: drawingResources,
   }
 
   return {
@@ -197,10 +305,259 @@ export async function buildDocxUniverDocumentV1(
       tableCount: body.tableCount,
       tableCellCount: body.tableCellCount,
       textBoxCount: body.textBoxCount,
-      drawingCount: body.drawingCount,
+      drawingCount: totalDrawingCount,
       mediaCount,
     },
   }
+}
+
+async function createBodyBuildContext(
+  zip: JSZip,
+  input: Omit<BodyBuildContextV1, 'relationships'>,
+): Promise<BodyBuildContextV1> {
+  const relationshipsPath = relationshipPartPath(input.partPath)
+  const relationshipsXml = await zip.file(relationshipsPath)?.async('string') ?? ''
+  return {
+    ...input,
+    relationships: readRelationships(relationshipsXml, input.partPath),
+  }
+}
+
+async function readMediaAssets(zip: JSZip): Promise<ReadonlyMap<string, MediaAssetV1>> {
+  const assets = new Map<string, MediaAssetV1>()
+  const paths = Object.keys(zip.files).filter((path) => path.startsWith('word/media/') && !zip.files[path].dir)
+  await Promise.all(paths.map(async (packagePath) => {
+    const mimeType = imageMimeType(packagePath)
+    if (!mimeType) return
+    const base64 = await zip.file(packagePath)?.async('base64')
+    if (!base64) return
+    assets.set(packagePath, {
+      packagePath,
+      mimeType,
+      dataUrl: `data:${mimeType};base64,${base64}`,
+    })
+  }))
+  return assets
+}
+
+function readRelationships(xml: string, partPath: string): ReadonlyMap<string, string> {
+  const relationships = new Map<string, string>()
+  for (const match of xml.matchAll(/<Relationship\b[^>]*\/?\s*>/gi)) {
+    const tag = match[0]
+    if (attribute(tag, 'TargetMode')?.toLowerCase() === 'external') continue
+    const id = attribute(tag, 'Id')
+    const target = attribute(tag, 'Target')
+    if (!id || !target) continue
+    relationships.set(id, resolvePackagePath(partPath, decodeXmlText(target)))
+  }
+  return relationships
+}
+
+function relationshipPartPath(partPath: string): string {
+  const slash = partPath.lastIndexOf('/')
+  const directory = slash >= 0 ? partPath.slice(0, slash + 1) : ''
+  const fileName = slash >= 0 ? partPath.slice(slash + 1) : partPath
+  return `${directory}_rels/${fileName}.rels`
+}
+
+function resolvePackagePath(partPath: string, target: string): string {
+  if (target.startsWith('/')) return normalizePackagePath(target.slice(1))
+  const slash = partPath.lastIndexOf('/')
+  const directory = slash >= 0 ? partPath.slice(0, slash + 1) : ''
+  return normalizePackagePath(`${directory}${target}`)
+}
+
+function normalizePackagePath(path: string): string {
+  const output: string[] = []
+  for (const segment of path.replaceAll('\\', '/').split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') output.pop()
+    else output.push(segment)
+  }
+  return output.join('/')
+}
+
+function imageMimeType(packagePath: string): string | undefined {
+  const extension = packagePath.split('.').pop()?.toLowerCase()
+  const types: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    bmp: 'image/bmp',
+    webp: 'image/webp',
+  }
+  return extension ? types[extension] : undefined
+}
+
+type RunContentItemV1 =
+  | { readonly kind: 'TEXT'; readonly text: string }
+  | {
+      readonly kind: 'DRAWING'
+      readonly drawing?: UniverImageDrawingV1
+      readonly approximateFloating: boolean
+    }
+
+function readRunContent(runXml: string, context: BodyBuildContextV1): RunContentItemV1[] {
+  const result: RunContentItemV1[] = []
+  const token = /<w:(t|instrText)\b[^>]*>([\s\S]*?)<\/w:\1>|<w:(tab|br|cr|lastRenderedPageBreak)\b([^>]*)\/?\s*>|<(w:drawing|w:pict|w:object)\b/g
+  let cursor = 0
+  while (cursor < runXml.length) {
+    token.lastIndex = cursor
+    const match = token.exec(runXml)
+    if (!match) break
+    if (match[1]) {
+      result.push({ kind: 'TEXT', text: decodeXmlText(match[2]).replace(/\r\n?/g, '\n') })
+      cursor = token.lastIndex
+      continue
+    }
+    if (match[3]) {
+      const text = match[3] === 'tab'
+        ? TAB
+        : match[3] === 'br' && /w:type\s*=\s*["']page["']/.test(match[4] ?? '')
+          ? PAGE_BREAK
+          : match[3] === 'lastRenderedPageBreak'
+            ? PAGE_BREAK
+            : '\n'
+      result.push({ kind: 'TEXT', text })
+      cursor = token.lastIndex
+      continue
+    }
+    const qualifiedTag = match[5]
+    const element = balancedElementAt(runXml, match.index, qualifiedTag)
+    if (!element) {
+      cursor = token.lastIndex
+      continue
+    }
+    if (qualifiedTag === 'w:drawing' || qualifiedTag === 'w:pict') {
+      const parsed = readImageDrawing(element, context)
+      result.push({
+        kind: 'DRAWING',
+        drawing: parsed?.drawing,
+        approximateFloating: parsed?.approximateFloating ?? false,
+      })
+    }
+    cursor = match.index + element.length
+  }
+  return result
+}
+
+function readImageDrawing(
+  xml: string,
+  context: BodyBuildContextV1,
+): { drawing: UniverImageDrawingV1; approximateFloating: boolean } | undefined {
+  context.drawingSequence.value += 1
+  const blip = firstOpenTag(xml, 'a:blip')
+  const vmlImage = firstOpenTag(xml, 'v:imagedata')
+  const relationshipId = blip
+    ? attribute(blip, 'r:embed')
+    : vmlImage
+      ? attribute(vmlImage, 'r:id')
+      : undefined
+  const packagePath = relationshipId ? context.relationships.get(relationshipId) : undefined
+  const asset = packagePath ? context.media.get(packagePath) : undefined
+  if (!asset) return undefined
+
+  const drawingId = `xiaogui-${context.part.toLowerCase()}-${context.partIndex}-drawing-${context.drawingSequence.value}`
+  const inline = hasElement(xml, 'wp:inline') || !hasElement(xml, 'wp:anchor')
+  const size = readDrawingSize(xml)
+  const horizontal = inline
+    ? { relativeFrom: 2, posOffset: 0 }
+    : readDrawingHorizontalPosition(xml)
+  const vertical = inline
+    ? { relativeFrom: 2, posOffset: 0 }
+    : readDrawingVerticalPosition(xml)
+  const docProperties = firstOpenTag(xml, 'wp:docPr')
+  const anchorTag = firstOpenTag(xml, 'wp:anchor')
+  const layoutType = inline ? 0 : readDrawingLayoutType(xml)
+  const drawing: UniverImageDrawingV1 = {
+    drawingId,
+    unitId: context.documentId,
+    subUnitId: context.documentId,
+    drawingType: 0,
+    imageSourceType: 'BASE64',
+    source: asset.dataUrl,
+    transform: { width: size.width, height: size.height, angle: 0 },
+    docTransform: {
+      size,
+      positionH: horizontal,
+      positionV: vertical,
+      angle: 0,
+    },
+    title: docProperties ? attribute(docProperties, 'name') ?? '' : '',
+    description: docProperties ? attribute(docProperties, 'descr') ?? '' : '',
+    layoutType,
+    behindDoc: anchorTag && attribute(anchorTag, 'behindDoc') === '1' ? 1 : 0,
+    wrapText: 0,
+    distL: emuToPixels(numericAttribute(anchorTag ?? '', 'distL')),
+    distR: emuToPixels(numericAttribute(anchorTag ?? '', 'distR')),
+    distT: emuToPixels(numericAttribute(anchorTag ?? '', 'distT')),
+    distB: emuToPixels(numericAttribute(anchorTag ?? '', 'distB')),
+  }
+  return { drawing, approximateFloating: !inline }
+}
+
+function readDrawingSize(xml: string): { width: number; height: number } {
+  const extent = firstOpenTag(xml, 'wp:extent') ?? firstOpenTag(xml, 'a:ext')
+  const cx = numericAttribute(extent ?? '', 'cx')
+  const cy = numericAttribute(extent ?? '', 'cy')
+  if (cx && cy) return { width: Math.max(1, cx / EMU_PER_PIXEL), height: Math.max(1, cy / EMU_PER_PIXEL) }
+  const shape = firstOpenTag(xml, 'v:shape')
+  const style = shape ? attribute(shape, 'style') ?? '' : ''
+  const width = cssLengthToPixels(style.match(/(?:^|;)\s*width\s*:\s*([^;]+)/i)?.[1])
+  const height = cssLengthToPixels(style.match(/(?:^|;)\s*height\s*:\s*([^;]+)/i)?.[1])
+  return { width: width ?? 240, height: height ?? 160 }
+}
+
+function cssLengthToPixels(value: string | undefined): number | undefined {
+  if (!value) return undefined
+  const parsed = Number.parseFloat(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined
+  if (/pt\s*$/i.test(value)) return parsed * POINTS_TO_PIXELS
+  if (/in\s*$/i.test(value)) return parsed * 96
+  if (/cm\s*$/i.test(value)) return parsed * (96 / 2.54)
+  return parsed
+}
+
+function readDrawingHorizontalPosition(xml: string): { relativeFrom: number; posOffset: number } {
+  const position = firstElement(xml, 'wp:positionH') ?? ''
+  const relative = attribute(firstOpenTag(position, 'wp:positionH') ?? '', 'relativeFrom')
+  const map: Record<string, number> = {
+    page: 0, column: 1, character: 2, margin: 3, insideMargin: 4,
+    outsideMargin: 5, leftMargin: 6, rightMargin: 7,
+  }
+  return { relativeFrom: map[relative ?? ''] ?? 0, posOffset: emuToPixels(textOfFirst(position, 'wp:posOffset')) }
+}
+
+function readDrawingVerticalPosition(xml: string): { relativeFrom: number; posOffset: number } {
+  const position = firstElement(xml, 'wp:positionV') ?? ''
+  const relative = attribute(firstOpenTag(position, 'wp:positionV') ?? '', 'relativeFrom')
+  const map: Record<string, number> = {
+    page: 0, paragraph: 1, line: 2, margin: 3, topMargin: 4,
+    bottomMargin: 5, insideMargin: 6, outsideMargin: 7,
+  }
+  return { relativeFrom: map[relative ?? ''] ?? 1, posOffset: emuToPixels(textOfFirst(position, 'wp:posOffset')) }
+}
+
+function readDrawingLayoutType(xml: string): number {
+  if (hasElement(xml, 'wp:wrapSquare')) return 3
+  if (hasElement(xml, 'wp:wrapThrough')) return 4
+  if (hasElement(xml, 'wp:wrapTight')) return 5
+  if (hasElement(xml, 'wp:wrapTopAndBottom')) return 6
+  return 1
+}
+
+function textOfFirst(xml: string, tag: string): number | undefined {
+  const element = firstElement(xml, tag)
+  if (!element) return undefined
+  const openEnd = element.indexOf('>')
+  const closeStart = element.lastIndexOf(`</${tag}>`)
+  if (openEnd < 0 || closeStart < 0) return undefined
+  return finiteNumber(decodeXmlText(element.slice(openEnd + 1, closeStart)).trim())
+}
+
+function emuToPixels(value: number | undefined): number {
+  return value === undefined ? 0 : value / EMU_PER_PIXEL
 }
 
 function buildBody(xml: string, context: BodyBuildContextV1): MutableBodyV1 {
@@ -211,12 +568,17 @@ function buildBody(xml: string, context: BodyBuildContextV1): MutableBodyV1 {
     sectionBreaks: [],
     tables: [],
     tableSource: {},
+    customBlocks: [],
+    drawings: {},
+    drawingsOrder: [],
     anchors: [],
     paragraphCount: 0,
     tableCount: 0,
     tableCellCount: 0,
     textBoxCount: 0,
     drawingCount: 0,
+    renderedDrawingCount: 0,
+    approximateFloatingDrawingCount: 0,
   }
   const container = elementContent(xml, context.part === 'BODY' ? 'w:body' : context.part === 'HEADER' ? 'w:hdr' : 'w:ftr') ?? xml
   const blocks = collectOrderedBlocks(container, ['w:p', 'w:tbl'])
@@ -243,10 +605,10 @@ function appendParagraph(
   context: BodyBuildContextV1,
   anchorKey?: string,
 ): void {
-  const parsed = parseParagraph(paragraphXml, context.styles)
+  const parsed = parseParagraph(paragraphXml, context)
   const paragraphStart = body.dataStream.length
   const visible: VisibleAccumulatorV1 = { text: '', offsets: [] }
-  appendStyledText(body, parsed.streamText, parsed.textRuns, visible)
+  appendStyledText(body, parsed.streamText, parsed.textRuns, parsed.drawings, visible)
   const paragraphEnd = body.dataStream.length
   body.dataStream += PARAGRAPH
   body.paragraphs.push({ startIndex: paragraphEnd, paragraphStyle: parsed.paragraphStyle })
@@ -318,8 +680,8 @@ function appendTable(
         body.paragraphCount += 1
       } else {
         paragraphs.forEach((paragraph, paragraphInCellIndex) => {
-          const parsed = parseParagraph(paragraph.xml, context.styles)
-          appendStyledText(body, parsed.streamText, parsed.textRuns, visible)
+          const parsed = parseParagraph(paragraph.xml, context)
+          appendStyledText(body, parsed.streamText, parsed.textRuns, parsed.drawings, visible)
           const paragraphEnd = body.dataStream.length
           body.dataStream += PARAGRAPH
           body.paragraphs.push({ startIndex: paragraphEnd, paragraphStyle: parsed.paragraphStyle })
@@ -376,6 +738,7 @@ function appendStyledText(
   body: MutableBodyV1,
   streamText: string,
   runs: readonly { readonly start: number; readonly end: number; readonly style: ITextStyle }[],
+  drawings: readonly ParsedDrawingV1[],
   visible: VisibleAccumulatorV1,
 ): void {
   const base = body.dataStream.length
@@ -384,15 +747,24 @@ function appendStyledText(
     if (run.end <= run.start) continue
     body.textRuns.push({ st: base + run.start, ed: base + run.end, ts: run.style })
   }
+  for (const item of drawings) {
+    const startIndex = base + item.streamOffset
+    body.customBlocks.push({ startIndex, blockId: item.drawing.drawingId, blockType: 0 })
+    body.drawings[item.drawing.drawingId] = item.drawing
+    body.drawingsOrder.push(item.drawing.drawingId)
+    body.renderedDrawingCount += 1
+    if (item.approximateFloating) body.approximateFloatingDrawingCount += 1
+  }
   for (let index = 0; index < streamText.length; index += 1) {
     const character = streamText[index]
-    if (character === PAGE_BREAK) continue
+    if (character === PAGE_BREAK || character === DRAWING_BLOCK) continue
     visible.text += character
     visible.offsets.push(base + index)
   }
 }
 
-function parseParagraph(xml: string, styles: StyleCatalogV1): ParsedParagraphV1 {
+function parseParagraph(xml: string, context: BodyBuildContextV1): ParsedParagraphV1 {
+  const { styles } = context
   const paragraphProperties = firstElement(xml, 'w:pPr') ?? ''
   const styleId = attributeOfFirst(paragraphProperties, 'w:pStyle', 'w:val')
   const inherited = resolveStyle(styleId, styles.paragraphStyles)
@@ -408,31 +780,42 @@ function parseParagraph(xml: string, styles: StyleCatalogV1): ParsedParagraphV1 
     readParagraphStyle(paragraphProperties),
   )
   const textBoxes = collectElements(xml, 'w:txbxContent')
-  const withoutComplexObjects = stripElements(xml, ['w:drawing', 'w:pict', 'w:object'])
-  const runXmls = collectElements(withoutComplexObjects, 'w:r')
+  const withoutTextBoxes = stripElements(xml, ['w:txbxContent'])
+  const runXmls = collectElements(withoutTextBoxes, 'w:r')
   let streamText = ''
   const textRuns: Array<{ start: number; end: number; style: ITextStyle }> = []
+  const drawings: ParsedDrawingV1[] = []
   for (const runXml of runXmls) {
     const runProperties = firstElement(runXml, 'w:rPr') ?? ''
     const characterStyleId = attributeOfFirst(runProperties, 'w:rStyle', 'w:val')
     const characterStyle = resolveStyle(characterStyleId, styles.characterStyles).textStyle
-    const text = readRunStreamText(runXml)
-    if (!text) continue
-    const start = streamText.length
-    streamText += text
-    textRuns.push({
-      start,
-      end: streamText.length,
-      style: mergeTextStyles(paragraphDefaultTextStyle, characterStyle, readTextStyle(runProperties)),
-    })
+    const style = mergeTextStyles(paragraphDefaultTextStyle, characterStyle, readTextStyle(runProperties))
+    const content = readRunContent(runXml, context)
+    for (const item of content) {
+      if (item.kind === 'DRAWING') {
+        if (!item.drawing) continue
+        drawings.push({
+          streamOffset: streamText.length,
+          drawing: item.drawing,
+          approximateFloating: item.approximateFloating,
+        })
+        streamText += DRAWING_BLOCK
+        continue
+      }
+      if (!item.text) continue
+      const start = streamText.length
+      streamText += item.text
+      textRuns.push({ start, end: streamText.length, style })
+    }
   }
   return {
-    text: streamText.replaceAll(PAGE_BREAK, ''),
+    text: streamText.replaceAll(PAGE_BREAK, '').replaceAll(DRAWING_BLOCK, ''),
     streamText,
     textRuns,
     paragraphStyle,
     textBoxes,
     drawingCount: countOpeningTags(xml, 'w:drawing') + countOpeningTags(xml, 'w:pict'),
+    drawings,
   }
 }
 
@@ -624,7 +1007,7 @@ function toDocumentBody(body: MutableBodyV1): IDocumentBody {
     textRuns: compactTextRuns(body.textRuns),
     paragraphs: body.paragraphs,
     sectionBreaks: body.sectionBreaks,
-    customBlocks: [],
+    customBlocks: body.customBlocks,
     customRanges: [],
     customDecorations: [],
     tables: body.tables,

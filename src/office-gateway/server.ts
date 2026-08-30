@@ -7,7 +7,9 @@ import type { AddressInfo } from 'node:net'
 import type { OfficeSnapshotV1 } from '../../packages/shared/xiaogui-office-surface'
 
 const LOOPBACK_HOST = '127.0.0.1'
-const DEFAULT_BODY_LIMIT = 8 * 1024 * 1024
+// DOCX 图片进入 Univer 后会同时出现在文档绘图数据和插件资源快照中。
+// 上限与既有 DOCX 64 MiB 解压安全门一致，且网关仅监听本机回环地址。
+const DEFAULT_BODY_LIMIT = 64 * 1024 * 1024
 
 class OfficeGatewayHttpError extends Error {
   constructor(

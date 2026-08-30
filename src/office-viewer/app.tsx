@@ -17,9 +17,17 @@ import {
   UniverDocsPlugin,
   type ISetTextSelectionsOperationParams,
 } from '@univerjs/docs'
+import { UniverDocsDrawingPlugin } from '@univerjs/docs-drawing'
+import { UniverDocsDrawingUIPlugin } from '@univerjs/docs-drawing-ui'
+import '@univerjs/docs-drawing-ui/lib/index.css'
+import UniverDocsDrawingUIZhCN from '@univerjs/docs-drawing-ui/locale/zh-CN'
 import { UniverDocsUIPlugin } from '@univerjs/docs-ui'
 import '@univerjs/docs-ui/facade'
 import UniverDocsUIZhCN from '@univerjs/docs-ui/locale/zh-CN'
+import { UniverDrawingPlugin } from '@univerjs/drawing'
+import { UniverDrawingUIPlugin } from '@univerjs/drawing-ui'
+import '@univerjs/drawing-ui/lib/index.css'
+import UniverDrawingUIZhCN from '@univerjs/drawing-ui/locale/zh-CN'
 import { UniverRenderEnginePlugin } from '@univerjs/engine-render'
 import { UniverUIPlugin } from '@univerjs/ui'
 import UniverUIZhCN from '@univerjs/ui/locale/zh-CN'
@@ -62,14 +70,24 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
     const univer = new Univer({
       locale: LocaleType.ZH_CN,
       locales: {
-        [LocaleType.ZH_CN]: mergeLocales(UniverDesignZhCN, UniverDocsUIZhCN, UniverUIZhCN),
+        [LocaleType.ZH_CN]: mergeLocales(
+          UniverDesignZhCN,
+          UniverDocsUIZhCN,
+          UniverDrawingUIZhCN,
+          UniverDocsDrawingUIZhCN,
+          UniverUIZhCN,
+        ),
       },
       logLevel: LogLevel.WARN,
     })
     univer.registerPlugin(UniverDocsPlugin)
     univer.registerPlugin(UniverRenderEnginePlugin)
     univer.registerPlugin(UniverUIPlugin, { container })
+    univer.registerPlugin(UniverDrawingPlugin)
+    univer.registerPlugin(UniverDrawingUIPlugin)
     univer.registerPlugin(UniverDocsUIPlugin)
+    univer.registerPlugin(UniverDocsDrawingPlugin)
+    univer.registerPlugin(UniverDocsDrawingUIPlugin)
     const univerAPI = FUniver.newAPI(univer)
     let commandSubscription: { dispose(): void } | null = null
     let parentSubscription: (() => void) | null = null
@@ -140,8 +158,6 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
         const materialized = await materializeStructuredProjectionV1(projection, document)
         activeProjection = withoutPrivateProjectionData(projection)
         setProjectionMetadata(activeProjection)
-        const saved = worktreeEnvelopeV1(document.getSnapshot(), projection)
-        await gateway.save(saved as unknown as OfficeSnapshotV1)
         if (materialized.unmappedOccurrenceIds.length > 0) {
           setError(`${materialized.unmappedOccurrenceIds.length} 个字段位置未能在文档中可靠定位，已保留在右侧清单。`)
         }
