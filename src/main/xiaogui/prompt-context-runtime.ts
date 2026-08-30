@@ -10,8 +10,8 @@ export const xiaoguiPromptContextResolverV1 = createXiaoguiPromptContextResolver
   getMode: () => xiaogui.getMode(),
   getPhase: () => xiaogui.getExecutionPhase(),
   workspaceExists: (cwd) => !!cwd.trim() && existsSync(cwd),
-  // Desktop project selection is the existing Main-process trust gate. Worker
-  // verifies this fact against Pi SettingsManager before activating a Session.
-  projectTrusted: () => true,
+  // Main cannot observe Pi's final project trust. Send the conservative
+  // candidate; Worker replaces it from ExtensionContext/SettingsManager.
+  projectTrusted: () => false,
   deriveProjectId: (cwd) => opaqueScopeIdDeriverV1.deriveProject(cwd).projectId,
 })

@@ -30,8 +30,10 @@ afterEach(() => {
   st.modelRuntime = null
   st.runtime = null
   st.promptContext = null
+  st.promptContextCandidate = null
   st.pendingPromptContext = null
   st.promptDiagnostics = null
+  st.promptPreflight = null
   st.agentTurnActive = false
 })
 
@@ -119,7 +121,7 @@ describe('handleSetmodel', () => {
 describe('handleLoadsession Prompt Context', () => {
   it('rejects a phase change for the same Session while a Turn is active', async () => {
     const sessionFile = 'C:\\sessions\\one.jsonl'
-    st.promptContext = promptContext('ASK')
+    st.promptContextCandidate = promptContext('ASK')
     st.agentTurnActive = true
     st.session = {
       sessionFile,
@@ -141,7 +143,7 @@ describe('handleLoadsession Prompt Context', () => {
 
   it('rejects a different opaque sessionKey for the same Session file', async () => {
     const sessionFile = 'C:\\sessions\\one.jsonl'
-    st.promptContext = promptContext('ASK', 'xgs1_one')
+    st.promptContextCandidate = promptContext('ASK', 'xgs1_one')
     st.session = {
       sessionFile,
       isStreaming: false,

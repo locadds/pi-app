@@ -1,13 +1,24 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { BeforeAgentStartEvent, ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type {
+  BeforeAgentStartEvent,
+  AgentSession,
+  AgentSessionServices,
+  ExtensionAPI,
+  ExtensionContext,
+} from '@earendil-works/pi-coding-agent'
 
-import { createXiaoguiPromptSessionExtensionV1 } from './session-extension'
+import {
+  buildXiaoguiPromptSessionStateV1,
+  createXiaoguiPromptSessionExtensionV1,
+} from './session-extension'
 
 describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
-  it('captures a fixed Context and builds from Pi real before_agent_start facts', async () => {
-    let handler: ((event: BeforeAgentStartEvent) => unknown) | undefined
+  it.each([true, false])(
+    'uses ExtensionContext trust=%s as the effective Prompt fact',
+    async (projectTrusted) => {
+    let handler: ((event: BeforeAgentStartEvent, context: ExtensionContext) => unknown) | undefined
     const pi = {
-      on: vi.fn((event: string, callback: (value: BeforeAgentStartEvent) => unknown) => {
+      on: vi.fn((event: string, callback: typeof handler) => {
         if (event === 'before_agent_start') handler = callback
       }),
     } as unknown as ExtensionAPI
@@ -22,10 +33,14 @@ describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
       sessionKey: 'xgs1_one',
       projectId: 'xgp1_project',
     }
-    const diagnostics = vi.fn()
-    const extension = createXiaoguiPromptSessionExtensionV1(source, diagnostics)
+    const resolved = vi.fn()
+    const extension = createXiaoguiPromptSessionExtensionV1(source, resolved)
     await extension.factory(pi)
 
+    const extensionContext = {
+      isProjectTrusted: () => projectTrusted,
+      abort: vi.fn(),
+    } as unknown as ExtensionContext
     const result = await handler!({
       type: 'before_agent_start',
       prompt: 'user task',
@@ -37,13 +52,96 @@ describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
         toolSnippets: { read: '读取文件' },
         promptGuidelines: ['只读取完成任务所需的内容'],
       },
-    } as BeforeAgentStartEvent) as { systemPrompt: string }
+    } as BeforeAgentStartEvent, extensionContext) as { systemPrompt: string }
 
     expect(result.systemPrompt).toContain('# 当前模式：WORK｜工作')
     expect(result.systemPrompt).toContain('read: 读取文件')
     expect(result.systemPrompt).toContain('<project_context>facts</project_context>')
-    expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({
-      manifest: expect.objectContaining({ mode: 'WORK', phase: 'ASK', toolNames: ['read'] }),
+    expect(resolved).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({
+        projectTrusted,
+        enabledCapabilities: ['work.file-organize'],
+      }),
+      diagnostics: expect.objectContaining({
+        manifest: expect.objectContaining({
+          mode: 'WORK',
+          phase: 'ASK',
+          projectTrusted,
+          toolNames: ['read'],
+        }),
+      }),
+    }))
+    expect(extensionContext.abort).not.toHaveBeenCalled()
+  })
+
+  it('hard-aborts when final before_agent_start assembly fails unexpectedly', async () => {
+    let handler: ((event: BeforeAgentStartEvent, context: ExtensionContext) => unknown) | undefined
+    const pi = {
+      on: vi.fn((event: string, callback: typeof handler) => {
+        if (event === 'before_agent_start') handler = callback
+      }),
+    } as unknown as ExtensionAPI
+    const context = {
+      schemaVersion: 1 as const,
+      mode: 'DESIGN' as const,
+      phase: 'ASK' as const,
+      workspaceAvailable: true,
+      projectTrusted: false,
+      enabledCapabilities: ['design.analysis' as const],
+      availableToolNames: ['read'],
+    }
+    const failure = vi.fn()
+    const extension = createXiaoguiPromptSessionExtensionV1(context, vi.fn(), failure)
+    await extension.factory(pi)
+    const extensionContext = {
+      isProjectTrusted: () => false,
+      abort: vi.fn(),
+    } as unknown as ExtensionContext
+
+    await expect(handler!({
+      type: 'before_agent_start',
+      prompt: 'task',
+      systemPrompt: '<!-- XIAOGUI:PRODUCT:BEGIN --> malformed',
+      systemPromptOptions: {
+        cwd: 'C:/project',
+        selectedTools: ['read'],
+        toolSnippets: {},
+        promptGuidelines: [],
+      },
+    } as BeforeAgentStartEvent, extensionContext)).rejects
+      .toThrow('XIAOGUI_PROMPT_PRODUCT_MARKER_MALFORMED')
+    expect(extensionContext.abort).toHaveBeenCalledOnce()
+    expect(failure).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'XIAOGUI_PROMPT_PRODUCT_MARKER_MALFORMED',
     }))
   })
+
+  it.each([true, false])(
+    'initializes with Session SettingsManager trust=%s despite a wrong Main candidate',
+    (projectTrusted) => {
+      const candidate = {
+        schemaVersion: 1 as const,
+        mode: 'WORK' as const,
+        phase: 'ASK' as const,
+        workspaceAvailable: true,
+        projectTrusted: !projectTrusted,
+        enabledCapabilities: ['work.file-organize' as const],
+        availableToolNames: ['read'],
+      }
+      const session = {
+        settingsManager: { isProjectTrusted: () => projectTrusted },
+        systemPrompt: 'PI base',
+        getActiveToolNames: () => ['read'],
+        getToolDefinition: () => ({ promptSnippet: 'read files', promptGuidelines: [] }),
+      } as unknown as AgentSession
+      const services = {
+        resourceLoader: { getSystemPrompt: () => undefined },
+      } as unknown as AgentSessionServices
+
+      const state = buildXiaoguiPromptSessionStateV1(session, services, candidate)
+
+      expect(state.context.projectTrusted).toBe(projectTrusted)
+      expect(state.diagnostics.manifest.projectTrusted).toBe(projectTrusted)
+    },
+  )
 })

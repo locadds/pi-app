@@ -17,9 +17,12 @@ import {
 } from './builder'
 import { freezeXiaoguiPromptContextV1 } from './session-binding'
 
-export type XiaoguiPromptDiagnosticsSinkV1 = (
-  diagnostics: XiaoguiEffectivePromptDiagnosticsV1,
-) => void
+export interface XiaoguiEffectivePromptSessionStateV1 {
+  readonly context: XiaoguiPromptContextV1
+  readonly diagnostics: XiaoguiEffectivePromptDiagnosticsV1
+}
+
+export type XiaoguiPromptStateSinkV1 = (state: XiaoguiEffectivePromptSessionStateV1) => void
 
 export interface XiaoguiPromptInlineExtensionV1 {
   readonly name: string
@@ -55,6 +58,7 @@ function normalizeToolsFromSession(session: AgentSession): XiaoguiRuntimePromptT
 function withActualTools(
   context: XiaoguiPromptContextV1,
   tools: readonly XiaoguiRuntimePromptToolV1[],
+  projectTrusted: boolean,
 ): XiaoguiPromptContextV1 {
   const actualNames = [...new Set(tools.map((tool) => tool.name).filter(Boolean))].sort()
   for (const requiredName of context.availableToolNames) {
@@ -62,7 +66,11 @@ function withActualTools(
       throw new Error('XIAOGUI_PROMPT_CONTEXT_TOOL_MISMATCH')
     }
   }
-  return freezeXiaoguiPromptContextV1({ ...context, availableToolNames: actualNames })
+  return freezeXiaoguiPromptContextV1({
+    ...context,
+    projectTrusted,
+    availableToolNames: actualNames,
+  })
 }
 
 function build(
@@ -70,9 +78,10 @@ function build(
   systemPrompt: string,
   piCustomSystem: boolean,
   tools: readonly XiaoguiRuntimePromptToolV1[],
+  projectTrusted: boolean,
 ): BuiltEffectiveXiaoguiPromptV1 {
   return xiaoguiPromptBuilderV1.build({
-    context: withActualTools(context, tools),
+    context: withActualTools(context, tools, projectTrusted),
     piSystemPrompt: systemPrompt,
     piCustomSystem,
     runtimeTools: tools,
@@ -86,43 +95,50 @@ function build(
  */
 export function createXiaoguiPromptSessionExtensionV1(
   rawContext: XiaoguiPromptContextV1,
-  onDiagnostics: XiaoguiPromptDiagnosticsSinkV1,
+  onState: XiaoguiPromptStateSinkV1,
+  onFailure: (error: unknown) => void = () => {},
 ): XiaoguiPromptInlineExtensionV1 {
   const context = freezeXiaoguiPromptContextV1(rawContext)
   return {
     name: 'xiaogui-prompt-context-v1',
     hidden: true,
     factory(pi) {
-      pi.on('before_agent_start', (event) => {
-        const tools = normalizeToolsFromPromptOptions(event.systemPromptOptions)
-        const result = build(
-          context,
-          event.systemPrompt,
-          !!event.systemPromptOptions.customPrompt,
-          tools,
-        )
-        onDiagnostics(result.diagnostics)
-        return { systemPrompt: result.prompt }
+      pi.on('before_agent_start', async (event, extensionContext) => {
+        try {
+          const tools = normalizeToolsFromPromptOptions(event.systemPromptOptions)
+          const result = build(
+            context,
+            event.systemPrompt,
+            !!event.systemPromptOptions.customPrompt,
+            tools,
+            extensionContext.isProjectTrusted(),
+          )
+          onState({ context: result.effectiveContext, diagnostics: result.diagnostics })
+          return { systemPrompt: result.prompt }
+        } catch (error) {
+          onFailure(error)
+          extensionContext.abort()
+          throw error
+        }
       })
     },
   }
 }
 
 /** Initial safe Manifest returned with Session identity before the first Turn. */
-export function buildInitialXiaoguiPromptDiagnosticsV1(
+export function buildXiaoguiPromptSessionStateV1(
   session: AgentSession,
   services: AgentSessionServices,
   rawContext: XiaoguiPromptContextV1,
-): XiaoguiEffectivePromptDiagnosticsV1 {
+): XiaoguiEffectivePromptSessionStateV1 {
   const context = freezeXiaoguiPromptContextV1(rawContext)
-  const actualTrust = session.settingsManager?.isProjectTrusted?.() ?? true
-  if (actualTrust !== context.projectTrusted) {
-    throw new Error('XIAOGUI_PROMPT_CONTEXT_TRUST_MISMATCH')
-  }
-  return build(
+  const actualTrust = session.settingsManager?.isProjectTrusted?.() ?? false
+  const result = build(
     context,
     session.systemPrompt,
     !!services.resourceLoader.getSystemPrompt(),
     normalizeToolsFromSession(session),
-  ).diagnostics
+    actualTrust,
+  )
+  return { context: result.effectiveContext, diagnostics: result.diagnostics }
 }

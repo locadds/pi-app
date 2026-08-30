@@ -4,10 +4,16 @@ import {
   assertStaticXiaoguiPromptLayerV1,
   parseXiaoguiPromptContextV1,
   type EffectivePromptLayerManifestV1,
+  type XiaoguiCapabilityId,
   type XiaoguiEffectivePromptDiagnosticsV1,
   type XiaoguiPromptContextV1,
   type XiaoguiPromptLayerV1,
 } from '@shared/xiaogui-prompt-contract'
+import {
+  XIAOGUI_CAPABILITY_MATRIX_V1,
+  XIAOGUI_PHASE_POLICY_MATRIX_V1,
+  type XiaoguiPhaseEffectV1,
+} from '@shared/xiaogui-prompt-matrix'
 
 import { XIAOGUI_PRODUCT_PROMPT_LAYERS_V1 } from './layers'
 
@@ -34,6 +40,7 @@ export interface BuildEffectiveXiaoguiPromptInputV1 {
 export interface BuiltEffectiveXiaoguiPromptV1 {
   /** Worker-only body. Never serialize this value to Main or ordinary logs. */
   readonly prompt: string
+  readonly effectiveContext: XiaoguiPromptContextV1
   readonly diagnostics: XiaoguiEffectivePromptDiagnosticsV1
 }
 
@@ -117,6 +124,35 @@ function requiredLayerIds(context: XiaoguiPromptContextV1): readonly string[] {
   ]
 }
 
+const CAPABILITY_MINIMUM_EFFECT_V1 = {
+  'collaboration.execution': 'CONFIRMATION_GATED_PERSISTENT',
+  'work.file-organize': 'READ_ONLY',
+  'work.report-docx': 'CONFIRMATION_GATED_PERSISTENT',
+  'work.template-intake': 'CONFIRMATION_GATED_PERSISTENT',
+  'work.template-generation': 'CONFIRMATION_GATED_PERSISTENT',
+  'design.analysis': 'READ_ONLY',
+  'coding.workspace': 'READ_ONLY',
+} as const satisfies Readonly<Record<XiaoguiCapabilityId, XiaoguiPhaseEffectV1>>
+
+function effectiveCapabilities(
+  context: XiaoguiPromptContextV1,
+  actualToolNames: readonly string[],
+): XiaoguiCapabilityId[] {
+  if (!context.workspaceAvailable) return []
+  const actual = new Set(actualToolNames)
+  const allowedEffects: readonly XiaoguiPhaseEffectV1[] =
+    XIAOGUI_PHASE_POLICY_MATRIX_V1[context.phase].allowedEffects
+  return context.enabledCapabilities.filter((capabilityId) => {
+    const row = XIAOGUI_CAPABILITY_MATRIX_V1[capabilityId]
+    const modePolicy = row.modes[context.mode]
+    if (modePolicy === 'HIDDEN' || modePolicy === 'RECOMMEND_SWITCH') {
+      fail('XIAOGUI_PROMPT_CONTEXT_CAPABILITY_MODE_MISMATCH')
+    }
+    if (!allowedEffects.includes(CAPABILITY_MINIMUM_EFFECT_V1[capabilityId])) return false
+    return row.tools.some((tool) => actual.has(tool.name))
+  })
+}
+
 export function createXiaoguiPromptBuilderV1(
   registry: readonly XiaoguiPromptLayerV1[],
 ): XiaoguiPromptBuilderV1 {
@@ -129,7 +165,15 @@ export function createXiaoguiPromptBuilderV1(
 
   return {
     build(input) {
-      const context = parseXiaoguiPromptContextV1(input.context)
+      const candidateContext = parseXiaoguiPromptContextV1(input.context)
+      const toolNames = input.runtimeTools
+        ? [...new Set(input.runtimeTools.map((tool) => tool.name.trim()).filter(Boolean))].sort()
+        : [...candidateContext.availableToolNames].sort()
+      const context = parseXiaoguiPromptContextV1({
+        ...candidateContext,
+        enabledCapabilities: effectiveCapabilities(candidateContext, toolNames),
+        availableToolNames: toolNames,
+      })
       const selected = requiredLayerIds(context).map((id) => {
         const layer = byId.get(id)
         if (!layer || !layer.required) fail('XIAOGUI_PROMPT_REQUIRED_LAYER_MISSING')
@@ -168,17 +212,17 @@ export function createXiaoguiPromptBuilderV1(
         withoutLegacy.content,
         `${PRODUCT_BEGIN}\n${productContent}\n${PRODUCT_END}`,
       ].join('\n\n')
-      const toolNames = input.runtimeTools
-        ? [...new Set(input.runtimeTools.map((tool) => tool.name.trim()).filter(Boolean))].sort()
-        : [...context.availableToolNames].sort()
       const completePrompt = normalize(prompt)
       return {
         prompt: completePrompt,
+        effectiveContext: context,
         diagnostics: {
           manifest: {
             schemaVersion: 1,
             mode: context.mode,
             phase: context.phase,
+            workspaceAvailable: context.workspaceAvailable,
+            projectTrusted: context.projectTrusted,
             capabilityIds: [...context.enabledCapabilities],
             toolNames,
             layers: effectiveLayers.map(manifestLayer),

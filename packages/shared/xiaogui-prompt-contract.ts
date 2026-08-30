@@ -72,6 +72,8 @@ export interface EffectivePromptManifestV1 {
   readonly schemaVersion: typeof XIAOGUI_PROMPT_CONTRACT_SCHEMA_VERSION_V1
   readonly mode: XiaoguiMode
   readonly phase: XiaoguiExecutionPhase
+  readonly workspaceAvailable: boolean
+  readonly projectTrusted: boolean
   readonly capabilityIds: readonly XiaoguiCapabilityId[]
   readonly toolNames: readonly string[]
   readonly layers: readonly EffectivePromptLayerManifestV1[]

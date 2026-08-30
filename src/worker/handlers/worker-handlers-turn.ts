@@ -10,6 +10,9 @@ import {
   beginRunIdentity,
   emit,
   currentSessionModelKey,
+  runXiaoguiPromptPreflightV1,
+  createXiaoguiPromptAssemblyGateV1,
+  resetXiaoguiPromptAssemblyGateV1,
 } from '../worker-runtime.js'
 
 export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
@@ -52,6 +55,12 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
         const promptSession = st.session
         if (!promptSession) { reply({ type: 'error', error: 'No session' }); return }
         const promptText = String(msg.text ?? '').trim()
+        try {
+          runXiaoguiPromptPreflightV1()
+        } catch (error) {
+          reply({ type: 'error', error: `prompt preflight failed: ${errorMessage(error)}` })
+          return
+        }
         const slashMatch = promptText.match(/^(\/\S+)/)
         if (slashMatch) {
           emit({
@@ -75,10 +84,16 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
         void (async () => {
           try {
             const extra = msg.options as Parameters<typeof promptSession.prompt>[1]
+            const gated = {
+              ...extra,
+              preflightResult: createXiaoguiPromptAssemblyGateV1(
+                !alreadyStreaming && !promptText.startsWith('/'),
+              ),
+            }
             const merged =
-              alreadyStreaming && !extra?.streamingBehavior
-                ? { ...extra, streamingBehavior: 'followUp' as const }
-                : extra
+              alreadyStreaming && !gated.streamingBehavior
+                ? { ...gated, streamingBehavior: 'followUp' as const }
+                : gated
             await promptSession.prompt(promptText, merged)
             if (!alreadyStreaming && st.promptPreflightActive) {
               st.promptPreflightActive = false
@@ -118,6 +133,8 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
                 text: `执行失败: ${errText}`,
               })
             }
+          } finally {
+            resetXiaoguiPromptAssemblyGateV1()
           }
         })()
         return
@@ -224,8 +241,11 @@ export async function handleDispose(msg: WorkerIncomingMessage, reply: WorkerRep
         st.modelRuntime = null
         st.runtime = null
         st.promptContext = null
+        st.promptContextCandidate = null
         st.pendingPromptContext = null
         st.promptDiagnostics = null
+        st.promptPreflight = null
+        resetXiaoguiPromptAssemblyGateV1()
         reply({ type: 'dispose-done' })
         return
 }

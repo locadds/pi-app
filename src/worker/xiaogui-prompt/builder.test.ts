@@ -142,4 +142,42 @@ describe('Xiaogui effective Prompt Builder V1', () => {
       piSystemPrompt: 'PI',
     })).toThrow('XIAOGUI_PROMPT_REQUIRED_LAYER_MISSING')
   })
+
+  it('derives effective Capabilities from Mode, Phase and actual Runtime tools', () => {
+    const designWithoutProfessionalTools = xiaoguiPromptBuilderV1.build({
+      context: context('DESIGN', 'ASK'),
+      piSystemPrompt: 'PI',
+      runtimeTools: [{ name: 'read' }],
+    })
+    const designWithProfessionalTool = xiaoguiPromptBuilderV1.build({
+      context: context('DESIGN', 'ASK'),
+      piSystemPrompt: 'PI',
+      runtimeTools: [{ name: 'read' }, { name: 'design_gis' }],
+    })
+    const reportContext = {
+      ...context('WORK', 'ASK'),
+      enabledCapabilities: ['work.report-docx' as const],
+    }
+    const reportAsk = xiaoguiPromptBuilderV1.build({
+      context: reportContext,
+      piSystemPrompt: 'PI',
+      runtimeTools: [{ name: 'xiaogui_work_report_docx' }],
+    })
+    const reportExecute = xiaoguiPromptBuilderV1.build({
+      context: { ...reportContext, phase: 'EXECUTE' as const },
+      piSystemPrompt: 'PI',
+      runtimeTools: [{ name: 'xiaogui_work_report_docx' }],
+    })
+
+    expect(designWithoutProfessionalTools.diagnostics.manifest.capabilityIds).toEqual([])
+    expect(designWithProfessionalTool.diagnostics.manifest.capabilityIds)
+      .toEqual(['design.analysis'])
+    expect(reportAsk.diagnostics.manifest.capabilityIds).toEqual([])
+    expect(reportExecute.diagnostics.manifest.capabilityIds).toEqual(['work.report-docx'])
+    expect(() => xiaoguiPromptBuilderV1.build({
+      context: { ...context('WORK', 'ASK'), enabledCapabilities: ['design.analysis'] },
+      piSystemPrompt: 'PI',
+      runtimeTools: [{ name: 'design_gis' }],
+    })).toThrow('XIAOGUI_PROMPT_CONTEXT_CAPABILITY_MODE_MISMATCH')
+  })
 })

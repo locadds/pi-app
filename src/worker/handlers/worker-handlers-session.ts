@@ -18,6 +18,9 @@ import {
   emit,
   currentSessionModelKey,
   listSessions,
+  runXiaoguiPromptPreflightV1,
+  createXiaoguiPromptAssemblyGateV1,
+  resetXiaoguiPromptAssemblyGateV1,
 } from '../worker-runtime.js'
 import {
   decideXiaoguiPromptContextTransitionV1,
@@ -73,7 +76,7 @@ export async function handleNewsession(msg: WorkerIncomingMessage, reply: Worker
         try {
           const promptContext = freezeXiaoguiPromptContextV1(msg.promptContext)
           decideXiaoguiPromptContextTransitionV1({
-            current: st.promptContext,
+            current: st.promptContextCandidate ?? st.promptContext,
             next: promptContext,
             sameSession: false,
             busy: isSessionBusy(),
@@ -142,7 +145,7 @@ export async function handleLoadsession(msg: WorkerIncomingMessage, reply: Worke
           const sameSession = !!st.session && sessionFilePathsEqual(st.session.sessionFile, targetFile)
           const busy = isSessionBusy()
           const transition = decideXiaoguiPromptContextTransitionV1({
-            current: st.promptContext,
+            current: st.promptContextCandidate ?? st.promptContext,
             next: promptContext,
             sameSession,
             // Preserve the existing force switch escape hatch across Sessions,
@@ -222,8 +225,9 @@ export async function handleSessiondeletefile(msg: WorkerIncomingMessage, reply:
           }
           const fs = await import('node:fs')
           if (st.session && sessionFilePathsEqual(st.session.sessionFile, file)) {
-            if (!st.promptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
-            await initSession(st.currentCwd, st.promptContext)
+            const candidate = st.promptContextCandidate ?? st.promptContext
+            if (!candidate) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
+            await initSession(st.currentCwd, candidate)
           }
           if (fs.existsSync(file)) fs.unlinkSync(file)
           reply({ type: 'sessionDeleteFile-done', ok: true })
@@ -429,6 +433,12 @@ export async function handleRunextensioncommand(msg: WorkerIncomingMessage, repl
           reply({ type: 'error', error: 'Expected slash command' })
           return
         }
+        try {
+          runXiaoguiPromptPreflightV1()
+        } catch (error) {
+          reply({ type: 'error', error: `prompt preflight failed: ${errorMessage(error)}` })
+          return
+        }
         reply({ type: 'runExtensionCommand-done' })
         void (async () => {
           try {
@@ -436,10 +446,15 @@ export async function handleRunextensioncommand(msg: WorkerIncomingMessage, repl
             const streaming = sess.isStreaming || st.agentTurnActive
             await sess.prompt(
               text,
-              streaming ? { streamingBehavior: 'followUp' } : undefined,
+              {
+                ...(streaming ? { streamingBehavior: 'followUp' as const } : {}),
+                preflightResult: createXiaoguiPromptAssemblyGateV1(false),
+              },
             )
           } catch (e: unknown) {
             console.error('[Worker] runExtensionCommand failed:', e)
+          } finally {
+            resetXiaoguiPromptAssemblyGateV1()
           }
         })()
         return

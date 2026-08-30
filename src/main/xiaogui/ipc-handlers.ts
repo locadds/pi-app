@@ -33,6 +33,7 @@ import { normalizeSessionKey } from '../worker-session-key'
 import { requestDirectExtensionUI } from '../direct-extension-ui'
 import { currentVisibleSessionFile } from '../completion-notification-events'
 import { summarizeTemplateReviewActionsV2 } from '@shared/xiaogui-template-review-decisions'
+import { errorMessage } from '@shared/error-message'
 
 const ModeSwitchSchema = z.object({
   mode: z.enum(['WORK', 'DESIGN', 'CODING']),
@@ -144,19 +145,29 @@ export function registerXiaoguiHandlers(): void {
     return { mode: xiaogui.getMode() }
   })
 
-  // ---- 执行方式（ASK/PLAN/EXECUTE，与一级模式正交；V0.1 仅状态标记，不拦截行为） ----
+  // ---- 执行方式（ASK/PLAN/EXECUTE，与一级模式正交；仅在空闲 Worker 上切换） ----
 
   registerHandlerWithSchema('ipc:xiaogui.phase.switch', PhaseSwitchSchema, async (req) => {
+    if (workerManager.hasActiveTurns) {
+      throw new Error('XIAOGUI_PHASE_SWITCH_TURN_ACTIVE')
+    }
+    const previousPhase = xiaogui.getExecutionPhase()
     const phase = xiaogui.setExecutionPhase(req.phase as ExecutionPhase)
-    // 执行方式经 worker env（XIAOGUI_PHASE）注入、fork 时固化：切换成功后重启
-    // 当前项目 worker 使新 phase 生效（遵循 scope.set 打标 DESIGN 的既有生命周期
-    // 模式）；worker busy 时不打断在途会话，重启失败仅记录、不阻断切换本身
-    if (workerManager.cwd && !workerManager.hasActiveTurns) {
+    const cwd = workerManager.cwd
+    if (cwd) {
       try {
         await workerManager.stop()
-        await workerManager.start(workerManager.cwd)
-      } catch (e) {
-        console.warn('[xiaogui] phase 切换后 worker 重启失败:', e)
+        await workerManager.start(cwd)
+      } catch (error) {
+        xiaogui.setExecutionPhase(previousPhase)
+        try {
+          await workerManager.stop()
+          await workerManager.start(cwd)
+        } catch {
+          // Phase is rolled back even if Worker recovery also fails. The caller
+          // receives an explicit failure instead of observing false success.
+        }
+        throw new Error(`XIAOGUI_PHASE_WORKER_REBUILD_FAILED: ${errorMessage(error)}`)
       }
     }
     return { ok: true, phase }

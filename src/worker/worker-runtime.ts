@@ -33,8 +33,9 @@ import { errorMessage } from '@shared/error-message'
 import { sendToMain } from './worker-transport.js'
 import { translateEventPaths } from './worker-path-bridge.js'
 import {
-  buildInitialXiaoguiPromptDiagnosticsV1,
+  buildXiaoguiPromptSessionStateV1,
   createXiaoguiPromptSessionExtensionV1,
+  type XiaoguiEffectivePromptSessionStateV1,
 } from './xiaogui-prompt/session-extension.js'
 import { freezeXiaoguiPromptContextV1 } from './xiaogui-prompt/session-binding.js'
 
@@ -66,10 +67,15 @@ export type WorkerMutableState = {
   promptSent: boolean
   /** Main-provided, immutable Session selection facts. */
   promptContext: XiaoguiPromptContextV1 | null
+  /** Main candidate retained separately from Worker-resolved effective facts. */
+  promptContextCandidate: XiaoguiPromptContextV1 | null
   /** Set only while Pi Runtime is replacing an AgentSession. */
   pendingPromptContext: XiaoguiPromptContextV1 | null
   /** Safe hashes/ids only. Prompt bodies never cross Worker IPC. */
   promptDiagnostics: XiaoguiEffectivePromptDiagnosticsV1 | null
+  promptPreflight: (() => XiaoguiEffectivePromptSessionStateV1) | null
+  promptAssemblyStatus: 'IDLE' | 'PENDING' | 'CONFIRMED' | 'FAILED'
+  promptAssemblyError: string | null
 }
 
 export const st: WorkerMutableState = {
@@ -91,8 +97,12 @@ export const st: WorkerMutableState = {
   promptPreflightActive: false,
   promptSent: false,
   promptContext: null,
+  promptContextCandidate: null,
   pendingPromptContext: null,
   promptDiagnostics: null,
+  promptPreflight: null,
+  promptAssemblyStatus: 'IDLE',
+  promptAssemblyError: null,
 }
 
 function nextSeq(): number {
@@ -130,6 +140,70 @@ export function baseEvent() {
 
 export function isSessionBusy(): boolean {
   return !!(st.agentTurnActive || st.session?.isStreaming)
+}
+
+/** Synchronous hard gate before any call into AgentSession.prompt(). */
+export function runXiaoguiPromptPreflightV1(): XiaoguiEffectivePromptSessionStateV1 {
+  if (!st.promptContextCandidate || !st.promptPreflight) {
+    throw new Error('XIAOGUI_PROMPT_PREFLIGHT_UNAVAILABLE')
+  }
+  const state = st.promptPreflight()
+  const candidate = st.promptContextCandidate
+  if (
+    state.context.schemaVersion !== candidate.schemaVersion ||
+    state.context.mode !== candidate.mode ||
+    state.context.phase !== candidate.phase ||
+    state.context.workspaceAvailable !== candidate.workspaceAvailable ||
+    state.context.sessionKey !== candidate.sessionKey ||
+    state.context.projectId !== candidate.projectId
+  ) {
+    throw new Error('XIAOGUI_PROMPT_CONTEXT_PREFLIGHT_MISMATCH')
+  }
+  st.promptContext = state.context
+  st.promptDiagnostics = state.diagnostics
+  return state
+}
+
+function confirmXiaoguiPromptAssemblyV1(): void {
+  if (st.promptAssemblyStatus === 'PENDING') st.promptAssemblyStatus = 'CONFIRMED'
+}
+
+function failXiaoguiPromptAssemblyV1(error: unknown): void {
+  if (st.promptAssemblyStatus !== 'PENDING') return
+  st.promptAssemblyStatus = 'FAILED'
+  st.promptAssemblyError = errorMessage(error)
+}
+
+export function resetXiaoguiPromptAssemblyGateV1(): void {
+  st.promptAssemblyStatus = 'IDLE'
+  st.promptAssemblyError = null
+}
+
+/**
+ * Pi invokes preflightResult(true) after before_agent_start and immediately
+ * before _runAgentPrompt. Throwing here is outside Pi's swallowed extension
+ * error loop, so an unconfirmed/failed final assembly cannot reach Provider.
+ */
+export function createXiaoguiPromptAssemblyGateV1(
+  requireFinalAssembly: boolean,
+): (passed: boolean) => void {
+  if (st.promptAssemblyStatus !== 'IDLE') {
+    throw new Error('XIAOGUI_PROMPT_ASSEMBLY_GATE_ACTIVE')
+  }
+  st.promptAssemblyStatus = 'PENDING'
+  st.promptAssemblyError = null
+  return (passed) => {
+    const status = st.promptAssemblyStatus
+    const failure = st.promptAssemblyError
+    resetXiaoguiPromptAssemblyGateV1()
+    if (!passed) return
+    if (status === 'FAILED') {
+      throw new Error(`XIAOGUI_PROMPT_FINAL_ASSEMBLY_FAILED: ${failure || 'unknown'}`)
+    }
+    if (requireFinalAssembly && status !== 'CONFIRMED') {
+      throw new Error('XIAOGUI_PROMPT_FINAL_ASSEMBLY_NOT_CONFIRMED')
+    }
+  }
 }
 
 function detachSessionSubscription(): void {
@@ -199,9 +273,21 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       resourceLoaderOptions: {
         eventBus: st.sharedEventBus!,
         extensionFactories: [
-          createXiaoguiPromptSessionExtensionV1(promptContext, (diagnostics) => {
-            if (st.promptContext === promptContext) st.promptDiagnostics = diagnostics
-          }),
+          createXiaoguiPromptSessionExtensionV1(
+            promptContext,
+            (state) => {
+              if (st.promptContextCandidate === promptContext) {
+                st.promptContext = state.context
+                st.promptDiagnostics = state.diagnostics
+                confirmXiaoguiPromptAssemblyV1()
+              }
+            },
+            (error) => {
+              if (st.promptContextCandidate === promptContext) {
+                failXiaoguiPromptAssemblyV1(error)
+              }
+            },
+          ),
         ],
         extensionsOverride: (result) => {
           const collaborationToolOptions = {
@@ -230,13 +316,19 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       sessionManager,
       sessionStartEvent,
     })
-    const diagnostics = buildInitialXiaoguiPromptDiagnosticsV1(
+    const initialState = buildXiaoguiPromptSessionStateV1(
       created.session,
       services,
       promptContext,
     )
-    st.promptContext = promptContext
-    st.promptDiagnostics = diagnostics
+    st.promptContextCandidate = promptContext
+    st.promptContext = initialState.context
+    st.promptDiagnostics = initialState.diagnostics
+    st.promptPreflight = () => buildXiaoguiPromptSessionStateV1(
+      created.session,
+      services,
+      promptContext,
+    )
     return {
       ...created,
       services,
@@ -252,13 +344,17 @@ async function withPendingPromptContext<T>(
   if (st.pendingPromptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_TRANSITION_ACTIVE')
   const context = freezeXiaoguiPromptContextV1(rawContext)
   const previousContext = st.promptContext
+  const previousCandidate = st.promptContextCandidate
   const previousDiagnostics = st.promptDiagnostics
+  const previousPreflight = st.promptPreflight
   st.pendingPromptContext = context
   try {
     return await operation()
   } catch (error) {
     st.promptContext = previousContext
+    st.promptContextCandidate = previousCandidate
     st.promptDiagnostics = previousDiagnostics
+    st.promptPreflight = previousPreflight
     throw error
   } finally {
     st.pendingPromptContext = null
@@ -309,6 +405,11 @@ async function disposeRuntimeOrSession(): Promise<void> {
     st.session = null
   }
   st.modelRuntime = null
+  st.promptContext = null
+  st.promptContextCandidate = null
+  st.promptDiagnostics = null
+  st.promptPreflight = null
+  resetXiaoguiPromptAssemblyGateV1()
 }
 
 export async function initSession(cwd: string, promptContext: unknown): Promise<void> {
@@ -411,8 +512,9 @@ export async function runtimeFork(
   options?: { position?: 'before' | 'at' },
 ): Promise<{ cancelled: boolean; selectedText?: string }> {
   if (!st.runtime) throw new Error('No runtime')
-  if (!st.promptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
-  const { sessionKey: _sourceSessionKey, ...inherited } = st.promptContext
+  const candidate = st.promptContextCandidate ?? st.promptContext
+  if (!candidate) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
+  const { sessionKey: _sourceSessionKey, ...inherited } = candidate
   return withPendingPromptContext(inherited, () =>
     st.runtime!.fork(entryId, { position: options?.position ?? 'before' }),
   )
