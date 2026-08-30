@@ -44,6 +44,7 @@ const dispatch: Record<string, (msg: WorkerIncomingMessage, reply: WorkerReply) 
   'reloadResources': Catalog.handleReloadresources,
   'getCommandCompletions': Catalog.handleGetcommandcompletions,
   'getState': Catalog.handleGetstate,
+  'getEffectivePromptManifest': Catalog.handleGeteffectivepromptmanifest,
   'getPiSettings': PiSettings.handleGetpisettings,
   'setPiSettings': PiSettings.handleSetpisettings,
 }

@@ -81,6 +81,22 @@ export interface EffectivePromptManifestV1 {
   readonly generatedAt: string
 }
 
+export type XiaoguiPromptMigrationNoticeCodeV1 =
+  | 'LEGACY_DESIGN_PROMPT_RUNTIME_DEDUPED'
+
+/**
+ * Safe Worker -> Main diagnostic view. It deliberately excludes Prompt bodies,
+ * filesystem paths and project content; PR4 may expose this shape without
+ * creating a second Prompt assembly path.
+ */
+export interface XiaoguiEffectivePromptDiagnosticsV1 {
+  readonly manifest: EffectivePromptManifestV1
+  readonly migrationNotices: readonly {
+    readonly code: XiaoguiPromptMigrationNoticeCodeV1
+    readonly fileMutation: false
+  }[]
+}
+
 const CONTEXT_KEYS = new Set([
   'schemaVersion',
   'mode',

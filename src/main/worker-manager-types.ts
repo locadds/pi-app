@@ -1,5 +1,9 @@
 import type { AppEvent } from '@shared/app-events'
 import type { WorkerResponsePayload } from '@shared/worker-rpc-types'
+import type {
+  XiaoguiEffectivePromptDiagnosticsV1,
+  XiaoguiPromptContextV1,
+} from '@shared/xiaogui-prompt-contract'
 import type { WorkerHostToolOutcomeV1, WorkerHostToolRequestV1 } from '@shared/worker-host-tools'
 import type { WorkerTransport } from './worker-transport'
 
@@ -7,6 +11,7 @@ export type WorkerInitResult = {
   sessionId: string
   model?: string
   thinkingLevel?: string
+  promptDiagnostics?: XiaoguiEffectivePromptDiagnosticsV1
 }
 
 export type WorkerSlot = {
@@ -19,6 +24,9 @@ export type WorkerSlot = {
   sessionFile: string | null
   /** Worker 当前实际绑定的 Pi session id；与 sessionFile 一起随生命周期回包同步更新。 */
   sessionId: string | null
+  /** Last Main context sent for this slot; body-free and safe to retain in memory. */
+  promptContext?: XiaoguiPromptContextV1 | null
+  promptDiagnostics?: XiaoguiEffectivePromptDiagnosticsV1 | null
   worker: WorkerTransport
   pendingRequests: Map<
     string,

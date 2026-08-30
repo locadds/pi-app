@@ -15,6 +15,19 @@ vi.mock('../config-store', () => ({
 vi.mock('../session-file-meta', () => ({
   readSessionMetaFromFile: vi.fn(() => ({ cwd: '/workspace' })),
 }))
+vi.mock('../xiaogui/prompt-context-runtime', () => ({
+  xiaoguiPromptContextResolverV1: {
+    forWorkspace: vi.fn(async (_cwd: string, mode = 'WORK') => ({
+      schemaVersion: 1, mode, phase: 'ASK', workspaceAvailable: true, projectTrusted: true,
+      enabledCapabilities: ['work.file-organize'], availableToolNames: [], projectId: 'xgp1_test',
+    })),
+    forSession: vi.fn(async (_cwd: string, sessionFile: string) => ({
+      schemaVersion: 1, mode: 'WORK', phase: 'ASK', workspaceAvailable: true, projectTrusted: true,
+      enabledCapabilities: ['work.file-organize'], availableToolNames: [], projectId: 'xgp1_test',
+      sessionKey: `xgs1_${Buffer.from(sessionFile).toString('hex')}`,
+    })),
+  },
+}))
 
 const { forkWorkerForCwd, readMaxSessionWorkers } = vi.hoisted(() => ({
   forkWorkerForCwd: vi.fn(),
@@ -129,6 +142,22 @@ describe('WorkerManager session isolation', () => {
     expect(running.worker.postMessage).not.toHaveBeenCalled()
     expect(internals.pool.get(running.poolKey)).toBe(running)
     expect(internals.pool.get(createdFile)).toBe(created)
+    const newSessionMessage = (created.worker.postMessage as ReturnType<typeof vi.fn>).mock.calls
+      .map(([message]) => message as Record<string, unknown>)
+      .find((message) => message.type === 'newSession')!
+    expect(newSessionMessage.promptContext).toEqual(expect.objectContaining({
+      schemaVersion: 1,
+      mode: 'WORK',
+    }))
+    expect(newSessionMessage.promptContext).not.toHaveProperty('sessionKey')
+    expect(created.worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'loadSession',
+      sessionFile: createdFile,
+      promptContext: expect.objectContaining({
+        schemaVersion: 1,
+        sessionKey: `xgs1_${Buffer.from(createdFile).toString('hex')}`,
+      }),
+    }))
   })
 
   it('runs the new-session persistence gate before foreground activation', async () => {

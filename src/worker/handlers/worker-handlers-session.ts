@@ -19,6 +19,10 @@ import {
   currentSessionModelKey,
   listSessions,
 } from '../worker-runtime.js'
+import {
+  decideXiaoguiPromptContextTransitionV1,
+  freezeXiaoguiPromptContextV1,
+} from '../xiaogui-prompt/session-binding.js'
 
 function currentModelFallbackMessage(): string | undefined {
   const message = String(st.runtime?.modelFallbackMessage || '').trim()
@@ -67,18 +71,21 @@ export async function handleSetthinkinglevel(msg: WorkerIncomingMessage, reply: 
 
 export async function handleNewsession(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
         try {
-          if (isSessionBusy()) {
-            reply({ type: 'error', error: 'SESSION_BUSY' })
-            return
-          }
+          const promptContext = freezeXiaoguiPromptContextV1(msg.promptContext)
+          decideXiaoguiPromptContextTransitionV1({
+            current: st.promptContext,
+            next: promptContext,
+            sameSession: false,
+            busy: isSessionBusy(),
+          })
           if (st.promptSent || st.runtime) {
-            const result = await runtimeNewSession()
+            const result = await runtimeNewSession(promptContext)
             if (result.cancelled) {
               reply({ type: 'error', error: 'SESSION_NEW_CANCELLED' })
               return
             }
           } else {
-            await initSession(st.currentCwd || process.cwd())
+            await initSession(st.currentCwd || process.cwd(), promptContext)
           }
           st.promptSent = false
           reply({
@@ -122,7 +129,8 @@ function applyLeafOverrideToLiveSession(leafId: string | null | undefined): void
 export async function handleLoadsession(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
         try {
           const targetFile = msg.sessionFile as string
-          const force = msg.force === true
+          if (!targetFile) throw new Error('SESSION_FILE_REQUIRED')
+          const promptContext = freezeXiaoguiPromptContextV1(msg.promptContext)
           const leafOverride =
             typeof msg.leafId === 'string'
               ? msg.leafId
@@ -131,36 +139,39 @@ export async function handleLoadsession(msg: WorkerIncomingMessage, reply: Worke
                 : undefined
           // Path-normalize: UI / pool keys often differ by slash or drive case from pi's sessionFile.
           // Strict === caused dispose+reopen thrash and worker-exit during rewind.
-          if (st.session && sessionFilePathsEqual(st.session.sessionFile, targetFile)) {
+          const sameSession = !!st.session && sessionFilePathsEqual(st.session.sessionFile, targetFile)
+          const busy = isSessionBusy()
+          const transition = decideXiaoguiPromptContextTransitionV1({
+            current: st.promptContext,
+            next: promptContext,
+            sameSession,
+            // Preserve the existing force switch escape hatch across Sessions,
+            // but never let it mutate Context inside an active Turn.
+            busy: sameSession ? busy : msg.force !== true && busy,
+          })
+          if (sameSession && transition.kind === 'REUSE') {
             applyLeafOverrideToLiveSession(leafOverride)
+            const session = st.session!
             const modelStr = currentSessionModelKey()
             reply({
               type: 'loadSession-done',
               sessionId: st.currentSessionId,
-              sessionFile: st.session.sessionFile,
+              sessionFile: session.sessionFile,
               model: modelStr,
-              thinkingLevel: st.session.thinkingLevel,
-              leafId: st.session.sessionManager.getLeafId?.() ?? null,
+              thinkingLevel: session.thinkingLevel,
+              leafId: session.sessionManager.getLeafId?.() ?? null,
               modelFallbackMessage: currentModelFallbackMessage(),
-            })
-            return
-          }
-          const busy =
-            !force &&
-            st.session &&
-            isSessionBusy() &&
-            st.session.sessionFile &&
-            !sessionFilePathsEqual(st.session.sessionFile, targetFile)
-          if (busy) {
-            reply({
-              type: 'error',
-              error: 'WORKER_AGENT_BUSY',
-              busySessionFile: st.session!.sessionFile,
+              promptDiagnostics: st.promptDiagnostics,
             })
             return
           }
           st.agentTurnActive = false
-          await switchOrLoadSession(String(msg.sessionFile ?? ''), leafOverride)
+          await switchOrLoadSession(
+            targetFile,
+            promptContext,
+            leafOverride,
+            sameSession && transition.kind === 'REBUILD',
+          )
           st.promptSent = true
           const modelStr = currentSessionModelKey()
           reply({
@@ -171,6 +182,7 @@ export async function handleLoadsession(msg: WorkerIncomingMessage, reply: Worke
             thinkingLevel: st.session?.thinkingLevel,
             leafId: st.session?.sessionManager.getLeafId?.() ?? null,
             modelFallbackMessage: currentModelFallbackMessage(),
+            promptDiagnostics: st.promptDiagnostics,
           })
         } catch (e: unknown) {
           reply({ type: 'error', error: `loadSession failed: ${errorMessage(e)}` })
@@ -210,7 +222,8 @@ export async function handleSessiondeletefile(msg: WorkerIncomingMessage, reply:
           }
           const fs = await import('node:fs')
           if (st.session && sessionFilePathsEqual(st.session.sessionFile, file)) {
-            await initSession(st.currentCwd)
+            if (!st.promptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
+            await initSession(st.currentCwd, st.promptContext)
           }
           if (fs.existsSync(file)) fs.unlinkSync(file)
           reply({ type: 'sessionDeleteFile-done', ok: true })
@@ -347,6 +360,7 @@ export async function handleFork(msg: WorkerIncomingMessage, reply: WorkerReply)
       editorText: result.selectedText,
       model: currentSessionModelKey(),
       thinkingLevel: st.session?.thinkingLevel,
+      promptDiagnostics: st.promptDiagnostics,
     })
   } catch (e: unknown) {
     reply({ type: 'error', error: `fork failed: ${errorMessage(e)}` })
@@ -387,6 +401,7 @@ export async function handleClone(_msg: WorkerIncomingMessage, reply: WorkerRepl
       sessionFile: st.session?.sessionFile,
       model: currentSessionModelKey(),
       thinkingLevel: st.session?.thinkingLevel,
+      promptDiagnostics: st.promptDiagnostics,
     })
   } catch (e: unknown) {
     reply({ type: 'error', error: `clone failed: ${errorMessage(e)}` })

@@ -1,6 +1,10 @@
 import { utilityProcess, app, type BrowserWindow } from 'electron'
 import type { AppEvent } from '@shared/app-events'
 import type { WorkerResponsePayload } from '@shared/worker-rpc-types'
+import type {
+  XiaoguiEffectivePromptDiagnosticsV1,
+  XiaoguiPromptContextV1,
+} from '@shared/xiaogui-prompt-contract'
 import {
   XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1,
   XIAOGUI_WORK_DOCX_METHOD_V1,
@@ -90,6 +94,7 @@ function createSlot(
   runtime: { mode: 'host' | 'wsl'; distro: string | null },
   worker: WorkerTransport,
   sessionFile: string | null = null,
+  promptContext: XiaoguiPromptContextV1 | null = null,
 ): WorkerSlot {
   const now = Date.now()
   return {
@@ -98,6 +103,8 @@ function createSlot(
     runtime,
     sessionFile,
     sessionId: null,
+    promptContext,
+    promptDiagnostics: null,
     worker,
     pendingRequests: new Map(),
     requestCounter: 0,
@@ -136,6 +143,9 @@ function synchronizeSlotSessionIdentity(slot: WorkerSlot, data: WorkerResponsePa
   }
   if (typeof data.sessionFile === 'string' && data.sessionFile.trim()) {
     slot.sessionFile = normalizeSessionKey(data.sessionFile)
+  }
+  if (data.promptDiagnostics && typeof data.promptDiagnostics === 'object') {
+    slot.promptDiagnostics = data.promptDiagnostics as XiaoguiEffectivePromptDiagnosticsV1
   }
 }
 
@@ -363,6 +373,7 @@ export function attachWorkerHandlers(
         sessionId: String(data.sessionId ?? ''),
         model: data.model as string | undefined,
         thinkingLevel: data.thinkingLevel as string | undefined,
+        promptDiagnostics: data.promptDiagnostics as XiaoguiEffectivePromptDiagnosticsV1 | undefined,
       })
       slot.initResolver = null
       slot.initRejecter = null
@@ -470,9 +481,13 @@ export function slotRequest(
 
 export async function forkWorkerForCwd(
   cwd: string,
-  opts?: { poolKey?: string; sessionFile?: string | null },
+  opts: {
+    poolKey?: string
+    sessionFile?: string | null
+    promptContext: XiaoguiPromptContextV1
+  },
 ): Promise<{ slot: WorkerSlot; init: Promise<WorkerInitResult> }> {
-  const poolKey = opts?.poolKey || workspacePoolKey(cwd)
+  const poolKey = opts.poolKey || workspacePoolKey(cwd)
   const runtime = getAgentRuntimeConfig()
   let transport: WorkerTransport
   let sdkPath: string | null
@@ -519,7 +534,7 @@ export async function forkWorkerForCwd(
     const activeSdk = resolveActiveSdk(app.getPath('userData'))
     sdkPath = activeSdk.kind === 'builtin' ? null : activeSdk.entryPath
   }
-  const slot = createSlot(poolKey, cwd, runtime, transport, opts?.sessionFile ?? null)
+  const slot = createSlot(poolKey, cwd, runtime, transport, opts.sessionFile ?? null, opts.promptContext)
   const initPromise = new Promise<WorkerInitResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       if (slot.worker !== transport) return
@@ -538,7 +553,7 @@ export async function forkWorkerForCwd(
     }
   })
   slot.initPromise = initPromise
-  transport.postMessage({ type: 'init', cwd: workerCwd, sdkPath })
+  transport.postMessage({ type: 'init', cwd: workerCwd, sdkPath, promptContext: opts.promptContext })
   return { slot, init: initPromise }
 }
 

@@ -7,6 +7,10 @@ import type {
   ModelRuntime,
 } from '@earendil-works/pi-coding-agent'
 import type { AppEvent } from '@shared/app-events'
+import type {
+  XiaoguiEffectivePromptDiagnosticsV1,
+  XiaoguiPromptContextV1,
+} from '@shared/xiaogui-prompt-contract'
 import { formatSessionModelKey, type SessionModelRef } from '@shared/worker-model'
 import { createDesktopUIBridge, type DesktopUIBridge } from './desktop-ui-bridge.js'
 import { createDesktopWidgetHost } from './desktop-widget-host.js'
@@ -28,6 +32,11 @@ import {
 import { errorMessage } from '@shared/error-message'
 import { sendToMain } from './worker-transport.js'
 import { translateEventPaths } from './worker-path-bridge.js'
+import {
+  buildInitialXiaoguiPromptDiagnosticsV1,
+  createXiaoguiPromptSessionExtensionV1,
+} from './xiaogui-prompt/session-extension.js'
+import { freezeXiaoguiPromptContextV1 } from './xiaogui-prompt/session-binding.js'
 
 export type WorkerModelRuntime = Pick<
   ModelRuntime,
@@ -55,6 +64,12 @@ export type WorkerMutableState = {
   agentTurnActive: boolean
   promptPreflightActive: boolean
   promptSent: boolean
+  /** Main-provided, immutable Session selection facts. */
+  promptContext: XiaoguiPromptContextV1 | null
+  /** Set only while Pi Runtime is replacing an AgentSession. */
+  pendingPromptContext: XiaoguiPromptContextV1 | null
+  /** Safe hashes/ids only. Prompt bodies never cross Worker IPC. */
+  promptDiagnostics: XiaoguiEffectivePromptDiagnosticsV1 | null
 }
 
 export const st: WorkerMutableState = {
@@ -75,6 +90,9 @@ export const st: WorkerMutableState = {
   agentTurnActive: false,
   promptPreflightActive: false,
   promptSent: false,
+  promptContext: null,
+  pendingPromptContext: null,
+  promptDiagnostics: null,
 }
 
 function nextSeq(): number {
@@ -173,11 +191,18 @@ function noteModelFallbackFromRuntime(): void {
 function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
   const sdk = st.sdk!
   return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
+    const promptContext = st.pendingPromptContext
+    if (!promptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
     const services = await sdk.createAgentSessionServices({
       cwd,
       agentDir,
       resourceLoaderOptions: {
         eventBus: st.sharedEventBus!,
+        extensionFactories: [
+          createXiaoguiPromptSessionExtensionV1(promptContext, (diagnostics) => {
+            if (st.promptContext === promptContext) st.promptDiagnostics = diagnostics
+          }),
+        ],
         extensionsOverride: (result) => {
           const collaborationToolOptions = {
             getSourceSessionId: () => st.currentSessionId || undefined,
@@ -205,11 +230,38 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       sessionManager,
       sessionStartEvent,
     })
+    const diagnostics = buildInitialXiaoguiPromptDiagnosticsV1(
+      created.session,
+      services,
+      promptContext,
+    )
+    st.promptContext = promptContext
+    st.promptDiagnostics = diagnostics
     return {
       ...created,
       services,
       diagnostics: services.diagnostics ?? [],
     }
+  }
+}
+
+async function withPendingPromptContext<T>(
+  rawContext: unknown,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (st.pendingPromptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_TRANSITION_ACTIVE')
+  const context = freezeXiaoguiPromptContextV1(rawContext)
+  const previousContext = st.promptContext
+  const previousDiagnostics = st.promptDiagnostics
+  st.pendingPromptContext = context
+  try {
+    return await operation()
+  } catch (error) {
+    st.promptContext = previousContext
+    st.promptDiagnostics = previousDiagnostics
+    throw error
+  } finally {
+    st.pendingPromptContext = null
   }
 }
 
@@ -259,7 +311,7 @@ async function disposeRuntimeOrSession(): Promise<void> {
   st.modelRuntime = null
 }
 
-export async function initSession(cwd: string): Promise<void> {
+export async function initSession(cwd: string, promptContext: unknown): Promise<void> {
   st.promptSent = false
   await disposeRuntimeOrSession()
 
@@ -267,11 +319,13 @@ export async function initSession(cwd: string): Promise<void> {
   const sdk = st.sdk!
   const agentDir = sdk.getAgentDir()
   const createRuntime = buildRuntimeFactory()
-  const runtime = await sdk.createAgentSessionRuntime(createRuntime, {
-    cwd,
-    agentDir,
-    sessionManager: sdk.SessionManager.create(cwd),
-  })
+  const runtime = await withPendingPromptContext(promptContext, () =>
+    sdk.createAgentSessionRuntime(createRuntime, {
+      cwd,
+      agentDir,
+      sessionManager: sdk.SessionManager.create(cwd),
+    }),
+  )
   st.runtime = runtime
   wireRuntimeCallbacks(runtime)
   await rebindAfterRuntimeReplace(runtime.session)
@@ -283,10 +337,12 @@ export async function initSession(cwd: string): Promise<void> {
  */
 export async function switchOrLoadSession(
   sessionFile: string,
+  promptContext: unknown,
   leafOverride?: string | null,
+  forceRebuild = false,
 ): Promise<void> {
   const sdk = st.sdk!
-  if (!st.runtime) {
+  if (!st.runtime || forceRebuild) {
     // Cold path: build runtime opened on this file
     await disposeRuntimeOrSession()
     const agentDir = sdk.getAgentDir()
@@ -300,11 +356,13 @@ export async function switchOrLoadSession(
       }
     }
     const createRuntime = buildRuntimeFactory()
-    const runtime = await sdk.createAgentSessionRuntime(createRuntime, {
-      cwd: sm.getCwd?.() || st.currentCwd || process.cwd(),
-      agentDir,
-      sessionManager: sm,
-    })
+    const runtime = await withPendingPromptContext(promptContext, () =>
+      sdk.createAgentSessionRuntime(createRuntime, {
+        cwd: sm.getCwd?.() || st.currentCwd || process.cwd(),
+        agentDir,
+        sessionManager: sm,
+      }),
+    )
     st.runtime = runtime
     wireRuntimeCallbacks(runtime)
     await rebindAfterRuntimeReplace(runtime.session)
@@ -312,7 +370,9 @@ export async function switchOrLoadSession(
     return
   }
 
-  const result = await st.runtime.switchSession(sessionFile)
+  const result = await withPendingPromptContext(promptContext, () =>
+    st.runtime!.switchSession(sessionFile),
+  )
   if (result.cancelled) {
     throw new Error('SESSION_SWITCH_CANCELLED')
   }
@@ -333,12 +393,12 @@ export async function switchOrLoadSession(
   noteModelFallbackFromRuntime()
 }
 
-export async function runtimeNewSession(): Promise<{ cancelled: boolean }> {
+export async function runtimeNewSession(promptContext: unknown): Promise<{ cancelled: boolean }> {
   if (!st.runtime) {
-    await initSession(st.currentCwd || process.cwd())
+    await initSession(st.currentCwd || process.cwd(), promptContext)
     return { cancelled: false }
   }
-  const result = await st.runtime.newSession()
+  const result = await withPendingPromptContext(promptContext, () => st.runtime!.newSession())
   return { cancelled: result.cancelled }
 }
 
@@ -351,7 +411,11 @@ export async function runtimeFork(
   options?: { position?: 'before' | 'at' },
 ): Promise<{ cancelled: boolean; selectedText?: string }> {
   if (!st.runtime) throw new Error('No runtime')
-  return st.runtime.fork(entryId, { position: options?.position ?? 'before' })
+  if (!st.promptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
+  const { sessionKey: _sourceSessionKey, ...inherited } = st.promptContext
+  return withPendingPromptContext(inherited, () =>
+    st.runtime!.fork(entryId, { position: options?.position ?? 'before' }),
+  )
 }
 
 function buildCommandContextActions(sess: AgentSession) {

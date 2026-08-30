@@ -35,6 +35,19 @@ vi.mock('../config-store', () => ({
     get: vi.fn(() => undefined),
   },
 }))
+vi.mock('../xiaogui/prompt-context-runtime', () => ({
+  xiaoguiPromptContextResolverV1: {
+    forWorkspace: vi.fn(async (_cwd: string, mode = 'WORK') => ({
+      schemaVersion: 1, mode, phase: 'ASK', workspaceAvailable: true, projectTrusted: true,
+      enabledCapabilities: ['work.file-organize'], availableToolNames: [], projectId: 'xgp1_test',
+    })),
+    forSession: vi.fn(async (_cwd: string, sessionFile: string) => ({
+      schemaVersion: 1, mode: 'WORK', phase: 'ASK', workspaceAvailable: true, projectTrusted: true,
+      enabledCapabilities: ['work.file-organize'], availableToolNames: [], projectId: 'xgp1_test',
+      sessionKey: `xgs1_${Buffer.from(sessionFile).toString('hex')}`,
+    })),
+  },
+}))
 
 function makeFakeTransport(): WorkerTransport & { emitMessage: (m: WorkerResponsePayload) => void } {
   const messageListeners: Array<(m: WorkerResponsePayload) => void> = []

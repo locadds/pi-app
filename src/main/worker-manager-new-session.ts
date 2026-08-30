@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron'
+import type { XiaoguiPromptContextV1 } from '@shared/xiaogui-prompt-contract'
 import {
   attachWorkerHandlers,
   canAcquireNewWorker,
@@ -27,6 +28,8 @@ export type NewSessionPoolOptions = {
   onHostToolRequest?: WorkerHostToolRequestHandler
   onSlotExit: (slot: WorkerSlot, code: number) => void
   beforeActivate?: (result: { sessionId: string; sessionFile: string }) => Promise<void>
+  promptContext: XiaoguiPromptContextV1
+  finalizePromptContext?: (sessionFile: string) => Promise<XiaoguiPromptContextV1>
 }
 
 function findReusableWorkspaceSlot(options: NewSessionPoolOptions): WorkerSlot | null {
@@ -70,13 +73,22 @@ async function runNewSession(
   options: NewSessionPoolOptions,
 ): Promise<{ sessionId: string; sessionFile?: string }> {
   if (slot.initPromise) await slot.initPromise
-  const response = await slotRequest(slot, 'newSession')
+  const response = await slotRequest(slot, 'newSession', { promptContext: options.promptContext })
+  slot.promptContext = options.promptContext
   const sessionId = String(response.sessionId ?? '')
   const sessionFile = response.sessionFile
     ? normalizeSessionKey(String(response.sessionFile))
     : undefined
   if (sessionFile) {
     await options.beforeActivate?.({ sessionId, sessionFile })
+    if (options.finalizePromptContext) {
+      const finalContext = await options.finalizePromptContext(sessionFile)
+      await slotRequest(slot, 'loadSession', {
+        sessionFile,
+        promptContext: finalContext,
+      })
+      slot.promptContext = finalContext
+    }
     await remapSessionWorkerSlot(options.pool, slot.poolKey, sessionFile)
   }
   options.setForeground(slot)
@@ -116,6 +128,7 @@ export async function createNewSessionInPool(
   const { slot, init } = await forkWorkerForCwd(options.cwd, {
     poolKey,
     sessionFile: null,
+    promptContext: options.promptContext,
   })
   options.pool.set(poolKey, slot)
   attachWorkerHandlers(slot, slot.worker, {

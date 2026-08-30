@@ -3,6 +3,10 @@
 import { type BrowserWindow } from 'electron'
 import type { AppEvent } from '@shared/app-events'
 import type {
+  XiaoguiEffectivePromptDiagnosticsV1,
+  XiaoguiMode,
+} from '@shared/xiaogui-prompt-contract'
+import type {
   WorkerCommandInfo,
   WorkerCompletionItem,
   WorkerContextPreview,
@@ -47,6 +51,7 @@ import {
   setSessionLeafOverride,
 } from './session-leaf-override'
 import { observeAppEventForCompletion, observeWorkerExitForCompletion } from './completion-notification-events'
+import type { XiaoguiPromptContextResolverV1 } from './xiaogui/prompt-context'
 
 interface InitResult extends WorkerInitResult {}
 
@@ -58,6 +63,27 @@ export class WorkerManager {
   private lifecycleChain: Promise<unknown> = Promise.resolve()
   private idleTimer: ReturnType<typeof setInterval> | null = null
   private hostToolRequestHandler: WorkerHostToolRequestHandler | null = null
+
+  constructor(
+    private promptContextResolver?: XiaoguiPromptContextResolverV1,
+  ) {}
+
+  private async getPromptContextResolver(): Promise<XiaoguiPromptContextResolverV1> {
+    if (!this.promptContextResolver) {
+      this.promptContextResolver = (
+        await import('./xiaogui/prompt-context-runtime')
+      ).xiaoguiPromptContextResolverV1
+    }
+    return this.promptContextResolver
+  }
+
+  private async workspacePromptContext(cwd: string, mode?: XiaoguiMode) {
+    return (await this.getPromptContextResolver()).forWorkspace(cwd, mode)
+  }
+
+  private async sessionPromptContext(cwd: string, sessionFile: string) {
+    return (await this.getPromptContextResolver()).forSession(cwd, sessionFile)
+  }
 
   /** 小规等可信主进程模块通过此窄接口接管 Pi 内建工具请求。 */
   setHostToolRequestHandler(handler: WorkerHostToolRequestHandler | null): void {
@@ -159,6 +185,7 @@ export class WorkerManager {
   }
 
   private async startWorkspaceUnlocked(cwd: string): Promise<InitResult> {
+    const promptContext = await this.workspacePromptContext(cwd)
     const key = workspacePoolKey(cwd)
     const existing = this.pool.get(key)
     if (existing && !existing.stopping && this.slotMatchesCurrentRuntime(existing)) {
@@ -196,7 +223,11 @@ export class WorkerManager {
     const cap = canAcquireNewWorker(this.pool)
     if (!cap.ok) throw new Error(cap.reason)
 
-    const { slot, init } = await forkWorkerForCwd(cwd, { poolKey: key, sessionFile: null })
+    const { slot, init } = await forkWorkerForCwd(cwd, {
+      poolKey: key,
+      sessionFile: null,
+      promptContext,
+    })
     this.pool.set(key, slot)
     this.setForeground(slot)
 
@@ -249,6 +280,7 @@ export class WorkerManager {
   private async ensureSessionWorkerUnlocked(sessionFile: string, cwd: string): Promise<InitResult> {
     const sk = normalizeSessionKey(sessionFile)
     if (!sk) throw new Error('sessionFile required')
+    const promptContext = await this.sessionPromptContext(cwd, sk)
 
     const existing = this.pool.get(sk)
     if (existing && !existing.stopping && this.slotMatchesCurrentRuntime(existing)) {
@@ -260,7 +292,8 @@ export class WorkerManager {
       })
       if (existing.initPromise) await existing.initPromise
       // Bind live session on worker
-      await this.requestOnSlot(existing, 'loadSession', { sessionFile: sk }).catch(() => null)
+      await this.requestOnSlot(existing, 'loadSession', { sessionFile: sk, promptContext })
+      existing.promptContext = promptContext
       return this.initResultFromSlot(existing)
     }
 
@@ -270,13 +303,14 @@ export class WorkerManager {
     if (reusable) {
       const oldKey = reusable.poolKey
       const wasForeground = this.foregroundPoolKey === oldKey
+      if (reusable.initPromise) await reusable.initPromise
+      await this.requestOnSlot(reusable, 'loadSession', { sessionFile: sk, promptContext })
       if (this.pool.get(oldKey) === reusable) this.pool.delete(oldKey)
       reusable.poolKey = sk
       reusable.sessionFile = sk
       this.pool.set(sk, reusable)
       if (wasForeground) this.foregroundPoolKey = sk
-      if (reusable.initPromise) await reusable.initPromise
-      await this.requestOnSlot(reusable, 'loadSession', { sessionFile: sk }).catch(() => null)
+      reusable.promptContext = promptContext
       return this.initResultFromSlot(reusable)
     }
 
@@ -291,7 +325,11 @@ export class WorkerManager {
     const cap = canAcquireNewWorker(this.pool)
     if (!cap.ok) throw new Error(cap.reason)
 
-    const { slot, init } = await forkWorkerForCwd(cwd, { poolKey: sk, sessionFile: sk })
+    const { slot, init } = await forkWorkerForCwd(cwd, {
+      poolKey: sk,
+      sessionFile: sk,
+      promptContext,
+    })
     this.pool.set(sk, slot)
 
     attachWorkerHandlers(slot, slot.worker, {
@@ -303,7 +341,8 @@ export class WorkerManager {
     })
 
     await init
-    await this.requestOnSlot(slot, 'loadSession', { sessionFile: sk })
+    await this.requestOnSlot(slot, 'loadSession', { sessionFile: sk, promptContext })
+    slot.promptContext = promptContext
 
     evictIdleWorkers(this.pool, {
       foregroundKey: this.foregroundPoolKey,
@@ -528,10 +567,12 @@ export class WorkerManager {
     cwd: string,
     options?: {
       beforeActivate?: (result: { sessionId: string; sessionFile: string }) => Promise<void>
+      mode?: XiaoguiMode
     },
   ): Promise<{ sessionId: string; sessionFile?: string }> {
-    const run = this.lifecycleChain.then(() =>
-      createNewSessionInPool({
+    const run = this.lifecycleChain.then(async () => {
+      const promptContext = await this.workspacePromptContext(cwd, options?.mode)
+      return createNewSessionInPool({
         cwd,
         pool: this.pool,
         mainWindow: this.mainWindow,
@@ -542,8 +583,11 @@ export class WorkerManager {
         onHostToolRequest: (payload) => this.forwardHostToolRequest(payload),
         onSlotExit: (slot, code) => this.handleSlotExit(slot, code),
         beforeActivate: options?.beforeActivate,
-      }),
-    )
+        promptContext,
+        finalizePromptContext: (sessionFile) =>
+          this.sessionPromptContext(cwd, sessionFile),
+      })
+    })
     this.lifecycleChain = run.then(
       () => undefined,
       () => undefined,
@@ -594,6 +638,11 @@ export class WorkerManager {
           sessionId: r.sessionId ? String(r.sessionId) : undefined,
           sessionFile,
         })
+        const slot = this.foregroundSlot()
+        if (!slot) throw new Error('XIAOGUI_PROMPT_SESSION_SLOT_MISSING')
+        const promptContext = await this.sessionPromptContext(cwd, sessionFile)
+        await this.requestOnSlot(slot, 'loadSession', { sessionFile, promptContext })
+        slot.promptContext = promptContext
       } catch (error) {
         const slot = this.foregroundSlot()
         if (slot) {
@@ -642,6 +691,11 @@ export class WorkerManager {
           sessionId: r.sessionId ? String(r.sessionId) : undefined,
           sessionFile,
         })
+        const slot = this.foregroundSlot()
+        if (!slot) throw new Error('XIAOGUI_PROMPT_SESSION_SLOT_MISSING')
+        const promptContext = await this.sessionPromptContext(cwd, sessionFile)
+        await this.requestOnSlot(slot, 'loadSession', { sessionFile, promptContext })
+        slot.promptContext = promptContext
       } catch (error) {
         const slot = this.foregroundSlot()
         if (slot) {
@@ -733,7 +787,12 @@ export class WorkerManager {
     }
     if (!canAcquireNewWorker(this.pool).ok) return null
     try {
-      const { slot, init } = await forkWorkerForCwd(cwd, { poolKey: key, sessionFile: null })
+      const promptContext = await this.workspacePromptContext(cwd)
+      const { slot, init } = await forkWorkerForCwd(cwd, {
+        poolKey: key,
+        sessionFile: null,
+        promptContext,
+      })
       this.pool.set(key, slot)
       attachWorkerHandlers(slot, slot.worker, {
         mainWindow: this.mainWindow,
@@ -905,6 +964,7 @@ export class WorkerManager {
     const r = await this.request('loadSession', {
       sessionFile,
       force: opts?.force === true,
+      promptContext: await this.sessionPromptContext(cwd, sessionFile),
       ...(leafId !== undefined ? { leafId } : {}),
     })
     const sk = normalizeSessionKey(sessionFile)
@@ -917,6 +977,17 @@ export class WorkerManager {
       thinkingLevel: r.thinkingLevel as string | undefined,
       modelFallbackMessage: r.modelFallbackMessage as string | undefined,
     }
+  }
+
+  /** Safe PR4 seam: identifiers, lengths and hashes only; never Prompt text. */
+  async getEffectivePromptManifest(
+    sessionFile?: string,
+  ): Promise<XiaoguiEffectivePromptDiagnosticsV1> {
+    const r = await this.request(
+      'getEffectivePromptManifest',
+      sessionFile ? { sessionFile } : undefined,
+    )
+    return r.promptDiagnostics as XiaoguiEffectivePromptDiagnosticsV1
   }
   async renameSessionFile(sessionFile: string, title: string): Promise<{ ok: boolean; title?: string; error?: string }> {
     const r = await this.request('sessionRenameFile', { sessionFile, title })

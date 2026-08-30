@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentSession } from '@earendil-works/pi-coding-agent'
 import type { WorkerModelRuntime } from '../worker-runtime'
-import { handleSetmodel } from './worker-handlers-session'
+import { handleLoadsession, handleSetmodel } from './worker-handlers-session'
 import { st } from '../worker-runtime'
+import { freezeXiaoguiPromptContextV1 } from '../xiaogui-prompt/session-binding'
 
 function modelRuntimeWith(getModel: (provider: string, modelId: string) => unknown): WorkerModelRuntime {
   return {
@@ -27,7 +28,26 @@ function sessionWith(options: {
 afterEach(() => {
   st.session = null
   st.modelRuntime = null
+  st.runtime = null
+  st.promptContext = null
+  st.pendingPromptContext = null
+  st.promptDiagnostics = null
+  st.agentTurnActive = false
 })
+
+function promptContext(phase: 'ASK' | 'EXECUTE', sessionKey = 'xgs1_one') {
+  return freezeXiaoguiPromptContextV1({
+    schemaVersion: 1,
+    mode: 'WORK',
+    phase,
+    workspaceAvailable: true,
+    projectTrusted: true,
+    enabledCapabilities: ['work.file-organize'],
+    availableToolNames: ['read'],
+    sessionKey,
+    projectId: 'xgp1_project',
+  })
+}
 
 describe('handleSetmodel', () => {
   it('resolves through the service-owned ModelRuntime without session.modelRegistry', async () => {
@@ -93,5 +113,50 @@ describe('handleSetmodel', () => {
     await handleSetmodel({ provider: 'openai', modelId: 'gpt/new' }, reply)
 
     expect(reply).toHaveBeenCalledWith({ type: 'setModel-done', modelId: 'openai/gpt/new' })
+  })
+})
+
+describe('handleLoadsession Prompt Context', () => {
+  it('rejects a phase change for the same Session while a Turn is active', async () => {
+    const sessionFile = 'C:\\sessions\\one.jsonl'
+    st.promptContext = promptContext('ASK')
+    st.agentTurnActive = true
+    st.session = {
+      sessionFile,
+      isStreaming: true,
+      sessionManager: { getLeafId: () => null },
+    } as unknown as AgentSession
+    const reply = vi.fn()
+
+    await handleLoadsession({
+      sessionFile,
+      promptContext: promptContext('EXECUTE'),
+    }, reply)
+
+    expect(reply).toHaveBeenCalledWith({
+      type: 'error',
+      error: 'loadSession failed: XIAOGUI_PROMPT_CONTEXT_TURN_ACTIVE',
+    })
+  })
+
+  it('rejects a different opaque sessionKey for the same Session file', async () => {
+    const sessionFile = 'C:\\sessions\\one.jsonl'
+    st.promptContext = promptContext('ASK', 'xgs1_one')
+    st.session = {
+      sessionFile,
+      isStreaming: false,
+      sessionManager: { getLeafId: () => null },
+    } as unknown as AgentSession
+    const reply = vi.fn()
+
+    await handleLoadsession({
+      sessionFile,
+      promptContext: promptContext('ASK', 'xgs1_two'),
+    }, reply)
+
+    expect(reply).toHaveBeenCalledWith({
+      type: 'error',
+      error: 'loadSession failed: XIAOGUI_PROMPT_CONTEXT_SESSION_MISMATCH',
+    })
   })
 })

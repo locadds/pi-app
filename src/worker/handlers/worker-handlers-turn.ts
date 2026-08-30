@@ -37,9 +37,9 @@ export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply)
           }
           if (!st.sdk) throw new Error('SDK load failed')
           if (!st.sharedEventBus) st.sharedEventBus = st.sdk.createEventBus()
-          await initSession(String(msg.cwd || ''))
+          await initSession(String(msg.cwd || ''), msg.promptContext)
           console.log('[Worker] Init done, sessionId:', st.currentSessionId)
-          reply({ type: 'init-done', sessionId: st.currentSessionId, sessionFile: st.session?.sessionFile, model: currentSessionModelKey(), thinkingLevel: st.session?.thinkingLevel, sdkFallback })
+          reply({ type: 'init-done', sessionId: st.currentSessionId, sessionFile: st.session?.sessionFile, model: currentSessionModelKey(), thinkingLevel: st.session?.thinkingLevel, promptDiagnostics: st.promptDiagnostics, sdkFallback })
         } catch (e: unknown) {
           console.error('[Worker] Init FAILED:', errorMessage(e), e instanceof Error ? e.stack : '')
           reply({ type: 'error', error: `Init failed: ${errorMessage(e)}`, stack: e instanceof Error ? e.stack : undefined })
@@ -223,6 +223,9 @@ export async function handleDispose(msg: WorkerIncomingMessage, reply: WorkerRep
         st.session = null
         st.modelRuntime = null
         st.runtime = null
+        st.promptContext = null
+        st.pendingPromptContext = null
+        st.promptDiagnostics = null
         reply({ type: 'dispose-done' })
         return
 }

@@ -358,6 +358,7 @@ export function registerSessionHandlers(): void {
     const requestedMode = (req.mode ?? xiaogui.getMode()) as SessionMode
     let canonical: PiSessionScopeV1 | undefined
     const result = await workerManager.newSession(workspaceId, {
+      mode: requestedMode,
       beforeActivate: async ({ sessionFile }) => {
         canonical = await sessionScopeResolverV1.registerNew(
           runtimeIssuedSessionRef(workspaceId, sessionFile),
