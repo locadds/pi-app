@@ -16,6 +16,7 @@ import type { WorkDocxServiceV1, WorkDocxTemplateSelectionIdV1 } from './work-do
 const FieldSchema = z.discriminatedUnion('status', [
   z
     .object({
+      fieldId: z.string().min(1).max(160),
       name: z.string().min(1).max(64),
       status: z.literal('READY'),
       value: z.union([z.string().max(20_000), z.number().finite(), z.boolean()]),
@@ -24,6 +25,7 @@ const FieldSchema = z.discriminatedUnion('status', [
     .strict(),
   z
     .object({
+      fieldId: z.string().min(1).max(160),
       name: z.string().min(1).max(64),
       status: z.literal('UNRESOLVED'),
       sourceSummary: z.string().max(500).optional(),
@@ -233,6 +235,9 @@ export function createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1(
           kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_SELECTED',
           templateDisplayName: outcome.value.templateDisplayName,
           templateSha256: outcome.value.templateSha256,
+          ...(outcome.value.templateVersionId
+            ? { templateVersionId: outcome.value.templateVersionId }
+            : {}),
           fields: outcome.value.fields,
           profile: outcome.value.profile,
         }
@@ -288,6 +293,7 @@ export function createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1(
             value: {
               kind: 'XIAOGUI_WORK_DOCX_INPUT_REQUIRED',
               unresolvedFields: outcome.value.unresolvedFields,
+              unresolvedFieldIds: outcome.value.unresolvedFieldIds,
             },
           }
         }
@@ -299,8 +305,12 @@ export function createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1(
           kind: 'XIAOGUI_WORK_DOCX_PREPARED',
           templateDisplayName: outcome.value.templateDisplayName,
           fields: outcome.value.fields,
+          fieldIds: outcome.value.fieldIds,
           templateSha256: outcome.value.templateSha256,
           dataSha256: outcome.value.dataSha256,
+          ...(outcome.value.templateVersionId
+            ? { templateVersionId: outcome.value.templateVersionId }
+            : {}),
         }
         const prepared: PendingOperation = {
           operationId: outcome.value.operationId,
@@ -339,6 +349,9 @@ export function createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1(
             outputSha256: outcome.value.outputSha256,
             templateSha256: outcome.value.templateSha256,
             dataSha256: outcome.value.dataSha256,
+            ...(outcome.value.templateVersionId
+              ? { templateVersionId: outcome.value.templateVersionId }
+              : {}),
             originalInputsUnchanged: true,
           },
         }

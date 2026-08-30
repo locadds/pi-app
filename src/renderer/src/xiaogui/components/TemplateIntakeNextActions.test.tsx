@@ -118,7 +118,16 @@ describe('TemplateIntakeNextActions', () => {
           report: { reportId: 'report-1' },
         }),
       ]),
-    ).toEqual({ reportId: 'report-1' })
+    ).toEqual({ reportId: 'report-1', resumable: false })
+
+    expect(
+      findReviewableTemplateIntake([
+        block({
+          kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_CANCELLED',
+          report: { reportId: 'report-1' },
+        }),
+      ]),
+    ).toEqual({ reportId: 'report-1', resumable: true })
   })
 
   it('开始复核按钮直接打开当前报告，不填写或发送提示词', async () => {
@@ -139,6 +148,20 @@ describe('TemplateIntakeNextActions', () => {
     expect(useUIStore.getState().composerPrefill).toBeNull()
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '填写提示词：生成正式模板' })).toBeVisible()
+    })
+  })
+
+  it('暂存或取消复核后显示继续复核', async () => {
+    invokeMock
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, state: 'CANCELLED' })
+    const user = userEvent.setup()
+    render(<TemplateIntakeStartReviewAction target={{ reportId: 'report-1' }} />)
+
+    await user.click(screen.getByRole('button', { name: '直接打开文档复核' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '继续文档复核' })).toHaveTextContent('继续复核')
     })
   })
 

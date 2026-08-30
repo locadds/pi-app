@@ -773,6 +773,9 @@ export function addXiaoguiWorkDocxTemplateIntakeTool(
               submission: {
                 decisions: summarizeTemplateReviewActionsV2(report, reviewedV2.actions),
                 reviewActionsV2: reviewedV2.actions,
+                ...(reviewedV2.issueChoicesV2
+                  ? { issueChoicesV2: reviewedV2.issueChoicesV2 }
+                  : {}),
               },
             },
             undefined,

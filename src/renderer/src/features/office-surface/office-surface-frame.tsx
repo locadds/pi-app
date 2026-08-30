@@ -12,6 +12,7 @@ export interface OfficeSurfaceFramePropsV1 {
   readonly gatewayAccessToken: string
   readonly onReady?: (capabilities: OfficeSurfaceCapabilityV1) => void
   readonly onDirtyChange?: (dirty: boolean, headSha256: string) => void
+  readonly onOccurrenceSelect?: (occurrenceId: string, fieldId: string) => void
   readonly onError?: (message: string) => void
 }
 
@@ -36,7 +37,7 @@ type OfficeSurfaceParentPayloadV1 = OfficeSurfaceParentMessageV1 extends infer M
 
 export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, OfficeSurfaceFramePropsV1>(
   function OfficeSurfaceFrameV1(props, ref): React.JSX.Element {
-    const { gatewayOrigin, gatewayAccessToken, onReady, onDirtyChange, onError } = props
+    const { gatewayOrigin, gatewayAccessToken, onReady, onDirtyChange, onOccurrenceSelect, onError } = props
     const iframeRef = useRef<HTMLIFrameElement>(null)
     const portRef = useRef<MessagePort | null>(null)
     const pendingFieldUpdatesRef = useRef(
@@ -50,8 +51,8 @@ export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, Offic
       >(),
     )
     const readyTimerRef = useRef<number | null>(null)
-    const callbacksRef = useRef({ onReady, onDirtyChange, onError })
-    callbacksRef.current = { onReady, onDirtyChange, onError }
+    const callbacksRef = useRef({ onReady, onDirtyChange, onOccurrenceSelect, onError })
+    callbacksRef.current = { onReady, onDirtyChange, onOccurrenceSelect, onError }
     const [status, setStatus] = useState<FrameStatus>('LOADING')
     const [reloadKey, setReloadKey] = useState(0)
     const channelNonce = useMemo(() => createChannelNonce(), [reloadKey])
@@ -82,13 +83,13 @@ export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, Offic
         focusOccurrence: (occurrenceId: string) => post({ type: 'PARENT_FOCUS_OCCURRENCE', occurrenceId }),
         updateField: ({ fieldId, value, occurrenceIds }) => {
           if (!portRef.current || status !== 'READY') {
-            return Promise.reject(new Error('文档工作表面尚未准备好。'))
+            return Promise.reject(new Error('文档界面尚未准备好。'))
           }
           const requestId = createChannelNonce()
           return new Promise<OfficeSurfaceFieldUpdateResultV1>((resolve, reject) => {
             const timer = window.setTimeout(() => {
               pendingFieldUpdatesRef.current.delete(requestId)
-              reject(new Error('同步业务字段超时，请重新载入文档工作表面。'))
+              reject(new Error('同步业务字段超时，请重新载入文档界面。'))
             }, 15_000)
             pendingFieldUpdatesRef.current.set(requestId, {
               resolve,
@@ -121,7 +122,7 @@ export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, Offic
         post({ type: 'PARENT_DISPOSE' })
         for (const pending of pendingFieldUpdatesRef.current.values()) {
           window.clearTimeout(pending.timer)
-          pending.reject(new Error('文档工作表面已经关闭。'))
+          pending.reject(new Error('文档界面已经关闭。'))
         }
         pendingFieldUpdatesRef.current.clear()
         portRef.current?.close()
@@ -155,6 +156,8 @@ export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, Offic
             failedOccurrenceIds: event.data.failedOccurrenceIds,
             headSha256: event.data.headSha256,
           })
+        } else if (event.data.type === 'VIEWER_OCCURRENCE_SELECTED') {
+          callbacksRef.current.onOccurrenceSelect?.(event.data.occurrenceId, event.data.fieldId)
         } else {
           if (readyTimerRef.current !== null) window.clearTimeout(readyTimerRef.current)
           readyTimerRef.current = null
@@ -186,12 +189,12 @@ export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, Offic
       <section className="relative h-full min-h-0 w-full overflow-hidden bg-neutral-100">
         {status === 'LOADING' ? (
           <div className="absolute inset-x-0 top-0 z-10 bg-amber-50 px-4 py-2 text-sm text-amber-900">
-            正在启动小规文档工作表面…
+            正在启动小规文档界面…
           </div>
         ) : null}
         {status === 'FAILED' ? (
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-white">
-            <p className="text-sm text-neutral-600">文档工作表面暂时无法打开。</p>
+            <p className="text-sm text-neutral-600">文档界面暂时无法打开。</p>
             <button
               type="button"
               className="rounded-lg bg-neutral-900 px-4 py-2 text-sm text-white"
@@ -205,7 +208,7 @@ export const OfficeSurfaceFrameV1 = forwardRef<OfficeSurfaceFrameHandleV1, Offic
           key={reloadKey}
           ref={iframeRef}
           src={viewerUrl}
-          title="小规文档工作表面"
+          title="小规文档界面"
           className="h-full w-full border-0"
           sandbox="allow-scripts allow-same-origin allow-forms"
           referrerPolicy="no-referrer"

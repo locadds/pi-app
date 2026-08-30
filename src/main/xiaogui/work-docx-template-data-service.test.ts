@@ -8,6 +8,7 @@ import JSZip from 'jszip'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
+import { TemplateLibraryServiceV1 } from './template-library-service'
 import { WorkDocxServiceV1, type WorkDocxDialogPortV1 } from './work-docx-service'
 
 const ADDRESS = {
@@ -74,25 +75,35 @@ describe('WorkDocxServiceV1 template data flow', () => {
       },
     })
     if (!selected.ok || selected.value.kind !== 'TEMPLATE_SELECTED') throw new Error('expected selection')
+    const fieldByName = new Map(selected.value.fields.map((field) => [field.name, field]))
+    const ownerField = fieldByName.get('负责人')!
+    const projectField = fieldByName.get('项目名称')!
 
     await expect(
       service.prepareTemplateData({
         address: ADDRESS,
         selectionId: selected.value.selectionId,
         fields: [
-          { name: '负责人', status: 'UNRESOLVED' },
-          { name: '项目名称', status: 'READY', value: '下盐路' },
+          { fieldId: ownerField.fieldId, name: '负责人', status: 'UNRESOLVED' },
+          { fieldId: projectField.fieldId, name: '项目名称', status: 'READY', value: '下盐路' },
         ],
       }),
-    ).resolves.toEqual({ ok: true, value: { kind: 'INPUT_REQUIRED', unresolvedFields: ['负责人'] } })
+    ).resolves.toEqual({
+      ok: true,
+      value: {
+        kind: 'INPUT_REQUIRED',
+        unresolvedFields: ['负责人'],
+        unresolvedFieldIds: [ownerField.fieldId],
+      },
+    })
     expect(dialogs.chooseNewTarget).not.toHaveBeenCalled()
 
     const prepared = await service.prepareTemplateData({
       address: ADDRESS,
       selectionId: selected.value.selectionId,
       fields: [
-        { name: '项目名称', status: 'READY', value: '下盐路', sourceSummary: '来自当前对话' },
-        { name: '负责人', status: 'READY', value: '规划一组' },
+        { fieldId: projectField.fieldId, name: '项目名称', status: 'READY', value: '下盐路', sourceSummary: '来自当前对话' },
+        { fieldId: ownerField.fieldId, name: '负责人', status: 'READY', value: '规划一组' },
       ],
     })
     expect(prepared).toMatchObject({
@@ -103,9 +114,9 @@ describe('WorkDocxServiceV1 template data flow', () => {
     expect(prepared.value.dataSha256).toBe(
       createHash('sha256')
         .update(JSON.stringify([
-          { name: '负责人', value: '规划一组' },
-          { name: '项目名称', value: '下盐路' },
-        ]))
+          { fieldId: ownerField.fieldId, name: '负责人', value: '规划一组' },
+          { fieldId: projectField.fieldId, name: '项目名称', value: '下盐路' },
+        ].sort((left, right) => left.fieldId.localeCompare(right.fieldId))))
         .digest('hex'),
     )
 
@@ -156,14 +167,16 @@ describe('WorkDocxServiceV1 template data flow', () => {
     const service = new WorkDocxServiceV1({ lookup: lookup(), dialogs, tempRoot: join(dir, 'stage') })
     const selected = await service.selectTemplate({ address: ADDRESS })
     if (!selected.ok || selected.value.kind !== 'TEMPLATE_SELECTED') throw new Error('expected selection')
+    const projectField = selected.value.fields.find((field) => field.name === 'project')!
+    const ownerField = selected.value.fields.find((field) => field.name === 'owner')!
 
     await expect(
       service.prepareTemplateData({
         address: ADDRESS,
         selectionId: selected.value.selectionId,
         fields: [
-          { name: 'project', status: 'READY', value: 'A' },
-          { name: 'project', status: 'READY', value: 'B' },
+          { fieldId: projectField.fieldId, name: 'project', status: 'READY', value: 'A' },
+          { fieldId: projectField.fieldId, name: 'project', status: 'READY', value: 'B' },
         ],
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'INPUT_INVALID' } })
@@ -172,11 +185,71 @@ describe('WorkDocxServiceV1 template data flow', () => {
         address: ADDRESS,
         selectionId: selected.value.selectionId,
         fields: [
-          { name: 'project', status: 'READY', value: 'A' },
-          { name: 'unknown', status: 'READY', value: 'B' },
+          { fieldId: projectField.fieldId, name: 'project', status: 'READY', value: 'A' },
+          { fieldId: ownerField.fieldId, name: 'unknown', status: 'READY', value: 'B' },
         ],
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'INPUT_INVALID' } })
     expect(dialogs.chooseNewTarget).not.toHaveBeenCalled()
+  })
+
+  it('按历史模板的稳定字段编号取值，只追问必填字段并将未提供的可选字段留空', async () => {
+    const dir = await root()
+    const template = join(dir, '资产模板.docx')
+    const target = join(dir, '资产模板结果.docx')
+    await writeDocx(template, '项目：{{项目名称}}；备注：{{备注}}')
+    const library = new TemplateLibraryServiceV1({
+      preferencePath: join(dir, 'private', 'template-library.json'),
+    })
+    await library.configureRoot(join(dir, 'library'))
+    const saved = await library.saveFromBuffer(await readFile(template), {
+      name: '资产模板',
+      fields: [
+        { fieldId: 'xgfield2_project', name: '项目名称', kind: 'TEXT', required: true },
+        { fieldId: 'xgfield2_note', name: '备注', kind: 'TEXT', required: false },
+      ],
+    })
+    const dialogs = dialogPort(template, target)
+    const service = new WorkDocxServiceV1({
+      lookup: lookup(),
+      dialogs,
+      tempRoot: join(dir, 'stage'),
+      templateLibrary: library,
+    })
+    const selected = await service.selectTemplate({
+      address: ADDRESS,
+      templateVersionId: saved.version.versionId,
+    })
+    if (!selected.ok || selected.value.kind !== 'TEMPLATE_SELECTED') {
+      throw new Error('expected library template selection')
+    }
+    expect(selected.value.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fieldId: 'xgfield2_project', required: true }),
+      expect.objectContaining({ fieldId: 'xgfield2_note', required: false }),
+    ]))
+    const prepared = await service.prepareTemplateData({
+      address: ADDRESS,
+      selectionId: selected.value.selectionId,
+      fields: [{
+        fieldId: 'xgfield2_project',
+        name: '项目名称',
+        status: 'READY',
+        value: '下盐路迁改工程',
+      }],
+    })
+    if (!prepared.ok || prepared.value.kind !== 'PREPARED') {
+      throw new Error('expected optional field to remain non-blocking')
+    }
+    expect(prepared.value.fieldIds).toEqual(['xgfield2_note', 'xgfield2_project'])
+    await expect(service.confirmTemplateData({
+      address: ADDRESS,
+      operationId: prepared.value.operationId,
+    })).resolves.toMatchObject({ ok: true, value: { kind: 'PUBLISHED' } })
+    const xml = await (await JSZip.loadAsync(await readFile(target)))
+      .file('word/document.xml')!
+      .async('string')
+    expect(xml).toContain('下盐路迁改工程')
+    expect(xml).not.toContain('{{备注}}')
+    library.close()
   })
 })

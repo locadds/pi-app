@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 
 import type {
   OfficeSurfaceFieldV1,
@@ -9,11 +9,9 @@ import type {
   OfficeSurfaceFieldUpdateResultV1,
 } from '@shared/xiaogui-office-surface'
 import type { TemplateReviewTargetV3 } from '@shared/xiaogui-work-template-review'
-import {
-  DocxHtmlViewer,
-  type DocxHtmlViewerHandleV1,
-  type DocxHtmlViewerSelectionV1,
-  type DocxHtmlViewerStateV1,
+import type {
+  DocxHtmlViewerSelectionV1,
+  DocxHtmlViewerStateV1,
 } from '@renderer/components/docx-html-viewer'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import {
@@ -34,7 +32,6 @@ export interface DocumentSurfaceViewerHandleV1 {
   dispose(): void
 }
 
-type SurfaceKind = 'OFFICE' | 'HTML'
 const EMPTY_FIELDS: readonly OfficeSurfaceFieldV1[] = []
 const EMPTY_OCCURRENCES: readonly OfficeSurfaceOccurrenceV1[] = []
 const EMPTY_TARGETS: readonly TemplateReviewTargetV3[] = []
@@ -53,6 +50,7 @@ export const DocumentSurfaceViewerV1 = forwardRef<
     selectedId?: string
     readonlyLabel?: string
     onSelectTarget?: (target: TemplateReviewTargetV3) => void
+    onSelectOccurrence?: (occurrenceId: string, fieldId: string) => void
     onStateChange?: (state: DocxHtmlViewerStateV1, pageCount: number | null) => void
     onMappedTargetsChange?: (targetIds: readonly string[]) => void
     className?: string
@@ -67,9 +65,8 @@ export const DocumentSurfaceViewerV1 = forwardRef<
     activeFieldId,
     activeOccurrenceId,
     targets = EMPTY_TARGETS,
-    selectedId,
-    readonlyLabel,
     onSelectTarget,
+    onSelectOccurrence,
     onStateChange,
     onMappedTargetsChange,
     className,
@@ -77,29 +74,41 @@ export const DocumentSurfaceViewerV1 = forwardRef<
   ref,
 ) {
   const officeRef = useRef<OfficeSurfaceFrameHandleV1 | null>(null)
-  const htmlRef = useRef<DocxHtmlViewerHandleV1 | null>(null)
   const onStateChangeRef = useRef(onStateChange)
   onStateChangeRef.current = onStateChange
-  const [mode, setMode] = useState<OfficeSurfaceModeV1>('OFF')
-  // 兼容视图先可见；主进程确认试验模式后再无刷新切换到 Office Surface。
-  const [surface, setSurface] = useState<SurfaceKind>('HTML')
+  const [mode, setMode] = useState<OfficeSurfaceModeV1 | null>(null)
   const [session, setSession] = useState<OfficeSurfaceSessionReadyV1 | null>(null)
   const [officeReady, setOfficeReady] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const reviewProjection = useMemo(
+    () => deriveReviewProjection(targets, fields, occurrences),
+    [fields, occurrences, targets],
+  )
 
   useImperativeHandle(
     ref,
     () => ({
-      focusTarget: (targetId: string) => htmlRef.current?.focus(targetId) ?? false,
+      focusTarget: (targetId: string) => {
+        const occurrenceId = reviewProjection.occurrenceIdByTargetId.get(targetId)
+        if (!occurrenceId) return false
+        officeRef.current?.focusOccurrence(occurrenceId)
+        return true
+      },
       focusField: (fieldId: string) => officeRef.current?.focusField(fieldId),
       focusOccurrence: (occurrenceId: string) => officeRef.current?.focusOccurrence(occurrenceId),
       updateField: (input) =>
         officeRef.current?.updateField(input) ??
-        Promise.reject(new Error('请切换到“工作表面（试验）”后再同步业务字段。')),
-      readSelection: () => htmlRef.current?.readSelection() ?? null,
-      dispose: () => htmlRef.current?.dispose(),
+        Promise.reject(new Error('文档界面尚未准备好，暂时不能同步业务字段。')),
+      readSelection: () => null,
+      dispose: () => {
+        if (session) {
+          void Promise.resolve(
+            ipcClient.invoke('xiaogui.officeSurface.session.release', { sessionId: session.sessionId }),
+          )
+        }
+      },
     }),
-    [],
+    [reviewProjection.occurrenceIdByTargetId, session],
   )
 
   useEffect(() => {
@@ -109,10 +118,16 @@ export const DocumentSurfaceViewerV1 = forwardRef<
         if (cancelled) return
         const next = readMode(value)
         setMode(next)
-        setSurface(next === 'OFF' ? 'HTML' : 'OFFICE')
+        if (next === 'OFF') {
+          setMessage('当前运行方式尚未启用小规文档界面。')
+          onStateChangeRef.current?.('FAILED', null)
+        }
       })
-      .catch(() => {
-        if (!cancelled) setSurface('HTML')
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setMode('OFF')
+        setMessage(`无法确认文档界面能力。${readErrorMessage(error)}`)
+        onStateChangeRef.current?.('FAILED', null)
       })
     return () => {
       cancelled = true
@@ -120,7 +135,7 @@ export const DocumentSurfaceViewerV1 = forwardRef<
   }, [])
 
   useEffect(() => {
-    if (surface !== 'OFFICE' || !documentToken) return
+    if (!mode || mode === 'OFF' || !documentToken) return
     let cancelled = false
     let openedSessionId: string | null = null
     setSession(null)
@@ -132,8 +147,8 @@ export const DocumentSurfaceViewerV1 = forwardRef<
         purpose,
         documentToken,
         title,
-        fields,
-        occurrences,
+        fields: reviewProjection.fields,
+        occurrences: reviewProjection.occurrences,
       }),
     )
       .then((ready: OfficeSurfaceSessionReadyV1) => {
@@ -147,11 +162,16 @@ export const DocumentSurfaceViewerV1 = forwardRef<
         }
         setSession(ready)
         setMessage(ready.warnings[0] ?? null)
+        onMappedTargetsChange?.(
+          ready.mappedOccurrenceIds
+            .map((occurrenceId) => reviewProjection.targetIdByOccurrenceId.get(occurrenceId))
+            .filter((targetId): targetId is string => Boolean(targetId)),
+        )
       })
       .catch((error: unknown) => {
         if (cancelled) return
-        setMessage(`文档工作表面暂时不可用，已切换到兼容视图。${readErrorMessage(error)}`)
-        setSurface('HTML')
+        setMessage(`文档界面暂时不可用。${readErrorMessage(error)}`)
+        onStateChangeRef.current?.('FAILED', null)
       })
     return () => {
       cancelled = true
@@ -163,7 +183,16 @@ export const DocumentSurfaceViewerV1 = forwardRef<
         )
       }
     }
-  }, [documentToken, fields, occurrences, purpose, surface, title])
+  }, [
+    documentToken,
+    onMappedTargetsChange,
+    purpose,
+    reviewProjection.fields,
+    reviewProjection.occurrences,
+    reviewProjection.targetIdByOccurrenceId,
+    mode,
+    title,
+  ])
 
   useEffect(() => {
     if (!officeReady) return
@@ -180,25 +209,7 @@ export const DocumentSurfaceViewerV1 = forwardRef<
   return (
     <div className={`flex h-full min-h-0 flex-col ${className ?? ''}`}>
       <div className="flex min-h-9 items-center gap-2 border-b border-border bg-background px-3 py-1 text-[11px]">
-        <span className="font-medium">文档视图</span>
-        {mode !== 'OFF' ? (
-          <div className="flex rounded-md bg-muted p-0.5">
-            <button
-              type="button"
-              onClick={() => setSurface('OFFICE')}
-              className={`rounded px-2 py-1 ${surface === 'OFFICE' ? 'bg-background shadow-sm' : ''}`}
-            >
-              工作表面（试验）
-            </button>
-            <button
-              type="button"
-              onClick={() => setSurface('HTML')}
-              className={`rounded px-2 py-1 ${surface === 'HTML' ? 'bg-background shadow-sm' : ''}`}
-            >
-              原版式兼容视图
-            </button>
-          </div>
-        ) : null}
+        <span className="font-medium">文档复核</span>
         {message ? (
           <span className="min-w-0 flex-1 truncate text-amber-700" title={message}>
             {message}
@@ -206,7 +217,15 @@ export const DocumentSurfaceViewerV1 = forwardRef<
         ) : null}
       </div>
       <div className="min-h-0 flex-1">
-        {surface === 'OFFICE' ? (
+        {mode === null ? (
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            正在准备文档界面…
+          </div>
+        ) : mode === 'OFF' ? (
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+            {message ?? '文档界面暂时无法打开。'}
+          </div>
+        ) : (
           session ? (
             <OfficeSurfaceFrameV1
               ref={officeRef}
@@ -219,32 +238,24 @@ export const DocumentSurfaceViewerV1 = forwardRef<
               onDirtyChange={(dirty) => {
                 if (!dirty) onStateChangeRef.current?.('READY', null)
               }}
+              onOccurrenceSelect={(occurrenceId) => {
+                const occurrence = reviewProjection.occurrences.find((item) => item.occurrenceId === occurrenceId)
+                if (occurrence) onSelectOccurrence?.(occurrenceId, occurrence.fieldId)
+                const targetId = reviewProjection.targetIdByOccurrenceId.get(occurrenceId)
+                const target = targetId ? targets.find((item) => item.targetId === targetId) : undefined
+                if (target) onSelectTarget?.(target)
+              }}
               onError={(error) => {
                 setOfficeReady(false)
-                setMessage(`${error} 已切换到兼容视图。`)
-                setSurface('HTML')
+                setMessage(error)
+                onStateChangeRef.current?.('FAILED', null)
               }}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              正在准备文档工作表面…
+              正在准备文档界面…
             </div>
           )
-        ) : surface === 'HTML' ? (
-          <DocxHtmlViewer
-            ref={htmlRef}
-            documentToken={documentToken}
-            targets={targets}
-            selectedId={selectedId}
-            readonlyLabel={readonlyLabel}
-            onSelectTarget={onSelectTarget}
-            onStateChange={onStateChange}
-            onMappedTargetsChange={onMappedTargetsChange}
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            正在选择文档显示方式…
-          </div>
         )}
       </div>
     </div>
@@ -255,6 +266,87 @@ function readMode(value: unknown): OfficeSurfaceModeV1 {
   if (!value || typeof value !== 'object') return 'OFF'
   const mode = (value as { mode?: unknown }).mode
   return mode === 'UNIVER_EXPERIMENTAL' || mode === 'UNIVER_PREFERRED' ? mode : 'OFF'
+}
+
+function deriveReviewProjection(
+  targets: readonly TemplateReviewTargetV3[],
+  fields: readonly OfficeSurfaceFieldV1[],
+  occurrences: readonly OfficeSurfaceOccurrenceV1[],
+): {
+  fields: readonly OfficeSurfaceFieldV1[]
+  occurrences: readonly OfficeSurfaceOccurrenceV1[]
+  occurrenceIdByTargetId: ReadonlyMap<string, string>
+  targetIdByOccurrenceId: ReadonlyMap<string, string>
+} {
+  if (fields.length || occurrences.length || !targets.length) {
+    return {
+      fields,
+      occurrences,
+      occurrenceIdByTargetId: new Map(),
+      targetIdByOccurrenceId: new Map(),
+    }
+  }
+
+  const derivedFields: OfficeSurfaceFieldV1[] = []
+  const derivedOccurrences: OfficeSurfaceOccurrenceV1[] = []
+  const occurrenceIdByTargetId = new Map<string, string>()
+  const targetIdByOccurrenceId = new Map<string, string>()
+
+  for (const target of targets) {
+    const sourceAnchor = toOfficeSourceAnchor(target)
+    const originalText = target.preview.trim()
+    if (!sourceAnchor || !originalText || target.kind === 'IMAGE' || target.kind === 'DRAWING') continue
+    const fieldId = `review:${target.targetId}`
+    const occurrenceId = `review-occurrence:${target.targetId}`
+    derivedFields.push({
+      fieldId,
+      displayName: '待复核内容',
+      occurrenceIds: [occurrenceId],
+    })
+    derivedOccurrences.push({
+      occurrenceId,
+      fieldId,
+      originalText,
+      sourceAnchor,
+      ...(target.sourceAnchor.textRange ? { textRange: target.sourceAnchor.textRange } : {}),
+      state: target.highRisk
+        ? 'BLOCKING'
+        : target.highlight === 'YELLOW'
+          ? 'WARNING'
+          : 'FIELD',
+    })
+    occurrenceIdByTargetId.set(target.targetId, occurrenceId)
+    targetIdByOccurrenceId.set(occurrenceId, target.targetId)
+  }
+
+  return {
+    fields: derivedFields,
+    occurrences: derivedOccurrences,
+    occurrenceIdByTargetId,
+    targetIdByOccurrenceId,
+  }
+}
+
+function toOfficeSourceAnchor(target: TemplateReviewTargetV3): OfficeSurfaceOccurrenceV1['sourceAnchor'] | null {
+  const anchor = target.sourceAnchor
+  if (
+    anchor.part !== 'BODY'
+    && anchor.part !== 'HEADER'
+    && anchor.part !== 'FOOTER'
+    && anchor.part !== 'TABLE_CELL'
+    && anchor.part !== 'TEXT_BOX'
+    && anchor.part !== 'DRAWING'
+  ) return null
+  return {
+    part: anchor.part,
+    ...(anchor.sectionIndex ? { sectionIndex: anchor.sectionIndex } : {}),
+    ...(anchor.partIndex ? { partIndex: anchor.partIndex } : {}),
+    ...(anchor.paragraphIndex ? { paragraphIndex: anchor.paragraphIndex } : {}),
+    ...(anchor.tableIndex ? { tableIndex: anchor.tableIndex } : {}),
+    ...(anchor.rowIndex ? { rowIndex: anchor.rowIndex } : {}),
+    ...(anchor.cellIndex ? { cellIndex: anchor.cellIndex } : {}),
+    ...(anchor.drawingIndex ? { drawingIndex: anchor.drawingIndex } : {}),
+  }
 }
 
 function readErrorMessage(error: unknown): string {

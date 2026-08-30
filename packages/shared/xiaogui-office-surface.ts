@@ -4,7 +4,11 @@ export type OfficeSurfaceModeV1 = 'OFF' | 'UNIVER_EXPERIMENTAL' | 'UNIVER_PREFER
 
 export type OfficeSnapshotV1 = Record<string, unknown>
 
-export type OfficeSurfacePurposeV1 = 'TEMPLATE_DRAFT' | 'MATERIALIZED_PREVIEW' | 'TEMPLATE_LIBRARY_PREVIEW'
+export type OfficeSurfacePurposeV1 =
+  | 'TEMPLATE_DRAFT'
+  | 'TEMPLATE_ADVANCED_REVIEW'
+  | 'MATERIALIZED_PREVIEW'
+  | 'TEMPLATE_LIBRARY_PREVIEW'
 
 export interface OfficeSurfaceSourceAnchorV1 {
   readonly part: 'BODY' | 'HEADER' | 'FOOTER' | 'TABLE_CELL' | 'TEXT_BOX' | 'DRAWING'
@@ -45,8 +49,8 @@ export interface OfficeSurfaceProjectedOccurrenceV1 {
 }
 
 /**
- * 开源 Univer 不包含官方 DOCX Exchange。单机试验版先把安全解析后的
- * 文档结构投影成可编辑正文；它不是 DOCX 像素级导入结果。
+ * 开源 Univer 不包含官方 DOCX Exchange。小规在主进程把安全解析后的
+ * OOXML 映射为 Univer 文档数据；保留可表达的版式，复杂浮动对象明确降级。
  */
 export interface OfficeStructuredDocumentProjectionV1 {
   readonly projectionVersion: 1
@@ -54,7 +58,11 @@ export interface OfficeStructuredDocumentProjectionV1 {
   readonly documentId: string
   readonly title: string
   readonly sourceSha256: string
+  readonly purpose: OfficeSurfacePurposeV1
+  readonly readOnly: boolean
   readonly plainText: string
+  /** 仅在私有文档网关内传递的 Univer 文档快照，不包含源文件路径。 */
+  readonly univerDocument: OfficeSnapshotV1
   readonly fields: readonly OfficeSurfaceFieldV1[]
   readonly occurrences: readonly OfficeSurfaceProjectedOccurrenceV1[]
   readonly warnings: readonly string[]
@@ -83,6 +91,8 @@ export interface OfficeSurfaceSessionReadyV1 {
   /** 仅由可信 Renderer 经 MessagePort 交给 Viewer，不得写入 URL 或会话。 */
   readonly gatewayAccessToken: string
   readonly sourceSha256: string
+  readonly readOnly: boolean
+  readonly mappedOccurrenceIds: readonly string[]
   readonly warnings: readonly string[]
   readonly statistics: OfficeStructuredDocumentProjectionV1['statistics']
 }
@@ -128,6 +138,11 @@ export type OfficeSurfaceViewerMessageV1 =
   | (OfficeSurfaceMessageBaseV1 & {
       readonly type: 'VIEWER_FIELD_UPDATE_RESULT'
     } & OfficeSurfaceFieldUpdateResultV1)
+  | (OfficeSurfaceMessageBaseV1 & {
+      readonly type: 'VIEWER_OCCURRENCE_SELECTED'
+      readonly occurrenceId: string
+      readonly fieldId: string
+    })
 
 export interface OfficeSurfacePortOfferV1 extends OfficeSurfaceMessageBaseV1 {
   readonly type: 'OFFICE_PORT_OFFER'
@@ -180,6 +195,9 @@ export function isOfficeSurfaceViewerMessageV1(value: unknown): value is OfficeS
       isDigest(message.headSha256)
     )
   }
+  if (message.type === 'VIEWER_OCCURRENCE_SELECTED') {
+    return isIdentifier(message.occurrenceId) && isIdentifier(message.fieldId)
+  }
   return false
 }
 
@@ -226,11 +244,22 @@ export function isOfficeStructuredDocumentProjectionV1(value: unknown): value is
     typeof projection.title === 'string' &&
     typeof projection.sourceSha256 === 'string' &&
     /^[a-f0-9]{64}$/.test(projection.sourceSha256) &&
+    isOfficeSurfacePurpose(projection.purpose) &&
+    typeof projection.readOnly === 'boolean' &&
     typeof projection.plainText === 'string' &&
+    !!projection.univerDocument &&
+    typeof projection.univerDocument === 'object' &&
     Array.isArray(projection.fields) &&
     Array.isArray(projection.occurrences) &&
     Array.isArray(projection.warnings)
   )
+}
+
+function isOfficeSurfacePurpose(value: unknown): value is OfficeSurfacePurposeV1 {
+  return value === 'TEMPLATE_DRAFT'
+    || value === 'TEMPLATE_ADVANCED_REVIEW'
+    || value === 'MATERIALIZED_PREVIEW'
+    || value === 'TEMPLATE_LIBRARY_PREVIEW'
 }
 
 function isMessageBase(value: unknown): value is OfficeSurfaceMessageBaseV1 & Record<string, unknown> {

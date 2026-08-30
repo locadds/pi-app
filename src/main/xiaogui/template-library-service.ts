@@ -16,7 +16,9 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import {
+  TEMPLATE_LIBRARY_ASSET_MANIFEST_VERSION_V2,
   TEMPLATE_LIBRARY_CONTRACT_VERSION_V1,
+  type TemplateLibraryAssetManifestV2,
   type TemplateLibraryConfigurationV1,
   type TemplateLibraryDetailV1,
   type TemplateLibraryErrorCodeV1,
@@ -29,6 +31,7 @@ import {
   type TemplateLibraryUsageV1,
   type TemplateLibraryVersionSummaryV1,
 } from '@shared/xiaogui-template-library'
+import { parseTemplateFieldGraphV2 } from '@shared/xiaogui-template-field-graph-v2'
 
 import { inspectSafeDocxArchiveV1 } from './docx-safety'
 import {
@@ -45,6 +48,7 @@ const MAX_TAG_COUNT = 20
 const MAX_TAG_LENGTH = 32
 const MAX_FIELD_COUNT = 200
 const MAX_FIELD_NAME_LENGTH = 80
+const MAX_ASSET_MANIFEST_BYTES = 2 * 1024 * 1024
 
 type RootPreferenceV1 = {
   version: 1
@@ -86,12 +90,78 @@ function hasControlCharacters(value: string): boolean {
   return /[\u0000-\u001f\u007f]/.test(value)
 }
 
+function validateAssetManifest(
+  rawManifest: TemplateLibraryAssetManifestV2 | undefined,
+): TemplateLibraryAssetManifestV2 | undefined {
+  if (!rawManifest) return undefined
+  try {
+    if (
+      rawManifest.manifestVersion !== TEMPLATE_LIBRARY_ASSET_MANIFEST_VERSION_V2 ||
+      !new Set(['REVIEWING', 'VALIDATING', 'AVAILABLE', 'VERIFIED', 'STALE', 'ARCHIVED']).has(rawManifest.lifecycle)
+    ) {
+      throw new Error('manifest header')
+    }
+    const fieldGraph = parseTemplateFieldGraphV2(rawManifest.fieldGraph)
+    if (
+      !Array.isArray(rawManifest.issueDecisions) ||
+      rawManifest.issueDecisions.length > 500 ||
+      rawManifest.issueDecisions.some((decision) =>
+        !decision.issueId || decision.issueId.length > 160 ||
+        !decision.action || decision.action.length > 80 ||
+        (decision.reason !== undefined && decision.reason.length > 1_000) ||
+        !decision.resolvedAtLocal || decision.resolvedAtLocal.length > 80)
+    ) {
+      throw new Error('issue decisions')
+    }
+    const allowedStatus = new Set(['PASSED', 'WARNING', 'FAILED'])
+    if (
+      !allowedStatus.has(rawManifest.validation.status) ||
+      !Array.isArray(rawManifest.validation.checks) ||
+      rawManifest.validation.checks.length > 100 ||
+      rawManifest.validation.checks.some((check) =>
+        !/^[A-Z0-9_.:-]{1,80}$/.test(check.code) ||
+        !allowedStatus.has(check.status) ||
+        !check.message || check.message.length > 1_000)
+    ) {
+      throw new Error('validation')
+    }
+    const provenance = rawManifest.provenance
+    if (
+      !provenance.reportId || provenance.reportId.length > 160 ||
+      !/^[a-f0-9]{64}$/.test(provenance.sourceSha256) ||
+      !/^[a-f0-9]{64}$/.test(provenance.decisionSha256) ||
+      !/^[a-f0-9]{64}$/.test(provenance.materializedSha256) ||
+      !provenance.createdAtLocal || provenance.createdAtLocal.length > 80 ||
+      fieldGraph.source.sha256 !== provenance.sourceSha256
+    ) {
+      throw new Error('provenance')
+    }
+    const safeManifest: TemplateLibraryAssetManifestV2 = {
+      ...rawManifest,
+      fieldGraph,
+      issueDecisions: rawManifest.issueDecisions.map((decision) => ({ ...decision })),
+      validation: {
+        ...rawManifest.validation,
+        checks: rawManifest.validation.checks.map((check) => ({ ...check })),
+      },
+      provenance: { ...provenance },
+    }
+    if (Buffer.byteLength(JSON.stringify(safeManifest), 'utf8') > MAX_ASSET_MANIFEST_BYTES) {
+      throw new Error('manifest too large')
+    }
+    return safeManifest
+  } catch {
+    throw new TemplateLibraryServiceErrorV1('TEMPLATE_LIBRARY_ASSET_MANIFEST_INVALID')
+  }
+}
+
 function validateMetadata(metadata: TemplateLibrarySaveMetadataV1): {
   name: string
   normalizedName: string
   purpose?: string
   tags: readonly string[]
   fields: readonly TemplateLibraryFieldSummaryV1[]
+  assetManifestV2?: TemplateLibraryAssetManifestV2
 } {
   const name = compactText(metadata.name)
   if (!name || name.length > MAX_NAME_LENGTH || hasControlCharacters(name)) {
@@ -146,12 +216,15 @@ function validateMetadata(metadata: TemplateLibrarySaveMetadataV1): {
     throw new TemplateLibraryServiceErrorV1('TEMPLATE_LIBRARY_FIELD_INVALID')
   }
 
+  const assetManifestV2 = validateAssetManifest(metadata.assetManifestV2)
+
   return {
     name,
     normalizedName: comparisonKey(name),
     ...(purpose ? { purpose } : {}),
     tags,
     fields,
+    ...(assetManifestV2 ? { assetManifestV2 } : {}),
   }
 }
 
@@ -218,6 +291,7 @@ export class TemplateLibraryServiceV1 {
           purpose: safeMetadata.purpose,
           tags: safeMetadata.tags,
           fields: safeMetadata.fields,
+          assetManifestV2: safeMetadata.assetManifestV2,
           sha256: digest,
           byteLength: content.byteLength,
           relativeAssetPath,
@@ -560,6 +634,7 @@ export class TemplateLibraryServiceV1 {
       sha256: version.assetSha256,
       byteLength: version.byteLength,
       fields: version.fields,
+      ...(version.assetManifestV2 ? { assetManifestV2: version.assetManifestV2 } : {}),
       createdAt: version.createdAt,
       isLatest,
     }

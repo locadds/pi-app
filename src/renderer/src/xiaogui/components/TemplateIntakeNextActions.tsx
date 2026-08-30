@@ -53,6 +53,7 @@ function isReviewableTemplateIntakeTool(item: TimelineRawItem): boolean {
 
 export interface ReviewableTemplateIntakeTarget {
   reportId: string
+  resumable?: boolean
 }
 
 function reviewTargetFromTool(item: TimelineRawItem): ReviewableTemplateIntakeTarget | null {
@@ -61,7 +62,10 @@ function reviewTargetFromTool(item: TimelineRawItem): ReviewableTemplateIntakeTa
   if (!isRecord(report) || typeof report.reportId !== 'string' || !report.reportId.trim()) {
     return null
   }
-  return { reportId: report.reportId }
+  return {
+    reportId: report.reportId,
+    resumable: item.toolDetails.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY',
+  }
 }
 
 /** 仅在当前轮确实保存了人工确认记录后，提供下一步提示词。 */
@@ -114,7 +118,7 @@ function isSuspendedDirectReview(reportId: string): boolean {
     suspended?.pending.method !== 'template_intake_review' ||
     suspended.pending.origin !== 'DIRECT' ||
     !('reviewVersion' in suspended.pending.payload) ||
-    suspended.pending.payload.reviewVersion !== 2
+    ![2, 3, 4].includes(suspended.pending.payload.reviewVersion)
   ) {
     return false
   }
@@ -129,13 +133,14 @@ export function TemplateIntakeStartReviewAction({
   const sessionFile = useUIStore((state) => state.historySessionFile)
   const suspended = useExtensionUIStore((state) => state.suspended)
   const resumeSuspended = useExtensionUIStore((state) => state.resumeSuspended)
-  const [state, setState] = useState<'IDLE' | 'OPENING' | 'CONFIRMED'>('IDLE')
-  const canResume = isSuspendedDirectReview(target.reportId) && suspended != null
+  const [state, setState] = useState<'IDLE' | 'OPENING' | 'RESUMABLE' | 'CONFIRMED'>('IDLE')
+  const hasSuspendedReview = isSuspendedDirectReview(target.reportId) && suspended != null
+  const shouldContinue = hasSuspendedReview || target.resumable === true || state === 'RESUMABLE'
 
   if (state === 'CONFIRMED') return <TemplateIntakeNextActions />
 
   const openReview = async () => {
-    if (canResume) {
+    if (hasSuspendedReview) {
       resumeSuspended()
       return
     }
@@ -157,13 +162,13 @@ export function TemplateIntakeStartReviewAction({
       })
       if (!result?.ok) {
         toast.error(result?.message || '暂时无法打开文档复核')
-        setState('IDLE')
+        setState(shouldContinue ? 'RESUMABLE' : 'IDLE')
         return
       }
-      setState(result.state === 'CONFIRMED' ? 'CONFIRMED' : 'IDLE')
+      setState(result.state === 'CONFIRMED' ? 'CONFIRMED' : 'RESUMABLE')
     } catch {
       toast.error('暂时无法打开文档复核，请稍后重试')
-      setState('IDLE')
+      setState(shouldContinue ? 'RESUMABLE' : 'IDLE')
     }
   }
 
@@ -177,10 +182,16 @@ export function TemplateIntakeStartReviewAction({
         type="button"
         className="rounded-md bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         onClick={() => void openReview()}
-        disabled={state === 'OPENING' && !canResume}
-        aria-label={canResume ? '继续文档复核' : '直接打开文档复核'}
+        disabled={state === 'OPENING' && !hasSuspendedReview}
+        aria-label={shouldContinue ? '继续文档复核' : '直接打开文档复核'}
       >
-        {canResume ? '继续复核' : state === 'OPENING' ? '正在打开复核…' : '开始复核'}
+        {hasSuspendedReview
+          ? '继续复核'
+          : state === 'OPENING'
+            ? '正在打开复核…'
+            : shouldContinue
+              ? '继续复核'
+              : '开始复核'}
       </button>
     </div>
   )

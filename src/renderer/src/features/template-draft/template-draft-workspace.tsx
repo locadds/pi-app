@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
 import type { TemplateReviewActionV2, TemplateReviewResultV2 } from '@shared/xiaogui-work-template-review'
@@ -11,6 +11,23 @@ import { TemplateFieldPanel } from './template-field-panel'
 import { TemplateIssuePanel, type TemplateIssueChoiceStateV2 } from './template-issue-panel'
 
 type WorkspaceTab = 'FIELDS' | 'ISSUES'
+
+type TemplateDraftWorkspaceState = {
+  tab: WorkspaceTab
+  fieldNames: Record<string, string>
+  fieldValues: Record<string, string>
+  syncResults: Record<string, { updated: number; failed: number }>
+  choices: Record<string, TemplateIssueChoiceStateV2>
+  selectedFieldId: string | null
+  selectedIssueId: string | null
+}
+
+/**
+ * Extension UI 的“稍后继续”和“高级检查”都会暂时卸载默认工作区。
+ * 用不透明 requestId 保存本次本机草稿，避免切换视图时丢失字段改名、试填值和问题决定。
+ * 最终提交或明确关闭后立即释放；不在这里保存文档正文、路径或文件字节。
+ */
+const draftWorkspaceByRequestId = new Map<string, TemplateDraftWorkspaceState>()
 
 function actionWithFieldName(action: TemplateReviewActionV2, name: string): TemplateReviewActionV2 {
   if (action.kind === 'FIELD') return { ...action, fieldName: name }
@@ -34,21 +51,48 @@ export function TemplateDraftWorkspace({
   onSubmit: (result: TemplateReviewResultV2) => void
   onOpenAdvanced: () => void
 }) {
-  const [tab, setTab] = useState<WorkspaceTab>(payload.fieldGraph.issues.length ? 'ISSUES' : 'FIELDS')
+  const initialState = draftWorkspaceByRequestId.get(requestId)
+  const [tab, setTab] = useState<WorkspaceTab>(
+    initialState?.tab ?? (payload.fieldGraph.issues.length ? 'ISSUES' : 'FIELDS'),
+  )
   const [fieldNames, setFieldNames] = useState<Record<string, string>>(() =>
-    Object.fromEntries(payload.fieldGraph.fields.map((field) => [field.fieldId, field.displayName])),
+    initialState?.fieldNames ?? Object.fromEntries(
+      payload.fieldGraph.fields.map((field) => [field.fieldId, field.displayName]),
+    ),
   )
   const [fieldValues, setFieldValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(payload.fieldGraph.fields.map((field) => [field.fieldId, field.sampleValue ?? ''])),
+    initialState?.fieldValues ?? Object.fromEntries(
+      payload.fieldGraph.fields.map((field) => [field.fieldId, field.sampleValue ?? '']),
+    ),
   )
   const [syncingFieldId, setSyncingFieldId] = useState<string | null>(null)
-  const [syncResults, setSyncResults] = useState<Record<string, { updated: number; failed: number }>>({})
-  const [choices, setChoices] = useState<Record<string, TemplateIssueChoiceStateV2>>({})
-  const [selectedFieldId, setSelectedFieldId] = useState<string | null>(payload.fieldGraph.fields[0]?.fieldId ?? null)
-  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(payload.fieldGraph.issues[0]?.issueId ?? null)
+  const [syncResults, setSyncResults] = useState<Record<string, { updated: number; failed: number }>>(
+    initialState?.syncResults ?? {},
+  )
+  const [choices, setChoices] = useState<Record<string, TemplateIssueChoiceStateV2>>(
+    initialState?.choices ?? {},
+  )
+  const [selectedFieldId, setSelectedFieldId] = useState<string | null>(
+    initialState?.selectedFieldId ?? payload.fieldGraph.fields[0]?.fieldId ?? null,
+  )
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(
+    initialState?.selectedIssueId ?? payload.fieldGraph.issues[0]?.issueId ?? null,
+  )
   const [message, setMessage] = useState<string | null>(null)
   const viewerRef = useRef<DocumentSurfaceViewerHandleV1 | null>(null)
   const occurrenceCursorRef = useRef<Record<string, number>>({})
+
+  useEffect(() => {
+    draftWorkspaceByRequestId.set(requestId, {
+      tab,
+      fieldNames,
+      fieldValues,
+      syncResults,
+      choices,
+      selectedFieldId,
+      selectedIssueId,
+    })
+  }, [choices, fieldNames, fieldValues, requestId, selectedFieldId, selectedIssueId, syncResults, tab])
 
   const visibleIssues = payload.fieldGraph.issues.slice(0, payload.quickIssueLimit)
   const overflowIssues = Math.max(0, payload.fieldGraph.issues.length - visibleIssues.length)
@@ -200,6 +244,7 @@ export function TemplateDraftWorkspace({
       setMessage('字段名称不能为空。')
       return
     }
+    draftWorkspaceByRequestId.delete(requestId)
     onSubmit({
       cancelled: false,
       actions: effectiveActions(),
@@ -210,6 +255,15 @@ export function TemplateDraftWorkspace({
       })),
       confirmedAtLocal: new Date().toISOString(),
       confirmedBy: 'LOCAL_USER',
+    })
+  }
+
+  const closeAndSaveDraft = () => {
+    const draftActions = effectiveActions()
+    draftWorkspaceByRequestId.delete(requestId)
+    onCancel({
+      cancelled: true,
+      draftActions,
     })
   }
 
@@ -254,6 +308,16 @@ export function TemplateDraftWorkspace({
                 activeOccurrenceId={tab === 'ISSUES' ? selectedIssueOccurrenceId : undefined}
                 targets={payload.advancedReview.targets}
                 readonlyLabel="模板草稿预览；黄色位置需要确认"
+                onSelectOccurrence={(occurrenceId, fieldId) => {
+                  const issue = payload.fieldGraph.issues.find((item) => item.occurrenceIds.includes(occurrenceId))
+                  if (issue) {
+                    setTab('ISSUES')
+                    setSelectedIssueId(issue.issueId)
+                  } else {
+                    setTab('FIELDS')
+                    setSelectedFieldId(fieldId)
+                  }
+                }}
                 onSelectTarget={(target) => {
                   const binding = bindingByTarget.get(target.targetId)
                   if (binding?.issueIds[0]) {
@@ -375,12 +439,7 @@ export function TemplateDraftWorkspace({
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
-                    onCancel({
-                      cancelled: true,
-                      draftActions: effectiveActions(),
-                    })
-                  }
+                  onClick={closeAndSaveDraft}
                   className="rounded-md border px-3 py-2 text-[12px]"
                 >
                   关闭并保存草稿

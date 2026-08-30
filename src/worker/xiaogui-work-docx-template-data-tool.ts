@@ -21,6 +21,11 @@ const SourceSummarySchema = Type.Optional(
 )
 const FieldSchema = Type.Object(
   {
+    fieldId: Type.String({
+      minLength: 1,
+      maxLength: 160,
+      description: '必须原样使用 SELECT_TEMPLATE 返回的稳定字段编号，不得自行生成。',
+    }),
     name: Type.String({ minLength: 1, maxLength: 64 }),
     status: Type.Union([Type.Literal('READY'), Type.Literal('UNRESOLVED')], {
       description: 'READY 必须同时提供 value；UNRESOLVED 不提供 value。',
@@ -51,7 +56,7 @@ const WorkDocxTemplateDataActionSchema = Type.Object(
     fields: Type.Optional(
       Type.Array(FieldSchema, {
         maxItems: 200,
-        description: '仅 PREPARE 使用，必须提交模板返回的全部且仅有字段。',
+        description: '仅 PREPARE 使用；按稳定 fieldId 提交已知字段，缺失必填字段会由小规继续追问。',
       }),
     ),
     libraryTemplateName: Type.Optional(
@@ -110,7 +115,7 @@ function successText(result: XiaoguiWorkDocxTemplateDataResultV1): string {
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_PREPARATION_REQUIRED':
       return `“${result.templateDisplayName}”这是一份成品文档，需要先整理成模板。已识别的结构摘要：${profileText(result)}。没有选择保存位置，也没有创建待发布文档。`
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_SELECTED':
-      return `已读取模板“${result.templateDisplayName}”。字段清单：${result.fields.map((field) => field.name).join('、')}。结构摘要：${profileText(result)}。请优先根据当前对话补齐字段，不能确定的字段标记为未解决。`
+      return `已读取模板“${result.templateDisplayName}”。字段清单：${result.fields.map((field) => `${field.name}${field.required ? '' : '（选填）'}`).join('、')}。结构摘要：${profileText(result)}。请按返回的稳定字段编号整理当前对话，只追问缺失的必填字段。`
     case 'XIAOGUI_WORK_DOCX_INPUT_REQUIRED':
       return `还需要用户补充这些字段：${result.unresolvedFields.join('、')}。尚未选择保存位置，也没有创建待发布文档。`
     case 'XIAOGUI_WORK_DOCX_TARGET_SELECTION_CANCELLED':
@@ -147,8 +152,8 @@ export function addXiaoguiWorkDocxTemplateDataTool(
     promptGuidelines: [
       '用户明确要求按 Word 模板创作时先调用 SELECT_TEMPLATE；不要让用户输入路径，也不要索要 JSON。',
       '用户明确说出或从模板库点选了模板名称/版本时，把名称写入 libraryTemplateName、版本号写入 libraryVersionNumber；不要编造名称或版本。',
-      'SELECT_TEMPLATE 返回字段清单后，优先从当前对话提取字段；无法确定的字段用 UNRESOLVED，不能猜测。',
-      '调用 PREPARE 时必须提交模板返回的全部且仅有字段。READY 只允许字符串、数字或布尔值。',
+      'SELECT_TEMPLATE 返回字段清单后，必须原样使用每项 fieldId；优先从当前对话提取字段，不能确定的必填字段用 UNRESOLVED，不能猜测。',
+      '调用 PREPARE 时按 fieldId 提交已知字段。READY 只允许字符串、数字或布尔值；选填字段可省略，系统不得因此追问用户。',
       'PREPARE 返回待确认摘要后必须停止调用工具，等待用户下一条消息明确确认。不得同一轮调用 CONFIRM。',
       '只有最新一条用户消息明确要求取消、打开文档或在文件夹中显示时，才调用 CANCEL、OPEN 或 REVEAL。',
       '不要向用户展示文件路径、会话地址、选择编号、操作编号、内部错误代码或摘要编号。',

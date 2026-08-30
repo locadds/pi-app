@@ -15,6 +15,7 @@ const PROJECT = `xgp1_${'1'.repeat(64)}`
 const SESSION = `xgs1_${'2'.repeat(64)}`
 const SELECTION = 'xgws1_00000000-0000-4000-8000-000000000001' as WorkDocxTemplateSelectionIdV1
 const OPERATION = 'xgw1_00000000-0000-4000-8000-000000000002' as WorkDocxOperationIdV1
+const FIELD_ID = 'xgfield1_title'
 
 function request(
   action: 'SELECT_TEMPLATE' | 'PREPARE' | 'CONFIRM' | 'CANCEL' | 'OPEN' | 'REVEAL',
@@ -50,7 +51,7 @@ function setup() {
       selectionId: SELECTION,
       templateDisplayName: '模板.docx',
       templateSha256: 'a'.repeat(64),
-      fields: [{ name: 'title', required: true as const, occurrences: 1, locations: ['正文' as const] }],
+      fields: [{ fieldId: FIELD_ID, name: 'title', required: true, occurrences: 1, locations: ['正文' as const] }],
       profile: {
         bodyPartCount: 1 as const,
         sectionCount: 1,
@@ -70,6 +71,7 @@ function setup() {
       operationId: OPERATION,
       templateDisplayName: '模板.docx',
       fields: ['title'],
+      fieldIds: [FIELD_ID],
       templateSha256: 'a'.repeat(64),
       dataSha256: 'b'.repeat(64),
     },
@@ -138,7 +140,7 @@ describe('WORK DOCX template-data Worker adapter', () => {
 
   it('blocks same-run confirmation and publishes only after the next user run', async () => {
     const test = setup()
-    const fields = [{ name: 'title', status: 'READY' as const, value: '工作周报' }]
+    const fields = [{ fieldId: FIELD_ID, name: 'title', status: 'READY' as const, value: '工作周报' }]
     await test.handler(test.metadata(request('SELECT_TEMPLATE', 'run-1')))
     const prepared = await test.handler(test.metadata(request('PREPARE', 'run-1', fields)))
     expect(prepared).toMatchObject({
@@ -170,14 +172,14 @@ describe('WORK DOCX template-data Worker adapter', () => {
     await test.handler(test.metadata(request('SELECT_TEMPLATE', 'run-1')))
     await test.handler(
       test.metadata(
-        request('PREPARE', 'run-1', [{ name: 'title', status: 'READY', value: '第一版' }]),
+        request('PREPARE', 'run-1', [{ fieldId: FIELD_ID, name: 'title', status: 'READY', value: '第一版' }]),
       ),
     )
 
     await expect(
       test.handler(
         test.metadata(
-          request('PREPARE', 'run-2', [{ name: 'title', status: 'READY', value: '修改版' }]),
+          request('PREPARE', 'run-2', [{ fieldId: FIELD_ID, name: 'title', status: 'READY', value: '修改版' }]),
         ),
       ),
     ).resolves.toMatchObject({

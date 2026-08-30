@@ -3,6 +3,7 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import type {
+  TemplateLibraryAssetManifestV2,
   TemplateLibraryEntryStatusV1,
   TemplateLibraryFieldSummaryV1,
 } from '@shared/xiaogui-template-library'
@@ -26,6 +27,7 @@ export interface StoredTemplateLibraryVersionV1 {
   assetSha256: string
   byteLength: number
   fields: readonly TemplateLibraryFieldSummaryV1[]
+  assetManifestV2?: TemplateLibraryAssetManifestV2
   createdAt: string
 }
 
@@ -44,6 +46,7 @@ export interface SaveTemplateLibraryVersionRecordV1 {
   purpose?: string
   tags: readonly string[]
   fields: readonly TemplateLibraryFieldSummaryV1[]
+  assetManifestV2?: TemplateLibraryAssetManifestV2
   sha256: string
   byteLength: number
   relativeAssetPath: string
@@ -70,6 +73,7 @@ type VersionRow = {
   asset_sha256: string
   byte_length: number
   fields_json: string
+  asset_manifest_json: string | null
   created_at: string
 }
 
@@ -94,6 +98,15 @@ function parseFields(json: string): readonly TemplateLibraryFieldSummaryV1[] {
   return parsed as readonly TemplateLibraryFieldSummaryV1[]
 }
 
+function parseAssetManifest(json: string | null): TemplateLibraryAssetManifestV2 | undefined {
+  if (!json) return undefined
+  const parsed: unknown = JSON.parse(json)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('TEMPLATE_LIBRARY_CORRUPT_ASSET_MANIFEST')
+  }
+  return parsed as TemplateLibraryAssetManifestV2
+}
+
 function parseEntry(row: EntryRow): StoredTemplateLibraryEntryV1 {
   return {
     entryId: row.entry_id,
@@ -110,6 +123,7 @@ function parseEntry(row: EntryRow): StoredTemplateLibraryEntryV1 {
 }
 
 function parseVersion(row: VersionRow): StoredTemplateLibraryVersionV1 {
+  const assetManifestV2 = parseAssetManifest(row.asset_manifest_json)
   return {
     versionId: row.version_id,
     entryId: row.entry_id,
@@ -117,6 +131,7 @@ function parseVersion(row: VersionRow): StoredTemplateLibraryVersionV1 {
     assetSha256: row.asset_sha256,
     byteLength: row.byte_length,
     fields: parseFields(row.fields_json),
+    ...(assetManifestV2 ? { assetManifestV2 } : {}),
     createdAt: row.created_at,
   }
 }
@@ -171,6 +186,7 @@ export class TemplateLibraryStoreV1 {
         asset_sha256 TEXT NOT NULL REFERENCES template_library_assets_v1(sha256),
         byte_length INTEGER NOT NULL CHECK(byte_length >= 0),
         fields_json TEXT NOT NULL,
+        asset_manifest_json TEXT,
         created_at TEXT NOT NULL,
         UNIQUE(entry_id, version_number)
       );
@@ -182,6 +198,12 @@ export class TemplateLibraryStoreV1 {
       CREATE INDEX IF NOT EXISTS template_library_versions_v1_asset
         ON template_library_versions_v1(asset_sha256);
     `)
+    const versionColumns = this.db
+      .prepare('PRAGMA table_info(template_library_versions_v1)')
+      .all() as { name: string }[]
+    if (!versionColumns.some((column) => column.name === 'asset_manifest_json')) {
+      this.db.exec('ALTER TABLE template_library_versions_v1 ADD COLUMN asset_manifest_json TEXT')
+    }
   }
 
   saveVersion(record: SaveTemplateLibraryVersionRecordV1): {
@@ -245,8 +267,8 @@ export class TemplateLibraryStoreV1 {
         .prepare(
           `INSERT INTO template_library_versions_v1 (
             version_id, entry_id, version_number, asset_sha256, byte_length,
-            fields_json, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            fields_json, asset_manifest_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           record.versionId,
@@ -255,6 +277,7 @@ export class TemplateLibraryStoreV1 {
           record.sha256,
           record.byteLength,
           JSON.stringify(record.fields),
+          record.assetManifestV2 ? JSON.stringify(record.assetManifestV2) : null,
           record.createdAt,
         )
 

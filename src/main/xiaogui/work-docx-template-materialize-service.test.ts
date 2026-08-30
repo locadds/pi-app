@@ -414,6 +414,28 @@ describe('WORK 模板物化服务', () => {
         required: true,
       }),
     ])
+    expect(detail.latestVersion.assetManifestV2).toMatchObject({
+      manifestVersion: 2,
+      lifecycle: 'VALIDATING',
+      fieldGraph: {
+        graphId: 'xggraph2_service',
+        fields: [expect.objectContaining({ fieldId: 'xgfield2_project_name' })],
+      },
+      validation: {
+        status: 'WARNING',
+        checks: expect.arrayContaining([
+          expect.objectContaining({ code: '01_DOCX_SAFETY_GATE', status: 'PASSED' }),
+          expect.objectContaining({ code: '02_SOURCE_HASH_MATCH', status: 'PASSED' }),
+          expect.objectContaining({ code: '14_ORIGINAL_UNCHANGED', status: 'PASSED' }),
+          expect.objectContaining({ code: 'OFFICE_SURFACE_TRIAL_GATE', status: 'WARNING' }),
+        ]),
+      },
+      provenance: {
+        reportId: confirmed.report.reportId,
+        sourceSha256: confirmed.sourceSha256,
+        materializedSha256: published.value.receipt.outputSha256,
+      },
+    })
     expect(JSON.stringify(detail)).not.toContain(root)
 
     const chooseLibraryFile = vi.fn(async () => null)
@@ -436,7 +458,8 @@ describe('WORK 模板物化服务', () => {
       value: {
         kind: 'TEMPLATE_SELECTED',
         templateDisplayName: '施工方案模板（第 1 版）.docx',
-        fields: [{ name: '项目名称', required: true }],
+        templateVersionId: published.value.receipt.library.versionId,
+        fields: [{ fieldId: 'xgfield2_project_name', name: '项目名称', required: true }],
       },
     })
     expect(chooseLibraryFile).not.toHaveBeenCalled()
@@ -447,7 +470,12 @@ describe('WORK 模板物化服务', () => {
     const generated = await workDocx.prepareTemplateData({
       address: ADDRESS,
       selectionId: selected.value.selectionId,
-      fields: [{ name: '项目名称', status: 'READY', value: '下盐路迁改工程' }],
+      fields: [{
+        fieldId: 'xgfield2_project_name',
+        name: '项目名称',
+        status: 'READY',
+        value: '下盐路迁改工程',
+      }],
     })
     expect(generated).toMatchObject({ ok: true, value: { kind: 'PREPARED' } })
     if (!generated.ok || generated.value.kind !== 'PREPARED') {
@@ -458,7 +486,13 @@ describe('WORK 模板物化服务', () => {
         address: ADDRESS,
         operationId: generated.value.operationId,
       }),
-    ).resolves.toMatchObject({ ok: true, value: { kind: 'PUBLISHED' } })
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        kind: 'PUBLISHED',
+        templateVersionId: published.value.receipt.library.versionId,
+      },
+    })
     const output = await readFile(outputPath)
     const outputZip = await JSZip.loadAsync(output)
     expect(await outputZip.file('word/document.xml')!.async('string')).toContain('下盐路迁改工程')

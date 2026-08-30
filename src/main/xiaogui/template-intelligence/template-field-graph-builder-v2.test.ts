@@ -82,7 +82,7 @@ describe('buildTemplateFieldGraphV2', () => {
       candidate('project-header', {
         kind: 'VARIABLE',
         defaultDecision: 'VARIABLE',
-        preview: '临港新片区道路工程',
+        preview: '临港新片区道路工程（页眉）',
         suggestedName: '工程名称',
         confidence: 0.93,
         sourceAnchors: [{ part: 'HEADER', partIndex: 1, paragraphIndex: 1 }],
@@ -98,6 +98,10 @@ describe('buildTemplateFieldGraphV2', () => {
       status: 'AUTO_ACCEPTED',
     })
     expect(result.fieldGraph.occurrences).toHaveLength(2)
+    expect(result.fieldGraph.occurrences.map((item) => item.originalText)).toEqual([
+      '临港新片区道路工程',
+      '临港新片区道路工程（页眉）',
+    ])
     expect(result.fieldGraph.issues).toHaveLength(0)
     expect(result.targetBindings.find((item) => item.targetId === 'fixed')?.recommendedAction.kind).toBe('KEEP')
     expect(result.targetBindings.find((item) => item.targetId === 'unresolved')?.recommendedAction.kind).toBe('KEEP')

@@ -367,10 +367,10 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
     service.close()
   })
 
-  it('把超过 20 个位置的有效模型分组拆成可追溯建议而不是全部降级人工判断', async () => {
+  it('把同一模型建议的多个位置拆成可追溯候选，避免拼接后无法定位', async () => {
     const root = await fixtureRoot()
     const sourcePath = join(root, '长分组.docx')
-    const paragraphs = Array.from({ length: 21 }, (_, index) => `通用固定说明第 ${index + 1} 段`)
+    const paragraphs = Array.from({ length: 2 }, (_, index) => `通用固定说明第 ${index + 1} 段`)
     await writeFile(sourcePath, await makeParagraphDocx(paragraphs))
     const store = new WorkDocxTemplateIntakeStoreV1(join(root, 'private', 'template-intake.sqlite'))
     const service = new WorkDocxTemplateIntakeServiceV1({
@@ -392,7 +392,7 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
       throw new Error('expected analysis request')
     }
     const fragments = started.value.analysisBatches.flatMap((batch) => batch.fragments)
-    expect(fragments).toHaveLength(21)
+    expect(fragments).toHaveLength(2)
 
     const completed = await service.execute(ADDRESS, {
       action: 'START',
@@ -416,7 +416,7 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
     }
     service.close()
 
-    expect(completed.value.report.candidates).toHaveLength(21)
+    expect(completed.value.report.candidates).toHaveLength(2)
     expect(completed.value.report.candidates.every((candidate) => candidate.kind === 'FIXED')).toBe(true)
     expect(
       completed.value.report.candidates.every((candidate) => candidate.sourceAnchors.length === 1),

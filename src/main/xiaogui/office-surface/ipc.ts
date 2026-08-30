@@ -28,7 +28,12 @@ const SourceAnchorSchema = z.object({
 }).strict()
 
 const PrepareSchema = z.object({
-  purpose: z.enum(['TEMPLATE_DRAFT', 'MATERIALIZED_PREVIEW', 'TEMPLATE_LIBRARY_PREVIEW']),
+  purpose: z.enum([
+    'TEMPLATE_DRAFT',
+    'TEMPLATE_ADVANCED_REVIEW',
+    'MATERIALIZED_PREVIEW',
+    'TEMPLATE_LIBRARY_PREVIEW',
+  ]),
   documentToken: z.string().min(16).max(256),
   title: z.string().trim().min(1).max(160),
   fields: z.array(z.object({
@@ -63,8 +68,8 @@ export function registerOfficeSurfaceHandlersV1(): void {
     mode: currentMode(),
     label: '小规 Office Surface 单机试验',
     limitations: [
-      '当前使用安全解析后的结构化文档投影，不等同于 Word 原版式。',
-      '正式 DOCX 导入导出仍需通过格式回归和正式 Exchange 能力门。',
+      '当前直接把安全解析后的 DOCX 段落、样式和表格导入 Univer；复杂浮动对象仍可能近似显示。',
+      '页面换行不冒充 Microsoft Word 像素级一致，正式导出仍需通过格式回归门。',
     ],
   }))
 
@@ -82,13 +87,15 @@ export function registerOfficeSurfaceHandlersV1(): void {
         const projection = await projectDocxToUniverV1({
           content,
           title: request.title,
+          purpose: request.purpose,
+          readOnly: request.purpose !== 'TEMPLATE_DRAFT',
           fields: request.fields,
           occurrences: request.occurrences,
         })
         const persistenceKey = createHash('sha256')
           // v2 invalidates early worktrees that stored LF-only text. Those
           // snapshots were structurally present but rendered as a blank page.
-          .update(`${projection.sourceSha256}\0${request.purpose}\0office-surface-v2`)
+          .update(`${projection.sourceSha256}\0${request.purpose}\0office-surface-v4`)
           .digest('hex')
         const gateway = await officeGatewaySupervisorV1.start({
           initialSnapshot: projection as unknown as OfficeSnapshotV1,
@@ -103,6 +110,8 @@ export function registerOfficeSurfaceHandlersV1(): void {
           gatewayOrigin: gateway.origin,
           gatewayAccessToken: gateway.accessToken,
           sourceSha256: projection.sourceSha256,
+          readOnly: projection.readOnly,
+          mappedOccurrenceIds: projection.occurrences.map((occurrence) => occurrence.occurrenceId),
           warnings: projection.warnings,
           statistics: projection.statistics,
         }

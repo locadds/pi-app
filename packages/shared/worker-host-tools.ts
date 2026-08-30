@@ -373,20 +373,24 @@ export type XiaoguiWorkDocxTemplateDataResultV1 =
       kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_SELECTED'
       templateDisplayName: string
       templateSha256: string
+      templateVersionId?: string
       fields: readonly WorkDocxTemplateFieldV1[]
       profile: WorkDocxTemplateProfileV1
     }
   | {
       kind: 'XIAOGUI_WORK_DOCX_INPUT_REQUIRED'
       unresolvedFields: readonly string[]
+      unresolvedFieldIds: readonly string[]
     }
   | { kind: 'XIAOGUI_WORK_DOCX_TARGET_SELECTION_CANCELLED' }
   | {
       kind: 'XIAOGUI_WORK_DOCX_PREPARED'
       templateDisplayName: string
       fields: readonly string[]
+      fieldIds: readonly string[]
       templateSha256: string
       dataSha256: string
+      templateVersionId?: string
     }
   | { kind: 'XIAOGUI_WORK_DOCX_CANCELLED' }
   | {
@@ -394,6 +398,7 @@ export type XiaoguiWorkDocxTemplateDataResultV1 =
       outputSha256: string
       templateSha256: string
       dataSha256: string
+      templateVersionId?: string
       originalInputsUnchanged: true
     }
   | {

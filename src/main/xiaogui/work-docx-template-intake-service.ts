@@ -337,8 +337,9 @@ function buildCandidates(
         continue
       }
       if (fragments.some((fragment) => !fragment.semanticAligned)) continue
-      // 过大的模型分组仍保留模型语义判断，但必须拆成逐位置候选，避免削弱可追溯性。
-      if (ids.length > 20) {
+      // 模型可以判断多个片段属于同一业务字段，但每个文档位置必须保持独立候选。
+      // 字段图谱会按 suggestedName/kind 重新合并；这里绝不能把多段原文拼成一个 occurrence。
+      if (ids.length > 1) {
         for (const fragment of fragments) {
           used.add(fragment.fragmentId)
           candidates.push(candidateFromSuggestion(suggestion, [fragment]))

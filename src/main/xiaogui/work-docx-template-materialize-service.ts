@@ -20,9 +20,11 @@ import type {
   TemplateMaterializePreviewRequestV1,
   TemplateMaterializeReceiptV1,
 } from '@shared/xiaogui-work-docx-template-materialize'
-import type {
-  TemplateLibraryFieldSummaryV1,
-  TemplateLibrarySaveMetadataV1,
+import {
+  TEMPLATE_LIBRARY_ASSET_MANIFEST_VERSION_V2,
+  type TemplateLibraryAssetManifestV2,
+  type TemplateLibraryFieldSummaryV1,
+  type TemplateLibrarySaveMetadataV1,
 } from '@shared/xiaogui-template-library'
 import type {
   XiaoguiWorkDocxTemplateMaterializePayloadV1,
@@ -587,6 +589,136 @@ export class WorkDocxTemplateMaterializeServiceV1 {
     return [...stableFields, ...compatibilityFields]
   }
 
+  private assetManifest(
+    source: ConfirmedTemplateIntakeMaterializationSourceV1,
+    built: Awaited<ReturnType<typeof materializeConfirmedTemplateV1>>,
+  ): TemplateLibraryAssetManifestV2 | undefined {
+    const fieldGraph = source.decision.fieldGraphV2
+    if (!fieldGraph) return undefined
+    const uniqueFieldIds = new Set(fieldGraph.fields.map((field) => field.fieldId))
+    const occurrencesById = new Map(fieldGraph.occurrences.map((item) => [item.occurrenceId, item]))
+    const everyFieldHasMappedOccurrence = fieldGraph.fields.every((field) =>
+      field.occurrenceIds.length > 0 &&
+      field.occurrenceIds.every((occurrenceId) => {
+        const occurrence = occurrencesById.get(occurrenceId)
+        return occurrence?.fieldId === field.fieldId && occurrence.status === 'MAPPED'
+      }),
+    )
+    const blockingIssuesResolved = fieldGraph.issues.every((issue) =>
+      issue.severity !== 'BLOCKING' || issue.status === 'RESOLVED',
+    )
+    return {
+      manifestVersion: TEMPLATE_LIBRARY_ASSET_MANIFEST_VERSION_V2,
+      // 规格要求 14 项发布校验全部通过后才能进入 AVAILABLE。当前单机包只完成
+      // 确定性生成和只读试用，尚未执行字段往返、最小成品生成和模板库回读全门禁。
+      lifecycle: 'VALIDATING',
+      fieldGraph,
+      issueDecisions: fieldGraph.issues.flatMap((issue) => issue.resolution
+        ? [{
+            issueId: issue.issueId,
+            action: issue.resolution.action,
+            ...(issue.resolution.reason ? { reason: issue.resolution.reason } : {}),
+            resolvedAtLocal: issue.resolution.resolvedAtLocal,
+          }]
+        : []),
+      validation: {
+        status: 'WARNING',
+        checks: [
+          {
+            code: '01_DOCX_SAFETY_GATE',
+            status: 'PASSED',
+            message: '源文档和生成后的模板均已通过现有 DOCX 安全门。',
+          },
+          {
+            code: '02_SOURCE_HASH_MATCH',
+            status: 'PASSED',
+            message: '生成时源文档摘要与分析、复核确认记录一致。',
+          },
+          {
+            code: '03_UNIQUE_FIELD_IDS',
+            status: uniqueFieldIds.size === fieldGraph.fields.length ? 'PASSED' : 'FAILED',
+            message: uniqueFieldIds.size === fieldGraph.fields.length
+              ? '业务字段编号在当前版本内唯一。'
+              : '发现重复的业务字段编号，不能发布为可用模板。',
+          },
+          {
+            code: '04_FIELD_OCCURRENCES_VALID',
+            status: everyFieldHasMappedOccurrence ? 'PASSED' : 'WARNING',
+            message: everyFieldHasMappedOccurrence
+              ? '每个业务字段都至少有一个可定位的出现位置。'
+              : '仍有字段缺少完全可定位的出现位置，需继续人工复核。',
+          },
+          {
+            code: '05_OCCURRENCE_OVERLAP',
+            status: 'WARNING',
+            message: '尚未执行发布级的全部位置非法重叠检查。',
+          },
+          {
+            code: '06_BLOCKING_ISSUES_RESOLVED',
+            status: blockingIssuesResolved ? 'PASSED' : 'FAILED',
+            message: blockingIssuesResolved
+              ? '所有阻断问题均已有人工决定。'
+              : '仍有未解决的阻断问题。',
+          },
+          {
+            code: '07_FIELD_TYPES_VALID',
+            status: 'PASSED',
+            message: '字段图谱已通过运行时结构校验，字段类型合法。',
+          },
+          {
+            code: '08_OCCURRENCES_RELOCATED',
+            status: 'WARNING',
+            message: '尚未在生成后的模板草稿中重新定位全部字段位置。',
+          },
+          {
+            code: '09_TEST_VALUE_SYNC',
+            status: 'WARNING',
+            message: '尚未对每个字段写入测试值并验证所有位置同步。',
+          },
+          {
+            code: '10_SAMPLE_VALUE_RESTORE',
+            status: 'WARNING',
+            message: '尚未执行测试值写入与示例值恢复往返校验。',
+          },
+          {
+            code: '11_MINIMUM_DOCUMENT_GENERATION',
+            status: 'WARNING',
+            message: '尚未用该模板完成一次最小正式文档生成。',
+          },
+          {
+            code: '12_INTERNAL_MARKERS_CLEARED',
+            status: 'WARNING',
+            message: '尚未执行发布级内部临时标记清理扫描。',
+          },
+          {
+            code: '13_LIBRARY_ROUND_TRIP',
+            status: 'WARNING',
+            message: '当前记录正在保存，发布级模板库重新读取校验尚未完成。',
+          },
+          {
+            code: '14_ORIGINAL_UNCHANGED',
+            status: built.plan.originalSourceUnchanged ? 'PASSED' : 'FAILED',
+            message: built.plan.originalSourceUnchanged
+              ? '原始文档保持只读且摘要未变化。'
+              : '无法证明原始文档未发生变化。',
+          },
+          {
+            code: 'OFFICE_SURFACE_TRIAL_GATE',
+            status: 'WARNING',
+            message: '可用于单机试用；尚未完成正式发布所需的批量 DOCX 保真验收。',
+          },
+        ],
+      },
+      provenance: {
+        reportId: source.report.reportId,
+        sourceSha256: source.sourceSha256,
+        decisionSha256: built.decisionSha256,
+        materializedSha256: built.plan.previewSha256,
+        createdAtLocal: localIso(this.now()),
+      },
+    }
+  }
+
   private async saveToLibrary(
     record: StoredTemplateMaterializeRecordV1,
     source: ConfirmedTemplateIntakeMaterializationSourceV1,
@@ -606,11 +738,13 @@ export class WorkDocxTemplateMaterializeServiceV1 {
       }
     }
     const fallbackName = `${parse(source.sourceDisplayName).name || '文档'}模板`
+    const assetManifestV2 = this.assetManifest(source, built)
     const saveMetadata: TemplateLibrarySaveMetadataV1 = {
       name: metadata.templateName?.trim() || fallbackName,
       ...(metadata.purpose?.trim() ? { purpose: metadata.purpose.trim() } : {}),
       ...(metadata.tags?.length ? { tags: metadata.tags } : {}),
       fields: this.libraryFields(record, source),
+      ...(assetManifestV2 ? { assetManifestV2 } : {}),
     }
     try {
       const saved = await library.saveFromBuffer(built.content, saveMetadata)

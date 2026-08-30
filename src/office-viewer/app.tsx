@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_DOCUMENT_PARAGRAPH_LINE_SPACING,
-  CustomDecorationType,
   DocumentFlavor,
   LocaleType,
   LogLevel,
@@ -13,8 +12,12 @@ import {
 } from '@univerjs/core'
 import { FUniver } from '@univerjs/core/facade'
 import UniverDesignZhCN from '@univerjs/design/locale/zh-CN'
-import { UniverDocsPlugin } from '@univerjs/docs'
-import { addCustomDecorationFactory, UniverDocsUIPlugin } from '@univerjs/docs-ui'
+import {
+  SetTextSelectionsOperation,
+  UniverDocsPlugin,
+  type ISetTextSelectionsOperationParams,
+} from '@univerjs/docs'
+import { UniverDocsUIPlugin } from '@univerjs/docs-ui'
 import '@univerjs/docs-ui/facade'
 import UniverDocsUIZhCN from '@univerjs/docs-ui/locale/zh-CN'
 import { UniverRenderEnginePlugin } from '@univerjs/engine-render'
@@ -33,12 +36,11 @@ import { ensureSyntheticFieldDecorationV1 } from './core/synthetic-field-decorat
 import {
   isOfficeUniverWorktreeEnvelopeV1,
   materializeStructuredProjectionV1,
-  occurrenceDecorationIdV1,
   worktreeEnvelopeV1,
   type OfficeUniverWorktreeEnvelopeV1,
 } from './core/structured-docx-projection'
 
-type ViewerStatus = '正在载入' | '可以编辑' | '有未保存修改' | '正在保存' | '已保存' | '载入失败'
+type ViewerStatus = '正在载入' | '可以编辑' | '只读预览' | '有未保存修改' | '正在保存' | '已保存' | '载入失败'
 type ProjectionMetadataV1 = OfficeUniverWorktreeEnvelopeV1['projection']
 
 export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBridgeV1 | null }): React.JSX.Element {
@@ -74,6 +76,45 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
     let document = univerAPI.getActiveDocument()
     let suppressDirty = false
     let activeProjection: ProjectionMetadataV1 | null = null
+    let readOnlyBaseline = ''
+    let programmaticOccurrenceId: string | null = null
+    let programmaticFocusUntil = 0
+
+    const preventReadOnlyMutation = (event: Event): void => {
+      if (!activeProjection?.readOnly) return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    const preventReadOnlyKey = (event: KeyboardEvent): void => {
+      if (!activeProjection?.readOnly) return
+      const key = event.key.toLocaleLowerCase('en-US')
+      const allowedShortcut = (event.ctrlKey || event.metaKey) && ['a', 'c', 'f'].includes(key)
+      const allowedNavigation = [
+        'ArrowLeft',
+        'ArrowRight',
+        'ArrowUp',
+        'ArrowDown',
+        'Home',
+        'End',
+        'PageUp',
+        'PageDown',
+        'Escape',
+        'Shift',
+        'Control',
+        'Alt',
+        'Meta',
+      ].includes(event.key)
+      if (allowedShortcut || allowedNavigation) return
+      if (event.key.length === 1 || ['Backspace', 'Delete', 'Enter', 'Tab'].includes(event.key) || event.ctrlKey || event.metaKey) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+    }
+    container.addEventListener('beforeinput', preventReadOnlyMutation, true)
+    container.addEventListener('paste', preventReadOnlyMutation, true)
+    container.addEventListener('cut', preventReadOnlyMutation, true)
+    container.addEventListener('drop', preventReadOnlyMutation, true)
+    container.addEventListener('keydown', preventReadOnlyKey, true)
 
     const capabilities = () => ({
       readSnapshot: true,
@@ -81,7 +122,8 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
       syntheticDocument: true,
       docxImport: false,
       docxExport: false,
-      nonDestructiveDecoration: fieldDecorationVerifiedFromDocument(document),
+      nonDestructiveDecoration:
+        (activeProjection?.occurrences.length ?? 0) > 0 || fieldDecorationVerifiedFromDocument(document),
       structuredDocxProjection: true,
     })
 
@@ -94,14 +136,14 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
 
       if (isOfficeStructuredDocumentProjectionV1(envelope.snapshot)) {
         const projection = envelope.snapshot
-        document = univerAPI.createUniverDoc(createBlankDocument(projection.documentId, projection.title))
-        const materialized = await materializeStructuredProjectionV1(projection, document, univerAPI)
-        activeProjection = withoutPlainText(projection)
+        document = univerAPI.createUniverDoc(projection.univerDocument as Partial<IDocumentData>)
+        const materialized = await materializeStructuredProjectionV1(projection, document)
+        activeProjection = withoutPrivateProjectionData(projection)
         setProjectionMetadata(activeProjection)
         const saved = worktreeEnvelopeV1(document.getSnapshot(), projection)
         await gateway.save(saved as unknown as OfficeSnapshotV1)
         if (materialized.unmappedOccurrenceIds.length > 0) {
-          setError(`${materialized.unmappedOccurrenceIds.length} 个字段位置未能在试验视图中定位，请用兼容视图核对。`)
+          setError(`${materialized.unmappedOccurrenceIds.length} 个字段位置未能在文档中可靠定位，已保留在右侧清单。`)
         }
       } else if (isOfficeUniverWorktreeEnvelopeV1(envelope.snapshot)) {
         document = univerAPI.createUniverDoc(envelope.snapshot.document)
@@ -129,9 +171,10 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
       if (disposed || !document) return
       loaded = true
       suppressDirty = false
-      const verified = fieldDecorationVerifiedFromDocument(document)
+      readOnlyBaseline = JSON.stringify(document.getSnapshot())
+      const verified = (activeProjection?.occurrences.length ?? 0) > 0 || fieldDecorationVerifiedFromDocument(document)
       setFieldDecorationVerified(verified)
-      setStatus('可以编辑')
+      setStatus(activeProjection?.readOnly ? '只读预览' : '可以编辑')
       parentBridge?.post({
         type: 'VIEWER_READY',
         capabilities: capabilities(),
@@ -140,6 +183,10 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
 
     const save = async (): Promise<string> => {
       if (!document) throw new Error('OFFICE_DOCUMENT_NOT_READY')
+      if (activeProjection?.readOnly) {
+        setStatus('只读预览')
+        return gateway.getHeadSha256()
+      }
       setStatus('正在保存')
       suppressDirty = true
       const snapshot = activeProjection
@@ -163,6 +210,7 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
 
     const updateField = async (message: Extract<OfficeSurfaceParentMessageV1, { type: 'PARENT_UPDATE_FIELD' }>) => {
       if (!document || !activeProjection) throw new Error('当前文档没有可同步的业务字段。')
+      if (activeProjection.readOnly) throw new Error('当前是只读复核或预览，不能直接修改文档内容。')
       const field = activeProjection.fields.find((item) => item.fieldId === message.fieldId)
       if (!field) throw new Error('没有找到要同步的业务字段。')
       const allowedOccurrenceIds = new Set(field.occurrenceIds)
@@ -171,14 +219,13 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
 
       const before = document.getSnapshot()
       const dataStream = before.body?.dataStream ?? ''
-      const decorations = before.body?.customDecorations ?? []
       const plans = requestedIds.map((occurrenceId) => {
-        const decoration = decorations.find((item) => item.id === occurrenceDecorationIdV1(occurrenceId))
-        if (!decoration) return null
+        const occurrence = activeProjection?.occurrences.find((item) => item.occurrenceId === occurrenceId)
+        if (!occurrence || dataStream.slice(occurrence.startUtf16, occurrence.endUtf16Exclusive) !== occurrence.originalText) return null
         return {
           occurrenceId,
-          start: decoration.startIndex,
-          end: decoration.endIndex + 1,
+          start: occurrence.startUtf16,
+          end: occurrence.endUtf16Exclusive,
         }
       })
       const missingIds = requestedIds.filter((_, index) => !plans[index])
@@ -223,51 +270,6 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
             return !!expected && textAfter.slice(expected.start, expected.end) === message.value
           })
 
-        if (verified) {
-          for (const plan of validPlans) {
-            const expected = expectedRanges.get(plan.occurrenceId)
-            if (!expected) {
-              verified = false
-              break
-            }
-            const mutation = addCustomDecorationFactory({
-              unitId: document.getId(),
-              id: occurrenceDecorationIdV1(plan.occurrenceId),
-              type: CustomDecorationType.COMMENT,
-              ranges: [
-                {
-                  startOffset: expected.start,
-                  endOffset: expected.end,
-                  collapsed: false,
-                },
-              ],
-            })
-            const decorated = await univerAPI.executeCommand(mutation.id, mutation.params)
-            if (!decorated) {
-              verified = false
-              break
-            }
-            executedCommandCount += 1
-          }
-        }
-
-        if (verified) {
-          const after = document.getSnapshot()
-          const afterText = after.body?.dataStream ?? ''
-          const afterDecorations = after.body?.customDecorations ?? []
-          verified = validPlans.every((plan) => {
-            const expected = expectedRanges.get(plan.occurrenceId)
-            const decoration = afterDecorations.find((item) => item.id === occurrenceDecorationIdV1(plan.occurrenceId))
-            return (
-              !!expected &&
-              !!decoration &&
-              decoration.startIndex === expected.start &&
-              decoration.endIndex + 1 === expected.end &&
-              afterText.slice(expected.start, expected.end) === message.value
-            )
-          })
-        }
-
         if (!verified) {
           for (let index = 0; index < executedCommandCount; index += 1) await document.undo()
           const headSha256 = await save()
@@ -286,7 +288,16 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
           ...activeProjection,
           occurrences: activeProjection.occurrences.map((occurrence) => {
             const expected = expectedRanges.get(occurrence.occurrenceId)
-            if (!expected) return occurrence
+            if (!expected) {
+              const shift = replacementShiftBefore(validPlans, message.value, occurrence.startUtf16)
+              return shift === 0
+                ? occurrence
+                : {
+                    ...occurrence,
+                    startUtf16: occurrence.startUtf16 + shift,
+                    endUtf16Exclusive: occurrence.endUtf16Exclusive + shift,
+                  }
+            }
             return {
               ...occurrence,
               originalText: message.value,
@@ -320,16 +331,54 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
 
     const focusOccurrence = (occurrenceId: string) => {
       if (!document) return
-      const decoration = document
-        .getSnapshot()
-        .body?.customDecorations?.find((item) => item.id === occurrenceDecorationIdV1(occurrenceId))
-      if (decoration) document.setSelection(decoration.startIndex, decoration.endIndex + 1)
+      const occurrence = activeProjection?.occurrences.find((item) => item.occurrenceId === occurrenceId)
+      if (occurrence) {
+        programmaticOccurrenceId = occurrenceId
+        programmaticFocusUntil = performance.now() + 250
+        document.setSelection(occurrence.startUtf16, occurrence.endUtf16Exclusive)
+      }
     }
 
     saveRef.current = save
     reloadRef.current = async () => window.location.reload()
-    commandSubscription = univerAPI.onCommandExecuted(() => {
+    commandSubscription = univerAPI.onCommandExecuted((command) => {
+      if (command.id === SetTextSelectionsOperation.id) {
+        const selected = occurrenceAtSelection(
+          activeProjection?.occurrences ?? [],
+          command.params as ISetTextSelectionsOperationParams,
+        )
+        if (
+          selected &&
+          selected.occurrenceId === programmaticOccurrenceId &&
+          performance.now() <= programmaticFocusUntil
+        ) {
+          return
+        }
+        programmaticOccurrenceId = null
+        programmaticFocusUntil = 0
+        if (selected) {
+          parentBridge?.post({
+            type: 'VIEWER_OCCURRENCE_SELECTED',
+            occurrenceId: selected.occurrenceId,
+            fieldId: selected.fieldId,
+          })
+        }
+        return
+      }
       if (suppressDirty || !document || !loaded) return
+      if (activeProjection?.readOnly) {
+        const changed = JSON.stringify(document.getSnapshot()) !== readOnlyBaseline
+        if (changed) {
+          suppressDirty = true
+          void document.undo().then(() => {
+            const restored = JSON.stringify(document?.getSnapshot()) === readOnlyBaseline
+            suppressDirty = false
+            setStatus('只读预览')
+            if (!restored) window.location.reload()
+          })
+        }
+        return
+      }
       setStatus('有未保存修改')
       parentBridge?.post({
         type: 'VIEWER_DIRTY_STATE',
@@ -377,17 +426,27 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
       parentSubscription?.()
       parentBridge?.dispose()
       commandSubscription?.dispose()
+      container.removeEventListener('beforeinput', preventReadOnlyMutation, true)
+      container.removeEventListener('paste', preventReadOnlyMutation, true)
+      container.removeEventListener('cut', preventReadOnlyMutation, true)
+      container.removeEventListener('drop', preventReadOnlyMutation, true)
+      container.removeEventListener('keydown', preventReadOnlyKey, true)
       univer.dispose()
     }
   }, [])
 
   return (
-    <main className="office-viewer-shell" data-field-decoration={fieldDecorationVerified ? 'verified' : 'pending'}>
+    <main
+      className="office-viewer-shell"
+      data-field-decoration={fieldDecorationVerified ? 'verified' : 'pending'}
+      data-readonly={projectionMetadata?.readOnly ? 'true' : 'false'}
+    >
       <header className="office-viewer-toolbar">
         <div>
           <strong>小规文档工作表面</strong>
           <span className="office-viewer-badge">单机试验</span>
-          {projectionMetadata ? <span className="office-viewer-badge">DOCX 结构视图</span> : null}
+          {projectionMetadata ? <span className="office-viewer-badge">DOCX 原结构导入</span> : null}
+          {projectionMetadata?.readOnly ? <span className="office-viewer-badge">只读</span> : null}
           {fieldDecorationVerified ? <span className="office-viewer-badge">字段已定位</span> : null}
         </div>
         <div className="office-viewer-actions">
@@ -395,9 +454,11 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
           <button type="button" onClick={() => void reloadRef.current?.()}>
             重新载入
           </button>
-          <button type="button" className="primary" onClick={() => void saveRef.current?.()}>
-            保存工作副本
-          </button>
+          {!projectionMetadata?.readOnly ? (
+            <button type="button" className="primary" onClick={() => void saveRef.current?.()}>
+              保存工作副本
+            </button>
+          ) : null}
         </div>
       </header>
       {projectionMetadata?.warnings[0] ? (
@@ -479,9 +540,35 @@ function expectedRangesAfterReplacement(
   return ranges
 }
 
-function withoutPlainText(projection: OfficeStructuredDocumentProjectionV1): ProjectionMetadataV1 {
-  const { plainText: _plainText, ...metadata } = projection
+function withoutPrivateProjectionData(projection: OfficeStructuredDocumentProjectionV1): ProjectionMetadataV1 {
+  const { plainText: _plainText, univerDocument: _univerDocument, ...metadata } = projection
   return metadata
+}
+
+function occurrenceAtSelection(
+  occurrences: ProjectionMetadataV1['occurrences'],
+  params: ISetTextSelectionsOperationParams,
+): ProjectionMetadataV1['occurrences'][number] | null {
+  const range = params.ranges?.[0]
+  if (!range || range.segmentId) return null
+  const start = Math.min(range.startOffset, range.endOffset)
+  const end = Math.max(range.startOffset, range.endOffset)
+  return occurrences.find((occurrence) => (
+    start === end
+      ? occurrence.startUtf16 <= start && start <= occurrence.endUtf16Exclusive
+      : start < occurrence.endUtf16Exclusive && occurrence.startUtf16 < end
+  )) ?? null
+}
+
+function replacementShiftBefore(
+  plans: readonly { start: number; end: number }[],
+  value: string,
+  offset: number,
+): number {
+  return plans.reduce(
+    (shift, plan) => plan.end <= offset ? shift + value.length - (plan.end - plan.start) : shift,
+    0,
+  )
 }
 
 function fieldDecorationVerifiedFromDocument(document: ReturnType<FUniver['getActiveDocument']>): boolean {

@@ -422,6 +422,11 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     requestTemplateIntakeReviewMock.mockResolvedValue({
       cancelled: false,
       actions: [{ targetId: 'candidate-1', kind: 'FIELD', fieldName: '项目名称' }],
+      issueChoicesV2: [{
+        issueId: 'issue-1',
+        action: 'ACCEPT_SUGGESTION',
+        reason: '本机用户已确认字段建议',
+      }],
       confirmedAtLocal: '2026-08-24T16:09:00+08:00',
       confirmedBy: 'LOCAL_USER',
     })
@@ -449,6 +454,11 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
       submission: {
         decisions: [{ candidateId: 'candidate-1', decision: 'VARIABLE', fieldName: '项目名称' }],
         reviewActionsV2: [{ targetId: 'candidate-1', kind: 'FIELD', fieldName: '项目名称' }],
+        issueChoicesV2: [{
+          issueId: 'issue-1',
+          action: 'ACCEPT_SUGGESTION',
+          reason: '本机用户已确认字段建议',
+        }],
       },
     })
     expect(result.content[0]?.text).toContain('没有修改文档')

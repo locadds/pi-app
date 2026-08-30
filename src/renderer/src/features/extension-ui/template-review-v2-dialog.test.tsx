@@ -25,6 +25,24 @@ vi.mock('@renderer/components/icons', () => ({
   X: () => <span data-testid="icon-close" />,
 }))
 
+vi.mock('@renderer/features/office-surface/office-surface-frame', async () => {
+  const React = await import('react')
+  return {
+    OfficeSurfaceFrameV1: React.forwardRef(function MockOfficeSurfaceFrame(
+      props: { onReady?: () => void },
+      ref: React.ForwardedRef<unknown>,
+    ) {
+      React.useImperativeHandle(ref, () => ({
+        focusField: vi.fn(),
+        focusOccurrence: vi.fn(),
+        updateField: vi.fn(),
+      }))
+      React.useEffect(() => props.onReady?.(), [props.onReady])
+      return <div data-testid="office-surface-frame" />
+    }),
+  }
+})
+
 vi.mock('docx-preview', () => ({
   renderAsync: vi.fn(async (_blob: Blob, body: HTMLElement) => {
     body.innerHTML = [
@@ -250,6 +268,69 @@ describe('TemplateReviewV2Dialog', () => {
       cancelled: false,
       actions: [{ targetId: 'target-1', kind: 'KEEP' }],
     }))
+  })
+
+  it('切换高级检查后保留字段改名、试填值和问题决定', async () => {
+    const user = userEvent.setup()
+    renderDialog(requestDraftV2(), 'request-draft-persistence')
+
+    await user.click(screen.getByRole('button', { name: '业务字段（1）' }))
+    const nameInput = screen.getByLabelText('项目名称字段名称')
+    await user.clear(nameInput)
+    await user.type(nameInput, '工程名称')
+    const valueInput = screen.getByLabelText('项目名称试填内容')
+    await user.clear(valueInput)
+    await user.type(valueInput, '浦东试验工程')
+
+    await user.click(screen.getByRole('button', { name: '待确认（1）' }))
+    await user.click(screen.getByRole('button', { name: '按建议处理' }))
+    await user.click(screen.getByRole('button', { name: '高级检查' }))
+    expect(screen.getByRole('heading', { name: '文档模板复核' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '稍后继续' }))
+    expect(screen.getByRole('heading', { name: '模板草稿' })).toBeInTheDocument()
+    expect(screen.getByText('已采用小规建议')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '业务字段（1）' }))
+    expect(screen.getByLabelText('项目名称字段名称')).toHaveValue('工程名称')
+    expect(screen.getByLabelText('项目名称试填内容')).toHaveValue('浦东试验工程')
+  })
+
+  it('高级复核进入 Office Surface 后不会因映射回报反复重建会话', async () => {
+    invoke.mockImplementation(async (method) => {
+      if (method === 'xiaogui.officeSurface.mode.get') {
+        return { mode: 'UNIVER_EXPERIMENTAL' }
+      }
+      if (method === 'xiaogui.officeSurface.session.prepare') {
+        return {
+          sessionVersion: 1,
+          sessionId: 'a88d93aa-923b-4d6a-975f-d5b05fe1d5bd',
+          mode: 'UNIVER_EXPERIMENTAL',
+          gatewayOrigin: 'http://127.0.0.1:32123',
+          gatewayAccessToken: 'x'.repeat(48),
+          sourceSha256: 'a'.repeat(64),
+          readOnly: true,
+          mappedOccurrenceIds: ['review-occurrence:target-1'],
+          warnings: [],
+          statistics: {
+            paragraphCount: 1,
+            tableCount: 0,
+            tableCellCount: 0,
+            mappedOccurrenceCount: 1,
+            unmappedOccurrenceCount: 0,
+          },
+        }
+      }
+      if (method === 'xiaogui.officeSurface.session.release') return { released: true }
+      throw new Error(`UNEXPECTED_METHOD:${method}`)
+    })
+
+    renderDialog(requestV3([targetV3()]), 'request-office-advanced')
+    await screen.findByTestId('office-surface-frame')
+    await waitFor(() => {
+      expect(invoke.mock.calls.filter(([method]) =>
+        method === 'xiaogui.officeSurface.session.prepare')).toHaveLength(1)
+    })
   })
 
   it('keeps the old V2 structured fallback usable without PDF page reads', async () => {

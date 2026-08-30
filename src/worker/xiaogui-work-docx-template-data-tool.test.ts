@@ -141,6 +141,7 @@ describe('xiaogui WORK DOCX template-data Pi tool', () => {
           templateSha256: 'c'.repeat(64),
           fields: [
             {
+              fieldId: 'xgfield2_project_name',
               name: '项目名称',
               required: true,
               occurrences: 1,

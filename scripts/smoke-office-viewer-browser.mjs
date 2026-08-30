@@ -30,6 +30,8 @@ const initialProjection = {
   documentId: 'xiaogui-office-real-projection-smoke',
   title: '模板资产化与 Office Surface 联合冒烟',
   sourceSha256: createHash('sha256').update(projectedText).digest('hex'),
+  purpose: 'TEMPLATE_DRAFT',
+  readOnly: false,
   plainText: projectedText,
   fields: [
     {

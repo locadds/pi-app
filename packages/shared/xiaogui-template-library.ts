@@ -1,12 +1,49 @@
 import type {
   TemplateReviewRenderV3,
 } from './xiaogui-work-template-review'
+import type { TemplateFieldGraphV2 } from './xiaogui-template-field-graph-v2'
 
 /** 小规本机个人模板库公开契约。公开数据永远不包含本机路径。 */
 export const TEMPLATE_LIBRARY_CONTRACT_VERSION_V1 = 1 as const
 export const TEMPLATE_LIBRARY_PREVIEW_VERSION_V1 = 1 as const
+export const TEMPLATE_LIBRARY_ASSET_MANIFEST_VERSION_V2 = 2 as const
 
 export type TemplateLibraryEntryStatusV1 = 'ACTIVE' | 'TRASHED'
+export type TemplateLibraryAssetLifecycleV2 =
+  | 'REVIEWING'
+  | 'VALIDATING'
+  | 'AVAILABLE'
+  | 'VERIFIED'
+  | 'STALE'
+  | 'ARCHIVED'
+
+export interface TemplateLibraryAssetManifestV2 {
+  manifestVersion: typeof TEMPLATE_LIBRARY_ASSET_MANIFEST_VERSION_V2
+  lifecycle: TemplateLibraryAssetLifecycleV2
+  /** 复核确认后的完整业务字段图谱；不得包含路径或原始 OOXML。 */
+  fieldGraph: TemplateFieldGraphV2
+  issueDecisions: readonly {
+    issueId: string
+    action: string
+    reason?: string
+    resolvedAtLocal: string
+  }[]
+  validation: {
+    status: 'PASSED' | 'WARNING' | 'FAILED'
+    checks: readonly {
+      code: string
+      status: 'PASSED' | 'WARNING' | 'FAILED'
+      message: string
+    }[]
+  }
+  provenance: {
+    reportId: string
+    sourceSha256: string
+    decisionSha256: string
+    materializedSha256: string
+    createdAtLocal: string
+  }
+}
 
 export interface TemplateLibraryFieldSummaryV1 {
   /** 稳定字段编号；同一模板版本内唯一。 */
@@ -25,6 +62,8 @@ export interface TemplateLibraryVersionSummaryV1 {
   byteLength: number
   /** 该不可变版本自己的字段结构，选择历史版本时仍可直接生成。 */
   fields: readonly TemplateLibraryFieldSummaryV1[]
+  /** 旧版记录可能没有；有值时才是模板资产 V2。 */
+  assetManifestV2?: TemplateLibraryAssetManifestV2
   createdAt: string
   isLatest: boolean
 }
@@ -106,6 +145,7 @@ export interface TemplateLibrarySaveMetadataV1 {
   purpose?: string
   tags?: readonly string[]
   fields?: readonly TemplateLibraryFieldSummaryV1[]
+  assetManifestV2?: TemplateLibraryAssetManifestV2
 }
 
 export interface TemplateLibrarySaveResultV1 {
@@ -121,6 +161,7 @@ export type TemplateLibraryErrorCodeV1 =
   | 'TEMPLATE_LIBRARY_NAME_INVALID'
   | 'TEMPLATE_LIBRARY_TAG_INVALID'
   | 'TEMPLATE_LIBRARY_FIELD_INVALID'
+  | 'TEMPLATE_LIBRARY_ASSET_MANIFEST_INVALID'
   | 'TEMPLATE_LIBRARY_DOCUMENT_INVALID'
   | 'TEMPLATE_LIBRARY_ENTRY_NOT_FOUND'
   | 'TEMPLATE_LIBRARY_VERSION_NOT_FOUND'

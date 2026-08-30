@@ -40,7 +40,10 @@ import type {
   WorkDocxTemplateProfileV1,
 } from '@shared/xiaogui-work-docx-template-data'
 import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
-import type { TemplateLibraryDetailV1 } from '@shared/xiaogui-template-library'
+import type {
+  TemplateLibraryDetailV1,
+  TemplateLibraryFieldSummaryV1,
+} from '@shared/xiaogui-template-library'
 import {
   DOCX_SAFETY_MAX_FILE_BYTES_V1,
   DocxSafetyErrorV1,
@@ -92,6 +95,8 @@ type PreparedOperationV1 = {
   templateSha256: string
   payloadSha256?: string
   dataSha256?: string
+  templateVersionId?: string
+  fieldIds?: readonly string[]
 }
 
 export type WorkDocxTemplateSelectionIdV1 = string & {
@@ -116,6 +121,7 @@ type WorkDocxTemplateSelectResultV1 =
       selectionId: WorkDocxTemplateSelectionIdV1
       templateDisplayName: string
       templateSha256: string
+      templateVersionId?: string
       fields: readonly WorkDocxTemplateFieldV1[]
       profile: WorkDocxTemplateProfileV1
     }
@@ -126,15 +132,21 @@ type WorkDocxTemplateDataPrepareRequestV1 = {
   fields: readonly WorkDocxTemplateFieldInputV1[]
 }
 type WorkDocxTemplateDataPrepareResultV1 =
-  | { kind: 'INPUT_REQUIRED'; unresolvedFields: readonly string[] }
+  | {
+      kind: 'INPUT_REQUIRED'
+      unresolvedFields: readonly string[]
+      unresolvedFieldIds: readonly string[]
+    }
   | { kind: 'CANCELLED' }
   | {
       kind: 'PREPARED'
       operationId: WorkDocxOperationIdV1
       templateDisplayName: string
       fields: readonly string[]
+      fieldIds: readonly string[]
       templateSha256: string
       dataSha256: string
+      templateVersionId?: string
     }
 type WorkDocxTemplateSelectionCancelRequestV1 = {
   address: SessionAddressV1
@@ -147,6 +159,7 @@ type WorkDocxTemplateDataPublishedResultV1 = {
   outputSha256: string
   templateSha256: string
   dataSha256: string
+  templateVersionId?: string
   originalInputsUnchanged: true
 }
 
@@ -158,6 +171,7 @@ type SelectedTemplateV1 = {
   stagedTemplate: string
   templateDisplayName: string
   templateSha256: string
+  templateVersionId?: string
   fields: readonly WorkDocxTemplateFieldV1[]
   profile: WorkDocxTemplateProfileV1
 }
@@ -178,6 +192,7 @@ type CompletedOperationV1 = {
   outputSha256: string
   templateSha256: string
   inputSha256: string
+  templateVersionId?: string
 }
 
 type InternalPublishedResultV1 = Omit<CompletedOperationV1, 'addressKey' | 'target'> & {
@@ -264,6 +279,7 @@ function literalOccurrences(text: string, needle: string): number {
 async function inspectTemplate(
   content: Buffer,
   placeholders: readonly string[],
+  templateSha256: string,
 ): Promise<{ fields: readonly WorkDocxTemplateFieldV1[]; profile: WorkDocxTemplateProfileV1 }> {
   const zip = await JSZip.loadAsync(content, { checkCRC32: true, createFolders: false })
   const documentXml = await zip.file('word/document.xml')!.async('string')
@@ -298,8 +314,9 @@ async function inspectTemplate(
     if (footerOccurrences > 0) locations.push('页脚')
     if (locations.length === 0) locations.push('未知')
     return {
+      fieldId: stableTemplateFieldId(templateSha256, name),
       name,
-      required: true as const,
+      required: true,
       occurrences: Math.max(1, occurrences),
       locations,
     }
@@ -334,6 +351,29 @@ async function inspectTemplate(
   }
 }
 
+function stableTemplateFieldId(templateSha256: string, name: string): string {
+  return `xgfield1_${createHash('sha256')
+    .update(`${templateSha256}\0${name.normalize('NFKC')}`)
+    .digest('hex')
+    .slice(0, 32)}`
+}
+
+function reconcileLibraryFields(
+  inspected: readonly WorkDocxTemplateFieldV1[],
+  libraryFields: readonly TemplateLibraryFieldSummaryV1[] | undefined,
+): readonly WorkDocxTemplateFieldV1[] {
+  if (!libraryFields?.length) return inspected
+  const byName = new Map(
+    libraryFields.map((field) => [field.name.normalize('NFKC').trim(), field]),
+  )
+  return inspected.map((field) => {
+    const libraryField = byName.get(field.name.normalize('NFKC').trim())
+    return libraryField
+      ? { ...field, fieldId: libraryField.fieldId, required: libraryField.required }
+      : field
+  })
+}
+
 function normalizePayload(value: unknown, placeholders: readonly string[]): Readonly<Record<string, string>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new WorkDocxError('INPUT_INVALID')
   const source = value as Record<string, unknown>
@@ -355,35 +395,46 @@ function normalizePayload(value: unknown, placeholders: readonly string[]): Read
 
 function normalizeTemplateData(
   fields: WorkDocxTemplateDataPrepareRequestV1['fields'],
-  placeholders: readonly string[],
+  expectedFields: readonly WorkDocxTemplateFieldV1[],
 ):
-  | { kind: 'INPUT_REQUIRED'; unresolvedFields: readonly string[] }
+  | {
+      kind: 'INPUT_REQUIRED'
+      unresolvedFields: readonly string[]
+      unresolvedFieldIds: readonly string[]
+    }
   | { kind: 'READY'; payload: Readonly<Record<string, string>>; dataSha256: string } {
-  if (!Array.isArray(fields) || fields.length !== placeholders.length || fields.length > MAX_PLACEHOLDERS) {
+  if (!Array.isArray(fields) || fields.length > expectedFields.length || fields.length > MAX_PLACEHOLDERS) {
     throw new WorkDocxError('PLACEHOLDER_MISSING')
   }
-  const expected = new Set(placeholders)
+  const expected = new Map(expectedFields.map((field) => [field.fieldId, field]))
   const seen = new Set<string>()
   const normalized: Record<string, string> = Object.create(null) as Record<string, string>
-  const canonical: { name: string; value: string | number | boolean }[] = []
-  const unresolved: string[] = []
+  const canonical: { fieldId: string; name: string; value: string | number | boolean }[] = []
+  const unresolved: WorkDocxTemplateFieldV1[] = []
 
   for (const field of fields) {
+    const expectedField = field && typeof field === 'object' ? expected.get(field.fieldId) : undefined
     if (
       !field ||
       typeof field !== 'object' ||
+      !expectedField ||
+      typeof field.fieldId !== 'string' ||
       !TEMPLATE_FIELD_KEY.test(field.name) ||
       ['__proto__', 'constructor', 'prototype'].includes(field.name) ||
-      !expected.has(field.name) ||
-      seen.has(field.name) ||
+      field.name.normalize('NFKC').trim() !== expectedField.name.normalize('NFKC').trim() ||
+      seen.has(field.fieldId) ||
       (field.sourceSummary !== undefined &&
         (typeof field.sourceSummary !== 'string' || field.sourceSummary.length > MAX_SOURCE_SUMMARY_CHARS))
     ) {
       throw new WorkDocxError('INPUT_INVALID')
     }
-    seen.add(field.name)
+    seen.add(field.fieldId)
     if (field.status === 'UNRESOLVED') {
-      unresolved.push(field.name)
+      if (expectedField.required) unresolved.push(expectedField)
+      else {
+        normalized[expectedField.name] = ''
+        canonical.push({ fieldId: expectedField.fieldId, name: expectedField.name, value: '' })
+      }
       continue
     }
     if (
@@ -395,14 +446,26 @@ function normalizeTemplateData(
     }
     const text = String(field.value)
     if (text.length > MAX_VALUE_CHARS) throw new WorkDocxError('INPUT_TOO_LARGE')
-    normalized[field.name] = text
-    canonical.push({ name: field.name, value: field.value })
+    normalized[expectedField.name] = text
+    canonical.push({ fieldId: expectedField.fieldId, name: expectedField.name, value: field.value })
   }
-  if (seen.size !== expected.size) throw new WorkDocxError('PLACEHOLDER_MISSING')
+  for (const expectedField of expectedFields) {
+    if (seen.has(expectedField.fieldId)) continue
+    if (expectedField.required) unresolved.push(expectedField)
+    else {
+      normalized[expectedField.name] = ''
+      canonical.push({ fieldId: expectedField.fieldId, name: expectedField.name, value: '' })
+    }
+  }
   if (unresolved.length > 0) {
-    return { kind: 'INPUT_REQUIRED', unresolvedFields: unresolved.sort() }
+    const ordered = [...unresolved].sort((left, right) => left.name.localeCompare(right.name))
+    return {
+      kind: 'INPUT_REQUIRED',
+      unresolvedFields: ordered.map((field) => field.name),
+      unresolvedFieldIds: ordered.map((field) => field.fieldId),
+    }
   }
-  canonical.sort((left, right) => left.name.localeCompare(right.name))
+  canonical.sort((left, right) => left.fieldId.localeCompare(right.fieldId))
   return {
     kind: 'READY',
     payload: normalized,
@@ -508,7 +571,11 @@ export class WorkDocxServiceV1 {
           throw new WorkDocxError('INPUT_INVALID')
         }
       }
-      const inspection = await inspectTemplate(templateBefore, placeholders)
+      const inspection = await inspectTemplate(templateBefore, placeholders, templateSha256)
+      const selectedFields = reconcileLibraryFields(
+        inspection.fields,
+        libraryVersion?.version.fields,
+      )
 
       if (placeholders.length === 0) {
         this.templateIntakeHandoffs.set(addressKey(request.address), {
@@ -544,7 +611,8 @@ export class WorkDocxServiceV1 {
         stagedTemplate,
         templateDisplayName,
         templateSha256,
-        fields: inspection.fields,
+        ...(libraryVersion ? { templateVersionId: libraryVersion.version.versionId } : {}),
+        fields: selectedFields,
         profile: inspection.profile,
       })
       stageDir = null
@@ -555,7 +623,8 @@ export class WorkDocxServiceV1 {
           selectionId,
           templateDisplayName,
           templateSha256,
-          fields: inspection.fields,
+          ...(libraryVersion ? { templateVersionId: libraryVersion.version.versionId } : {}),
+          fields: selectedFields,
           profile: inspection.profile,
         },
       }
@@ -616,7 +685,7 @@ export class WorkDocxServiceV1 {
       }
       const normalized = normalizeTemplateData(
         request.fields,
-        selection.fields.map((field) => field.name),
+        selection.fields,
       )
       if (normalized.kind === 'INPUT_REQUIRED') {
         return { ok: true, value: normalized }
@@ -644,6 +713,8 @@ export class WorkDocxServiceV1 {
         payload: normalized.payload,
         templateSha256: selection.templateSha256,
         dataSha256: normalized.dataSha256,
+        ...(selection.templateVersionId ? { templateVersionId: selection.templateVersionId } : {}),
+        fieldIds: selection.fields.map((field) => field.fieldId),
       })
       this.selected.delete(selection.selectionId)
       return {
@@ -653,8 +724,10 @@ export class WorkDocxServiceV1 {
           operationId,
           templateDisplayName: selection.templateDisplayName,
           fields: fieldNames,
+          fieldIds: selection.fields.map((field) => field.fieldId),
           templateSha256: selection.templateSha256,
           dataSha256: normalized.dataSha256,
+          ...(selection.templateVersionId ? { templateVersionId: selection.templateVersionId } : {}),
         },
       }
     } catch (error) {
@@ -772,6 +845,7 @@ export class WorkDocxServiceV1 {
           outputSha256: previous.outputSha256,
           templateSha256: previous.templateSha256,
           inputSha256: previous.inputSha256,
+          ...(previous.templateVersionId ? { templateVersionId: previous.templateVersionId } : {}),
           originalInputsUnchanged: true,
         },
       }
@@ -837,6 +911,7 @@ export class WorkDocxServiceV1 {
         outputSha256,
         templateSha256: operation.templateSha256,
         inputSha256,
+        ...(operation.templateVersionId ? { templateVersionId: operation.templateVersionId } : {}),
         originalInputsUnchanged: true,
       }
       this.completed.set(operation.operationId, {
@@ -847,6 +922,7 @@ export class WorkDocxServiceV1 {
         outputSha256,
         templateSha256: operation.templateSha256,
         inputSha256,
+        ...(operation.templateVersionId ? { templateVersionId: operation.templateVersionId } : {}),
       })
       this.prepared.delete(operation.operationId)
       await rm(operation.stageDir, { recursive: true, force: true }).catch(() => {})
@@ -894,6 +970,7 @@ export class WorkDocxServiceV1 {
         outputSha256: outcome.value.outputSha256,
         templateSha256: outcome.value.templateSha256,
         dataSha256: outcome.value.inputSha256,
+        ...(outcome.value.templateVersionId ? { templateVersionId: outcome.value.templateVersionId } : {}),
         originalInputsUnchanged: true,
       },
     }

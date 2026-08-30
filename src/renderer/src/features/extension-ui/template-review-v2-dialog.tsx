@@ -18,7 +18,10 @@ import {
   Search,
   X,
 } from '@renderer/components/icons'
-import { DocxHtmlViewer, type DocxHtmlViewerHandleV1 } from '@renderer/components/docx-html-viewer'
+import {
+  DocumentSurfaceViewerV1,
+  type DocumentSurfaceViewerHandleV1,
+} from '@renderer/features/document-surface/document-surface-viewer'
 import { TemplateDraftWorkspace } from '@renderer/features/template-draft/template-draft-workspace'
 
 type TemplateReviewRequest = TemplateReviewRequestV2 | TemplateReviewRequestV3
@@ -191,7 +194,7 @@ function TemplateCandidateReviewDialog({
   const [confirmingHighRisk, setConfirmingHighRisk] = useState(false)
   const [viewerMappedIds, setViewerMappedIds] = useState<readonly string[]>([])
   const targetElement = useRef<HTMLDivElement | null>(null)
-  const viewerRef = useRef<DocxHtmlViewerHandleV1 | null>(null)
+  const viewerRef = useRef<DocumentSurfaceViewerHandleV1 | null>(null)
 
   useEffect(() => {
     draftByRequestId.set(requestId, actions)
@@ -213,6 +216,10 @@ function TemplateCandidateReviewDialog({
     !normalizedQuery ||
     `${target.preview}\n${target.reason}`.toLocaleLowerCase('zh-CN').includes(normalizedQuery),
   ), [normalizedQuery, payload.targets])
+  const officeReviewTargets = useMemo(
+    () => isV3(payload) ? payload.targets.map(asV3Target) : [],
+    [payload],
+  )
   const pendingTargets = payload.targets.filter(
     (target) => requiresExplicitDecision(target) && !(actions[target.targetId]?.length),
   )
@@ -230,7 +237,7 @@ function TemplateCandidateReviewDialog({
 
   const selectTarget = (target: TemplateReviewTarget) => {
     setSelectedId(target.targetId)
-    if (isDirectDocxReview(payload)) viewerRef.current?.focus(target.targetId)
+    if (isDirectDocxReview(payload)) viewerRef.current?.focusTarget(target.targetId)
     setChosenRange(null)
     setEditKind(null)
     setEditValue('')
@@ -403,11 +410,14 @@ function TemplateCandidateReviewDialog({
             <div className="min-h-0 flex-1">
               {isV3(payload) && payload.document.render.mode === 'DOCX_HTML' ? (
                 <div onMouseUp={captureRange} className="h-full min-h-0 overflow-hidden">
-                  <DocxHtmlViewer
+                  <DocumentSurfaceViewerV1
                     ref={viewerRef}
+                    purpose="TEMPLATE_ADVANCED_REVIEW"
                     documentToken={payload.document.render.documentToken}
-                    targets={payload.targets.map(asV3Target)}
+                    title={payload.document.source.displayName}
+                    targets={officeReviewTargets}
                     selectedId={selectedId}
+                    readonlyLabel="高级复核试用；文档内容保持只读"
                     onSelectTarget={(target) => {
                       const original = payload.targets.find((item) => item.targetId === target.targetId)
                       if (original) selectTarget(original)
