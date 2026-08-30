@@ -4,16 +4,15 @@ import {
   assertStaticXiaoguiPromptLayerV1,
   parseXiaoguiPromptContextV1,
   type EffectivePromptLayerManifestV1,
-  type XiaoguiCapabilityId,
   type XiaoguiEffectivePromptDiagnosticsV1,
   type XiaoguiPromptContextV1,
   type XiaoguiPromptLayerV1,
 } from '@shared/xiaogui-prompt-contract'
 import {
-  XIAOGUI_CAPABILITY_MATRIX_V1,
-  XIAOGUI_PHASE_POLICY_MATRIX_V1,
-  type XiaoguiPhaseEffectV1,
-} from '@shared/xiaogui-prompt-matrix'
+  isKnownXiaoguiCapabilityToolNameV1,
+  isXiaoguiCapabilityToolAllowedInModeV1,
+  resolveEffectiveXiaoguiCapabilitiesV1,
+} from '@shared/xiaogui-prompt-capabilities'
 
 import { XIAOGUI_PRODUCT_PROMPT_LAYERS_V1 } from './layers'
 
@@ -124,35 +123,6 @@ function requiredLayerIds(context: XiaoguiPromptContextV1): readonly string[] {
   ]
 }
 
-const CAPABILITY_MINIMUM_EFFECT_V1 = {
-  'collaboration.execution': 'CONFIRMATION_GATED_PERSISTENT',
-  'work.file-organize': 'READ_ONLY',
-  'work.report-docx': 'CONFIRMATION_GATED_PERSISTENT',
-  'work.template-intake': 'CONFIRMATION_GATED_PERSISTENT',
-  'work.template-generation': 'CONFIRMATION_GATED_PERSISTENT',
-  'design.analysis': 'READ_ONLY',
-  'coding.workspace': 'READ_ONLY',
-} as const satisfies Readonly<Record<XiaoguiCapabilityId, XiaoguiPhaseEffectV1>>
-
-function effectiveCapabilities(
-  context: XiaoguiPromptContextV1,
-  actualToolNames: readonly string[],
-): XiaoguiCapabilityId[] {
-  if (!context.workspaceAvailable) return []
-  const actual = new Set(actualToolNames)
-  const allowedEffects: readonly XiaoguiPhaseEffectV1[] =
-    XIAOGUI_PHASE_POLICY_MATRIX_V1[context.phase].allowedEffects
-  return context.enabledCapabilities.filter((capabilityId) => {
-    const row = XIAOGUI_CAPABILITY_MATRIX_V1[capabilityId]
-    const modePolicy = row.modes[context.mode]
-    if (modePolicy === 'HIDDEN' || modePolicy === 'RECOMMEND_SWITCH') {
-      fail('XIAOGUI_PROMPT_CONTEXT_CAPABILITY_MODE_MISMATCH')
-    }
-    if (!allowedEffects.includes(CAPABILITY_MINIMUM_EFFECT_V1[capabilityId])) return false
-    return row.tools.some((tool) => actual.has(tool.name))
-  })
-}
-
 export function createXiaoguiPromptBuilderV1(
   registry: readonly XiaoguiPromptLayerV1[],
 ): XiaoguiPromptBuilderV1 {
@@ -169,12 +139,22 @@ export function createXiaoguiPromptBuilderV1(
       const toolNames = input.runtimeTools
         ? [...new Set(input.runtimeTools.map((tool) => tool.name.trim()).filter(Boolean))].sort()
         : [...candidateContext.availableToolNames].sort()
+      if (toolNames.some((name) =>
+        isKnownXiaoguiCapabilityToolNameV1(name) &&
+        !isXiaoguiCapabilityToolAllowedInModeV1(name, candidateContext.mode),
+      )) {
+        fail('XIAOGUI_PROMPT_TOOL_MODE_MISMATCH')
+      }
+      const capabilities = resolveEffectiveXiaoguiCapabilitiesV1(candidateContext, toolNames)
       const context = parseXiaoguiPromptContextV1({
         ...candidateContext,
-        enabledCapabilities: effectiveCapabilities(candidateContext, toolNames),
+        enabledCapabilities: capabilities.map((capability) => capability.id),
         availableToolNames: toolNames,
       })
-      const selected = requiredLayerIds(context).map((id) => {
+      const selected = [
+        ...requiredLayerIds(context),
+        ...capabilities.map((capability) => capability.promptLayer.id),
+      ].map((id) => {
         const layer = byId.get(id)
         if (!layer || !layer.required) fail('XIAOGUI_PROMPT_REQUIRED_LAYER_MISSING')
         return layer

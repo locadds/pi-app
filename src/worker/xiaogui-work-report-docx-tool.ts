@@ -6,6 +6,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
+import { XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 } from '@shared/xiaogui-prompt-capabilities'
 import {
   XIAOGUI_WORK_REPORT_DOCX_METHOD_V1,
   type XiaoguiWorkReportDocxResultV1,
@@ -14,7 +15,8 @@ import {
 
 import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 
-export const XIAOGUI_WORK_REPORT_DOCX_TOOL_NAME = 'xiaogui_work_report_docx'
+const TOOL_PROMPT = XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1.xiaogui_work_report_docx
+export const XIAOGUI_WORK_REPORT_DOCX_TOOL_NAME = TOOL_PROMPT.name
 
 const DraftSchema = Type.Object(
   {
@@ -110,21 +112,7 @@ export function addXiaoguiWorkReportDocxTool(
     origin: 'top-level',
   })
   const definition = defineTool<typeof ActionSchema, SafeDetails>({
-    name: XIAOGUI_WORK_REPORT_DOCX_TOOL_NAME,
-    label: '生成标准 Word 报告',
-    description:
-      '把当前 WORK 对话中已经整理好的纯文本草稿生成标准 Word 预览，并在用户下一条消息确认后另存为全新 DOCX。用户明确要求使用自己的模板时不要调用。',
-    promptSnippet: '自然语言提交报告草稿、预览、跨轮确认另存、取消或打开',
-    promptGuidelines: [
-      '只有用户没有指定模板、且明确要求把当前已整理草稿做成 Word 时才调用 PREPARE。',
-      'PREPARE 的 draft 只填写当前对话中已经形成的标题、章节、段落和项目符号；不要补写未经用户确认的事实。',
-      'PREPARE 打开标准 Word 预览后必须结束本轮；只有用户下一条消息明确确认才调用 CONFIRM。',
-      'CONFIRM、CANCEL、OPEN、REVEAL 不得携带 draft 或任何路径。',
-      '只有最新一条用户消息明确要求取消、打开文档或在文件夹中显示时，才调用 CANCEL、OPEN 或 REVEAL。',
-      '用户明确说使用自己的模板时，改用模板 Word 工具，不要调用标准报告工具。',
-      '不要展示或索要预览、成品、数据库或临时目录的绝对路径，也不要在结果中重复草稿全文。',
-      '成品只能另存为不存在的新 DOCX；不得声称覆盖或修改了已有文件。',
-    ],
+    ...TOOL_PROMPT,
     parameters: ActionSchema,
     executionMode: 'sequential',
     async execute(toolCallId, params, signal) {

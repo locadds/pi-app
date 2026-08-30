@@ -4,6 +4,7 @@ import {
   type XiaoguiMode,
   type XiaoguiPromptLayerV1,
 } from '@shared/xiaogui-prompt-contract'
+import { XIAOGUI_CAPABILITY_REGISTRY_V1 } from '@shared/xiaogui-prompt-capabilities'
 
 const layer = (value: XiaoguiPromptLayerV1): XiaoguiPromptLayerV1 =>
   assertStaticXiaoguiPromptLayerV1(value)
@@ -128,4 +129,5 @@ export const XIAOGUI_PRODUCT_PROMPT_LAYERS_V1: readonly XiaoguiPromptLayerV1[] =
   XIAOGUI_BASE_PROMPT_LAYER_V1,
   ...Object.values(XIAOGUI_MODE_PROMPT_LAYERS_V1),
   ...Object.values(XIAOGUI_PHASE_PROMPT_LAYERS_V1),
+  ...Object.values(XIAOGUI_CAPABILITY_REGISTRY_V1).map((capability) => capability.promptLayer),
 ]

@@ -6,6 +6,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
+import { XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 } from '@shared/xiaogui-prompt-capabilities'
 import {
   XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1,
   type XiaoguiWorkDocxTemplateMaterializeResultV1,
@@ -15,8 +16,8 @@ import {
 import { getDesktopUIBridge } from './desktop-ui-bridge.js'
 import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 
-export const XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_TOOL_NAME =
-  'xiaogui_work_docx_template_materialize'
+const TOOL_PROMPT = XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1.xiaogui_work_docx_template_materialize
+export const XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_TOOL_NAME = TOOL_PROMPT.name
 
 // 顶层固定为 object；reportId 只在 PREPARE 使用，主进程负责动作级严格校验。
 const ActionSchema = Type.Object(
@@ -103,21 +104,7 @@ export function addXiaoguiWorkDocxTemplateMaterializeTool(
     origin: 'top-level',
   })
   const definition = defineTool<typeof ActionSchema, SafeDetails>({
-    name: XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_TOOL_NAME,
-    label: '生成正式文档模板',
-    description: '把已人工确认的普通文档整理报告生成小规内置预览，并在用户点击确认后保存进本机模板库。',
-    promptSnippet: '从已确认的模板整理报告生成预览、保存模板库、另存一份、恢复、取消或打开正式模板',
-    promptGuidelines: [
-      '只有用户已经完成普通文档整理报告的人工确认，并明确要求生成正式模板时，才调用 PREPARE。',
-      'PREPARE 会打开小规内置整份预览；只有用户点击“生成正式模板”后，Worker 才携带私有确认令牌继续保存，模型不得自行构造该令牌。',
-      '用户在内置预览填写“需要修改”时，收到修改要求后应调用模板整理工具 REOPEN/UPDATE，不得继续发布旧预览。',
-      '如果用户在后续新消息明确表示已经看过预览并确认生成，仍可调用 CONFIRM，并可同时带模板名称、用途和标签。',
-      '用户明确要求另存一份本机模板时才调用 EXPORT；模板会先存在本机模板库。',
-      '用户取消保存位置后不要自动重试；等待用户下一条消息。',
-      '不要展示或索要源文件、预览文件、正式模板、数据库或临时目录的绝对路径。',
-      '重复块和条件块使用文档内容控件，当前简单字段生成器不会展开；必须如实告诉用户这个能力边界。',
-      '不得声称覆盖或修改了原文档；正式模板只能保存为新的 DOCX。',
-    ],
+    ...TOOL_PROMPT,
     parameters: ActionSchema,
     executionMode: 'sequential',
     async execute(toolCallId, params, signal, _onUpdate, context) {

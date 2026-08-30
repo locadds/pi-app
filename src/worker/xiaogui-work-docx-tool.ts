@@ -6,6 +6,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
+import { XIAOGUI_LEGACY_WORK_DOCX_TOOL_PROMPT_DEFINITION_V1 } from '@shared/xiaogui-prompt-capabilities'
 import {
   XIAOGUI_WORK_DOCX_METHOD_V1,
   type XiaoguiWorkDocxResultV1,
@@ -14,7 +15,8 @@ import {
 
 import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 
-export const XIAOGUI_WORK_DOCX_TOOL_NAME = 'xiaogui_work_docx'
+const TOOL_PROMPT = XIAOGUI_LEGACY_WORK_DOCX_TOOL_PROMPT_DEFINITION_V1
+export const XIAOGUI_WORK_DOCX_TOOL_NAME = TOOL_PROMPT.name
 
 const WorkDocxActionSchema = Type.Object(
   {
@@ -74,18 +76,7 @@ export function addXiaoguiWorkDocxTool(
     origin: 'top-level',
   })
   const definition = defineTool<typeof WorkDocxActionSchema, XiaoguiWorkDocxToolDetails>({
-    name: XIAOGUI_WORK_DOCX_TOOL_NAME,
-    label: '生成 DOCX',
-    description:
-      '在 WORK 会话中按用户明确指令，通过系统选择器选择 DOCX 模板、JSON 数据和新的保存位置，再经单独确认生成文档。普通问答、DESIGN、CODING 不要调用。',
-    promptSnippet: '用自然语言准备、确认、取消或打开 WORK DOCX；生成前必须等待用户下一条确认消息',
-    promptGuidelines: [
-      '只有用户明确要求使用模板和数据生成 DOCX 时才调用 PREPARE；不要让用户输入路径。',
-      'PREPARE 返回已准备后必须停止调用工具，向用户复述安全摘要，并等待用户下一条消息。',
-      '只有最新一条用户消息明确表示确认生成时才调用 CONFIRM；不得在 PREPARE 的同一轮调用。',
-      '只有最新一条用户消息明确要求取消、打开文档或在文件夹中显示时，才调用 CANCEL、OPEN 或 REVEAL。',
-      '不要向用户展示会话地址、文件路径、操作编号、内部错误代码或摘要编号。',
-    ],
+    ...TOOL_PROMPT,
     parameters: WorkDocxActionSchema,
     executionMode: 'sequential',
     async execute(toolCallId, params, signal) {

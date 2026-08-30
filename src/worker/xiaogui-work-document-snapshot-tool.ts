@@ -6,6 +6,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
+import { XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 } from '@shared/xiaogui-prompt-capabilities'
 import {
   XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1,
   type WorkerHostToolErrorCodeV1,
@@ -15,7 +16,8 @@ import type { DocumentSnapshotV1 } from '@shared/xiaogui-document-snapshot'
 
 import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 
-export const XIAOGUI_READ_PDF_TOOL_NAME = 'xiaogui_read_pdf'
+const TOOL_PROMPT = XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1.xiaogui_read_pdf
+export const XIAOGUI_READ_PDF_TOOL_NAME = TOOL_PROMPT.name
 
 const ReadPdfParamsSchema = Type.Object(
   {
@@ -83,17 +85,7 @@ export function addXiaoguiWorkDocumentSnapshotTool(
     origin: 'top-level',
   })
   const definition = defineTool<typeof ReadPdfParamsSchema, XiaoguiWorkDocumentSnapshotToolDetails>({
-    name: XIAOGUI_READ_PDF_TOOL_NAME,
-    label: '读取 PDF',
-    description:
-      '在 WORK 会话中按用户明确指令，通过系统选择器读取用户选择的 PDF，并把不含文件路径的分页文本快照交回当前会话供回答。普通问答、DESIGN、CODING 不要调用。',
-    promptSnippet: '用自然语言读取 WORK 会话中的 PDF；系统选择器由用户选文件，不让用户输入路径',
-    promptGuidelines: [
-      '只有用户明确要求读取某份 PDF 的内容时才调用；不要让用户输入路径。',
-      '默认从第 1 页开始最多读取 20 页；用户指明具体页码范围时才传 startPage/endPage。',
-      '以工具返回的分页快照为唯一依据回答；快照被截断或没有正文时如实告知用户。',
-      '不要向用户展示会话地址、文件路径、哈希或内部错误代码。',
-    ],
+    ...TOOL_PROMPT,
     parameters: ReadPdfParamsSchema,
     executionMode: 'sequential',
     async execute(toolCallId, params, signal) {

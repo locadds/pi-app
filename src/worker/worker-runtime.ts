@@ -16,13 +16,7 @@ import { createDesktopUIBridge, type DesktopUIBridge } from './desktop-ui-bridge
 import { createDesktopWidgetHost } from './desktop-widget-host.js'
 import { applySkillsOverride } from './skill-override.js'
 import { decorateQuestionnaireTools } from './questionnaire-tool-decorator.js'
-import { addXiaoguiCollaborationTool } from './xiaogui-collaboration-tool.js'
-import { addXiaoguiWorkDocxTemplateDataTool } from './xiaogui-work-docx-template-data-tool.js'
-import { addXiaoguiWorkDocxTemplateIntakeTool } from './xiaogui-work-docx-template-intake-tool.js'
-import { addXiaoguiWorkDocxTemplateMaterializeTool } from './xiaogui-work-docx-template-materialize-tool.js'
-import { addXiaoguiWorkDocxAdvancedGenerationTool } from './xiaogui-work-docx-advanced-generation-tool.js'
-import { addXiaoguiWorkReportDocxTool } from './xiaogui-work-report-docx-tool.js'
-import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool.js'
+import { addXiaoguiWorkerToolsV1 } from './xiaogui-worker-tools.js'
 import { assertXiaoguiModelToolSchemasCompatible } from './xiaogui-model-tool-schema-compatibility.js'
 import {
   handleSessionEvent as dispatchSessionEvent,
@@ -298,14 +292,11 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
             getSourceSessionId: collaborationToolOptions.getSourceSessionId,
             getSourceRunId: () => st.currentRunId || undefined,
           }
-          let loaded = decorateQuestionnaireTools(result, cwd)
-          loaded = addXiaoguiCollaborationTool(loaded, collaborationToolOptions)
-          loaded = addXiaoguiWorkDocxTemplateDataTool(loaded, sessionToolOptions)
-          loaded = addXiaoguiWorkDocxTemplateIntakeTool(loaded, sessionToolOptions)
-          loaded = addXiaoguiWorkDocxTemplateMaterializeTool(loaded, sessionToolOptions)
-          loaded = addXiaoguiWorkDocumentSnapshotTool(loaded, sessionToolOptions)
-          loaded = addXiaoguiWorkDocxAdvancedGenerationTool(loaded, sessionToolOptions)
-          loaded = addXiaoguiWorkReportDocxTool(loaded, sessionToolOptions)
+          const loaded = addXiaoguiWorkerToolsV1(
+            decorateQuestionnaireTools(result, cwd),
+            promptContext.mode,
+            { collaboration: collaborationToolOptions, session: sessionToolOptions },
+          )
           return assertXiaoguiModelToolSchemasCompatible(loaded)
         },
         skillsOverride: applySkillsOverride as never,

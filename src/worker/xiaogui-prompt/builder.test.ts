@@ -46,6 +46,7 @@ describe('Xiaogui effective Prompt Builder V1', () => {
       'xiaogui.base',
       'xiaogui.mode.work',
       'xiaogui.phase.ask',
+      'xiaogui.capability.work.file-organize',
     ])
   })
 
@@ -57,12 +58,12 @@ describe('Xiaogui effective Prompt Builder V1', () => {
     ]
     const builder = createXiaoguiPromptBuilderV1(layers)
     const first = builder.build({
-      context: context(),
+      context: { ...context(), enabledCapabilities: [] },
       piSystemPrompt: 'PI\r\nBASELINE',
       generatedAt: '2026-08-30T00:00:00.000Z',
     })
     const second = builder.build({
-      context: context(),
+      context: { ...context(), enabledCapabilities: [] },
       piSystemPrompt: 'PI\nBASELINE',
       generatedAt: '2026-08-31T00:00:00.000Z',
     })
@@ -152,7 +153,15 @@ describe('Xiaogui effective Prompt Builder V1', () => {
     const designWithProfessionalTool = xiaoguiPromptBuilderV1.build({
       context: context('DESIGN', 'ASK'),
       piSystemPrompt: 'PI',
-      runtimeTools: [{ name: 'read' }, { name: 'design_gis' }],
+      runtimeTools: [
+        { name: 'read' },
+        { name: 'design_project' },
+        { name: 'design_document' },
+        { name: 'design_data' },
+        { name: 'design_cad' },
+        { name: 'design_gis' },
+        { name: 'design_spatial' },
+      ],
     })
     const reportContext = {
       ...context('WORK', 'ASK'),
@@ -178,6 +187,6 @@ describe('Xiaogui effective Prompt Builder V1', () => {
       context: { ...context('WORK', 'ASK'), enabledCapabilities: ['design.analysis'] },
       piSystemPrompt: 'PI',
       runtimeTools: [{ name: 'design_gis' }],
-    })).toThrow('XIAOGUI_PROMPT_CONTEXT_CAPABILITY_MODE_MISMATCH')
+    })).toThrow('XIAOGUI_PROMPT_TOOL_MODE_MISMATCH')
   })
 })

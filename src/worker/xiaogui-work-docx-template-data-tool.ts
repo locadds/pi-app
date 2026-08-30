@@ -6,6 +6,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
+import { XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 } from '@shared/xiaogui-prompt-capabilities'
 import {
   XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1,
   type XiaoguiWorkDocxTemplateDataResultV1,
@@ -14,7 +15,8 @@ import {
 
 import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 
-export const XIAOGUI_WORK_DOCX_TOOL_NAME = 'xiaogui_work_docx'
+const TOOL_PROMPT = XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1.xiaogui_work_docx
+export const XIAOGUI_WORK_DOCX_TOOL_NAME = TOOL_PROMPT.name
 
 const SourceSummarySchema = Type.Optional(
   Type.String({ maxLength: 500, description: '只写字段来源的简短说明，不要放路径或内部编号。' }),
@@ -144,20 +146,7 @@ export function addXiaoguiWorkDocxTemplateDataTool(
     typeof WorkDocxTemplateDataActionSchema,
     XiaoguiWorkDocxTemplateDataToolDetails
   >({
-    name: XIAOGUI_WORK_DOCX_TOOL_NAME,
-    label: '按模板生成文档',
-    description:
-      '在日常工作会话中选择已经标记字段的 Word 模板，从当前对话整理字段，经用户单独确认后生成新的 Word 副本。普通成品文档会提示先整理成模板。',
-    promptSnippet: '用自然语言选择模板、整理字段、准备、确认、取消或打开 Word；生成前必须等待用户下一条确认消息',
-    promptGuidelines: [
-      '用户明确要求按 Word 模板创作时先调用 SELECT_TEMPLATE；不要让用户输入路径，也不要索要 JSON。',
-      '用户明确说出或从模板库点选了模板名称/版本时，把名称写入 libraryTemplateName、版本号写入 libraryVersionNumber；不要编造名称或版本。',
-      'SELECT_TEMPLATE 返回字段清单后，必须原样使用每项 fieldId；优先从当前对话提取字段，不能确定的必填字段用 UNRESOLVED，不能猜测。',
-      '调用 PREPARE 时按 fieldId 提交已知字段。READY 只允许字符串、数字或布尔值；选填字段可省略，系统不得因此追问用户。',
-      'PREPARE 返回待确认摘要后必须停止调用工具，等待用户下一条消息明确确认。不得同一轮调用 CONFIRM。',
-      '只有最新一条用户消息明确要求取消、打开文档或在文件夹中显示时，才调用 CANCEL、OPEN 或 REVEAL。',
-      '不要向用户展示文件路径、会话地址、选择编号、操作编号、内部错误代码或摘要编号。',
-    ],
+    ...TOOL_PROMPT,
     parameters: WorkDocxTemplateDataActionSchema,
     executionMode: 'sequential',
     async execute(toolCallId, params, signal, _onUpdate, context) {

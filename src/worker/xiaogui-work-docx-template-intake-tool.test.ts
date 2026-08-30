@@ -5,8 +5,10 @@ import type {
   LoadExtensionsResult,
 } from '@earendil-works/pi-coding-agent'
 import type { TemplateIntakeReportV1 } from '@shared/xiaogui-work-docx-template-intake'
+import { TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1 } from '@shared/xiaogui-prompt-capabilities'
 
 import {
+  __test,
   addXiaoguiWorkDocxTemplateIntakeTool,
   XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_TOOL_NAME,
 } from './xiaogui-work-docx-template-intake-tool'
@@ -116,6 +118,27 @@ beforeEach(() => {
 })
 
 describe('xiaogui WORK finished-DOCX intake tool', () => {
+  it('uses a separately versioned analysis Prompt and rejects invalid structured output explicitly', () => {
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.id)
+      .toBe('template-intake-analysis')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.version).toBe('1.0.0')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
+      .toContain('template-intake-analysis@1.0.0')
+
+    expect(() => __test.validateSuggestions('not json', new Set(['F001'])))
+      .toThrow('MODEL_JSON_INVALID')
+    expect(() => __test.validateSuggestions(JSON.stringify({
+      suggestions: [{
+        fragmentIds: ['F999'],
+        kind: 'FIXED',
+        reason: '固定',
+        confidence: 0.9,
+      }],
+    }), new Set(['F001']))).toThrow('MODEL_FRAGMENT_UNKNOWN')
+    expect(() => __test.validateSuggestions('{"suggestions":[]}', new Set(['F001'])))
+      .toThrow('MODEL_FRAGMENT_INCOMPLETE')
+  })
+
   it('is a hidden natural-language intake ending at a read-only report', () => {
     const tool = loadTool()
 
@@ -187,6 +210,7 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
 
     expect(complete).toHaveBeenCalledTimes(2)
     for (const call of complete.mock.calls) {
+      expect(call[1].systemPrompt).toBe(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
       expect(call[2]).toMatchObject({ cacheRetention: 'none' })
       expect(call[2].sessionId).toEqual(expect.any(String))
     }

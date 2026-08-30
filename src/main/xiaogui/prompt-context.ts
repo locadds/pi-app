@@ -4,8 +4,8 @@ import {
   type XiaoguiMode,
   type XiaoguiPromptContextV1,
 } from '@shared/xiaogui-prompt-contract'
+import { workerPromptContextToolNamesForModeV1 } from '@shared/xiaogui-prompt-capabilities'
 import {
-  workerPromptContextBaselineToolNamesV1,
   XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1,
 } from '@shared/xiaogui-prompt-matrix'
 
@@ -38,7 +38,7 @@ function contextFor(
     workspaceAvailable: deps.workspaceExists(cwd),
     projectTrusted: deps.projectTrusted(cwd),
     enabledCapabilities: [...XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1[mode]],
-    availableToolNames: [...workerPromptContextBaselineToolNamesV1()],
+    availableToolNames: [...workerPromptContextToolNamesForModeV1(mode)],
     ...ids,
   })
 }

@@ -171,18 +171,3 @@ export const XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1 = {
   DESIGN: ['design.analysis'],
   CODING: ['coding.workspace'],
 } as const satisfies Readonly<Record<XiaoguiMode, readonly XiaoguiCapabilityId[]>>
-
-/**
- * Tool names Main can safely require before Worker resource discovery. Dynamic
- * project-extension tools are added by Worker to the effective per-Turn facts.
- * PR3 owns mode/phase filtering; this PR2 baseline preserves current exposure.
- */
-export function workerPromptContextBaselineToolNamesV1(): readonly string[] {
-  return [
-    'bash',
-    'edit',
-    'read',
-    'write',
-    ...workerBuiltinToolNamesFromPromptMatrixV1(),
-  ].sort()
-}

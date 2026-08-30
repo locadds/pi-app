@@ -1,16 +1,14 @@
 import type { LoadExtensionsResult } from '@earendil-works/pi-coding-agent'
 import { describe, expect, it } from 'vitest'
 
-import { workerBuiltinToolNamesFromPromptMatrixV1 } from '@shared/xiaogui-prompt-matrix'
-import { addXiaoguiCollaborationTool } from './xiaogui-collaboration-tool'
-import { addXiaoguiWorkDocxAdvancedGenerationTool } from './xiaogui-work-docx-advanced-generation-tool'
-import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool'
-import { addXiaoguiWorkReportDocxTool } from './xiaogui-work-report-docx-tool'
-import { addXiaoguiWorkDocxTemplateDataTool } from './xiaogui-work-docx-template-data-tool'
-import { addXiaoguiWorkDocxTemplateIntakeTool } from './xiaogui-work-docx-template-intake-tool'
-import { addXiaoguiWorkDocxTemplateMaterializeTool } from './xiaogui-work-docx-template-materialize-tool'
+import {
+  workerBuiltinToolNamesForModeV1,
+  XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
+} from '@shared/xiaogui-prompt-capabilities'
+import type { XiaoguiMode } from '@shared/xiaogui-prompt-contract'
+import { addXiaoguiWorkerToolsV1 } from './xiaogui-worker-tools'
 
-function loadCurrentWorkerBuiltinTools() {
+function loadCurrentWorkerBuiltinTools(mode: XiaoguiMode = 'WORK') {
   const collaborationOptions = {
     getSourceSessionId: () => 'session-1',
     getSourceTurnId: () => 'turn-1',
@@ -20,20 +18,72 @@ function loadCurrentWorkerBuiltinTools() {
     getSourceRunId: () => 'run-1',
   }
   let loaded = { extensions: [], errors: [], runtime: {} } as unknown as LoadExtensionsResult
-  loaded = addXiaoguiCollaborationTool(loaded, collaborationOptions)
-  loaded = addXiaoguiWorkDocxTemplateDataTool(loaded, sessionOptions)
-  loaded = addXiaoguiWorkDocxTemplateIntakeTool(loaded, sessionOptions)
-  loaded = addXiaoguiWorkDocxTemplateMaterializeTool(loaded, sessionOptions)
-  loaded = addXiaoguiWorkDocumentSnapshotTool(loaded, sessionOptions)
-  loaded = addXiaoguiWorkDocxAdvancedGenerationTool(loaded, sessionOptions)
-  loaded = addXiaoguiWorkReportDocxTool(loaded, sessionOptions)
+  loaded = addXiaoguiWorkerToolsV1(loaded, mode, {
+    collaboration: collaborationOptions,
+    session: sessionOptions,
+  })
   return new Map(loaded.extensions.flatMap((extension) => [...extension.tools.entries()]))
 }
 
+function workerToolOptions() {
+  return {
+    collaboration: {
+      getSourceSessionId: () => 'session-1',
+      getSourceTurnId: () => 'turn-1',
+    },
+    session: {
+      getSourceSessionId: () => 'session-1',
+      getSourceRunId: () => 'run-1',
+    },
+  }
+}
+
 describe('current Xiaogui Worker Tool Guidelines baseline', () => {
-  it('matches the PR1 Capability / Tool matrix without changing runtime registration', () => {
+  it('matches the Capability Registry for each Runtime mode', () => {
     const tools = loadCurrentWorkerBuiltinTools()
-    expect([...tools.keys()].sort()).toEqual(workerBuiltinToolNamesFromPromptMatrixV1())
+    expect([...tools.keys()].sort()).toEqual(workerBuiltinToolNamesForModeV1('WORK'))
+    expect([...loadCurrentWorkerBuiltinTools('CODING').keys()].sort())
+      .toEqual(workerBuiltinToolNamesForModeV1('CODING'))
+  })
+
+  it('references the exact Tool Definition constants owned by the Capability Registry', () => {
+    const tools = loadCurrentWorkerBuiltinTools()
+    for (const [name, expected] of Object.entries(XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1)) {
+      const actual = tools.get(name)?.definition
+      expect(actual?.description).toBe(expected.description)
+      expect(actual?.promptSnippet).toBe(expected.promptSnippet)
+      expect(actual?.promptGuidelines).toBe(expected.promptGuidelines)
+    }
+  })
+
+  it('removes known mode-disallowed extension tools while preserving unrelated extensions', () => {
+    const empty = { extensions: [], errors: [], runtime: {} } as unknown as LoadExtensionsResult
+    const design = addXiaoguiWorkerToolsV1(empty, 'DESIGN', workerToolOptions())
+    const source = design.extensions[0]
+    const registered = source && [...source.tools.values()][0]
+    expect(source).toBeDefined()
+    expect(registered).toBeDefined()
+    const seeded = {
+      ...design,
+      extensions: [
+        ...design.extensions,
+        {
+          ...source!,
+          path: '<test:mode-tools>',
+          resolvedPath: '<test:mode-tools>',
+          tools: new Map([
+            ['design_gis', registered!],
+            ['third_party_tool', registered!],
+          ]),
+        },
+      ],
+    }
+
+    const coding = addXiaoguiWorkerToolsV1(seeded, 'CODING', workerToolOptions())
+    const names = coding.extensions.flatMap((extension) => [...extension.tools.keys()])
+    expect(names).not.toContain('design_gis')
+    expect(names).not.toContain('xiaogui_work_report_docx')
+    expect(names).toContain('third_party_tool')
   })
 
   it('freezes the current snippets and critical stop conditions', () => {
@@ -52,7 +102,7 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
         ]),
       },
       xiaogui_read_pdf: {
-        promptSnippet: '用自然语言读取 WORK 会话中的 PDF；系统选择器由用户选文件，不让用户输入路径',
+        promptSnippet: '用自然语言读取 PDF；系统选择器由用户选文件，不让用户输入路径',
         promptGuidelines: expect.arrayContaining([
           expect.stringContaining('不要让用户输入路径'),
           expect.stringContaining('快照被截断或没有正文时如实告知用户'),

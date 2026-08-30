@@ -6,6 +6,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
+import { XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 } from '@shared/xiaogui-prompt-capabilities'
 import {
   XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1,
   type XiaoguiCollaborationPlanCreatedV1,
@@ -14,7 +15,8 @@ import {
 
 import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 
-export const XIAOGUI_COLLABORATION_PLAN_TOOL_NAME = 'xiaogui_create_collaboration_plan'
+const TOOL_PROMPT = XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1.xiaogui_create_collaboration_plan
+export const XIAOGUI_COLLABORATION_PLAN_TOOL_NAME = TOOL_PROMPT.name
 
 const PlanTaskSchema = Type.Object(
   {
@@ -73,16 +75,7 @@ export function addXiaoguiCollaborationTool(
     origin: 'top-level',
   })
   const definition = defineTool<typeof PlanDraftSchema, XiaoguiCollaborationToolDetails>({
-    name: XIAOGUI_COLLABORATION_PLAN_TOOL_NAME,
-    label: '创建协作计划',
-    description:
-      '把用户明确要求拆分、分工或交给多个 Agent 协作的工作，保存成待用户批准的协作计划草稿。仅在用户明确要创建执行计划或多 Agent 分工时调用；普通问答、单步工作和规划设计（DESIGN）研究不要调用。',
-    promptSnippet: '把明确的多步骤协作需求写入小规协作计划，等待用户批准',
-    promptGuidelines: [
-      '用户明确要求任务拆分、分工、多 Agent 协作或建立执行计划时，使用 xiaogui_create_collaboration_plan。',
-      '先从自然语言提炼目标、可验收任务和真实依赖；不要让用户填写 taskKey、依赖标识等内部字段。',
-      '此工具只创建待批准草稿，不代表用户已经批准或开始执行。',
-    ],
+    ...TOOL_PROMPT,
     parameters: PlanDraftSchema,
     executionMode: 'sequential',
     async execute(toolCallId, params, signal) {

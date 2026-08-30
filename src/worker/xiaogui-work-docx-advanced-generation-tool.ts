@@ -1,10 +1,12 @@
 import { createSyntheticSourceInfo, defineTool, type Extension, type LoadExtensionsResult } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
+import { XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 } from '@shared/xiaogui-prompt-capabilities'
 import { XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1, type XiaoguiWorkDocxAdvancedGenerationResultV1, type WorkerHostToolErrorCodeV1 } from '@shared/worker-host-tools'
 import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 
-export const XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_TOOL_NAME = 'xiaogui_work_docx_advanced_generation'
+const TOOL_PROMPT = XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1.xiaogui_work_docx_advanced_generation
+export const XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_TOOL_NAME = TOOL_PROMPT.name
 const ValueSchema = Type.Union([Type.String({ maxLength: 20_000 }), Type.Number(), Type.Boolean()])
 const DataSchema = Type.Object({
   dataVersion: Type.Literal(1),
@@ -41,18 +43,7 @@ function publicText(details: SafeDetails): string {
 export function addXiaoguiWorkDocxAdvancedGenerationTool(loaded: LoadExtensionsResult, options: XiaoguiWorkDocxAdvancedGenerationToolOptionsV1): LoadExtensionsResult {
   const sourceInfo = createSyntheticSourceInfo('<builtin:xiaogui-work-docx-advanced-generation>', { source: 'xiaogui-desktop', scope: 'temporary', origin: 'top-level' })
   const definition = defineTool<typeof ActionSchema, SafeDetails>({
-    name: XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_TOOL_NAME,
-    label: '按小规模板生成 Word 成品',
-    description: '从包含小规重复块或条件块的正式模板生成只读预览，并在下一轮确认后另存全新 Word 成品。',
-    promptSnippet: '自然语言选择正式模板、补齐普通字段和结构槽位、预览、确认另存、恢复或取消',
-    promptGuidelines: [
-      '用户明确要求按正式模板生成含重复块或条件块的 Word 成品时调用 START；不要要求用户手写工具参数。',
-      'START 返回结构摘要后，从当前对话整理 PREPARE 数据；每个名称和槽位必须与摘要完全一致。',
-      '无法确定的字段、重复块或条件决定必须标为 UNRESOLVED，并向用户追问；不要猜测旧项目内容。',
-      'PREPARE 打开预览后必须结束本轮；只有用户下一条消息明确确认才调用 CONFIRM。',
-      '不要展示或索要源模板、预览、成品、数据库或临时目录的绝对路径。',
-      '不得声称覆盖或修改了原模板；成品只能另存为不存在的新 DOCX。',
-    ],
+    ...TOOL_PROMPT,
     parameters: ActionSchema,
     executionMode: 'sequential',
     async execute(toolCallId, params, signal) {

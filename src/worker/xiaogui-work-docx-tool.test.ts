@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LoadExtensionsResult } from '@earendil-works/pi-coding-agent'
+import { XIAOGUI_LEGACY_WORK_DOCX_TOOL_PROMPT_DEFINITION_V1 } from '@shared/xiaogui-prompt-capabilities'
 
 import { addXiaoguiWorkDocxTool, XIAOGUI_WORK_DOCX_TOOL_NAME } from './xiaogui-work-docx-tool'
 
@@ -36,6 +37,8 @@ describe('xiaogui WORK DOCX Pi tool', () => {
     const tool = loadTool()
 
     expect(tool?.label).toBe('生成 DOCX')
+    expect(tool?.promptGuidelines)
+      .toBe(XIAOGUI_LEGACY_WORK_DOCX_TOOL_PROMPT_DEFINITION_V1.promptGuidelines)
     expect(tool?.parameters).toMatchObject({ type: 'object', required: ['action'] })
     expect(tool?.promptGuidelines?.join('\n')).toContain('不得在 PREPARE 的同一轮调用')
     expect(tool?.promptGuidelines?.join('\n')).toContain('不要让用户输入路径')
