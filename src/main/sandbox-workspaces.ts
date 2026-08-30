@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync
 import { randomUUID } from 'crypto'
 import { resolveActiveDesktopDir } from './agent-dir'
 import { isWslRuntimeActive } from './wsl/runtime-config'
+import { normalizePathKey } from './xiaogui/path-key'
 
 const META_FILE = '.pi-desktop-sandbox.json'
 
@@ -132,6 +133,26 @@ export function bindSandboxSession(path: string, sessionId: string, sessionFile?
   writeFileSync(join(path, META_FILE), JSON.stringify(meta, null, 2), 'utf-8')
   return true
 }
+
+/** True only for a Session file explicitly recorded in this managed sandbox. */
+export function sandboxOwnsSessionFile(path: string, sessionFile: string): boolean {
+  if (!isSandboxWorkspacePath(path)) return false
+  const bound = readMeta(path)?.sessionFile
+  return !!bound && normalizePathKey(bound) === normalizePathKey(sessionFile)
+}
+
+/** Recover the managed sandbox identity for legacy Session headers with a stale cwd. */
+export function findSandboxWorkspaceForSessionFile(sessionFile: string): string | null {
+  const target = normalizePathKey(sessionFile)
+  if (!target) return null
+  for (const sandbox of listSandboxWorkspaces()) {
+    if (sandbox.sessionFile && normalizePathKey(sandbox.sessionFile) === target) {
+      return sandbox.path
+    }
+  }
+  return null
+}
+
 export function deleteSandboxWorkspace(path: string): boolean {
   if (!isSandboxWorkspacePath(path)) return false
   try {

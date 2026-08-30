@@ -12,6 +12,13 @@ type RouteState = {
 }
 
 export function resolveAppEventRoute(state: RouteState, event: SessionScopedAppEvent): AppEventRoute {
+  const viewFile = state.historySessionFile
+  const evFile = event.sessionFile
+  // The absolute Session file is the most specific identity carried by a
+  // trusted Worker event. Legacy sandbox records can retain an older header
+  // workspace; do not hide a reply that belongs to the exact visible file.
+  if (evFile && viewFile && sessionFilesEqual(evFile, viewFile)) return 'visible'
+
   const evWs = event.workspaceId
   const viewWs = state.currentWorkspace
   if (evWs && viewWs && evWs !== viewWs) {
@@ -19,9 +26,7 @@ export function resolveAppEventRoute(state: RouteState, event: SessionScopedAppE
     return 'drop'
   }
 
-  const viewFile = state.historySessionFile
   const workerFile = state.workerLiveSnapshot.sessionFile
-  const evFile = event.sessionFile
   const viewSid = state.currentSessionId
   const workerSid = state.workerLiveSnapshot.sessionId
   const evSid = event.sessionId

@@ -53,6 +53,7 @@ import {
 } from './session-leaf-override'
 import { observeAppEventForCompletion, observeWorkerExitForCompletion } from './completion-notification-events'
 import type { XiaoguiPromptContextResolverV1 } from './xiaogui/prompt-context'
+import { findSandboxWorkspaceForSessionFile } from './sandbox-workspaces'
 
 interface InitResult extends WorkerInitResult {}
 
@@ -326,10 +327,15 @@ export class WorkerManager {
     const cap = canAcquireNewWorker(this.pool)
     if (!cap.ok) throw new Error(cap.reason)
 
+    // A cold Worker starts by creating a temporary in-memory/new Pi Session.
+    // Do not attach the target Session identity to that bootstrap Session: the
+    // first loadSession would otherwise observe the same opaque sessionKey on
+    // two different Session files and correctly reject the transition.
+    const bootstrapPromptContext = await this.workspacePromptContext(cwd, promptContext.mode)
     const { slot, init } = await forkWorkerForCwd(cwd, {
       poolKey: sk,
       sessionFile: sk,
-      promptContext,
+      promptContext: bootstrapPromptContext,
     })
     this.pool.set(sk, slot)
 
@@ -474,12 +480,16 @@ export class WorkerManager {
     return null
   }
 
+  private sessionWorkspaceCwd(sessionFile: string): string | null {
+    return findSandboxWorkspaceForSessionFile(sessionFile) ?? readSessionMetaFromFile(sessionFile)?.cwd ?? null
+  }
+
   private async resolveSlotForRpc(sessionFile?: string | null): Promise<WorkerSlot> {
     if (sessionFile) {
       const sk = normalizeSessionKey(sessionFile)
       const bySession = this.pool.get(sk)
       if (bySession && !bySession.stopping) return bySession
-      const sessionCwd = readSessionMetaFromFile(sessionFile)?.cwd
+      const sessionCwd = this.sessionWorkspaceCwd(sessionFile)
       const cwd = this.resolveWorkspaceCwd(sessionCwd)
       if (!cwd) throw new Error('Worker not started for session')
       await this.ensureSessionWorkerUnlocked(sessionFile, cwd)
@@ -620,7 +630,7 @@ export class WorkerManager {
     model?: string
     thinkingLevel?: string
   }> {
-    const sessionCwd = readSessionMetaFromFile(opts.sessionFile)?.cwd
+    const sessionCwd = this.sessionWorkspaceCwd(opts.sessionFile)
     const cwd = this.resolveWorkspaceCwd(sessionCwd)
     if (!cwd) return { error: 'worker_not_ready' }
     await this.focusSessionWorker(opts.sessionFile, cwd)
@@ -677,7 +687,7 @@ export class WorkerManager {
     model?: string
     thinkingLevel?: string
   }> {
-    const sessionCwd = readSessionMetaFromFile(opts.sessionFile)?.cwd
+    const sessionCwd = this.sessionWorkspaceCwd(opts.sessionFile)
     const cwd = this.resolveWorkspaceCwd(sessionCwd)
     if (!cwd) return { error: 'worker_not_ready' }
     await this.focusSessionWorker(opts.sessionFile, cwd)
@@ -955,7 +965,7 @@ export class WorkerManager {
   }> {
     // A session header owns its workspace identity. Foreground/config cwd is only a
     // fallback for legacy or incomplete files without a header cwd.
-    const sessionCwd = readSessionMetaFromFile(sessionFile)?.cwd
+    const sessionCwd = this.sessionWorkspaceCwd(sessionFile)
     const cwd = this.resolveWorkspaceCwd(sessionCwd || opts?.cwd)
     if (!cwd) throw new Error('Worker not started for session')
     await this.ensureSessionWorker(sessionFile, cwd)

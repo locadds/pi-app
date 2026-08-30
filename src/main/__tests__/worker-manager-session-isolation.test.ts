@@ -15,6 +15,9 @@ vi.mock('../config-store', () => ({
 vi.mock('../session-file-meta', () => ({
   readSessionMetaFromFile: vi.fn(() => ({ cwd: '/workspace' })),
 }))
+vi.mock('../sandbox-workspaces', () => ({
+  findSandboxWorkspaceForSessionFile: vi.fn(() => null),
+}))
 vi.mock('../xiaogui/prompt-context-runtime', () => ({
   xiaoguiPromptContextResolverV1: {
     forWorkspace: vi.fn(async (_cwd: string, mode = 'WORK') => ({
@@ -156,6 +159,35 @@ describe('WorkerManager session isolation', () => {
       promptContext: expect.objectContaining({
         schemaVersion: 1,
         sessionKey: `xgs1_${Buffer.from(createdFile).toString('hex')}`,
+      }),
+    }))
+  })
+
+  it('bootstraps a cold Session worker without pre-binding the target Session identity', async () => {
+    const manager = new WorkerManager()
+    const targetFile = normalizeSessionKey('/sessions/cold.jsonl')
+    const created = fakeSlot(targetFile)
+    replyFrom(created, {
+      type: 'loadSession-done',
+      sessionId: 'cold',
+      sessionFile: targetFile,
+    })
+    forkWorkerForCwd.mockResolvedValue({
+      slot: created,
+      init: Promise.resolve({ sessionId: 'bootstrap' }),
+    })
+
+    await manager.ensureSessionWorker(targetFile, '/workspace')
+
+    expect(forkWorkerForCwd).toHaveBeenCalledWith('/workspace', expect.objectContaining({
+      sessionFile: targetFile,
+      promptContext: expect.not.objectContaining({ sessionKey: expect.any(String) }),
+    }))
+    expect(created.worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'loadSession',
+      sessionFile: targetFile,
+      promptContext: expect.objectContaining({
+        sessionKey: `xgs1_${Buffer.from(targetFile).toString('hex')}`,
       }),
     }))
   })

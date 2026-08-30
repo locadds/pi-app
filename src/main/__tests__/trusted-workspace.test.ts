@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   currentProject: null as string | null,
   recentProjects: [] as string[],
   sandboxPath: '' as string,
+  sandboxOwnsSession: false,
+  sandboxBinding: null as string | null,
   runtime: { mode: 'host' as 'host' | 'wsl', distro: null as string | null },
   readSessionMetaFromFile: vi.fn(),
 }))
@@ -29,7 +31,9 @@ vi.mock('../config-store', () => ({
 }))
 
 vi.mock('../sandbox-workspaces', () => ({
+  findSandboxWorkspaceForSessionFile: vi.fn(() => mocks.sandboxBinding),
   isSandboxWorkspacePath: vi.fn((path: string) => path === mocks.sandboxPath),
+  sandboxOwnsSessionFile: vi.fn(() => mocks.sandboxOwnsSession),
 }))
 
 vi.mock('../wsl/runtime-config', () => ({
@@ -48,6 +52,8 @@ describe('authorizeTrustedSessionFile', () => {
     mocks.currentProject = null
     mocks.recentProjects = []
     mocks.sandboxPath = join(sandboxRoot, 'managed')
+    mocks.sandboxOwnsSession = false
+    mocks.sandboxBinding = null
     mkdirSync(mocks.sandboxPath, { recursive: true })
     mocks.runtime = { mode: 'host', distro: null }
     mocks.readSessionMetaFromFile.mockReset()
@@ -99,6 +105,29 @@ describe('authorizeTrustedSessionFile', () => {
     expect(authorizeTrustedSessionFile('/evil', '/sessions/evil.jsonl')).toEqual({
       ok: false,
       error: 'cwd_not_trusted',
+    })
+  })
+
+  it('accepts a stale Session header only when private sandbox metadata owns that exact file', () => {
+    mocks.readSessionMetaFromFile.mockReturnValue({ sessionId: 'session-s', cwd: '/legacy' })
+    expect(authorizeTrustedSessionFile(mocks.sandboxPath, '/sessions/sandbox.jsonl')).toEqual({
+      ok: false,
+      error: 'session_workspace_mismatch',
+    })
+
+    mocks.sandboxOwnsSession = true
+    expect(authorizeTrustedSessionFile(mocks.sandboxPath, '/sessions/sandbox.jsonl')).toEqual({
+      ok: true,
+      cwd: mocks.sandboxPath,
+      sessionFile: '/sessions/sandbox.jsonl',
+    })
+
+    mocks.sandboxOwnsSession = false
+    mocks.sandboxBinding = mocks.sandboxPath
+    expect(authorizeTrustedSessionFile('/legacy', '/sessions/sandbox.jsonl')).toEqual({
+      ok: true,
+      cwd: mocks.sandboxPath,
+      sessionFile: '/sessions/sandbox.jsonl',
     })
   })
 
