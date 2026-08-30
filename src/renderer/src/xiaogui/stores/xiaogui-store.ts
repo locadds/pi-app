@@ -80,7 +80,7 @@ interface XiaoguiStoreState {
   lastError: string | null
 
   refreshMode: () => Promise<void>
-  switchMode: (mode: XiaoguiMode) => Promise<void>
+  switchMode: (mode: XiaoguiMode) => Promise<boolean>
   refreshExecutionPhase: () => Promise<void>
   switchExecutionPhase: (phase: ExecutionPhase) => Promise<void>
   refreshSidecarStatus: () => Promise<void>
@@ -109,18 +109,26 @@ export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
   },
 
   switchMode: async (mode) => {
+    const previousMode = get().mode
     set({ mode }) // 乐观更新
     // 切模式立即回到新模式首屏（只清视图绑定，后台会话继续运行）
     navigateToModeHome()
     try {
       const res = await ipcClient.invoke('xiaogui.mode.switch', { mode })
-      if (res?.mode) set({ mode: res.mode as XiaoguiMode })
+      if (res?.ok === true && res.mode === mode) {
+        set({ mode })
+        void refreshWorkspaceSessionLists()
+        return true
+      }
+      console.warn('[xiaogui] mode.switch 响应错配:', res)
     } catch (e) {
       console.error('[xiaogui] mode.switch 失败:', e)
-      void get().refreshMode()
     }
+    set({ mode: previousMode })
+    await get().refreshMode()
     // 模式切换后主动刷新会话列表，让侧栏按新模式重新过滤（小规 scope）
     void refreshWorkspaceSessionLists()
+    return false
   },
 
   refreshExecutionPhase: async () => {

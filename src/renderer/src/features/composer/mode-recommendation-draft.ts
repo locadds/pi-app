@@ -19,7 +19,7 @@ export function canPreserveComposerSegments(segments: readonly Segment[]): boole
 export async function switchModePreservingComposerDraftV1(input: {
   readonly targetMode: XiaoguiMode
   readonly segments: readonly Segment[]
-  readonly switchMode: (mode: XiaoguiMode) => Promise<void>
+  readonly switchMode: (mode: XiaoguiMode) => Promise<boolean>
   readonly getTargetDraftContextKey: () => string
   readonly restoreSegments: (segments: Segment[]) => void
 }): Promise<boolean> {
@@ -33,7 +33,11 @@ export async function switchModePreservingComposerDraftV1(input: {
   })
   const switchPromise = input.switchMode(input.targetMode)
   rememberTransientComposerDraft(input.getTargetDraftContextKey(), preservedSegments)
-  await switchPromise
-  input.restoreSegments(preservedSegments)
-  return true
+  let switched = false
+  try {
+    switched = await switchPromise
+  } finally {
+    input.restoreSegments(preservedSegments)
+  }
+  return switched
 }

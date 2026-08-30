@@ -29,8 +29,8 @@ afterEach(() => {
 
 describe('mode recommendation draft preservation', () => {
   it('waits for switchMode, preserves rich input, and never sends it', async () => {
-    let finishSwitch!: () => void
-    const switchPromise = new Promise<void>((resolve) => {
+    let finishSwitch!: (switched: boolean) => void
+    const switchPromise = new Promise<boolean>((resolve) => {
       finishSwitch = resolve
     })
     const switchMode = vi.fn(() => switchPromise)
@@ -49,7 +49,7 @@ describe('mode recommendation draft preservation', () => {
     expect(readTransientComposerDraft('workspace:C:/workspace')).toEqual(richDraft)
     expect(restoreSegments).not.toHaveBeenCalled()
 
-    finishSwitch()
+    finishSwitch(true)
     await expect(resultPromise).resolves.toBe(true)
     expect(restoreSegments).toHaveBeenCalledOnce()
     expect(restoreSegments).toHaveBeenCalledWith(richDraft)
@@ -60,7 +60,7 @@ describe('mode recommendation draft preservation', () => {
       { type: 'text', text: 'draft' },
       { type: 'file', attachment: { path: '', name: 'pending.ts', kind: 'code' } },
     ]
-    const switchMode = vi.fn(async () => {})
+    const switchMode = vi.fn(async () => true)
 
     expect(canPreserveComposerSegments(segments)).toBe(false)
     await expect(
@@ -73,5 +73,22 @@ describe('mode recommendation draft preservation', () => {
       }),
     ).resolves.toBe(false)
     expect(switchMode).not.toHaveBeenCalled()
+  })
+
+  it('returns false but still restores the rich draft when switchMode fails', async () => {
+    const restoreSegments = vi.fn()
+
+    await expect(
+      switchModePreservingComposerDraftV1({
+        targetMode: 'CODING',
+        segments: richDraft,
+        switchMode: vi.fn(async () => false),
+        getTargetDraftContextKey: () => 'workspace:C:/workspace',
+        restoreSegments,
+      }),
+    ).resolves.toBe(false)
+
+    expect(restoreSegments).toHaveBeenCalledOnce()
+    expect(restoreSegments).toHaveBeenCalledWith(richDraft)
   })
 })
