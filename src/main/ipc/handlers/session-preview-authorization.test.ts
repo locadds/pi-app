@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   getTree: vi.fn(),
   getMessages: vi.fn(),
   getState: vi.fn(),
+  scopeResolve: vi.fn(),
 }))
 
 vi.mock('../registry', () => ({
@@ -67,7 +68,7 @@ vi.mock('../../session-bind-state', () => ({
   setPendingWorkerSessionFile: vi.fn(),
 }))
 vi.mock('../../xiaogui/scope-service', () => ({
-  sessionScopeResolverV1: { resolve: vi.fn(), registerNew: vi.fn(), derive: vi.fn() },
+  sessionScopeResolverV1: { resolve: mocks.scopeResolve, registerNew: vi.fn(), derive: vi.fn() },
 }))
 vi.mock('../../xiaogui/sidecar-bridge', () => ({
   xiaogui: { setMode: vi.fn(), getMode: vi.fn(() => 'WORK') },
@@ -100,6 +101,12 @@ describe('session preview authorization', () => {
     mocks.getTree.mockReset()
     mocks.getMessages.mockReset()
     mocks.getState.mockReset()
+    mocks.scopeResolve.mockReset()
+    mocks.scopeResolve.mockResolvedValue({
+      projectId: `xgp1_${'1'.repeat(64)}`,
+      sessionKey: `xgs1_${'2'.repeat(64)}`,
+      sessionMode: 'WORK',
+    })
     mocks.deleteSessionFile.mockReset()
     mocks.deleteSessionFile.mockResolvedValue({ ok: true })
     mocks.invalidateListSessions.mockReset()
@@ -115,6 +122,33 @@ describe('session preview authorization', () => {
     expect(mocks.invalidateListSessions.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.listSessions.mock.invocationCallOrder[0],
     )
+  })
+
+  it('skips one unauthorized historical row instead of failing the whole session list', async () => {
+    mocks.listSessions.mockResolvedValue([
+      {
+        id: 'stale-id',
+        path: '/sessions/stale.jsonl',
+        cwd: '/legacy',
+        firstMessage: 'stale',
+      },
+      {
+        id: 'valid-id',
+        path: '/sessions/valid.jsonl',
+        cwd: '/workspace',
+        firstMessage: 'valid',
+      },
+    ])
+    mocks.authorizeTrustedSessionFile.mockImplementation((_cwd: string, sessionFile: string) =>
+      sessionFile.endsWith('/stale.jsonl')
+        ? { ok: false, error: 'cwd_not_trusted' }
+        : { ok: true, cwd: '/workspace', sessionFile },
+    )
+
+    await expect(mocks.handlers.get('ipc:session.list')!({ workspaceId: '/workspace' }))
+      .resolves.toEqual({
+        sessions: [expect.objectContaining({ sessionId: 'valid-id' })],
+      })
   })
 
   it.each([

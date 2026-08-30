@@ -68,14 +68,22 @@ export async function materializePendingNewSession(
   const { refreshComposerRunDisplay } = await import('@renderer/lib/composer-run-display')
   void refreshComposerRunDisplay()
 
-  const listRes = await ipcClient.invoke('session.list', { workspaceId })
-  let sessions = (listRes?.sessions || []) as Array<{
+  type ListedSession = {
     sessionId: string
     sessionFile?: string
     title?: string
     updatedAt?: number
     canonicalScope?: SessionItem['canonicalScope']
-  }>
+  }
+  let sessions = [...useUIStore.getState().sessions] as ListedSession[]
+  try {
+    const listRes = await ipcClient.invoke('session.list', { workspaceId })
+    sessions = (listRes?.sessions || []) as ListedSession[]
+  } catch {
+    // Sidebar refresh is best-effort and must never block the first prompt.
+    // Keep the already-created local row and refresh again after the prompt.
+    console.warn('[new-session] sidebar session refresh failed; keeping the local session list')
+  }
   const row = {
     sessionId,
     sessionFile,

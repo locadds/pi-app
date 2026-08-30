@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const invoke = vi.fn()
 const store = {
   runState: { model: 'openai/org/model/v2', thinkingLevel: 'high' },
+  sessions: [] as Array<Record<string, unknown>>,
   clearPendingNewSessionPlaceholder: vi.fn(),
   setCurrentSession: vi.fn(),
   clearFileChanges: vi.fn(),
@@ -38,6 +39,7 @@ describe('new session model preselection', () => {
     store.clearFileChanges.mockReset()
     store.setHistoryMeta.mockReset()
     store.setSessions.mockReset()
+    store.sessions = []
   })
 
   it('binds the created session before model confirmation completes', async () => {
@@ -164,5 +166,32 @@ describe('new session model preselection', () => {
     )
     expect(invoke).not.toHaveBeenCalledWith('thinkingLevel.set', expect.anything())
     expect(invoke).not.toHaveBeenCalledWith('session.list', expect.anything())
+  })
+
+  it('keeps first-message sending available when the sidebar session refresh fails', async () => {
+    store.sessions = [{ sessionId: 'existing-id', title: '已有会话', updatedAt: 1 }]
+    invoke.mockImplementation(async (method: string) => {
+      if (method === 'session.new') {
+        return {
+          session: {
+            sessionId: 'new-id',
+            sessionFile: 'C:/sessions/new.jsonl',
+            canonicalScope,
+          },
+        }
+      }
+      if (method === 'session.setPendingBind') return { ok: true }
+      if (method === 'model.set') return { modelId: 'openai/org/model/v2' }
+      if (method === 'thinkingLevel.set') return { ok: true }
+      if (method === 'session.list') throw new Error('cwd_not_trusted')
+      return { ok: true }
+    })
+
+    await expect(materializePendingNewSession('D:/workspace', 'first prompt')).resolves.toBeUndefined()
+
+    expect(store.setSessions).toHaveBeenCalledWith([
+      expect.objectContaining({ sessionId: 'new-id', title: 'first prompt' }),
+      expect.objectContaining({ sessionId: 'existing-id' }),
+    ])
   })
 })

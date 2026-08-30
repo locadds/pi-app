@@ -83,24 +83,36 @@ export function registerSessionHandlers(): void {
       await sessionPreviewProcess.invalidateListSessions(workspaceId)
     }
     const sessions = workspaceId ? await sessionPreviewProcess.listSessions(workspaceId) : []
-    const formatted = await Promise.all(
+    const candidates = await Promise.all(
       sessions.map(async (s: SessionOnDiskRow) => {
-        const sessionWorkspace = s.cwd || workspaceId
-        const { scope } = await resolveTrustedSessionScope(sessionWorkspace, s.path)
-        return {
-          sessionId: s.id,
-          sessionFile: s.path,
-          workspaceId: sessionWorkspace,
-          title: resolveSessionListTitle(s.path, s.firstMessage?.slice(0, 60) || s.id.slice(0, 8), s.name),
-          createdAt: s.created?.getTime() || 0,
-          updatedAt: s.modified?.getTime() || 0,
-          messageCount: s.messageCount || 0,
-          modelId: '',
-          status: 'idle' as const,
-          canonicalScope: publicSessionScope(scope),
+        try {
+          const sessionWorkspace = s.cwd || workspaceId
+          const { scope } = await resolveTrustedSessionScope(sessionWorkspace, s.path)
+          return {
+            sessionId: s.id,
+            sessionFile: s.path,
+            workspaceId: sessionWorkspace,
+            title: resolveSessionListTitle(s.path, s.firstMessage?.slice(0, 60) || s.id.slice(0, 8), s.name),
+            createdAt: s.created?.getTime() || 0,
+            updatedAt: s.modified?.getTime() || 0,
+            messageCount: s.messageCount || 0,
+            modelId: '',
+            status: 'idle' as const,
+            canonicalScope: publicSessionScope(scope),
+          }
+        } catch (error) {
+          // SessionManager.list is trusted discovery output, but one legacy or
+          // corrupt row must not prevent a new message from being sent. Keep the
+          // row hidden and avoid logging its local path.
+          console.warn(
+            '[session.list] skipped an invalid historical session:',
+            errorMessage(error) || 'authorization_failed',
+          )
+          return null
         }
       }),
     )
+    const formatted = candidates.filter((session): session is NonNullable<typeof session> => session !== null)
     return { sessions: formatted }
   })
 
