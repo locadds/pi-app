@@ -8,6 +8,13 @@ const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Xcw6WQAAAABJRU5ErkJggg==',
   'base64',
 )
+const JPEG_16X16 = Buffer.from(
+  '/9j/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAAQABADAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFgEBAQEAAAAAAAAAAAAAAAAAAAYI/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AjSSb4AAAf//Z',
+  'base64',
+)
+const GIF_2X2 = Buffer.from('R0lGODlhAgACAIAAAExpcdwePCH5BAUAAAAALAAAAAACAAIAAAICjFMAOw==', 'base64')
+const BMP_1X1 = Buffer.from('Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAPB7cAA==', 'base64')
+const WEBP_2X2 = Buffer.from('UklGRjgAAABXRUJQVlA4ICwAAACQAQCdASoCAAIAAUAmJaACdLoAA5gA/vAb38Qu9kOf/37S/8Cd/8Cd/0MAAA==', 'base64')
 
 function drawingMl(relationshipId: string, kind: 'inline' | 'anchor', width: number, height: number): string {
   return `<w:r><w:drawing><wp:${kind}>
@@ -65,15 +72,15 @@ async function makeDrawingFixture(): Promise<{ zip: JSZip; mainXml: string }> {
   zip.file('word/_rels/footer1.xml.rels', `<Relationships>${relationship('rWebp', 'media/image.webp')}</Relationships>`)
 
   zip.file('word/media/image.png', PNG_1X1)
-  zip.file('word/media/image.jpeg', Buffer.from([0xff, 0xd8, 0xff, 0xd9]))
-  zip.file('word/media/image.gif', Buffer.from('GIF89a', 'ascii'))
+  zip.file('word/media/image.jpeg', JPEG_16X16)
+  zip.file('word/media/image.gif', GIF_2X2)
   zip.file('word/media/svg-fallback.png', PNG_1X1)
   zip.file('word/media/image.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))
   zip.file('word/media/image.emf', Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]))
   zip.file('word/media/image.wmf', Buffer.from([0xd7, 0xcd, 0xc6, 0x9a]))
   zip.file('word/media/image.tiff', Buffer.from([0x49, 0x49, 0x2a, 0x00]))
-  zip.file('word/media/image.bmp', Buffer.from('BM', 'ascii'))
-  zip.file('word/media/image.webp', Buffer.from('RIFF0000WEBP', 'ascii'))
+  zip.file('word/media/image.bmp', BMP_1X1)
+  zip.file('word/media/image.webp', WEBP_2X2)
   zip.file('word/media/object-preview.png', PNG_1X1)
   zip.file('word/embeddings/object.bin', Buffer.from([1, 2, 3]))
   return { zip, mainXml }
