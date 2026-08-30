@@ -1,4 +1,6 @@
 import JSZip from 'jszip'
+import { DocumentDataModel } from '@univerjs/core'
+import { DocumentViewModel } from '@univerjs/engine-render'
 import { describe, expect, it } from 'vitest'
 
 import { projectDocxToUniverV1 } from './docx-univer-projection'
@@ -34,6 +36,97 @@ async function makeDocx(): Promise<Buffer> {
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Xcw6WQAAAABJRU5ErkJggg==',
     'base64',
   ))
+  return zip.generateAsync({ type: 'nodebuffer' })
+}
+
+async function makeMergedTableDocx(): Promise<Buffer> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<Types/>')
+  zip.file('word/styles.xml', `
+    <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:style w:type="table" w:styleId="TableGrid">
+        <w:tblPr>
+          <w:tblBorders>
+            <w:top w:val="single" w:sz="12" w:color="1F4E78"/>
+            <w:left w:val="single" w:sz="12" w:color="1F4E78"/>
+            <w:bottom w:val="single" w:sz="12" w:color="1F4E78"/>
+            <w:right w:val="single" w:sz="12" w:color="1F4E78"/>
+            <w:insideH w:val="single" w:sz="6" w:color="5B9BD5"/>
+            <w:insideV w:val="single" w:sz="6" w:color="5B9BD5"/>
+          </w:tblBorders>
+        </w:tblPr>
+      </w:style>
+    </w:styles>
+  `)
+  zip.file('word/document.xml', `
+    <w:document
+      xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+      xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+      xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+      xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+      xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+    >
+      <w:body>
+        <w:p><w:r><w:t>表格前</w:t></w:r></w:p>
+        <w:tbl>
+          <w:tblPr>
+            <w:tblStyle w:val="TableGrid"/>
+            <w:tblW w:w="7200" w:type="dxa"/>
+            <w:jc w:val="center"/>
+            <w:tblLayout w:type="fixed"/>
+          </w:tblPr>
+          <w:tblGrid>
+            <w:gridCol w:w="1800"/><w:gridCol w:w="2400"/><w:gridCol w:w="3000"/>
+          </w:tblGrid>
+          <w:tr>
+            <w:trPr><w:trHeight w:val="600" w:hRule="exact"/></w:trPr>
+            <w:tc>
+              <w:tcPr><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/><w:shd w:fill="FFF2CC"/><w:vAlign w:val="center"/></w:tcPr>
+              <w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="C00000"/></w:rPr><w:t>合并标题</w:t></w:r><w:r><w:drawing><wp:inline><wp:extent cx="952500" cy="476250"/><wp:docPr id="2" name="单元格图片"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="rIdImage1"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>
+            </w:tc>
+            <w:tc><w:p><w:r><w:t>末列</w:t></w:r></w:p></w:tc>
+          </w:tr>
+          <w:tr>
+            <w:trPr><w:trHeight w:val="450" w:hRule="atLeast"/></w:trPr>
+            <w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p/></w:tc>
+            <w:tc><w:p><w:r><w:t>责任单位</w:t></w:r></w:p></w:tc>
+          </w:tr>
+        </w:tbl>
+        <w:p><w:r><w:t>表格后</w:t></w:r></w:p>
+        <w:sectPr/>
+      </w:body>
+    </w:document>
+  `)
+  zip.file('word/_rels/document.xml.rels', `
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+      <Relationship Id="rIdImage1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+    </Relationships>
+  `)
+  zip.file('word/media/image1.png', Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Xcw6WQAAAABJRU5ErkJggg==',
+    'base64',
+  ))
+  return zip.generateAsync({ type: 'nodebuffer' })
+}
+
+async function makeNestedTableDocx(): Promise<Buffer> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<Types/>')
+  zip.file('word/document.xml', `
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:body>
+        <w:tbl>
+          <w:tblPr><w:tblW w:w="5000" w:type="pct"/></w:tblPr>
+          <w:tr><w:tc>
+            <w:p><w:r><w:t>外层前</w:t></w:r></w:p>
+            <w:tbl><w:tr><w:tc><w:p><w:r><w:t>嵌套内容</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+            <w:p><w:r><w:t>外层后</w:t></w:r></w:p>
+          </w:tc></w:tr>
+        </w:tbl>
+        <w:sectPr/>
+      </w:body>
+    </w:document>
+  `)
   return zip.generateAsync({ type: 'nodebuffer' })
 }
 
@@ -84,6 +177,7 @@ describe('DOCX 到 Office Surface 结构化投影', () => {
       body: {
         dataStream: string
         customBlocks?: Array<{ startIndex: number; blockId: string }>
+        tables?: Array<{ startIndex: number; endIndex: number; tableId: string }>
         textRuns: Array<{ st: number; ed: number; ts?: { bg?: { rgb?: string }; bl?: number; fs?: number } }>
       }
       drawings?: Record<string, { source?: string; imageSourceType?: string; docTransform?: { size?: { width?: number } } }>
@@ -94,6 +188,14 @@ describe('DOCX 到 Office Surface 结构化投影', () => {
     }
     expect(document.body.dataStream).toContain('\x1A\x1B\x1C')
     expect(Object.keys(document.tableSource ?? {})).toHaveLength(1)
+    const table = document.body.tables?.[0]
+    expect(document.body.dataStream).toContain('\x1D\x0E\x0F')
+    expect(table?.endIndex).toBe(document.body.dataStream.indexOf('\x0F') + 1)
+    const viewModel = new DocumentViewModel(new DocumentDataModel(projection.univerDocument))
+    expect(viewModel.findTableNodeById('xiaogui-table-body-0-1')).toMatchObject({
+      nodeType: 'TABLE',
+    })
+    viewModel.dispose()
     expect(document.documentStyle.pageSize?.width).toBeCloseTo(11906 / 15, 1)
     expect(document.body.customBlocks).toEqual([{ startIndex: 11, blockId: 'xiaogui-body-0-drawing-1', blockType: 0 }])
     expect(document.body.dataStream[11]).toBe('\b')
@@ -119,5 +221,122 @@ describe('DOCX 到 Office Surface 结构化投影', () => {
       ))).toBe(true)
     }
     expect(document.body.textRuns.some((run) => run.ts?.bl === 1 && run.ts?.fs === 16)).toBe(true)
+  })
+
+  it('把合并表格作为真实 Univer 表格渲染，并保持字段锚点与单元格图片', async () => {
+    const projection = await projectDocxToUniverV1({
+      content: await makeMergedTableDocx(),
+      title: '合并表格.docx',
+      purpose: 'TEMPLATE_DRAFT',
+      readOnly: false,
+      occurrences: [
+        {
+          occurrenceId: 'merged-title',
+          fieldId: 'table.title',
+          originalText: '合并标题',
+          sourceAnchor: { part: 'TABLE_CELL', tableIndex: 1, rowIndex: 1, cellIndex: 1 },
+          state: 'FIELD',
+        },
+        {
+          occurrenceId: 'owner',
+          fieldId: 'owner',
+          originalText: '责任单位',
+          sourceAnchor: { part: 'TABLE_CELL', tableIndex: 1, rowIndex: 2, cellIndex: 2 },
+          state: 'WARNING',
+        },
+      ],
+    })
+
+    expect(projection.statistics).toMatchObject({
+      tableCount: 1,
+      tableCellCount: 4,
+      mappedOccurrenceCount: 2,
+      unmappedOccurrenceCount: 0,
+    })
+    const document = projection.univerDocument as {
+      body: {
+        dataStream: string
+        tables: Array<{ startIndex: number; endIndex: number; tableId: string }>
+        paragraphs: Array<{ startIndex: number; paragraphStyle?: { horizontalAlign?: number } }>
+        customBlocks?: Array<{ startIndex: number; blockId: string }>
+        textRuns: Array<{ st: number; ed: number; ts?: { bg?: { rgb?: string }; bl?: number; cl?: { rgb?: string } } }>
+      }
+      tableSource: Record<string, {
+        align: number
+        tableRows: Array<{
+          trHeight: { val: { v: number }; hRule: number }
+          tableCells: Array<{
+            columnSpan?: number
+            rowSpan?: number
+            backgroundColor?: { rgb?: string }
+            borderRight?: { color?: { rgb?: string } }
+          }>
+        }>
+      }>
+    }
+    const table = document.body.tables[0]
+    const tableSource = document.tableSource[table.tableId]
+    expect(document.body.dataStream.slice(table.startIndex, table.endIndex)).toMatch(/^\x1A[\s\S]*\x0F$/)
+    expect(tableSource).toMatchObject({
+      align: 1,
+      tableRows: [
+        {
+          trHeight: { val: { v: 40 }, hRule: 2 },
+          tableCells: [
+            { columnSpan: 2, rowSpan: 2, backgroundColor: { rgb: '#FFF2CC' } },
+            { columnSpan: 0 },
+            expect.objectContaining({
+              borderRight: { color: { rgb: '#1F4E78' }, width: { v: 2 }, dashStyle: 1 },
+            }),
+          ],
+        },
+        {
+          trHeight: { val: { v: 30 }, hRule: 1 },
+          tableCells: [{ rowSpan: 0, columnSpan: 0 }, { rowSpan: 0, columnSpan: 0 }, expect.any(Object)],
+        },
+      ],
+    })
+    const viewModel = new DocumentViewModel(new DocumentDataModel(projection.univerDocument))
+    const tableNode = viewModel.findTableNodeById(table.tableId)
+    expect(tableNode?.children).toHaveLength(2)
+    expect(tableNode?.children.map((row) => row.children.length)).toEqual([3, 3])
+    viewModel.dispose()
+    const drawingIndex = document.body.dataStream.indexOf('\b', table.startIndex)
+    expect(drawingIndex).toBeGreaterThan(table.startIndex)
+    expect(drawingIndex).toBeLessThan(table.endIndex)
+    expect(document.body.customBlocks?.some((block) => block.startIndex === drawingIndex)).toBe(true)
+    for (const occurrence of projection.occurrences) {
+      expect(document.body.dataStream.slice(occurrence.startUtf16, occurrence.endUtf16Exclusive))
+        .toBe(occurrence.originalText)
+      expect(document.body.textRuns.some((run) => (
+        run.st <= occurrence.startUtf16
+        && occurrence.endUtf16Exclusive <= run.ed
+        && run.ts?.bg?.rgb?.startsWith('#FF')
+      ))).toBe(true)
+    }
+    const titleStart = document.body.dataStream.indexOf('合并标题')
+    expect(document.body.textRuns.some((run) => (
+      run.st <= titleStart && titleStart < run.ed && run.ts?.bl === 1 && run.ts?.cl?.rgb === '#C00000'
+    ))).toBe(true)
+    const titleParagraphEnd = document.body.dataStream.indexOf('\r', titleStart)
+    expect(document.body.paragraphs.find((paragraph) => paragraph.startIndex === titleParagraphEnd)?.paragraphStyle)
+      .toMatchObject({ horizontalAlign: 2 })
+  })
+
+  it('把不支持的嵌套表格与自动宽度提升为投影告警', async () => {
+    const projection = await projectDocxToUniverV1({
+      content: await makeNestedTableDocx(),
+      title: '嵌套表格.docx',
+      purpose: 'TEMPLATE_DRAFT',
+      readOnly: true,
+    })
+
+    expect(projection.plainText).toContain('外层前')
+    expect(projection.plainText).toContain('外层后')
+    expect(projection.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('嵌套表格'),
+      expect.stringContaining('百分比或自动宽度'),
+      expect.stringContaining('缺少 tblGrid'),
+    ]))
   })
 })

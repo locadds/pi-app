@@ -6,12 +6,15 @@ import type {
   IDocumentBody,
   IDocumentData,
   IParagraphStyle,
-  ITable,
-  ITableCell,
-  ITableRow,
   ITextRun,
   ITextStyle,
 } from '@univerjs/core'
+
+import {
+  adaptDocxTableToUniverV1,
+  createDocxTableStyleCatalogV1,
+  type DocxTableStyleCatalogV1,
+} from './docx-univer-table-adapter'
 
 const PARAGRAPH = '\r'
 const SECTION_BREAK = '\n'
@@ -21,8 +24,8 @@ const TABLE_START = '\x1A'
 const TABLE_ROW_START = '\x1B'
 const TABLE_CELL_START = '\x1C'
 const TABLE_CELL_END = '\x1D'
-const TABLE_ROW_END = '\x1E'
-const TABLE_END = '\x1F'
+const TABLE_ROW_END = '\x0E'
+const TABLE_END = '\x0F'
 const DRAWING_BLOCK = '\b'
 const EMU_PER_PIXEL = 9_525
 const POINTS_TO_PIXELS = 4 / 3
@@ -77,6 +80,7 @@ interface BodyBuildContextV1 {
   readonly part: 'BODY' | 'HEADER' | 'FOOTER'
   readonly partIndex: number
   readonly styles: StyleCatalogV1
+  readonly tableStyles: DocxTableStyleCatalogV1
   readonly documentId: string
   readonly partPath: string
   readonly relationships: ReadonlyMap<string, string>
@@ -101,7 +105,7 @@ interface MutableBodyV1 {
   paragraphs: NonNullable<IDocumentBody['paragraphs']>
   sectionBreaks: NonNullable<IDocumentBody['sectionBreaks']>
   tables: NonNullable<IDocumentBody['tables']>
-  tableSource: Record<string, ITable>
+  tableSource: NonNullable<IDocumentData['tableSource']>
   customBlocks: ICustomBlock[]
   drawings: Record<string, UniverImageDrawingV1>
   drawingsOrder: string[]
@@ -113,6 +117,7 @@ interface MutableBodyV1 {
   drawingCount: number
   renderedDrawingCount: number
   approximateFloatingDrawingCount: number
+  warnings: string[]
 }
 
 interface ParsedDrawingV1 {
@@ -141,6 +146,7 @@ export async function buildDocxUniverDocumentV1(
 ): Promise<DocxUniverDocumentBuildResultV1> {
   const stylesXml = await input.zip.file('word/styles.xml')?.async('string') ?? ''
   const styles = readStyleCatalog(stylesXml)
+  const tableStyles = createDocxTableStyleCatalogV1(stylesXml)
   const media = await readMediaAssets(input.zip)
   const drawingSequence = { value: 0 }
   const body = buildBody(
@@ -150,6 +156,7 @@ export async function buildDocxUniverDocumentV1(
       partIndex: 0,
       partPath: 'word/document.xml',
       styles,
+      tableStyles,
       documentId: input.documentId,
       media,
       drawingSequence,
@@ -165,6 +172,7 @@ export async function buildDocxUniverDocumentV1(
   const headers: NonNullable<IDocumentData['headers']> = {}
   const footers: NonNullable<IDocumentData['footers']> = {}
   const drawings: NonNullable<IDocumentData['drawings']> = { ...body.drawings }
+  const tableSource: NonNullable<IDocumentData['tableSource']> = { ...body.tableSource }
   const drawingsOrder = [...body.drawingsOrder]
   const headerFooterDrawingsOrder: string[] = []
   let headerParagraphCount = 0
@@ -172,6 +180,9 @@ export async function buildDocxUniverDocumentV1(
   let totalDrawingCount = body.drawingCount
   let totalRenderedDrawingCount = body.renderedDrawingCount
   let approximateFloatingDrawingCount = body.approximateFloatingDrawingCount
+  let totalTableCount = body.tableCount
+  let totalTableCellCount = body.tableCellCount
+  const tableWarnings = [...body.warnings]
 
   for (let index = 0; index < headerPaths.length; index += 1) {
     const xml = await input.zip.file(headerPaths[index])?.async('string')
@@ -183,6 +194,7 @@ export async function buildDocxUniverDocumentV1(
         partIndex: index + 1,
         partPath: headerPaths[index],
         styles,
+        tableStyles,
         documentId: input.documentId,
         media,
         drawingSequence,
@@ -191,11 +203,15 @@ export async function buildDocxUniverDocumentV1(
     const headerId = `xiaogui-header-${index + 1}`
     headers[headerId] = { headerId, body: toDocumentBody(built) }
     Object.assign(drawings, built.drawings)
+    Object.assign(tableSource, built.tableSource)
     headerFooterDrawingsOrder.push(...built.drawingsOrder)
     headerParagraphCount += built.paragraphCount
     totalDrawingCount += built.drawingCount
     totalRenderedDrawingCount += built.renderedDrawingCount
     approximateFloatingDrawingCount += built.approximateFloatingDrawingCount
+    totalTableCount += built.tableCount
+    totalTableCellCount += built.tableCellCount
+    tableWarnings.push(...built.warnings)
   }
   for (let index = 0; index < footerPaths.length; index += 1) {
     const xml = await input.zip.file(footerPaths[index])?.async('string')
@@ -207,6 +223,7 @@ export async function buildDocxUniverDocumentV1(
         partIndex: index + 1,
         partPath: footerPaths[index],
         styles,
+        tableStyles,
         documentId: input.documentId,
         media,
         drawingSequence,
@@ -215,16 +232,20 @@ export async function buildDocxUniverDocumentV1(
     const footerId = `xiaogui-footer-${index + 1}`
     footers[footerId] = { footerId, body: toDocumentBody(built) }
     Object.assign(drawings, built.drawings)
+    Object.assign(tableSource, built.tableSource)
     headerFooterDrawingsOrder.push(...built.drawingsOrder)
     footerParagraphCount += built.paragraphCount
     totalDrawingCount += built.drawingCount
     totalRenderedDrawingCount += built.renderedDrawingCount
     approximateFloatingDrawingCount += built.approximateFloatingDrawingCount
+    totalTableCount += built.tableCount
+    totalTableCellCount += built.tableCellCount
+    tableWarnings.push(...built.warnings)
   }
 
   const page = readPageStyle(sectionProperties)
   const mediaCount = Object.keys(input.zip.files).filter((path) => path.startsWith('word/media/')).length
-  const warnings: string[] = []
+  const warnings: string[] = [...tableWarnings]
   if (totalRenderedDrawingCount > 0) {
     warnings.push(`已从原文档导入 ${totalRenderedDrawingCount} 个图片对象；图片内容保留在本机私有工作副本中。`)
   }
@@ -284,7 +305,7 @@ export async function buildDocxUniverDocumentV1(
       textStyle: styles.defaultTextStyle,
     },
     body: toDocumentBody(body),
-    tableSource: Object.keys(body.tableSource).length ? body.tableSource : undefined,
+    tableSource: Object.keys(tableSource).length ? tableSource : undefined,
     headers: Object.keys(headers).length ? headers : undefined,
     footers: Object.keys(footers).length ? footers : undefined,
     drawings: Object.keys(drawings).length ? drawings : undefined,
@@ -302,8 +323,8 @@ export async function buildDocxUniverDocumentV1(
     warnings,
     statistics: {
       paragraphCount: body.paragraphCount + headerParagraphCount + footerParagraphCount,
-      tableCount: body.tableCount,
-      tableCellCount: body.tableCellCount,
+      tableCount: totalTableCount,
+      tableCellCount: totalTableCellCount,
       textBoxCount: body.textBoxCount,
       drawingCount: totalDrawingCount,
       mediaCount,
@@ -579,6 +600,7 @@ function buildBody(xml: string, context: BodyBuildContextV1): MutableBodyV1 {
     drawingCount: 0,
     renderedDrawingCount: 0,
     approximateFloatingDrawingCount: 0,
+    warnings: [],
   }
   const container = elementContent(xml, context.part === 'BODY' ? 'w:body' : context.part === 'HEADER' ? 'w:hdr' : 'w:ftr') ?? xml
   const blocks = collectOrderedBlocks(container, ['w:p', 'w:tbl'])
@@ -658,29 +680,28 @@ function appendTable(
   tableIndex: number,
 ): void {
   const tableId = `xiaogui-table-${context.part.toLowerCase()}-${context.partIndex}-${tableIndex}`
+  const adapted = adaptDocxTableToUniverV1({
+    tableXml,
+    tableId,
+    styles: context.tableStyles,
+  })
+  body.warnings.push(...adapted.warnings)
   const tableStart = body.dataStream.length
   body.dataStream += TABLE_START
-  const rowXmls = collectOrderedBlocks(tableXml, ['w:tr']).map((item) => item.xml)
-  const rows: ITableRow[] = []
-  let maximumColumnCount = 1
-  for (let rowIndex = 0; rowIndex < rowXmls.length; rowIndex += 1) {
+  for (const row of adapted.rows) {
     body.dataStream += TABLE_ROW_START
-    const cellXmls = collectOrderedBlocks(rowXmls[rowIndex], ['w:tc']).map((item) => item.xml)
-    maximumColumnCount = Math.max(maximumColumnCount, cellXmls.length)
-    const cells: ITableCell[] = []
-    for (let cellIndex = 0; cellIndex < cellXmls.length; cellIndex += 1) {
-      body.tableCellCount += 1
+    for (const cell of row.cells) {
       body.dataStream += TABLE_CELL_START
       const cellStart = body.dataStream.length
       const visible: VisibleAccumulatorV1 = { text: '', offsets: [] }
-      const paragraphs = collectOrderedBlocks(cellXmls[cellIndex], ['w:p'])
+      const paragraphs = cell.paragraphXmls
       if (!paragraphs.length) {
         body.dataStream += PARAGRAPH
         body.paragraphs.push({ startIndex: body.dataStream.length - 1, paragraphStyle: defaultParagraphStyle(context.styles) })
         body.paragraphCount += 1
       } else {
-        paragraphs.forEach((paragraph, paragraphInCellIndex) => {
-          const parsed = parseParagraph(paragraph.xml, context)
+        paragraphs.forEach((paragraphXml, paragraphInCellIndex) => {
+          const parsed = parseParagraph(paragraphXml, context)
           appendStyledText(body, parsed.streamText, parsed.textRuns, parsed.drawings, visible)
           const paragraphEnd = body.dataStream.length
           body.dataStream += PARAGRAPH
@@ -696,41 +717,22 @@ function appendTable(
       body.dataStream += SECTION_BREAK
       body.sectionBreaks.push({ startIndex: body.dataStream.length - 1 })
       body.dataStream += TABLE_CELL_END
-      visible.offsets.push(Math.max(cellStart, body.dataStream.length - 2))
-      body.anchors.push({
-        anchorKey: `${context.part}:${context.partIndex}:T:${tableIndex}:${rowIndex + 1}:${cellIndex + 1}`,
-        text: visible.text,
-        documentOffsets: visible.offsets,
-      })
-      cells.push(readTableCell(cellXmls[cellIndex]))
+      if (cell.sourceCellIndex !== undefined) {
+        visible.offsets.push(Math.max(cellStart, body.dataStream.length - 2))
+        body.anchors.push({
+          anchorKey: `${context.part}:${context.partIndex}:T:${tableIndex}:${row.sourceRowIndex}:${cell.sourceCellIndex}`,
+          text: visible.text,
+          documentOffsets: visible.offsets,
+        })
+      }
     }
     body.dataStream += TABLE_ROW_END
-    rows.push({
-      tableCells: cells,
-      trHeight: { val: { v: 30 }, hRule: 0 },
-      repeatHeaderRow: hasElement(rowXmls[rowIndex], 'w:tblHeader') ? 1 : 0,
-    })
   }
   body.dataStream += TABLE_END
-  const tableEnd = body.dataStream.length - 1
-  const columnWidths = readTableColumnWidths(tableXml, maximumColumnCount)
+  const tableEnd = body.dataStream.length
   body.tables.push({ startIndex: tableStart, endIndex: tableEnd, tableId })
-  body.tableSource[tableId] = {
-    tableId,
-    tableRows: rows,
-    tableColumns: columnWidths.map((width) => ({ size: { type: 1, width: { v: width } } })),
-    align: readTableAlignment(tableXml),
-    indent: { v: 0 },
-    textWrap: 0,
-    position: {
-      positionH: { relativeFrom: 0, posOffset: 0 },
-      positionV: { relativeFrom: 0, posOffset: 0 },
-    },
-    dist: { distT: 0, distB: 0, distL: 0, distR: 0 },
-    size: { type: 0, width: { v: columnWidths.reduce((sum, width) => sum + width, 0) } },
-    cellMargin: { start: { v: 8 }, end: { v: 8 }, top: { v: 4 }, bottom: { v: 4 } },
-    layout: hasAttributeValue(tableXml, 'w:tblLayout', 'w:type', 'fixed') ? 1 : 0,
-  }
+  body.tableSource[tableId] = adapted.table
+  body.tableCellCount += adapted.sourceCellCount
   body.tableCount += 1
 }
 
@@ -972,35 +974,6 @@ function readPageStyle(xml: string): {
   }
 }
 
-function readTableCell(xml: string): ITableCell {
-  const properties = firstElement(xml, 'w:tcPr') ?? ''
-  const span = numericAttributeOfFirst(properties, 'w:gridSpan', 'w:val')
-  const shading = attributeOfFirst(properties, 'w:shd', 'w:fill')
-  const width = numericAttributeOfFirst(properties, 'w:tcW', 'w:w')
-  return {
-    margin: { start: { v: 8 }, end: { v: 8 }, top: { v: 4 }, bottom: { v: 4 } },
-    ...(span && span > 1 ? { columnSpan: span } : {}),
-    ...(shading && shading !== 'auto' ? { backgroundColor: { rgb: normalizeColor(shading) } } : {}),
-    ...(width ? { size: { type: 1, width: { v: width / 15 } } } : {}),
-  }
-}
-
-function readTableColumnWidths(xml: string, count: number): number[] {
-  const grid = firstElement(xml, 'w:tblGrid') ?? ''
-  const widths = collectElements(grid, 'w:gridCol')
-    .map((column) => numericAttribute(firstOpenTag(column, 'w:gridCol') ?? '', 'w:w'))
-    .filter((value): value is number => value !== undefined && value > 0)
-    .map((value) => value / 15)
-  if (widths.length >= count) return widths.slice(0, count)
-  const fallback = 600 / Math.max(1, count)
-  return Array.from({ length: count }, (_, index) => widths[index] ?? fallback)
-}
-
-function readTableAlignment(xml: string): 0 | 1 | 2 {
-  const value = attributeOfFirst(xml, 'w:jc', 'w:val')
-  return value === 'center' ? 1 : value === 'right' || value === 'end' ? 2 : 0
-}
-
 function toDocumentBody(body: MutableBodyV1): IDocumentBody {
   return {
     dataStream: body.dataStream,
@@ -1112,11 +1085,6 @@ function firstOpenTag(xml: string, tag: string): string | undefined {
 
 function hasElement(xml: string, tag: string): boolean {
   return new RegExp(`<${escapeRegExp(tag)}\\b`, 'i').test(xml)
-}
-
-function hasAttributeValue(xml: string, tag: string, name: string, value: string): boolean {
-  const openTag = firstOpenTag(xml, tag)
-  return !!openTag && attribute(openTag, name) === value
 }
 
 function attributeOfFirst(xml: string, tag: string, name: string): string | undefined {
