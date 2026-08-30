@@ -10,6 +10,7 @@ afterEach(() => {
   st.promptContext = null
   st.promptContextCandidate = null
   st.promptDiagnostics = null
+  st.effectivePrompt = null
   st.agentTurnActive = false
   st.promptPreflightActive = false
 })
@@ -70,7 +71,7 @@ describe('Worker Prompt dispatch preflight', () => {
       sessionFile: 'C:\\sessions\\one.jsonl',
     } as unknown as AgentSession
     st.promptContextCandidate = context
-    st.promptPreflight = () => ({ context, diagnostics: {} as never })
+    st.promptPreflight = () => ({ prompt: 'effective prompt', context, diagnostics: {} as never })
     const reply = vi.fn()
 
     await handlePrompt({ text: 'do work' }, reply)

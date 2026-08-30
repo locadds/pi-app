@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ModelAuthProjectionRuntime } from '@shared/model-auth-projection'
 import {
+  handleGeteffectivepromptmanifest,
   handleGetmodels,
   handleGetmodelsettingssnapshot,
   handleGetsessioncontextpreview,
@@ -27,6 +28,96 @@ afterEach(() => {
   st.modelRuntime = null
   st.session = null
   st.currentSessionId = ''
+  st.promptDiagnostics = null
+  st.effectivePrompt = null
+  st.promptPreflight = null
+})
+
+describe('worker effective Prompt diagnostics handler', () => {
+  it('keeps Prompt text out of the default Manifest response and returns the same body only for advanced diagnostics', async () => {
+    st.currentSessionId = 'session-a'
+    st.session = { sessionFile: 'C:/sessions/a.jsonl' } as never
+    st.promptDiagnostics = {
+      manifest: {
+        schemaVersion: 1,
+        mode: 'WORK',
+        phase: 'EXECUTE',
+        workspaceAvailable: true,
+        projectTrusted: true,
+        capabilityIds: ['work.file-organize'],
+        toolNames: ['read'],
+        layers: [],
+        completePromptCharacterCount: 21,
+        completePromptSha256: 'f'.repeat(64),
+        generatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      migrationNotices: [],
+    }
+    st.effectivePrompt = 'complete prompt body!'
+    const manifestReply = vi.fn()
+    const advancedReply = vi.fn()
+
+    await handleGeteffectivepromptmanifest({ sessionFile: 'C:/sessions/a.jsonl' }, manifestReply)
+    await handleGeteffectivepromptmanifest({
+      sessionFile: 'C:/sessions/a.jsonl',
+      includePromptBody: true,
+    }, advancedReply)
+
+    expect(manifestReply).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'getEffectivePromptManifest-done',
+      promptDiagnostics: st.promptDiagnostics,
+    }))
+    expect(manifestReply.mock.calls[0]?.[0]).not.toHaveProperty('prompt')
+    expect(advancedReply).toHaveBeenCalledWith(expect.objectContaining({
+      promptDiagnostics: st.promptDiagnostics,
+      prompt: 'complete prompt body!',
+    }))
+  })
+
+  it('refreshes idle diagnostics through the real Session preflight Builder', async () => {
+    const freshDiagnostics = {
+      manifest: {
+        schemaVersion: 1 as const,
+        mode: 'CODING' as const,
+        phase: 'PLAN' as const,
+        workspaceAvailable: true,
+        projectTrusted: true,
+        capabilityIds: ['coding.workspace' as const],
+        toolNames: ['read'],
+        layers: [],
+        completePromptCharacterCount: 12,
+        completePromptSha256: 'd'.repeat(64),
+        generatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      migrationNotices: [],
+    }
+    const freshContext = {
+      schemaVersion: 1 as const,
+      mode: 'CODING' as const,
+      phase: 'PLAN' as const,
+      workspaceAvailable: true,
+      projectTrusted: true,
+      enabledCapabilities: ['coding.workspace' as const],
+      availableToolNames: ['read'],
+    }
+    st.session = { sessionFile: 'C:/sessions/a.jsonl', isStreaming: false } as never
+    st.promptDiagnostics = null
+    st.effectivePrompt = null
+    st.promptPreflight = vi.fn(() => ({
+      prompt: 'fresh prompt',
+      context: freshContext,
+      diagnostics: freshDiagnostics,
+    }))
+    const reply = vi.fn()
+
+    await handleGeteffectivepromptmanifest({}, reply)
+
+    expect(st.promptPreflight).toHaveBeenCalledOnce()
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      promptDiagnostics: freshDiagnostics,
+    }))
+    expect(st.effectivePrompt).toBe('fresh prompt')
+  })
 })
 
 describe('worker model catalog handlers', () => {

@@ -291,7 +291,19 @@ export async function handleGeteffectivepromptmanifest(
   msg: WorkerIncomingMessage,
   reply: WorkerReply,
 ): Promise<void> {
-  if (!st.session || !st.promptDiagnostics) {
+  if (
+    st.session &&
+    st.promptPreflight &&
+    !st.agentTurnActive &&
+    !st.session.isStreaming
+  ) {
+    const state = st.promptPreflight()
+    st.promptContext = state.context
+    st.promptDiagnostics = state.diagnostics
+    st.effectivePrompt = state.prompt
+  }
+  const includePromptBody = msg.includePromptBody === true
+  if (!st.session || !st.promptDiagnostics || (includePromptBody && !st.effectivePrompt)) {
     reply({ type: 'error', error: 'XIAOGUI_PROMPT_MANIFEST_UNAVAILABLE' })
     return
   }
@@ -306,6 +318,7 @@ export async function handleGeteffectivepromptmanifest(
     type: 'getEffectivePromptManifest-done',
     sessionId: st.currentSessionId,
     promptDiagnostics: st.promptDiagnostics,
+    ...(includePromptBody ? { prompt: st.effectivePrompt } : {}),
   })
 }
 

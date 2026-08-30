@@ -65,8 +65,10 @@ export type WorkerMutableState = {
   promptContextCandidate: XiaoguiPromptContextV1 | null
   /** Set only while Pi Runtime is replacing an AgentSession. */
   pendingPromptContext: XiaoguiPromptContextV1 | null
-  /** Safe hashes/ids only. Prompt bodies never cross Worker IPC. */
+  /** Safe hashes/ids returned by default diagnostics. */
   promptDiagnostics: XiaoguiEffectivePromptDiagnosticsV1 | null
+  /** Worker-memory-only body; returned only by an explicit advanced diagnostic request. */
+  effectivePrompt: string | null
   promptPreflight: (() => XiaoguiEffectivePromptSessionStateV1) | null
   promptAssemblyStatus: 'IDLE' | 'PENDING' | 'CONFIRMED' | 'FAILED'
   promptAssemblyError: string | null
@@ -94,6 +96,7 @@ export const st: WorkerMutableState = {
   promptContextCandidate: null,
   pendingPromptContext: null,
   promptDiagnostics: null,
+  effectivePrompt: null,
   promptPreflight: null,
   promptAssemblyStatus: 'IDLE',
   promptAssemblyError: null,
@@ -155,6 +158,7 @@ export function runXiaoguiPromptPreflightV1(): XiaoguiEffectivePromptSessionStat
   }
   st.promptContext = state.context
   st.promptDiagnostics = state.diagnostics
+  st.effectivePrompt = state.prompt
   return state
 }
 
@@ -273,6 +277,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
               if (st.promptContextCandidate === promptContext) {
                 st.promptContext = state.context
                 st.promptDiagnostics = state.diagnostics
+                st.effectivePrompt = state.prompt
                 confirmXiaoguiPromptAssemblyV1()
               }
             },
@@ -315,6 +320,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
     st.promptContextCandidate = promptContext
     st.promptContext = initialState.context
     st.promptDiagnostics = initialState.diagnostics
+    st.effectivePrompt = initialState.prompt
     st.promptPreflight = () => buildXiaoguiPromptSessionStateV1(
       created.session,
       services,
@@ -337,6 +343,7 @@ async function withPendingPromptContext<T>(
   const previousContext = st.promptContext
   const previousCandidate = st.promptContextCandidate
   const previousDiagnostics = st.promptDiagnostics
+  const previousEffectivePrompt = st.effectivePrompt
   const previousPreflight = st.promptPreflight
   st.pendingPromptContext = context
   try {
@@ -345,6 +352,7 @@ async function withPendingPromptContext<T>(
     st.promptContext = previousContext
     st.promptContextCandidate = previousCandidate
     st.promptDiagnostics = previousDiagnostics
+    st.effectivePrompt = previousEffectivePrompt
     st.promptPreflight = previousPreflight
     throw error
   } finally {
@@ -359,6 +367,8 @@ function wireRuntimeCallbacks(runtime: AgentSessionRuntime): void {
     st.modelRuntime = null
     st.agentTurnActive = false
     st.promptPreflightActive = false
+    st.promptDiagnostics = null
+    st.effectivePrompt = null
   })
   runtime.setRebindSession(async (session) => {
     await rebindAfterRuntimeReplace(session)
@@ -385,6 +395,12 @@ async function disposeRuntimeOrSession(): Promise<void> {
     st.runtime = null
     st.modelRuntime = null
     st.session = null
+    st.promptContext = null
+    st.promptContextCandidate = null
+    st.promptDiagnostics = null
+    st.effectivePrompt = null
+    st.promptPreflight = null
+    resetXiaoguiPromptAssemblyGateV1()
     return
   }
   if (st.session) {
@@ -399,6 +415,7 @@ async function disposeRuntimeOrSession(): Promise<void> {
   st.promptContext = null
   st.promptContextCandidate = null
   st.promptDiagnostics = null
+  st.effectivePrompt = null
   st.promptPreflight = null
   resetXiaoguiPromptAssemblyGateV1()
 }

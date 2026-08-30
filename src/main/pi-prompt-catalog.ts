@@ -132,20 +132,18 @@ export function listPiBuiltinPromptFiles(cwd: string, projectTrusted = true): Pr
     inSystemContext: !existsSync(projectSystem) || !projectTrusted,
   })
 
-  if (!globalExists && !(projectTrusted && existsSync(projectSystem))) {
-    out.push({
-      id: 'builtin:system:default',
-      category: 'pi_builtin',
-      name: '当前内置 system（只读预览）',
-      description: '未配置 SYSTEM.md 时 Worker 实际使用的组装结果；要修改请编辑上方全局 SYSTEM.md',
-      path: null,
-      command: '',
-      source: 'builtin',
-      editable: false,
-      readOnly: true,
-      inSystemContext: true,
-    })
-  }
+  out.push({
+    id: 'builtin:system:default',
+    category: 'pi_builtin',
+    name: '当前真实 Effective Prompt（诊断）',
+    description: '当前真实会话的完整 Manifest；正文仅在高级诊断中显式展开',
+    path: null,
+    command: '',
+    source: 'runtime',
+    editable: false,
+    readOnly: true,
+    inSystemContext: true,
+  })
 
   if (projectTrusted && existsSync(projectAppend)) {
     out.push({

@@ -119,12 +119,18 @@ describe('Xiaogui effective Prompt Builder V1', () => {
         '<!-- XIAOGUI:DESIGN:BEGIN -->',
         'legacy design body',
         '<!-- XIAOGUI:DESIGN:END -->',
+        'BETWEEN LEGACY BLOCKS',
+        '<!-- XIAOGUI:DESIGN:BEGIN -->',
+        'second legacy design body',
+        '<!-- XIAOGUI:DESIGN:END -->',
         '<project_context>keep me</project_context>',
       ].join('\n'),
       generatedAt: '2026-08-30T00:00:00.000Z',
     })
 
     expect(result.prompt).not.toContain('legacy design body')
+    expect(result.prompt).not.toContain('second legacy design body')
+    expect(result.prompt).toContain('BETWEEN LEGACY BLOCKS')
     expect(result.prompt).toContain('<project_context>keep me</project_context>')
     expect(result.prompt).toContain('# 当前模式：DESIGN｜规划设计')
     expect(result.diagnostics.migrationNotices).toEqual([

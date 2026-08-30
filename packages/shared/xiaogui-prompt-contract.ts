@@ -99,6 +99,15 @@ export interface XiaoguiEffectivePromptDiagnosticsV1 {
   }[]
 }
 
+/**
+ * Explicit advanced-diagnostic response. The complete Prompt body must never be
+ * included in ordinary catalog/list responses or logs.
+ */
+export interface XiaoguiAdvancedPromptDiagnosticsV1
+  extends XiaoguiEffectivePromptDiagnosticsV1 {
+  readonly prompt: string
+}
+
 const CONTEXT_KEYS = new Set([
   'schemaVersion',
   'mode',

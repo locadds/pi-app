@@ -244,6 +244,7 @@ export async function handleDispose(msg: WorkerIncomingMessage, reply: WorkerRep
         st.promptContextCandidate = null
         st.pendingPromptContext = null
         st.promptDiagnostics = null
+        st.effectivePrompt = null
         st.promptPreflight = null
         resetXiaoguiPromptAssemblyGateV1()
         reply({ type: 'dispose-done' })

@@ -606,6 +606,25 @@
     "restored": "已回退到该版本",
     "perTurnSystem": "每轮 system",
     "readOnly": "只读",
+    "effectiveTitle": "真实 Effective Prompt Manifest",
+    "effectiveSafeSummary": "默认仅显示当前真实会话的层、版本、长度、哈希与实际工具，不加载 Prompt 正文。",
+    "effectiveUnavailable": "当前真实会话的 Prompt Manifest 暂不可用，请刷新后重试。",
+    "effectiveMode": "模式",
+    "effectivePhase": "阶段",
+    "effectiveCharacters": "完整字符数",
+    "effectiveSha256": "完整 Prompt SHA-256",
+    "effectiveCapabilities": "Capability（{{count}}）",
+    "effectiveTools": "实际 Tool（{{count}}）",
+    "effectiveLayers": "Prompt Layer（{{count}}）",
+    "effectiveNone": "无",
+    "layerId": "Layer",
+    "layerKind": "类型",
+    "layerVersion": "版本",
+    "layerCharacters": "字符数",
+    "advancedSummary": "高级诊断：展开 Prompt 正文",
+    "advancedWarning": "正文可能包含项目上下文和敏感信息；仅在明确需要诊断时查看。",
+    "advancedLoading": "正在从当前真实会话读取正文…",
+    "advancedTruncated": "界面仅显示前 {{count}} 个字符；上方完整长度与 SHA-256 始终基于未截断 Prompt。",
     "templateTitle": "模板 {{command}}",
     "items": {
       "agentsGlobal": {
@@ -625,8 +644,8 @@
         "descriptionCreate": "尚未创建；保存后将写入 ~/.pi/agent/SYSTEM.md，并替换内置默认文案"
       },
       "systemDefaultPreview": {
-        "name": "当前内置 system（只读预览）",
-        "description": "当前会话实际组装的 system 提示词（只读预览）"
+        "name": "当前真实 Effective Prompt（诊断）",
+        "description": "当前真实会话的完整 Manifest；正文仅在高级诊断中显式展开"
       },
       "appendProject": {
         "name": "APPEND_SYSTEM.md（项目）",

@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (request: Record<string, unknown>) => Promise<unknown>>(),
   getSystemPrompt: vi.fn(),
   getContextPrompts: vi.fn(),
+  getEffectivePromptManifest: vi.fn(),
+  getEffectivePromptPreview: vi.fn(),
   getPromptTemplatesList: vi.fn(),
   reloadResources: vi.fn(),
   getSkillsList: vi.fn(),
@@ -29,6 +31,8 @@ vi.mock('../registry', () => ({
 vi.mock('../../worker-manager', () => ({
   workerManager: Object.assign(mocks.workerManager, {
     getContextPrompts: mocks.getContextPrompts,
+    getEffectivePromptManifest: mocks.getEffectivePromptManifest,
+    getEffectivePromptPreview: mocks.getEffectivePromptPreview,
     getPromptTemplatesList: mocks.getPromptTemplatesList,
     reloadResources: mocks.reloadResources,
     getSkillsList: mocks.getSkillsList,
@@ -91,6 +95,30 @@ describe('system prompt resource preview', () => {
     mocks.handlers.clear()
     mocks.getSystemPrompt.mockReset().mockResolvedValue('assembled prompt')
     mocks.getContextPrompts.mockReset()
+    mocks.getEffectivePromptManifest.mockReset().mockResolvedValue({
+      manifest: {
+        schemaVersion: 1,
+        mode: 'WORK',
+        phase: 'EXECUTE',
+        workspaceAvailable: true,
+        projectTrusted: true,
+        capabilityIds: ['work.file-organize'],
+        toolNames: ['read'],
+        layers: [],
+        completePromptCharacterCount: 25,
+        completePromptSha256: 'a'.repeat(64),
+        generatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      migrationNotices: [],
+    })
+    mocks.getEffectivePromptPreview.mockReset().mockResolvedValue({
+      manifest: {
+        completePromptCharacterCount: 25,
+        completePromptSha256: 'a'.repeat(64),
+      },
+      migrationNotices: [],
+      prompt: 'complete effective prompt',
+    })
     mocks.getPromptTemplatesList.mockReset().mockResolvedValue([])
     mocks.reloadResources.mockReset().mockResolvedValue(undefined)
     mocks.getSkillsList.mockReset()
@@ -107,39 +135,59 @@ describe('system prompt resource preview', () => {
     registerSkillsResourceHandlers()
   })
 
-  it('uses the isolated preview process while the session worker is idle', async () => {
+  it('starts the current project Worker and reads Prompt text only for an explicit advanced preview', async () => {
     const handler = mocks.handlers.get('ipc:resource.read')
     await expect(handler?.({ path: 'pi-desktop://system-prompt-preview' })).resolves.toEqual({
-      content: 'assembled prompt',
+      content: 'complete effective prompt',
       path: 'pi-desktop://system-prompt-preview',
       revisions: [],
     })
 
-    expect(mocks.getSystemPrompt).toHaveBeenCalledWith({
-      cwd: 'C:/repo',
-      globalSettings: { defaultProvider: 'openai' },
-      projectSettings: { skills: ['.pi/skills/project-skill'] },
-    })
-    expect(mocks.start).not.toHaveBeenCalled()
-    expect(mocks.getContextPrompts).not.toHaveBeenCalled()
+    expect(mocks.start).toHaveBeenCalledWith('C:/repo')
+    expect(mocks.getEffectivePromptPreview).toHaveBeenCalledOnce()
+    expect(mocks.getSystemPrompt).not.toHaveBeenCalled()
   })
 
-  it('does not reuse a live worker from another project', async () => {
+  it('returns the complete real-Session Manifest from prompts.list without requesting Prompt text', async () => {
+    const handler = mocks.handlers.get('ipc:prompts.list')
+
+    const result = await handler?.({}) as Record<string, unknown>
+
+    expect(mocks.start).toHaveBeenCalledWith('C:/repo')
+    expect(mocks.getEffectivePromptManifest).toHaveBeenCalledOnce()
+    expect(mocks.getEffectivePromptPreview).not.toHaveBeenCalled()
+    expect(result.effectivePromptDiagnostics).toEqual(
+      await mocks.getEffectivePromptManifest.mock.results[0]?.value,
+    )
+    expect(JSON.stringify(result)).not.toContain('complete effective prompt')
+  })
+
+  it('rejects an advanced Prompt body when the displayed Manifest has become stale', async () => {
+    const handler = mocks.handlers.get('ipc:resource.read')
+
+    await expect(handler?.({
+      path: 'pi-desktop://system-prompt-preview',
+      expectedPromptSha256: 'b'.repeat(64),
+    })).resolves.toEqual({ error: 'XIAOGUI_PROMPT_DIAGNOSTICS_STALE' })
+  })
+
+  it('rebinds diagnostics instead of reusing a live Worker from another project', async () => {
     mocks.workerManager.isRunning = true
     mocks.workerManager.cwd = 'C:/project-a'
     const handler = mocks.handlers.get('ipc:resource.read')
 
     await expect(handler?.({ path: 'pi-desktop://system-prompt-preview' })).resolves.toEqual({
-      content: 'assembled prompt',
+      content: 'complete effective prompt',
       path: 'pi-desktop://system-prompt-preview',
       revisions: [],
     })
 
-    expect(mocks.getSystemPrompt).toHaveBeenCalledWith(expect.objectContaining({ cwd: 'C:/repo' }))
-    expect(mocks.getContextPrompts).not.toHaveBeenCalled()
+    expect(mocks.start).toHaveBeenCalledWith('C:/repo')
+    expect(mocks.getEffectivePromptPreview).toHaveBeenCalledOnce()
+    expect(mocks.getSystemPrompt).not.toHaveBeenCalled()
   })
 
-  it('does not build the prompt catalog from another project worker', async () => {
+  it('rebinds the Prompt catalog to the current project Worker', async () => {
     mocks.workerManager.isRunning = true
     mocks.workerManager.cwd = 'C:/project-a'
     const handler = mocks.handlers.get('ipc:prompts.list')
@@ -150,8 +198,9 @@ describe('system prompt resource preview', () => {
     expect(mocks.listPiBuiltinPromptFiles).toHaveBeenCalledWith('C:/repo', true)
     expect(mocks.listPluginInjectedPromptFiles).toHaveBeenCalledWith('C:/repo')
     expect(mocks.listPromptsOnDisk).toHaveBeenCalledWith('C:/repo')
-    expect(mocks.getContextPrompts).not.toHaveBeenCalled()
-    expect(mocks.getPromptTemplatesList).not.toHaveBeenCalled()
+    expect(mocks.start).toHaveBeenCalledWith('C:/repo')
+    expect(mocks.getEffectivePromptManifest).toHaveBeenCalledOnce()
+    expect(mocks.getPromptTemplatesList).toHaveBeenCalledOnce()
   })
 
   it('lazily starts the current project worker before listing skills', async () => {

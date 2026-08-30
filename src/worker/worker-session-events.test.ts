@@ -471,6 +471,7 @@ describe('worker session event lifecycle', () => {
     const originalPromptContext = st.promptContext
     const originalPromptContextCandidate = st.promptContextCandidate
     const originalPromptDiagnostics = st.promptDiagnostics
+    const originalEffectivePrompt = st.effectivePrompt
     const originalRunId = st.currentRunId
     const originalTurnId = st.currentTurnId
     const replies: Record<string, unknown>[] = []
@@ -495,7 +496,11 @@ describe('worker session event lifecycle', () => {
         availableToolNames: [] as const,
       }
       st.promptContextCandidate = promptContext
-      st.promptPreflight = () => ({ context: promptContext, diagnostics: {} as never })
+      st.promptPreflight = () => ({
+        prompt: 'effective prompt',
+        context: promptContext,
+        diagnostics: {} as never,
+      })
 
       await handlePrompt(
         { type: 'prompt', text: '/extension-command' },
@@ -517,6 +522,7 @@ describe('worker session event lifecycle', () => {
       st.promptContext = originalPromptContext
       st.promptContextCandidate = originalPromptContextCandidate
       st.promptDiagnostics = originalPromptDiagnostics
+      st.effectivePrompt = originalEffectivePrompt
       st.currentRunId = originalRunId
       st.currentTurnId = originalTurnId
     }

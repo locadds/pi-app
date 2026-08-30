@@ -18,6 +18,8 @@ import {
 import { freezeXiaoguiPromptContextV1 } from './session-binding'
 
 export interface XiaoguiEffectivePromptSessionStateV1 {
+  /** Worker-only body from the same Builder invocation as `diagnostics`. */
+  readonly prompt: string
   readonly context: XiaoguiPromptContextV1
   readonly diagnostics: XiaoguiEffectivePromptDiagnosticsV1
 }
@@ -113,7 +115,11 @@ export function createXiaoguiPromptSessionExtensionV1(
             tools,
             extensionContext.isProjectTrusted(),
           )
-          onState({ context: result.effectiveContext, diagnostics: result.diagnostics })
+          onState({
+            prompt: result.prompt,
+            context: result.effectiveContext,
+            diagnostics: result.diagnostics,
+          })
           return { systemPrompt: result.prompt }
         } catch (error) {
           onFailure(error)
@@ -140,5 +146,9 @@ export function buildXiaoguiPromptSessionStateV1(
     normalizeToolsFromSession(session),
     actualTrust,
   )
-  return { context: result.effectiveContext, diagnostics: result.diagnostics }
+  return {
+    prompt: result.prompt,
+    context: result.effectiveContext,
+    diagnostics: result.diagnostics,
+  }
 }

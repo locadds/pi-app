@@ -606,6 +606,25 @@
     "restored": "Restored to this revision",
     "perTurnSystem": "per-turn system",
     "readOnly": "read-only",
+    "effectiveTitle": "Real Effective Prompt Manifest",
+    "effectiveSafeSummary": "By default, only layers, versions, lengths, hashes, and actual tools from the real session are shown. Prompt text is not loaded.",
+    "effectiveUnavailable": "The real session Prompt Manifest is unavailable. Refresh and try again.",
+    "effectiveMode": "Mode",
+    "effectivePhase": "Phase",
+    "effectiveCharacters": "Complete characters",
+    "effectiveSha256": "Complete Prompt SHA-256",
+    "effectiveCapabilities": "Capabilities ({{count}})",
+    "effectiveTools": "Actual Tools ({{count}})",
+    "effectiveLayers": "Prompt Layers ({{count}})",
+    "effectiveNone": "None",
+    "layerId": "Layer",
+    "layerKind": "Kind",
+    "layerVersion": "Version",
+    "layerCharacters": "Characters",
+    "advancedSummary": "Advanced diagnostics: expand Prompt body",
+    "advancedWarning": "The body may contain project context and sensitive information. View it only when explicitly needed for diagnostics.",
+    "advancedLoading": "Loading the body from the current real session…",
+    "advancedTruncated": "The UI shows only the first {{count}} characters. The complete length and SHA-256 above always use the untruncated Prompt.",
     "templateTitle": "Template {{command}}",
     "items": {
       "agentsGlobal": {
@@ -625,8 +644,8 @@
         "descriptionCreate": "Not created yet; saving writes ~/.pi/agent/SYSTEM.md and replaces the built-in default"
       },
       "systemDefaultPreview": {
-        "name": "Built-in system (read-only preview)",
-        "description": "System prompt assembled for the current session (read-only preview)"
+        "name": "Real Effective Prompt (diagnostics)",
+        "description": "Complete Manifest for the real session; body expands only in advanced diagnostics"
       },
       "appendProject": {
         "name": "APPEND_SYSTEM.md (project)",

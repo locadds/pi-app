@@ -115,19 +115,25 @@ export function registerSkillsResourceHandlers(): void {
 
   registerHandler('ipc:prompts.list', async () => {
     const cwd = configStore.get('currentProject') || workerManager.cwd || process.cwd()
-    const useLiveWorker =
+    let useLiveWorker =
       workerManager.isRunning &&
       normalizeSessionKey(workerManager.cwd || '') === normalizeSessionKey(cwd)
     let projectTrusted = true
-    let defaultSystemPreview = ''
-    if (useLiveWorker) {
+    let effectivePromptDiagnostics = null
+    try {
+      if (!useLiveWorker) {
+        await workerManager.start(cwd)
+        useLiveWorker = true
+      }
       try {
         const ctx = await workerManager.getContextPrompts()
         projectTrusted = ctx.projectTrusted !== false
-        defaultSystemPreview = String(ctx.builtSystemPreview || '')
       } catch (e) {
         /* */
       }
+      effectivePromptDiagnostics = await workerManager.getEffectivePromptManifest()
+    } catch (e) {
+      useLiveWorker = false
     }
 
     const byPath = new Map<string, PromptCatalogItem>()
@@ -138,8 +144,8 @@ export function registerSkillsResourceHandlers(): void {
 
     for (const a of listAgentsContextFiles(cwd)) push(a)
     for (const b of listPiBuiltinPromptFiles(cwd, projectTrusted)) {
-      if (b.id === 'builtin:system:default' && defaultSystemPreview) {
-        push({ ...b, description: '当前会话实际组装的 system 提示词（只读预览）' })
+      if (b.id === 'builtin:system:default' && effectivePromptDiagnostics) {
+        push({ ...b, description: '当前会话真实 Effective Prompt 诊断（默认不显示正文）' })
       } else push(b)
     }
     for (const plug of listPluginInjectedPromptFiles(cwd)) push(plug)
@@ -187,7 +193,7 @@ export function registerSkillsResourceHandlers(): void {
     return {
       prompts,
       groups: groupPromptCatalog(prompts),
-      defaultSystemPreview,
+      effectivePromptDiagnostics,
       virtualSystemPreviewPath: 'pi-desktop://system-prompt-preview',
     }
   })
@@ -199,18 +205,21 @@ export function registerSkillsResourceHandlers(): void {
       try {
         const cwd = configStore.get('currentProject') || workerManager.cwd || process.cwd()
         if (
-          workerManager.isRunning &&
-          normalizeSessionKey(workerManager.cwd || '') === normalizeSessionKey(cwd)
+          !workerManager.isRunning ||
+          normalizeSessionKey(workerManager.cwd || '') !== normalizeSessionKey(cwd)
         ) {
-          const ctx = await workerManager.getContextPrompts()
-          return { content: String(ctx.builtSystemPreview || '（空）'), path, revisions: [] }
+          await workerManager.start(cwd)
+        }
+        const preview = await workerManager.getEffectivePromptPreview()
+        const expectedPromptSha256 = String(req.expectedPromptSha256 || '').trim()
+        if (
+          expectedPromptSha256 &&
+          preview.manifest.completePromptSha256 !== expectedPromptSha256
+        ) {
+          return { error: 'XIAOGUI_PROMPT_DIAGNOSTICS_STALE' }
         }
         return {
-          content: await sessionPreviewProcess.getSystemPrompt({
-            cwd,
-            globalSettings: readPiAgentGlobalSettingsFromDisk() || {},
-            projectSettings: readPiProjectSettingsFromDisk(cwd) || {},
-          }),
+          content: preview.prompt,
           path,
           revisions: [],
         }

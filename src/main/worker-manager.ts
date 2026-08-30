@@ -3,6 +3,7 @@
 import { type BrowserWindow } from 'electron'
 import type { AppEvent } from '@shared/app-events'
 import type {
+  XiaoguiAdvancedPromptDiagnosticsV1,
   XiaoguiEffectivePromptDiagnosticsV1,
   XiaoguiMode,
 } from '@shared/xiaogui-prompt-contract'
@@ -988,6 +989,23 @@ export class WorkerManager {
       sessionFile ? { sessionFile } : undefined,
     )
     return r.promptDiagnostics as XiaoguiEffectivePromptDiagnosticsV1
+  }
+
+  /** Complete body is available only through the explicit advanced UI action. */
+  async getEffectivePromptPreview(
+    sessionFile?: string,
+  ): Promise<XiaoguiAdvancedPromptDiagnosticsV1> {
+    const r = await this.request('getEffectivePromptManifest', {
+      ...(sessionFile ? { sessionFile } : {}),
+      includePromptBody: true,
+    })
+    if (typeof r.prompt !== 'string') {
+      throw new Error('XIAOGUI_PROMPT_BODY_UNAVAILABLE')
+    }
+    return {
+      ...(r.promptDiagnostics as XiaoguiEffectivePromptDiagnosticsV1),
+      prompt: r.prompt,
+    }
   }
   async renameSessionFile(sessionFile: string, title: string): Promise<{ ok: boolean; title?: string; error?: string }> {
     const r = await this.request('sessionRenameFile', { sessionFile, title })

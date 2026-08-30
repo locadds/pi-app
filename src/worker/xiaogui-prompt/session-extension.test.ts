@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import { describe, expect, it, vi } from 'vitest'
 import type {
   BeforeAgentStartEvent,
@@ -71,6 +73,11 @@ describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
         }),
       }),
     }))
+    const resolvedState = resolved.mock.calls[0]?.[0]
+    expect(result.systemPrompt.length)
+      .toBe(resolvedState.diagnostics.manifest.completePromptCharacterCount)
+    expect(createHash('sha256').update(result.systemPrompt, 'utf8').digest('hex'))
+      .toBe(resolvedState.diagnostics.manifest.completePromptSha256)
     expect(extensionContext.abort).not.toHaveBeenCalled()
   })
 
