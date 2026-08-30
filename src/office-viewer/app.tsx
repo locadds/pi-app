@@ -38,6 +38,7 @@ import {
   type OfficeSnapshotV1,
   type OfficeStructuredDocumentProjectionV1,
 } from '@shared/xiaogui-office-surface'
+import { ensureUniverDocDrawingResourcesV1 } from './core/doc-drawing-resources'
 import { OfficeGatewayClientV1 } from './core/gateway-client'
 import type { OfficeParentBridgeV1 } from './core/parent-bridge'
 import { ensureSyntheticFieldDecorationV1 } from './core/synthetic-field-decoration'
@@ -154,7 +155,9 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
 
       if (isOfficeStructuredDocumentProjectionV1(envelope.snapshot)) {
         const projection = envelope.snapshot
-        document = univerAPI.createUniverDoc(projection.univerDocument as Partial<IDocumentData>)
+        document = univerAPI.createUniverDoc(
+          ensureUniverDocDrawingResourcesV1(projection.univerDocument as Partial<IDocumentData>),
+        )
         const materialized = await materializeStructuredProjectionV1(projection, document)
         activeProjection = withoutPrivateProjectionData(projection)
         setProjectionMetadata(activeProjection)
@@ -162,11 +165,13 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
           setError(`${materialized.unmappedOccurrenceIds.length} 个字段位置未能在文档中可靠定位，已保留在右侧清单。`)
         }
       } else if (isOfficeUniverWorktreeEnvelopeV1(envelope.snapshot)) {
-        document = univerAPI.createUniverDoc(envelope.snapshot.document)
+        document = univerAPI.createUniverDoc(ensureUniverDocDrawingResourcesV1(envelope.snapshot.document))
         activeProjection = envelope.snapshot.projection
         setProjectionMetadata(activeProjection)
       } else if (Object.keys(envelope.snapshot).length > 0) {
-        document = univerAPI.createUniverDoc(envelope.snapshot as Partial<IDocumentData>)
+        document = univerAPI.createUniverDoc(
+          ensureUniverDocDrawingResourcesV1(envelope.snapshot as Partial<IDocumentData>),
+        )
       } else {
         document = univerAPI.createUniverDoc(
           createBlankDocument('xiaogui-office-spike', '小规 Office Surface 验证文档'),
