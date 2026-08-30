@@ -24,6 +24,14 @@ const projectStart = projectedText.indexOf(projectName)
 const projectSecondStart = projectedText.indexOf(projectName, projectStart + projectName.length)
 const replacementProjectName = '临港测试项目'
 const channelNonce = randomBytes(32).toString('hex')
+const projectedOccurrences = [projectStart, projectSecondStart].map((start, index) => ({
+  occurrenceId: `occurrence.project.name.${index + 1}`,
+  fieldId: 'project.name',
+  originalText: projectName,
+  startUtf16: start,
+  endUtf16Exclusive: start + projectName.length,
+  state: 'FIELD',
+}))
 const initialProjection = {
   projectionVersion: 1,
   kind: 'XIAOGUI_DOCX_STRUCTURED_PROJECTION',
@@ -33,6 +41,7 @@ const initialProjection = {
   purpose: 'TEMPLATE_DRAFT',
   readOnly: false,
   plainText: projectedText,
+  univerDocument: createSmokeUniverDocument(projectedText, projectedOccurrences),
   fields: [
     {
       fieldId: 'project.name',
@@ -40,14 +49,7 @@ const initialProjection = {
       occurrenceIds: ['occurrence.project.name.1', 'occurrence.project.name.2'],
     },
   ],
-  occurrences: [projectStart, projectSecondStart].map((start, index) => ({
-    occurrenceId: `occurrence.project.name.${index + 1}`,
-    fieldId: 'project.name',
-    originalText: projectName,
-    startUtf16: start,
-    endUtf16Exclusive: start + projectName.length,
-    state: 'FIELD',
-  })),
+  occurrences: projectedOccurrences,
   warnings: ['当前为 DOCX 结构化试验视图，不代表 Word 原版式。'],
   statistics: {
     paragraphCount: 4,
@@ -56,6 +58,74 @@ const initialProjection = {
     mappedOccurrenceCount: 2,
     unmappedOccurrenceCount: 0,
   },
+}
+
+function createSmokeUniverDocument(text, occurrences) {
+  const dataStream = `${text.replaceAll('\n', '\r')}\r\n`
+  const boundaries = new Set([0, dataStream.length - 2])
+  for (const occurrence of occurrences) {
+    boundaries.add(occurrence.startUtf16)
+    boundaries.add(occurrence.endUtf16Exclusive)
+  }
+  const points = [...boundaries].sort((left, right) => left - right)
+  const textRuns = []
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index]
+    const end = points[index + 1]
+    if (end <= start) continue
+    const highlighted = occurrences.some(
+      (occurrence) => occurrence.startUtf16 <= start && end <= occurrence.endUtf16Exclusive,
+    )
+    textRuns.push({
+      st: start,
+      ed: end,
+      ts: highlighted ? { bg: { rgb: '#FFF2B2' } } : {},
+    })
+  }
+  return {
+    id: 'xiaogui-office-real-projection-smoke',
+    title: '模板资产化与 Office Surface 联合冒烟',
+    documentStyle: {
+      pageSize: { width: 793.7, height: 1122.5 },
+      documentFlavor: 1,
+      marginTop: 96,
+      marginBottom: 96,
+      marginLeft: 96,
+      marginRight: 96,
+      marginHeader: 48,
+      marginFooter: 48,
+      defaultHeaderId: '',
+      defaultFooterId: '',
+      firstPageHeaderId: '',
+      firstPageFooterId: '',
+      evenPageHeaderId: '',
+      evenPageFooterId: '',
+      evenAndOddHeaders: 0,
+      useFirstPageHeaderFooter: 0,
+      paragraphLineGapDefault: 0,
+      renderConfig: {
+        zeroWidthParagraphBreak: 0,
+        vertexAngle: 0,
+        centerAngle: 0,
+        background: { rgb: '#d9d9d9' },
+      },
+      textStyle: {},
+    },
+    body: {
+      dataStream,
+      textRuns,
+      paragraphs: [...dataStream.matchAll(/\r/g)].map((match) => ({
+        startIndex: match.index,
+        paragraphStyle: {},
+      })),
+      sectionBreaks: [{ startIndex: dataStream.length - 1 }],
+      customBlocks: [],
+      customRanges: [],
+      customDecorations: [],
+      tables: [],
+    },
+    resources: [],
+  }
 }
 const gateway = await startOfficeGatewayV1({
   sessionCookieName: cookieName,
@@ -79,8 +149,12 @@ try {
     },
   ])
   const page = await context.newPage()
+  const pageErrors = []
   page.on('console', (message) => process.stderr.write(`[viewer:${message.type()}] ${message.text()}\n`))
-  page.on('pageerror', (error) => process.stderr.write(`[viewer:error] ${error.message}\n`))
+  page.on('pageerror', (error) => {
+    pageErrors.push(error.stack ?? error.message)
+    process.stderr.write(`[viewer:error] ${error.message}\n`)
+  })
   await page.goto(`${gateway.origin}/viewer/?channelNonce=${channelNonce}`, {
     waitUntil: 'domcontentloaded',
   })
@@ -91,7 +165,8 @@ try {
     process.stderr.write(`[viewer:body] ${await page.locator('body').innerText()}\n`)
     throw error
   }
-  await page.locator('[data-field-decoration="verified"]').waitFor({ timeout: 10_000 })
+  await page.getByText('字段已定位', { exact: true }).waitFor({ timeout: 10_000 })
+  assertNoViewerErrors(pageErrors)
   await assertStructuredProjection(page, projectName, 2)
   const updateResult = await updateFieldThroughParentBridge(page, channelNonce, replacementProjectName)
   if (updateResult.updatedOccurrenceIds.length !== 2 || updateResult.failedOccurrenceIds.length !== 0) {
@@ -103,8 +178,10 @@ try {
   await page.reload({ waitUntil: 'domcontentloaded' })
   await authorizeViewer(page, token, channelNonce)
   await page.getByText('可以编辑', { exact: true }).waitFor({ timeout: 20_000 })
-  await page.locator('[data-field-decoration="verified"]').waitFor({ timeout: 10_000 })
+  await page.getByText('字段已定位', { exact: true }).waitFor({ timeout: 10_000 })
+  assertNoViewerErrors(pageErrors)
   await assertStructuredProjection(page, replacementProjectName, 2)
+  assertNoViewerErrors(pageErrors)
   const usedJsHeapSize = await page.evaluate(() => {
     return globalThis.performance.memory?.usedJSHeapSize ?? null
   })
@@ -172,7 +249,7 @@ async function updateFieldThroughParentBridge(page, nonce, value) {
 }
 
 async function assertStructuredProjection(page, fieldText, expectedCount) {
-  const snapshot = await page.evaluate(async () => {
+  const persisted = await page.evaluate(async () => {
     const response = await fetch('/api/v1/snapshot', {
       credentials: 'same-origin',
       cache: 'no-store',
@@ -180,19 +257,43 @@ async function assertStructuredProjection(page, fieldText, expectedCount) {
     if (!response.ok) throw new Error(`snapshot read failed: ${response.status}`)
     return response.json()
   })
-  const worktree = snapshot?.snapshot
-  const body = worktree?.document?.body ?? worktree?.body
+  const snapshot = persisted?.snapshot
+  const documentSnapshot = snapshot?.kind === 'XIAOGUI_DOCX_STRUCTURED_PROJECTION'
+    ? snapshot.univerDocument
+    : snapshot?.kind === 'XIAOGUI_UNIVER_WORKTREE'
+      ? snapshot.document
+      : snapshot
+  const projection = snapshot?.kind === 'XIAOGUI_DOCX_STRUCTURED_PROJECTION'
+    ? snapshot
+    : snapshot?.kind === 'XIAOGUI_UNIVER_WORKTREE'
+      ? snapshot.projection
+      : null
+  const body = documentSnapshot?.body
   const matches = [...String(body?.dataStream ?? '').matchAll(new RegExp(fieldText, 'g'))]
   if (matches.length !== expectedCount) {
     throw new Error(`structured DOCX field occurrence count mismatch: ${matches.length}`)
   }
   for (let index = 0; index < expectedCount; index += 1) {
-    const decoration = body?.customDecorations?.find(
-      (item) => item.id === `xiaogui.occurrence.v1:occurrence.project.name.${index + 1}`,
+    const occurrence = projection?.occurrences?.find(
+      (item) => item.occurrenceId === `occurrence.project.name.${index + 1}`,
     )
-    if (!decoration) throw new Error('structured DOCX field decoration is missing')
-    if (decoration.startIndex !== matches[index].index) {
-      throw new Error('structured DOCX field decoration start does not match the text')
+    if (!occurrence) throw new Error('structured DOCX field occurrence metadata is missing')
+    if (occurrence.startUtf16 !== matches[index].index || occurrence.endUtf16Exclusive !== matches[index].index + fieldText.length) {
+      throw new Error('structured DOCX field occurrence range does not match the text')
     }
+    const highlighted = body?.textRuns?.some((run) => (
+      run.st <= occurrence.startUtf16
+      && occurrence.endUtf16Exclusive <= run.ed
+      && run.ts?.bg?.rgb === '#FFF2B2'
+    ))
+    if (!highlighted) {
+      throw new Error('structured DOCX field highlight is missing')
+    }
+  }
+}
+
+function assertNoViewerErrors(pageErrors) {
+  if (pageErrors.length > 0) {
+    throw new Error(`Office Viewer emitted page errors:\n${pageErrors.join('\n\n')}`)
   }
 }

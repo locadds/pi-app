@@ -9,6 +9,8 @@ import {
   mergeLocales,
   Univer,
   type IDocumentData,
+  type ITextRun,
+  type ITextStyle,
 } from '@univerjs/core'
 import { FUniver } from '@univerjs/core/facade'
 import UniverDesignZhCN from '@univerjs/design/locale/zh-CN'
@@ -21,7 +23,7 @@ import { UniverDocsDrawingPlugin } from '@univerjs/docs-drawing'
 import { UniverDocsDrawingUIPlugin } from '@univerjs/docs-drawing-ui'
 import '@univerjs/docs-drawing-ui/lib/index.css'
 import UniverDocsDrawingUIZhCN from '@univerjs/docs-drawing-ui/locale/zh-CN'
-import { UniverDocsUIPlugin } from '@univerjs/docs-ui'
+import { ReplaceSelectionCommand, UniverDocsUIPlugin } from '@univerjs/docs-ui'
 import '@univerjs/docs-ui/facade'
 import UniverDocsUIZhCN from '@univerjs/docs-ui/locale/zh-CN'
 import { UniverDrawingPlugin } from '@univerjs/drawing'
@@ -43,6 +45,7 @@ import { OfficeGatewayClientV1 } from './core/gateway-client'
 import type { OfficeParentBridgeV1 } from './core/parent-bridge'
 import { ensureSyntheticFieldDecorationV1 } from './core/synthetic-field-decoration'
 import {
+  isOfficeUniverDocumentSnapshotV1,
   isOfficeUniverWorktreeEnvelopeV1,
   materializeStructuredProjectionV1,
   worktreeEnvelopeV1,
@@ -141,8 +144,7 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
       syntheticDocument: true,
       docxImport: false,
       docxExport: false,
-      nonDestructiveDecoration:
-        (activeProjection?.occurrences.length ?? 0) > 0 || fieldDecorationVerifiedFromDocument(document),
+      nonDestructiveDecoration: fieldDecorationVerifiedFromDocument(document, activeProjection),
       structuredDocxProjection: true,
     })
 
@@ -155,6 +157,9 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
 
       if (isOfficeStructuredDocumentProjectionV1(envelope.snapshot)) {
         const projection = envelope.snapshot
+        if (!isOfficeUniverDocumentSnapshotV1(projection.univerDocument)) {
+          throw new Error('Office 投影缺少合法的 Univer 文档快照。')
+        }
         document = univerAPI.createUniverDoc(
           ensureUniverDocDrawingResourcesV1(projection.univerDocument as Partial<IDocumentData>),
         )
@@ -168,11 +173,11 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
         document = univerAPI.createUniverDoc(ensureUniverDocDrawingResourcesV1(envelope.snapshot.document))
         activeProjection = envelope.snapshot.projection
         setProjectionMetadata(activeProjection)
-      } else if (Object.keys(envelope.snapshot).length > 0) {
+      } else if (isOfficeUniverDocumentSnapshotV1(envelope.snapshot)) {
         document = univerAPI.createUniverDoc(
           ensureUniverDocDrawingResourcesV1(envelope.snapshot as Partial<IDocumentData>),
         )
-      } else {
+      } else if (Object.keys(envelope.snapshot).length === 0) {
         document = univerAPI.createUniverDoc(
           createBlankDocument('xiaogui-office-spike', '小规 Office Surface 验证文档'),
         )
@@ -187,13 +192,15 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
         const decoration = await ensureSyntheticFieldDecorationV1(document, univerAPI)
         if (!decoration.verified) throw new Error(decoration.reason ?? '非破坏性字段标记验证失败。')
         await gateway.save(document.getSnapshot() as unknown as OfficeSnapshotV1)
+      } else {
+        throw new Error('Office 网关返回了不支持的文档快照。')
       }
 
       if (disposed || !document) return
       loaded = true
       suppressDirty = false
       readOnlyBaseline = JSON.stringify(document.getSnapshot())
-      const verified = (activeProjection?.occurrences.length ?? 0) > 0 || fieldDecorationVerifiedFromDocument(document)
+      const verified = fieldDecorationVerifiedFromDocument(document, activeProjection)
       setFieldDecorationVerified(verified)
       setStatus(activeProjection?.readOnly ? '只读预览' : '可以编辑')
       parentBridge?.post({
@@ -247,6 +254,7 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
           occurrenceId,
           start: occurrence.startUtf16,
           end: occurrence.endUtf16Exclusive,
+          state: occurrence.state,
         }
       })
       const missingIds = requestedIds.filter((_, index) => !plans[index])
@@ -272,10 +280,31 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
       let executedCommandCount = 0
       try {
         for (const plan of [...validPlans].sort((left, right) => right.start - left.start)) {
-          const executed = await document.insertText(message.value, {
-            startOffset: plan.start,
-            endOffset: plan.end,
-            cursorOffset: message.value.length,
+          const sourceStyle = textStyleAtRange(before.body?.textRuns ?? [], plan.start, plan.end)
+          const cursorOffset = plan.start + message.value.length
+          const executed = await univerAPI.executeCommand(ReplaceSelectionCommand.id, {
+            unitId: document.getId(),
+            selection: {
+              startOffset: plan.start,
+              endOffset: plan.end,
+              collapsed: false,
+            },
+            body: {
+              dataStream: message.value,
+              textRuns: [{
+                st: 0,
+                ed: message.value.length,
+                ts: {
+                  ...sourceStyle,
+                  bg: { rgb: occurrenceHighlightColor(plan.state) },
+                },
+              }],
+            },
+            textRanges: [{
+              startOffset: cursorOffset,
+              endOffset: cursorOffset,
+              collapsed: true,
+            }],
           })
           if (!executed) break
           executedIds.push(plan.occurrenceId)
@@ -305,7 +334,7 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
           return
         }
 
-        activeProjection = {
+        const nextProjection = {
           ...activeProjection,
           occurrences: activeProjection.occurrences.map((occurrence) => {
             const expected = expectedRanges.get(occurrence.occurrenceId)
@@ -327,6 +356,22 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
             }
           }),
         }
+        verified = verified && fieldDecorationVerifiedFromDocument(document, nextProjection)
+        if (!verified) {
+          for (let index = 0; index < executedCommandCount; index += 1) await document.undo()
+          const headSha256 = await save()
+          parentBridge?.post({
+            type: 'VIEWER_FIELD_UPDATE_RESULT',
+            requestId: message.requestId,
+            fieldId: message.fieldId,
+            updatedOccurrenceIds: [],
+            failedOccurrenceIds: requestedIds,
+            headSha256,
+          })
+          return
+        }
+        activeProjection = nextProjection
+        setFieldDecorationVerified(true)
         setProjectionMetadata(activeProjection)
         const headSha256 = await save()
         parentBridge?.post({
@@ -592,8 +637,52 @@ function replacementShiftBefore(
   )
 }
 
-function fieldDecorationVerifiedFromDocument(document: ReturnType<FUniver['getActiveDocument']>): boolean {
-  return (
-    document?.getSnapshot().body?.customDecorations?.some((decoration) => decoration.id.startsWith('xiaogui.')) ?? false
-  )
+function fieldDecorationVerifiedFromDocument(
+  document: ReturnType<FUniver['getActiveDocument']>,
+  projection: ProjectionMetadataV1 | null,
+): boolean {
+  const body = document?.getSnapshot().body
+  if (!body) return false
+  if (projection?.occurrences.length) {
+    return projection.occurrences.every((occurrence) => (
+      body.dataStream.slice(occurrence.startUtf16, occurrence.endUtf16Exclusive) === occurrence.originalText
+      && rangeHasHighlight(
+        body.textRuns ?? [],
+        occurrence.startUtf16,
+        occurrence.endUtf16Exclusive,
+        occurrenceHighlightColor(occurrence.state),
+      )
+    ))
+  }
+  return body.customDecorations?.some((decoration) => decoration.id.startsWith('xiaogui.')) ?? false
+}
+
+function textStyleAtRange(runs: readonly ITextRun[], start: number, end: number): ITextStyle {
+  const run = runs.find((item) => item.st <= start && end <= item.ed)
+    ?? runs.find((item) => item.st < end && start < item.ed)
+  return { ...(run?.ts ?? {}) }
+}
+
+function rangeHasHighlight(
+  runs: readonly ITextRun[],
+  start: number,
+  end: number,
+  color: string,
+): boolean {
+  let cursor = start
+  const highlighted = runs
+    .filter((run) => run.st < end && start < run.ed && run.ts?.bg?.rgb === color)
+    .sort((left, right) => left.st - right.st)
+  for (const run of highlighted) {
+    if (run.st > cursor) return false
+    cursor = Math.max(cursor, run.ed)
+    if (cursor >= end) return true
+  }
+  return false
+}
+
+function occurrenceHighlightColor(state: ProjectionMetadataV1['occurrences'][number]['state']): string {
+  if (state === 'BLOCKING') return '#FFD27A'
+  if (state === 'WARNING') return '#FFE59A'
+  return '#FFF2B2'
 }

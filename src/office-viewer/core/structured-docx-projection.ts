@@ -43,10 +43,20 @@ export function isOfficeUniverWorktreeEnvelopeV1(value: unknown): value is Offic
   const envelope = value as Record<string, unknown>
   return envelope.envelopeVersion === OFFICE_WORKTREE_ENVELOPE_VERSION_V1
     && envelope.kind === 'XIAOGUI_UNIVER_WORKTREE'
-    && !!envelope.document
-    && typeof envelope.document === 'object'
+    && isOfficeUniverDocumentSnapshotV1(envelope.document)
     && !!envelope.projection
     && typeof envelope.projection === 'object'
+}
+
+export function isOfficeUniverDocumentSnapshotV1(value: unknown): value is Partial<IDocumentData> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const snapshot = value as Record<string, unknown>
+  const body = snapshot.body
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false
+  if (typeof (body as Record<string, unknown>).dataStream !== 'string') return false
+  if ('id' in snapshot && typeof snapshot.id !== 'string') return false
+  return !('documentStyle' in snapshot)
+    || (!!snapshot.documentStyle && typeof snapshot.documentStyle === 'object' && !Array.isArray(snapshot.documentStyle))
 }
 
 export function worktreeEnvelopeV1(
