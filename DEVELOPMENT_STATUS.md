@@ -1,5 +1,105 @@
 # 小规开发阶段状态
 
+## 2026-08-31｜CODING-P1 P0 六个受控扩展契约与三接缝 Spike
+
+### 阶段状态
+
+- 状态：P0 契约、接缝 Spike、聚焦验证和双轴只读审查完成，等待人工验收
+- 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`
+- 当前分支：`agent/coding-p1-pi-extension-pack-v1`
+- 冻结基线：`planning-agent/agent/next-phase-prompt-office-v1@0f7d74bbe1e8e41aa3294f0d7f0cc9a919f2c937`
+- 隔离边界：未修改正在施工 WORK 的工作树或分支；未合并阶段线、未发布、未制作 Portable
+
+### 本阶段目标
+
+1. 冻结 `XiaoguiCodingExtensionPackV1` 的六个受控 Coding Module manifest。
+2. 冻结 Pi Extension、TaskHub、Renderer Extension UI 三条接缝使用的版本化窄契约。
+3. 用进程内 Scripted Adapter 证明 `Pi Extension → TaskHub → Renderer` 的注册事件可以确定性往返。
+4. 保证 P0 不注册生产工具、不启用生产模块、不改变现有 CODING、WORK 或 TaskHub 状态机。
+
+### 实际修改文件
+
+- `packages/shared/index.ts`
+- `packages/shared/xiaogui-coding-extension-pack.ts`
+- `packages/shared/xiaogui-coding-extension-pack.test.ts`
+- `src/worker/xiaogui-coding-extensions/extension-pack.ts`
+- `src/worker/xiaogui-coding-extensions/extension-pack.test.ts`
+- `src/main/xiaogui/task-hub/coding-extension-seam-bridge.ts`
+- `src/main/xiaogui/task-hub/coding-extension-seam-bridge.test.ts`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 新增 `CodingExtensionManifestV1`，冻结代码上下文与符号、权限、计划、Diff 审阅、Git 检查点、角色配置六个 Module 的编号、中文名称、能力与三条必需接缝。
+2. 六个 Module 均固定为仅允许 `CODING`、`defaultEnabled: false`；P0 Pi Factory 只发出 `MODULE_REGISTERED`，不注册 hook 或工具。
+3. 新增上下文、权限意图、计划草稿、审阅证据、检查点与角色配置六组共享 V1 契约，以及注册事件、TaskHub 回执、Renderer 投影和往返回执。
+4. 注册事件运行时校验采用冻结 manifest 和精确字段集合；伪造能力、未知字段及夹带绝对路径会在进入 TaskHub 前失败关闭。
+5. 新增单一 `dispatch` 接缝桥：TaskHub 必须先接受事件，Renderer 才能收到只含扩展编号、中文名称、序号和就绪状态的窄投影。
+6. 用六个隐藏 Pi Module、Scripted TaskHub Port 和 Scripted Renderer Port 完成一次进程内往返，证明事件顺序、投影和回执一致。
+7. 完成 Standards 与规格符合性两路只读审查；代码实现无 blocker，阶段收口要求已落实到本记录、独立提交和独立分支推送。
+
+### 未完成内容
+
+- P1 的 `@` 文件/符号上下文、LSP 降级、命令/写入/路径/外传权限对话框尚未施工。
+- 六个 Module 尚未装配进生产 `worker-runtime`，也没有任何生产工具、Renderer 控件或 TaskHub 持久化行为。
+- P2 的计划卡、Todo、真实工作树 Diff 和验证审阅尚未施工。
+- P3 的检查点恢复、角色编辑及真实 Electron 联合旅程尚未施工。
+- P0 没有可见生产 UI，因而本阶段以进程内三接缝 Scripted 往返作为冒烟证据；没有伪装成生产 Electron 功能已接通。
+- 未运行全量测试、未合并阶段线、未覆盖 WORK 主线、未发布或制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 无产品或架构决策偏差：实现继续复用 Pi Extension、Renderer Extension UI 和 TaskHub 三条冻结接缝，没有复制 Claude Code 源码，也没有引入第二套 Agent Loop、权限系统或任务状态机。
+- P0 只证明契约和进程内 Scripted 往返，没有提前装配生产 runtime 或呈现 Renderer UI；这符合“先契约和 Spike，再替换生产功能”的阶段边界。
+- 本阶段未修改 WORK、DESIGN、Univer Office Surface、DOCX HTML 或 PDF 降级路径。
+
+### 测试命令和测试结果
+
+#### TDD 与聚焦测试
+
+新增契约、Pi 注册器、三接缝往返和绝对路径夹带防护均先观察到目标失败，再补最小实现至通过。
+
+```powershell
+.\node_modules\.bin\vitest.cmd run packages/shared/xiaogui-coding-extension-pack.test.ts src/worker/xiaogui-coding-extensions/extension-pack.test.ts src/main/xiaogui/task-hub/coding-extension-seam-bridge.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/main/direct-extension-ui.test.ts --reporter=dot
+```
+
+结果：`5 test files passed`，`15 tests passed`，退出码 `0`。其中包含现有 Scripted Runtime composition 和 Direct Extension UI 接缝回归。
+
+#### 类型检查、构建和差异检查
+
+```powershell
+npm run typecheck
+npm run build
+git diff --cached --check
+```
+
+结果：三项退出码均为 `0`。主进程、Preload、Renderer、Office Viewer 和 Office Gateway 构建成功；仅有既有 chunk 体积提示，没有新增构建失败。
+
+#### 基线债务复核
+
+```powershell
+.\node_modules\.bin\vitest.cmd run src/worker/xiaogui-prompt/session-extension.test.ts
+```
+
+结果：该既有 WORK 测试在本独立分支和未改动的基线 WORK 工作树均为 `2 failed / 4 passed`，失败原因是旧断言仍期望 `enabledCapabilities: ['work.file-organize']`，而当前基线返回空数组。P0 未修改 Prompt/WORK 文件，不在本包放宽或改写该测试。
+
+### 已知风险
+
+1. 当前三接缝桥是契约 Spike，没有持久化、重启恢复或生产 Renderer 生命周期，不能视为 P1-P3 已完成。
+2. `CodingRoleProfileV1.systemPrompt` 已被冻结为契约字段；未来落地时必须作为本机私有配置处理，不得进入公开 TaskHub/Renderer 事件。
+3. 六个 Module 后续接入生产时必须继续保持 TaskHub 为 Attempt、权限、工作树、验证和恢复的唯一权威。
+4. 基线存在一项与本包无关的 WORK Prompt 测试债务，后续应由 WORK 主线单独修正，不能在 Coding 分支混改。
+5. 构建复用 D 盘既有 `node_modules` Junction，未执行 `npm install` 或 `npm ci`；依赖内容由当前冻结基线提供。
+
+### 下一阶段计划
+
+本阶段结束后停止施工并等待人工或审查 Agent 验收。只有 P0 验收通过后，才在同一独立 Coding 分支进入 P1：
+
+1. 实现项目范围内的 `@` 文件/符号上下文和明确 LSP 降级；
+2. 接入命令、写入、路径与数据外传权限意图；
+3. 复用现有 Extension UI 做“允许一次 / 允许本次任务中的相同规则 / 拒绝”；
+4. 验证拒绝、超时、越界及重启恢复后，再提交独立 P1 验收点。
+
 ## 2026-08-31｜WORK 全类型资料读取与路径边界调整
 
 ### 阶段状态
