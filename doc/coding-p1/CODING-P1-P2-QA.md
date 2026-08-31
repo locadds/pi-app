@@ -13,6 +13,8 @@
 | 修改并批准计划 | 修改目标、步骤或验证方法产生新正文版本；只有批准精确 revision/digest 后可执行 | 修改撤销旧批准资格；批准后进入可执行状态 | `attempt-plan-module.test.ts`、Electron 计划卡截图 | 通过 |
 | 未批准时零派发 | Attempt 保持 `READY`，Runtime 不收到 dispatch | A/B 计划卡出现前无 Runtime 启动；单元回归断言零派发 | `execution-orchestrator.test.ts`、`02-attempt-plans-awaiting-approval.png` | 通过 |
 | 派发失败后恢复 | 未进入运行态的失败退回同一 `APPROVED` 计划；重启后可继续且只派发一次 | 真实计划模块关闭重开后保留相同投影，下一次恢复进入 `RUNNING`，成功 dispatch 仅一次 | `execution-orchestrator.test.ts` | 通过 |
+| 派发结果无法对账 | dispatch 失败且权威 Attempt 不可读时不得退回可重试状态 | Saga 进入 `OUTCOME_UNKNOWN`，计划保持 `EXECUTING`，再次恢复不产生第二次 dispatch | `execution-orchestrator.test.ts` | 通过 |
+| 计划回滚失败 | 已知 `READY` 但计划无法原子退回时不得继续重试 | Saga 进入 `OUTCOME_UNKNOWN`，rollback 只调用一次，后续恢复不重复 dispatch | `execution-orchestrator.test.ts` | 通过 |
 | 批准请求重放 | 丢失响应后用同一 revision/digest 重放，返回相同结果且不产生正文新版本 | 首次批准与重放结果完全一致 | `attempt-plan-module.test.ts` | 通过 |
 | A/B 并行，C 依赖 A | A、B 同一波并行；C 只在 A 验证后执行，并看到 A、不看到无关 B | 两个 root-wave 运行事件后分别成功；C 的依赖基线检查包含 `src/a.ts` 且确认 `src/b.ts` 缺失 | `journey-events.jsonl`、`03-ab-running-c-waiting.png` | 通过 |
 | 展开真实 Diff | 用户点击“查看 Diff”后看到工作树中的真实补丁正文 | E2E 展开 Diff 并断言 `A-verified` 或 `B-verified` 可见 | `e2e/xiaogui-real-three-task-journey.spec.ts`、`04-real-diff-and-verification.png` | 通过 |
@@ -28,7 +30,7 @@
 node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/attempt-plan-module.test.ts src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/execution-orchestrator.test.ts
 ```
 
-结果：`3` 个测试文件、`36/36` 通过。
+结果：`3` 个测试文件、`38/38` 通过。
 
 ### 类型检查与构建
 
@@ -47,7 +49,7 @@ node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.t
 
 结果：`1/1` 通过，耗时约 `46s`。
 
-证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788178580071`
+证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788181671956`
 
 | 证据 | 说明 |
 |---|---|

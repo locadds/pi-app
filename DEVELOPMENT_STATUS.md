@@ -38,6 +38,8 @@
 5. `resumeAttempt` 返回失败或抛错时，IPC 返回最新权威计划投影和固定安全错误，不返回异常正文。
 6. 新增真实 `CodingAttemptPlanModuleV1 + Orchestrator + fail-once dispatch` 回归：首次失败后计划为 `APPROVED`，关闭重启后仍保持，第二次人工续接只成功 dispatch 一次并进入 `EXECUTING`。
 7. Electron 旅程会真正展开 Diff，并断言工作树中的 `A-verified`/`B-verified` 变更文本可见。
+8. dispatch 失败后只有权威 Attempt 明确为 `READY` 才允许回滚并重试；authority 不可读、状态非 `READY` 或计划回滚失败均进入 `OUTCOME_UNKNOWN`，防止重复运行。
+9. 已对生产差异和测试逐项完成过拟合、恒真断言、实现镜像、无效测试、不必要抽象、维护负担、虚假信心与范围漂移复核，记录见 `doc/coding-p1/CODING-P1-P2-REVIEW.md`。
 
 ### 未完成内容
 
@@ -57,7 +59,7 @@
 node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/attempt-plan-module.test.ts src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/execution-orchestrator.test.ts
 ```
 
-结果：`3 test files passed`，`36 tests passed`，退出码 `0`。新增覆盖批准重放、dispatch 失败回滚、SQLite 重启续接和异常脱敏。
+结果：`3 test files passed`，`38 tests passed`，退出码 `0`。新增覆盖批准重放、dispatch 失败回滚、SQLite 重启续接、authority 不可读、rollback 失败和异常脱敏。
 
 ```powershell
 npm run typecheck
@@ -70,7 +72,7 @@ npm run build
 node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.ts --workers=1
 ```
 
-结果：`1 passed`，耗时约 46 秒。最新证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788178580071`；`04-real-diff-and-verification.png` 显示已展开的真实统一 Diff 和两条退出码 `0`。
+结果：`1 passed`，耗时约 1.5 分钟。最新证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788181671956`；`04-real-diff-and-verification.png` 显示已展开的真实统一 Diff 和两条退出码 `0`。
 
 ### 已知风险
 

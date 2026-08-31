@@ -492,8 +492,23 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       })
       if (!dispatched.ok) {
         const authority = await this.authority(operation)
-        if (authority.ok && ['STARTING', 'RUNNING'].includes(authority.result.attempt.status)) {
+        if (!authority.ok) {
+          // A failed dispatch response is not proof that the Agent did not
+          // start. Without an authoritative Attempt state, retrying would risk
+          // running the same work twice.
+          this.saga.advance(operation.operation_id, 'OUTCOME_UNKNOWN', {
+            lastSafeCode: 'DISPATCH_AUTHORITY_UNAVAILABLE',
+          })
+          return executionError('OUTCOME_UNKNOWN')
+        }
+        if (['STARTING', 'RUNNING'].includes(authority.result.attempt.status)) {
           return this.markOutcomeUnknown(operation, authority.result)
+        }
+        if (authority.result.attempt.status !== 'READY') {
+          this.saga.advance(operation.operation_id, 'OUTCOME_UNKNOWN', {
+            lastSafeCode: `DISPATCH_FAILED_${authority.result.attempt.status}`,
+          })
+          return executionError('OUTCOME_UNKNOWN')
         }
         if (this.options.attemptPlanGate) {
           try {

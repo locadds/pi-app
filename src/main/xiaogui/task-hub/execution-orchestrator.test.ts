@@ -183,6 +183,74 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     restoredPlan.close()
   })
 
+  it('does not make an unknown dispatch retryable when authoritative state cannot be read', async () => {
+    const events: string[] = []
+    const dbPath = await tempDb()
+    const hub = fakeHub(events)
+    const plan = new CodingAttemptPlanModuleV1({ dbPath, idFactory: () => 'plan_unknown_dispatch' })
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      attemptPlanGate: plan,
+    })
+
+    await orchestrator.start(request())
+    const awaiting = plan.getProjection(ATTEMPT_ID)!
+    const approved = plan.approve({
+      schemaVersion: 1,
+      attemptId: ATTEMPT_ID,
+      expectedRevision: awaiting.plan.revision,
+      expectedPlanDigest: awaiting.planDigest,
+    })
+    expect(approved.ok).toBe(true)
+
+    hub.failNextDispatchWithUnknownAuthority()
+    await expect(orchestrator.resumeAttempt(ADDRESS, ATTEMPT_ID)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'OUTCOME_UNKNOWN' },
+    })
+    expect(plan.getProjection(ATTEMPT_ID)?.state).toBe('EXECUTING')
+    await expect(orchestrator.resumeAttempt(ADDRESS, ATTEMPT_ID)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'OUTCOME_UNKNOWN' },
+    })
+    expect(events.filter((event) => event === 'dispatch-failed')).toHaveLength(1)
+    expect(events.filter((event) => event === 'dispatch')).toHaveLength(0)
+    await orchestrator.close()
+    plan.close()
+  })
+
+  it('fails closed without redispatch when the approved-plan rollback itself fails', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    let approved = false
+    const planGate: TaskExecutionAttemptPlanGateV1 = {
+      ensureAttemptPlan: vi.fn(async () => undefined),
+      isAttemptPlanApproved: vi.fn(async () => approved),
+      markAttemptExecutionStarted: vi.fn(async () => undefined),
+      markAttemptExecutionDispatchFailed: vi.fn(async () => {
+        throw new Error('rollback unavailable')
+      }),
+    }
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
+      attemptPlanGate: planGate,
+    })
+
+    await orchestrator.start(request())
+    approved = true
+    hub.failNextDispatch()
+    await expect(orchestrator.resumeAttempt(ADDRESS, ATTEMPT_ID)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'OUTCOME_UNKNOWN' },
+    })
+    await expect(orchestrator.resumeAttempt(ADDRESS, ATTEMPT_ID)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'OUTCOME_UNKNOWN' },
+    })
+    expect(planGate.markAttemptExecutionDispatchFailed).toHaveBeenCalledTimes(1)
+    expect(events.filter((event) => event === 'dispatch-failed')).toHaveLength(1)
+    expect(events.filter((event) => event === 'dispatch')).toHaveLength(0)
+    await orchestrator.close()
+  })
+
   it('owns the fixed resolve -> schedule -> stage -> prepare -> dispatch sequence and returns the authoritative Attempt', async () => {
     const events: string[] = []
     const hub = fakeHub(events)
@@ -1152,6 +1220,8 @@ function fakeHub(events: string[], privateDbPath?: string) {
   let runtimeSession: string | undefined
   let schedules = 0
   let failDispatch = false
+  let authorityUnavailable = false
+  let makeAuthorityUnavailableAfterDispatch = false
 
   const projection = (): SessionCollaborationProjectionM2BV1 => ({
     kind: 'SESSION_COLLABORATION_PROJECTION',
@@ -1209,6 +1279,10 @@ function fakeHub(events: string[], privateDbPath?: string) {
       case 'system.agent.report.record':
         if (failDispatch) {
           failDispatch = false
+          if (makeAuthorityUnavailableAfterDispatch) {
+            makeAuthorityUnavailableAfterDispatch = false
+            authorityUnavailable = true
+          }
           events.push('dispatch-failed')
           return { ok: false as const, error: { code: 'AGENT_UNAVAILABLE' as const } }
         }
@@ -1242,7 +1316,9 @@ function fakeHub(events: string[], privateDbPath?: string) {
     }
   })
   const application = {
-    observeM2B: vi.fn(async () => ({ ok: true as const, value: projection() })),
+    observeM2B: vi.fn(async () => authorityUnavailable
+      ? { ok: false as const, error: { code: 'INTERNAL' as const } }
+      : { ok: true as const, value: projection() }),
     executeSystem,
     prepareNextWorkspace: vi.fn(async (_address, request) => {
       events.push('prepare')
@@ -1264,6 +1340,10 @@ function fakeHub(events: string[], privateDbPath?: string) {
     runtimeSessionId: () => runtimeSession,
     systemCommands: () => executeSystem.mock.calls.map(([command]) => command),
     failNextDispatch: () => { failDispatch = true },
+    failNextDispatchWithUnknownAuthority: () => {
+      failDispatch = true
+      makeAuthorityUnavailableAfterDispatch = true
+    },
   }
 }
 
