@@ -628,6 +628,10 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       await realReviewButtons.first().click()
       await expect(page.getByText(A_PATH, { exact: true }).or(page.getByText(B_PATH, { exact: true }))).toBeVisible()
       await expect(page.getByText('通过', { exact: true }).first()).toBeVisible()
+      await page.getByText('查看 Diff', { exact: true }).first().click()
+      await expect(page.locator('pre').filter({ hasText: 'A-verified' }).or(
+        page.locator('pre').filter({ hasText: 'B-verified' }),
+      ).first()).toBeVisible()
       await page.getByLabel('修改与验证').filter({ hasText: '变更文件' }).first().screenshot({ path: screenshots.review })
       await configureExecutionTask(page, runC.taskRunId, '任务 C', C_PATH)
       await page.getByRole('button', { name: '核对本批执行范围', exact: true }).click()

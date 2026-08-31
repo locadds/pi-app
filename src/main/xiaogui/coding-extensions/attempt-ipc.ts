@@ -174,9 +174,21 @@ async function resume(
   address: HubAddressV1,
   projection: CodingPlanProjectionV1,
 ): Promise<CodingPlanPerformOutcomeV1> {
-  const resumed = await taskExecution.resumeAttempt(address, projection.attemptId as AttemptId)
-  if (!resumed.ok) {
-    return { ...failure('EXECUTION_RESUME_FAILED'), projection }
+  try {
+    const resumed = await taskExecution.resumeAttempt(address, projection.attemptId as AttemptId)
+    if (!resumed.ok) {
+      return {
+        ...failure('EXECUTION_RESUME_FAILED'),
+        projection: plan.getProjection(projection.attemptId) ?? projection,
+      }
+    }
+  } catch {
+    // Never let a runtime/TaskHub exception escape through the public IPC
+    // registry where paths or private execution details could be logged.
+    return {
+      ...failure('EXECUTION_RESUME_FAILED'),
+      projection: plan.getProjection(projection.attemptId) ?? projection,
+    }
   }
   return {
     ok: true,

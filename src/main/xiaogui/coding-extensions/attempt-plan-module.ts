@@ -142,6 +142,17 @@ export class CodingAttemptPlanModuleV1 {
     if (!outcome.ok) throw new Error(`CODING_PLAN_${outcome.error}`)
   }
 
+  async markAttemptExecutionDispatchFailed(attemptId: string): Promise<void> {
+    const row = this.readRow(attemptId)
+    if (!row) throw new Error('CODING_PLAN_PLAN_NOT_FOUND')
+    if (row.lifecycle_state === 'APPROVED') return
+    if (row.lifecycle_state !== 'EXECUTING') {
+      throw new Error('CODING_PLAN_PLAN_NOT_EXECUTING')
+    }
+    const outcome = this.advanceState(row, 'APPROVED')
+    if (!outcome.ok) throw new Error(`CODING_PLAN_${outcome.error}`)
+  }
+
   bindAttempt(command: CodingPlanBindAttemptCommandV1): CodingPlanCommandOutcomeV1 {
     const address = canonicalAddress(command.address)
     const taskObjective = canonicalText(command.taskObjective, 8_000)
@@ -323,7 +334,11 @@ export class CodingAttemptPlanModuleV1 {
   ): CodingPlanCommandOutcomeV1 {
     const plan = parsePlan(row.plan_json)
     if (!plan) return { ok: false, error: 'INVALID_COMMAND' }
-    return this.writeMutation(row, { ...plan, revision: plan.revision + 1 }, state)
+    // The revision and digest identify the user-reviewed plan body. Lifecycle
+    // transitions must not manufacture a new plan version: keeping the body
+    // identity stable makes approval replay safe after a lost IPC response and
+    // lets a failed pre-dispatch attempt return to the exact approved plan.
+    return this.writeMutation(row, plan, state)
   }
 
   private writeMutation(

@@ -109,6 +109,7 @@ export interface TaskExecutionAttemptPlanGateV1 {
   }): Promise<void>
   isAttemptPlanApproved(attemptId: AttemptId): Promise<boolean>
   markAttemptExecutionStarted(attemptId: AttemptId): Promise<void>
+  markAttemptExecutionDispatchFailed(attemptId: AttemptId): Promise<void>
 }
 
 export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
@@ -493,6 +494,19 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
         const authority = await this.authority(operation)
         if (authority.ok && ['STARTING', 'RUNNING'].includes(authority.result.attempt.status)) {
           return this.markOutcomeUnknown(operation, authority.result)
+        }
+        if (this.options.attemptPlanGate) {
+          try {
+            await this.options.attemptPlanGate.markAttemptExecutionDispatchFailed(attemptId)
+          } catch {
+            // The Agent did not report a running state, but the approved plan
+            // could not be restored atomically. Fail closed so recovery cannot
+            // silently dispatch an EXECUTING plan a second time.
+            this.saga.advance(operation.operation_id, 'OUTCOME_UNKNOWN', {
+              lastSafeCode: 'PLAN_DISPATCH_ROLLBACK_FAILED',
+            })
+            return executionError('OUTCOME_UNKNOWN')
+          }
         }
         this.saga.advance(operation.operation_id, 'WORKSPACE_READY', {
           lastSafeCode: dispatched.error.code,

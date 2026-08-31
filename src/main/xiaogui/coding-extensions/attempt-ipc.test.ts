@@ -125,6 +125,42 @@ describe('CODING Attempt IPC', () => {
     })
   })
 
+  it('恢复抛错时只返回安全错误和权威的可重试计划', async () => {
+    const approvedProjection = { ...PLAN, state: 'APPROVED' as const }
+    const plan = {
+      observe: vi.fn(() => [approvedProjection]),
+      revise: vi.fn(),
+      approve: vi.fn(),
+      transitionTodo: vi.fn(),
+      getProjection: vi.fn(() => approvedProjection),
+    }
+    registerCodingAttemptHandlersV1({
+      plan,
+      review: { read: vi.fn() },
+      taskExecution: { resumeAttempt: vi.fn(async () => { throw new Error('D:\\private\\workspace') }) },
+    })
+
+    const outcome = await handlers.get('ipc:xiaogui.coding.plan.perform')!({
+      contractVersion: 'xiaogui.coding-extension-control.v1',
+      address: ADDRESS,
+      action: {
+        type: 'RESUME',
+        attemptId: PLAN.attemptId,
+        expectedRevision: PLAN.plan.revision,
+        expectedPlanDigest: PLAN.planDigest,
+      },
+    })
+    expect(outcome).toEqual({
+      ok: false,
+      error: {
+        code: 'EXECUTION_RESUME_FAILED',
+        messageKey: 'xiaogui.coding.extension.execution_resume_failed',
+      },
+      projection: approvedProjection,
+    })
+    expect(JSON.stringify(outcome)).not.toContain('private')
+  })
+
   it('只通过 Attempt 审阅模块返回真实 Diff，并拒绝无效请求', async () => {
     const read = vi.fn(async () => ({
       bundle: {

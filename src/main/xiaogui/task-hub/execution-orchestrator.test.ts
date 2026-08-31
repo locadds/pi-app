@@ -20,6 +20,7 @@ import type {
 import type { RuntimeEventV1, RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
 
 import type { CollaborationHubApplicationV1 } from './application'
+import { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-module'
 import {
   XiaoguiTaskExecutionOrchestratorV1,
   type TaskExecutionAttemptPlanGateV1,
@@ -70,6 +71,7 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
       markAttemptExecutionStarted: vi.fn(async (attemptId) => {
         events.push(`plan-started:${attemptId}`)
       }),
+      markAttemptExecutionDispatchFailed: vi.fn(async () => undefined),
     }
     const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
       attemptPlanGate: planGate,
@@ -107,6 +109,7 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
       ensureAttemptPlan: vi.fn(async () => undefined),
       isAttemptPlanApproved: vi.fn(async () => false),
       markAttemptExecutionStarted: vi.fn(async () => undefined),
+      markAttemptExecutionDispatchFailed: vi.fn(async () => undefined),
     }
     const first = await createOrchestrator(hub.application, events, undefined, dbPath, { attemptPlanGate: planGate })
     await expect(first.start(request())).resolves.toMatchObject({
@@ -119,6 +122,65 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     await restarted.recover()
     expect(events.filter((event) => event === 'dispatch')).toHaveLength(0)
     await restarted.close()
+  })
+
+  it('restores the exact approved plan after a failed dispatch and retries it once after restart', async () => {
+    const events: string[] = []
+    const dbPath = await tempDb()
+    const hub = fakeHub(events)
+    const firstPlan = new CodingAttemptPlanModuleV1({
+      dbPath,
+      idFactory: () => 'plan_dispatch_retry',
+      now: () => '2026-08-31T10:00:00.000Z',
+    })
+    const first = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      attemptPlanGate: firstPlan,
+    })
+
+    await expect(first.start(request())).resolves.toMatchObject({
+      ok: true,
+      value: { attempt: { attemptId: ATTEMPT_ID, status: 'READY' } },
+    })
+    const awaiting = firstPlan.getProjection(ATTEMPT_ID)!
+    const approved = firstPlan.approve({
+      schemaVersion: 1,
+      attemptId: ATTEMPT_ID,
+      expectedRevision: awaiting.plan.revision,
+      expectedPlanDigest: awaiting.planDigest,
+    })
+    expect(approved).toMatchObject({ ok: true, projection: { state: 'APPROVED' } })
+    if (!approved.ok) throw new Error('approve failed')
+
+    hub.failNextDispatch()
+    await expect(first.resumeAttempt(ADDRESS, ATTEMPT_ID)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'AGENT_UNAVAILABLE' },
+    })
+    expect(firstPlan.getProjection(ATTEMPT_ID)).toEqual(approved.projection)
+    expect(events.filter((event) => event === 'dispatch-failed')).toHaveLength(1)
+    await first.close()
+    firstPlan.close()
+
+    const restoredPlan = new CodingAttemptPlanModuleV1({ dbPath })
+    expect(restoredPlan.getProjection(ATTEMPT_ID)).toEqual(approved.projection)
+    expect(restoredPlan.approve({
+      schemaVersion: 1,
+      attemptId: ATTEMPT_ID,
+      expectedRevision: awaiting.plan.revision,
+      expectedPlanDigest: awaiting.planDigest,
+    })).toEqual(approved)
+
+    const restarted = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      attemptPlanGate: restoredPlan,
+    })
+    await expect(restarted.resumeAttempt(ADDRESS, ATTEMPT_ID)).resolves.toMatchObject({
+      ok: true,
+      value: { attempt: { attemptId: ATTEMPT_ID, status: 'RUNNING' } },
+    })
+    expect(events.filter((event) => event === 'dispatch')).toHaveLength(1)
+    expect(restoredPlan.getProjection(ATTEMPT_ID)?.state).toBe('EXECUTING')
+    await restarted.close()
+    restoredPlan.close()
   })
 
   it('owns the fixed resolve -> schedule -> stage -> prepare -> dispatch sequence and returns the authoritative Attempt', async () => {
@@ -1089,6 +1151,7 @@ function fakeHub(events: string[], privateDbPath?: string) {
   let attemptStatus: 'WORKSPACE_PREPARING' | 'READY' | 'RUNNING' | 'FAILED' | 'OUTCOME_UNKNOWN' | undefined
   let runtimeSession: string | undefined
   let schedules = 0
+  let failDispatch = false
 
   const projection = (): SessionCollaborationProjectionM2BV1 => ({
     kind: 'SESSION_COLLABORATION_PROJECTION',
@@ -1144,6 +1207,11 @@ function fakeHub(events: string[], privateDbPath?: string) {
           attemptId: ATTEMPT_ID,
         } }
       case 'system.agent.report.record':
+        if (failDispatch) {
+          failDispatch = false
+          events.push('dispatch-failed')
+          return { ok: false as const, error: { code: 'AGENT_UNAVAILABLE' as const } }
+        }
         events.push('dispatch')
         attemptStatus = 'RUNNING'
         runtimeSession = 'runtime-1'
@@ -1195,6 +1263,7 @@ function fakeHub(events: string[], privateDbPath?: string) {
     scheduleCount: () => schedules,
     runtimeSessionId: () => runtimeSession,
     systemCommands: () => executeSystem.mock.calls.map(([command]) => command),
+    failNextDispatch: () => { failDispatch = true },
   }
 }
 

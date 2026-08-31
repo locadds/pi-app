@@ -1,5 +1,87 @@
 # 小规开发阶段状态
 
+## 2026-08-31｜CODING-P1 P2 审查修复候选
+
+### 阶段状态
+
+- 状态：针对 P2 首轮审查的 dispatch 恢复、批准幂等、安全错误和真实 Diff 证据完成修复；聚焦回归、类型检查、构建和 Electron 旅程均通过，等待清洁工作树复核
+- 固定起点：`e992483975ade4bd10aaf1c6fc399a63f42caf93`
+- 独立分支：`agent/coding-p1-pi-extension-pack-v1`
+- 隔离边界：P3 在接线前以独立可恢复暂存保存；未修改 WORK 工作树，未合并阶段线、未发布、未制作 Portable
+
+### 本阶段目标
+
+1. 修复 Runtime dispatch 失败后计划停在 `EXECUTING`、界面无法“继续执行”的恢复缺陷。
+2. 让已落库的同一批准请求在响应丢失后可以安全重放，不产生虚假的正文版本冲突。
+3. 确保 TaskHub/Runtime 抛错只经版本化安全错误返回 Renderer，不把绝对路径或内部状态交给公共 IPC 日志。
+4. 让真实 Electron 旅程展开并断言工作树 Diff 内容，而不是只看“通过”标签。
+
+### 实际修改文件
+
+- `src/main/xiaogui/coding-extensions/attempt-plan-module.ts`
+- `src/main/xiaogui/coding-extensions/attempt-plan-module.test.ts`
+- `src/main/xiaogui/coding-extensions/attempt-ipc.ts`
+- `src/main/xiaogui/coding-extensions/attempt-ipc.test.ts`
+- `src/main/xiaogui/task-hub/execution-orchestrator.ts`
+- `src/main/xiaogui/task-hub/execution-orchestrator.test.ts`
+- `e2e/xiaogui-real-three-task-journey.spec.ts`
+- `doc/coding-p1/CODING-P1-P2-REVIEW.md`
+- `doc/coding-p1/CODING-P1-P2-QA.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 计划 revision 与 digest 现在只标识用户审阅的计划正文；`AWAITING_APPROVAL → APPROVED → EXECUTING` 生命周期变化不再伪造正文新版本。
+2. 同一 `APPROVE` 请求可以在响应丢失后重放并返回同一权威投影；修改正文或 Todo 仍会生成新 revision/digest。
+3. Runtime 在真正进入 `STARTING/RUNNING` 前 dispatch 失败时，TaskHub 将计划从 `EXECUTING` 原子退回原来的 `APPROVED`，Saga 回到 `WORKSPACE_READY`，重启后仍由用户“继续执行”。
+4. 若 Agent 已进入 `STARTING/RUNNING`，继续保持 `OUTCOME_UNKNOWN` 且不重复派发；若计划回滚本身失败，也进入 `OUTCOME_UNKNOWN` 并失败关闭。
+5. `resumeAttempt` 返回失败或抛错时，IPC 返回最新权威计划投影和固定安全错误，不返回异常正文。
+6. 新增真实 `CodingAttemptPlanModuleV1 + Orchestrator + fail-once dispatch` 回归：首次失败后计划为 `APPROVED`，关闭重启后仍保持，第二次人工续接只成功 dispatch 一次并进入 `EXECUTING`。
+7. Electron 旅程会真正展开 Diff，并断言工作树中的 `A-verified`/`B-verified` 变更文本可见。
+
+### 未完成内容
+
+- P3 检查点、Pi 会话恢复、角色配置及联合旅程尚未接入生产装配，不计入本阶段完成。
+- P2 仍使用 Scripted Runtime 验证 TaskHub、工作树和界面接缝；这不是生产模型生成质量证据。
+- 未运行全量测试；按用户要求只运行直接相关回归、一次类型检查、一次构建和一条 Electron 旅程。
+
+### 与规格文档存在的偏差
+
+- 无新增产品或架构偏差。TaskHub 仍是 Attempt、计划、权限、工作树、验证和恢复的唯一权威；Pi 与 Renderer 只通过窄契约提交草稿和人工决定。
+- 未复制 Claude Code 源码、品牌或第二套状态机；只保持其“计划先审、批准后执行、失败可继续、查看真实 Diff”的交互语义。
+- WORK、DESIGN、Univer Office Surface 以及 DOCX/PDF 降级路径未修改。
+
+### 测试命令和测试结果
+
+```powershell
+node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/attempt-plan-module.test.ts src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/execution-orchestrator.test.ts
+```
+
+结果：`3 test files passed`，`36 tests passed`，退出码 `0`。新增覆盖批准重放、dispatch 失败回滚、SQLite 重启续接和异常脱敏。
+
+```powershell
+npm run typecheck
+npm run build
+```
+
+结果：两项退出码均为 `0`。构建只有既有动态导入和大 chunk 提示。
+
+```powershell
+node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.ts --workers=1
+```
+
+结果：`1 passed`，耗时约 46 秒。最新证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788178580071`；`04-real-diff-and-verification.png` 显示已展开的真实统一 Diff 和两条退出码 `0`。
+
+### 已知风险
+
+1. 计划回滚与 Runtime 权威状态之间采用先查询再回滚；若该窗口内状态无法确认，系统选择 `OUTCOME_UNKNOWN`，需要人工对账而不是自动重试。
+2. P2 尚未证明生产 Kimi/Codex 的代码质量，只证明更换 Runtime 时保持相同的 TaskHub 计划与审阅契约。
+3. P3 当前仍是未接线模块，必须在 P2 清洁复核通过后再进入生产装配。
+
+### 下一阶段计划
+
+在固定提交上建立清洁工作树重跑同一最小门禁并完成审查；通过后恢复 P3 工作，接通检查点预览/确认、Pi Session 与工作树联合恢复、三类角色配置与硬权限上限，最后完成真实 Electron 联合旅程。
+
 ## 2026-08-31｜CODING-P1 P2 计划、Todo 与真实 Diff 审阅候选
 
 ### 阶段状态
@@ -35,7 +117,7 @@
 5. “批准并开始执行”同时完成 TaskHub 批准和同一 Attempt 续接；若批准已落库但启动失败，界面保留“继续执行”，不会要求重新批准或静默换 Agent。
 6. Todo 只属于当前 Attempt 的执行步骤，不创建、不重排 TaskHub DAG；执行开始后只允许合法的状态迁移。
 7. 审阅模块从真实 Attempt 工作树生成统一 Diff，并校验 TaskChangeSet、补丁制品和验证制品的绑定。失败、未知或缺少退出状态会明确进入未解决问题，不能形成伪通过。
-8. Renderer 只展示相对路径、验证标签、状态、退出码、未解决问题和 Diff；不展示 Attempt ID、digest、绝对路径、私有会话编号或底层命令。
+8. Renderer 只展示相对路径、验证标签、状态、退出码、未解决问题和 Diff；不展示 Attempt ID、绝对路径、私有会话编号或底层命令。既有验证摘要卡继续展示公开证据/变更集编号及截断 digest，不能据此访问私有工作树或会话。
 
 ### 未完成内容
 

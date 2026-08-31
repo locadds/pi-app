@@ -173,7 +173,7 @@ describe('CodingAttemptPlanModuleV1', () => {
       expectedRevision: revised.projection.plan.revision,
       expectedPlanDigest: revised.projection.planDigest,
     })
-    expect(approved).toMatchObject({ ok: true, projection: { state: 'APPROVED', plan: { revision: 3 } } })
+    expect(approved).toMatchObject({ ok: true, projection: { state: 'APPROVED', plan: { revision: 2 } } })
 
     if (!approved.ok) throw new Error('approve failed')
     const reopened = module.revise({
@@ -185,7 +185,7 @@ describe('CodingAttemptPlanModuleV1', () => {
     })
     expect(reopened).toMatchObject({
       ok: true,
-      projection: { state: 'AWAITING_APPROVAL', plan: { revision: 4, objective: '再次调整' } },
+      projection: { state: 'AWAITING_APPROVAL', plan: { revision: 3, objective: '再次调整' } },
     })
     module.close()
   })
@@ -220,7 +220,7 @@ describe('CodingAttemptPlanModuleV1', () => {
       expectedRevision: approved.projection.plan.revision,
       expectedPlanDigest: approved.projection.planDigest,
     })
-    expect(started).toMatchObject({ ok: true, projection: { state: 'EXECUTING', plan: { revision: 3 } } })
+    expect(started).toMatchObject({ ok: true, projection: { state: 'EXECUTING', plan: { revision: 1 } } })
     if (!started.ok) throw new Error('start failed')
 
     expect(module.revise({
@@ -241,7 +241,7 @@ describe('CodingAttemptPlanModuleV1', () => {
     })
     expect(inProgress).toMatchObject({
       ok: true,
-      projection: { plan: { revision: 4, steps: [expect.objectContaining({ status: 'IN_PROGRESS' })] } },
+      projection: { plan: { revision: 2, steps: [expect.objectContaining({ status: 'IN_PROGRESS' })] } },
     })
     if (!inProgress.ok) throw new Error('todo failed')
     expect(module.transitionTodo({
@@ -261,7 +261,7 @@ describe('CodingAttemptPlanModuleV1', () => {
       stepId: 'fallback_execute',
       nextStatus: 'COMPLETED',
     })
-    expect(completed).toMatchObject({ ok: true, projection: { plan: { revision: 5 } } })
+    expect(completed).toMatchObject({ ok: true, projection: { plan: { revision: 3 } } })
     module.close()
   })
 
@@ -319,6 +319,38 @@ describe('CodingAttemptPlanModuleV1', () => {
     await expect(module.isAttemptPlanApproved('attempt_1')).resolves.toBe(true)
     await expect(module.markAttemptExecutionStarted('attempt_1')).resolves.toBeUndefined()
     expect(module.getProjection('attempt_1')?.state).toBe('EXECUTING')
+    await expect(module.markAttemptExecutionDispatchFailed('attempt_1')).resolves.toBeUndefined()
+    expect(module.getProjection('attempt_1')).toEqual(approved.ok ? approved.projection : null)
+    module.close()
+  })
+
+  it('批准丢失响应后可重放同一请求，且生命周期变化不伪造正文版本', () => {
+    const module = moduleAt(databasePath())
+    const bound = module.bindAttempt({
+      schemaVersion: 1,
+      address: ADDRESS,
+      attemptId: 'attempt_1',
+      taskObjective: '目标',
+    })
+    if (!bound.ok) throw new Error('bind failed')
+    const command = {
+      schemaVersion: 1 as const,
+      attemptId: 'attempt_1',
+      expectedRevision: bound.projection.plan.revision,
+      expectedPlanDigest: bound.projection.planDigest,
+    }
+
+    const first = module.approve(command)
+    const replay = module.approve(command)
+    expect(replay).toEqual(first)
+    expect(replay).toMatchObject({
+      ok: true,
+      projection: {
+        state: 'APPROVED',
+        plan: { revision: bound.projection.plan.revision },
+        planDigest: bound.projection.planDigest,
+      },
+    })
     module.close()
   })
 })
