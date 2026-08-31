@@ -1,5 +1,105 @@
 # 小规开发阶段状态
 
+## 2026-08-31｜WORK 普通文档路由与会话续发修复
+
+### 阶段状态
+
+- 状态：代码修改、聚焦测试、完整构建和真实 Electron 窗口冒烟完成，等待人工验收
+- 当前分支：`agent/next-phase-prompt-office-v1`
+- 修改基线：`0f7d74b`
+- 合并与发布：未合并阶段线、未覆盖正式主线、未制作发布包
+
+### 本阶段目标
+
+修复用户单机试用中相互关联的两个 P0/P1 问题：
+
+1. “整理普通文档”选择文件后必须稳定进入普通文档模板整理工具，不能误走通用资料扫描；
+2. 候选报告生成后必须显示“开始复核”，点击直接打开复核界面，同时输入框仍允许继续发送自然语言；
+3. Worker 退出或应用重新加载会话后，不得因为 Pi 会话头中的旧工作目录触发 `XIAOGUI_PROMPT_CONTEXT_SESSION_MISMATCH`；
+4. 避免一次约 9 MiB 的旧 DOC 被错误路由为对当前目录的大范围扫描，造成超大工具结果、上下文压缩和看似卡顿的分段输出。
+
+### 实际修改文件
+
+- `packages/shared/xiaogui-prompt-capabilities.ts`
+- `packages/shared/xiaogui-prompt-capabilities.test.ts`
+- `src/main/worker-manager.ts`
+- `src/main/__tests__/worker-manager-session-isolation.test.ts`
+- `src/main/ipc/handlers/session.ts`
+- `src/main/ipc/handlers/session-preview-invalidation.test.ts`
+- `src/main/xiaogui/index.ts`
+- `src/main/xiaogui/index.test.ts`
+- `src/main/xiaogui/ipc-handlers.ts`
+- `src/main/xiaogui/work-docx-template-intake-composition.ts`
+- `src/main/xiaogui/work-materials-worker-tool.ts`
+- `src/main/xiaogui/work-materials-worker-tool.test.ts`
+- `src/renderer/src/xiaogui/components/WorkHomeView.tsx`
+- `src/renderer/src/xiaogui/components/WorkHomeView.test.tsx`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. “整理普通文档”快捷入口的自动提示明确包含“整理成可复用模板”，Capability 推断会选择 `work.template-intake`，不再只暴露通用资料工具。
+2. 模板整理装配记录当前尚未消费的已选文档；存在该交接时，通用资料工具的无路径调用会明确拒绝并要求改用模板整理工具，防止模型扫描整个当前目录。用户明确提供路径时，通用资料读取行为保持不变。
+3. WorkerManager 新增仅主进程持有的可信会话工作区提示。会话重载时按“存活 Worker → 沙盒绑定 → 可信提示 → Pi 旧会话头”解析工作目录，不再把进程启动目录误当成用户会话目录。
+4. 新建、打开、待绑定、Fork/Clone、删除和直接打开复核等接缝统一使用该解析结果；执行尝试和会话身份仍保持原有失败关闭规则。
+5. 候选报告的按钮仍只由真实 `xiaogui_work_docx_template_intake` 成功工具事件生成，不从模型自然语言伪造。真实历史报告显示“开始复核”，点击直接打开 Univer 文档复核界面。
+6. 真实旧会话在 Worker 已退出、Pi 会话头仍含旧 cwd 的条件下继续发送文字，模型正常回复“文字发送已恢复”，未再出现 `XIAOGUI_PROMPT_CONTEXT_SESSION_MISMATCH`。
+
+### 未完成内容
+
+- 本阶段没有改写模型供应商的增量流协议。此前“一卡一卡”的主要可复现原因是错误路由后扫描了大量目录内容并触发上下文压缩；修复后的新文档流程仍需用户用真实 DOC/DOCX 再观察供应商侧流式体感。
+- 老式 `.doc` 仍需要既有 DOC→DOCX 转换能力；本阶段修复的是入口路由和会话续发，不扩大旧 DOC 格式还原范围。
+- 没有替用户在原生选择器中选取新的真实业务文件，因此“新选择一个 DOC/DOCX → 新报告 → 复核”的最终业务内容质量仍由人工试用验收。
+- 未运行全量测试、未制作 Portable、未合并阶段线或正式主线。
+
+### 与规格文档存在的偏差
+
+- 无新增架构偏差。仍遵循“真实工具事件驱动结构化控件”“Agent 修改只进入草稿/工作副本”“不删除 DOCX HTML/PDF 降级路径”的冻结决定。
+- 本阶段只在存在尚未消费的模板整理文档时阻止通用资料工具的无路径扫描；这不是恢复已由用户撤销的通用 WORK 目录边界。显式相对路径和绝对路径仍可使用。
+- 未修改 Pi 上游基础 `SYSTEM.md`；只修正小规 Capability/工具路由和主进程可信会话绑定。
+
+### 测试命令和测试结果
+
+#### 聚焦测试
+
+```powershell
+$env:XIAOGUI_TEST_TEMP='D:\CodexTemp\xiaogui-test-temp'
+npm run test:unit -- packages/shared/xiaogui-prompt-capabilities.test.ts src/renderer/src/xiaogui/components/WorkHomeView.test.tsx src/main/xiaogui/work-materials-worker-tool.test.ts src/main/xiaogui/index.test.ts src/main/xiaogui/work-docx-template-intake-service.test.ts src/main/__tests__/worker-manager-session-isolation.test.ts src/main/ipc/handlers/session-preview-invalidation.test.ts src/main/xiaogui/ipc-handlers-scope-lookup.test.ts
+```
+
+结果：`8 test files passed`，`70 tests passed`，退出码 `0`。其中包含“Worker 退出后忽略旧 Pi cwd 并沿可信用户工作区 Fork”的回归测试。
+
+#### 类型检查与完整构建
+
+```powershell
+npm run typecheck
+npm run build
+```
+
+结果：两项退出码均为 `0`。主进程、Renderer、Office Viewer 和 Office Gateway 全部构建成功；只有既有动态导入与 chunk 体积提示。
+
+#### Electron 真实窗口冒烟
+
+- 以 `D:\AppData\Roaming1` 为隔离用户数据启动当前开发分支，CDP 端口 `9333`。
+- 打开一个曾经会因旧工作目录报错的历史会话，发送“只回复‘文字发送已恢复’”；用户消息成功入会话，约 10 秒后收到模型回复“文字发送已恢复”，控制台无新的 Session Context mismatch。
+- 打开含真实模板整理成功工具事件的历史报告，界面显示“开始复核”；点击后直接打开“模板草稿复核”及 Univer 文档工作表面，没有把“复核”写入输入框。
+
+### 已知风险
+
+1. Pi 会话文件头的 cwd 仍可能是进程启动目录；当前以主进程可信绑定覆盖它。若未来会话从未经过新建、打开或项目绑定入口，仍会回退到旧头信息并按原规则失败关闭。
+2. 用户点击“整理普通文档”后若取消选择，不会留下模板交接标识，也不会触发通用扫描，行为保持安全取消。
+3. 约 9 MiB 的 DOC 文件本身不是本次 1,668 文件扫描的原因；若文档内部含大量媒体或转换后极大，后续解析仍可能受既有资源上限约束并明确警告。
+4. Univer 仍是 OOXML 原结构导入单机试验，不代表 Word 像素级保真或正式 DOCX Exchange。
+
+### 下一阶段计划
+
+等待人工验收本阶段。建议按以下顺序复测：
+
+1. 点击“整理普通文档”并选择一个 DOCX，确认不再扫描整个目录；
+2. 报告出现后直接点“开始复核”；
+3. 关闭复核或返回对话后继续发送一句自然语言，确认不再“发送失败”；
+4. 观察一次正常规模文档的增量输出体感，再决定是否另立供应商流式传输专项。
+
 ## 2026-08-31｜WORK 全类型资料读取与路径边界调整
 
 ### 阶段状态

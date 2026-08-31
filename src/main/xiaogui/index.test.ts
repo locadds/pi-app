@@ -180,6 +180,7 @@ describe('xiaogui Worker host-tool wiring', () => {
     expect(mocks.createWorkMaterialsHandler).toHaveBeenCalledWith({
       getService: mocks.getWorkMaterialsService,
       scopeResolver: mocks.scopeResolver,
+      hasPendingTemplateIntakeSource: expect.any(Function),
     })
     expect(mocks.createRouter).toHaveBeenCalledWith(expect.objectContaining({
       collaboration: mocks.collaborationHandler,

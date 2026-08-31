@@ -92,6 +92,7 @@ const READ_MATERIALS_TOOL = toolDefinition({
   promptSnippet: '读取任意类型的本机资料或整个文件夹；能解析则提取内容，否则保留元数据并明确说明',
   promptGuidelines: [
     '用户要求整理整个文件夹时，优先调用 xiaogui_work_read_materials；省略 paths 即读取当前工作目录。',
+    '用户已经通过“整理普通文档”选择文件并要求生成候选内容报告时，不得代替普通文档模板整理，也不得省略 paths 后扫描当前工作目录；应调用 xiaogui_work_docx_template_intake。',
     '用户明确给出其他绝对或相对路径时，可以通过 paths 读取，不限制在当前工作区。',
     '工具返回的每个文件都必须进入整理总账；METADATA_ONLY 只能按路径、文件名、类型和大小归类，不得声称理解了正文。',
     'CONTENT_TRUNCATED、CONTENT_BUDGET_EXHAUSTED 或 INVENTORY_TRUNCATED 必须在回答中明确说明，并提出继续读取下一批。',
@@ -525,7 +526,8 @@ function localIntentCandidates(userInput: string): {
   const templateGeneration = ownTemplate && /(?:生成|制作|套用|使用|按|报告|文档)/.test(input)
   const templateIntake = !templateGeneration && (
     /(?:普通成品|普通文档|成品文档|这份文档|这个文档|word|docx).{0,24}(?:整理|转换|提取|制作).{0,8}(?:成|为)?模板/.test(input) ||
-    /(?:整理|转换|提取|制作).{0,12}(?:普通成品|普通文档|成品文档|word|docx).{0,8}(?:成|为)?模板/.test(input)
+    /(?:整理|转换|提取|制作).{0,12}(?:普通成品|普通文档|成品文档|word|docx).{0,8}(?:成|为)?模板/.test(input) ||
+    /(?:普通成品|普通文档|成品文档).{0,48}(?:候选内容报告|模板整理报告)/.test(input)
   )
   const standardReport = !templateGeneration && !templateIntake && (
     /(?:生成|导出|做成|另存).{0,16}(?:word|docx|文档)/.test(input) ||

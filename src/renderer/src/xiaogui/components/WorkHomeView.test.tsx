@@ -103,6 +103,7 @@ describe('WorkHomeView', () => {
       workspaceRoot: 'D:\\workspace',
     })
     expect(submit).toHaveBeenCalledWith(expect.stringContaining('个人小结.docx'))
+    expect(submit).toHaveBeenCalledWith(expect.stringContaining('整理成可复用模板'))
     expect(submit.mock.calls[0]![0]).not.toMatch(/[A-Za-z]:[\\/]/)
   })
 

@@ -36,6 +36,7 @@ import { createXiaoguiWorkDocxTemplateDataWorkerToolHandlerV1 } from './work-doc
 import {
   closeDefaultWorkDocxTemplateIntakeServiceV1,
   getDefaultWorkDocxTemplateIntakeServiceV1,
+  hasStagedTemplateIntakeSourceForProjectV1,
 } from './work-docx-template-intake-composition'
 import { createXiaoguiWorkDocxTemplateIntakeWorkerToolHandlerV1 } from './work-docx-template-intake-worker-tool'
 import {
@@ -104,6 +105,7 @@ export function initXiaogui(): void {
       workMaterials: createXiaoguiWorkMaterialsWorkerToolHandlerV1({
         getService: getDefaultWorkMaterialsServiceV1,
         scopeResolver: sessionScopeResolverV1,
+        hasPendingTemplateIntakeSource: hasStagedTemplateIntakeSourceForProjectV1,
       }),
     }),
   )

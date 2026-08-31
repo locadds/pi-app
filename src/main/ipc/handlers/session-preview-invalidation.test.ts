@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   setMode: vi.fn(),
   getMode: vi.fn(() => 'WORK'),
   focusExistingSession: vi.fn(() => false),
+  rememberSessionWorkspace: vi.fn(),
+  forgetSessionWorkspace: vi.fn(),
   clearForegroundSession: vi.fn(),
   loadSession: vi.fn(),
   setPendingWorkerSessionFile: vi.fn(),
@@ -56,6 +58,8 @@ vi.mock('../../worker-manager', () => ({
     forkSession: mocks.forkSession,
     cloneSession: mocks.cloneSession,
     focusExistingSession: mocks.focusExistingSession,
+    rememberSessionWorkspace: mocks.rememberSessionWorkspace,
+    forgetSessionWorkspace: mocks.forgetSessionWorkspace,
     clearForegroundSession: mocks.clearForegroundSession,
     loadSession: mocks.loadSession,
     deleteSessionFile: mocks.deleteSessionFile,
@@ -162,6 +166,8 @@ describe('session list preview invalidation', () => {
     mocks.getMode.mockReturnValue('WORK')
     mocks.focusExistingSession.mockReset()
     mocks.focusExistingSession.mockReturnValue(false)
+    mocks.rememberSessionWorkspace.mockReset()
+    mocks.forgetSessionWorkspace.mockReset()
     mocks.clearForegroundSession.mockReset()
     mocks.loadSession.mockReset()
     mocks.setPendingWorkerSessionFile.mockReset()
@@ -246,6 +252,10 @@ describe('session list preview invalidation', () => {
     })
 
     expect(result).toMatchObject({ canonicalScope: { sessionMode: 'CODING' } })
+    expect(mocks.rememberSessionWorkspace).toHaveBeenCalledWith(
+      '/sessions/source.jsonl',
+      '/workspace',
+    )
     expect(mocks.resolveScope.mock.invocationCallOrder[0]).toBeLessThan(mocks.setMode.mock.invocationCallOrder[0])
     expect(mocks.setMode.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.setPendingWorkerSessionFile.mock.invocationCallOrder[0],

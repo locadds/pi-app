@@ -163,6 +163,37 @@ describe('WorkerManager session isolation', () => {
     }))
   })
 
+  it('reuses the registered workspace after a new-session worker exits even when the Pi header cwd is stale', async () => {
+    const manager = new WorkerManager()
+    const internals = manager as unknown as Internals
+    const workspace = '/selected-workspace'
+    const createdFile = normalizeSessionKey('/sessions/new-with-stale-header.jsonl')
+    const created = fakeSlot(workspacePoolKey(workspace))
+    created.cwd = workspace
+    replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
+
+    const reloaded = fakeSlot(createdFile)
+    reloaded.cwd = workspace
+    replyFrom(reloaded, {
+      type: 'loadSession-done',
+      sessionId: 'new',
+      sessionFile: createdFile,
+    })
+    forkWorkerForCwd
+      .mockResolvedValueOnce({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
+      .mockResolvedValueOnce({ slot: reloaded, init: Promise.resolve({ sessionId: 'bootstrap' }) })
+
+    await manager.newSession(workspace)
+    internals.pool.clear()
+    internals.foregroundPoolKey = null
+    await manager.loadSession(createdFile)
+
+    expect(forkWorkerForCwd).toHaveBeenLastCalledWith(
+      workspace,
+      expect.objectContaining({ sessionFile: createdFile }),
+    )
+  })
+
   it('bootstraps a cold Session worker without pre-binding the target Session identity', async () => {
     const manager = new WorkerManager()
     const targetFile = normalizeSessionKey('/sessions/cold.jsonl')

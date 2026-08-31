@@ -29,6 +29,7 @@ const RequestSchema = z
 export interface XiaoguiWorkMaterialsWorkerToolOptionsV1 {
   scopeResolver: SessionScopeResolverV1
   getService: () => Pick<WorkMaterialsServiceV1, 'read'>
+  hasPendingTemplateIntakeSource?: (projectId: string) => boolean
 }
 
 function failure(code: WorkerHostToolErrorCodeV1, message: string): WorkerHostToolOutcomeV1 {
@@ -63,6 +64,15 @@ export function createXiaoguiWorkMaterialsWorkerToolHandlerV1(
     }
     if (!scope) return failure('SESSION_SCOPE_MISMATCH', '当前会话尚未准备好 WORK 能力，请重新进入会话后再试')
     if (scope.sessionMode !== 'WORK') return failure('MODE_NOT_ALLOWED', '读取资料只在 WORK 模式中可用')
+    if (
+      parsed.data.payload.paths == null &&
+      options.hasPendingTemplateIntakeSource?.(scope.projectId)
+    ) {
+      return failure(
+        'HOST_TOOL_FAILED',
+        '已经选择了单个普通文档，请改用普通文档模板整理能力开始分析；不得扫描当前工作目录',
+      )
+    }
 
     const key = scopeKey(scope.projectId, scope.sessionKey)
     if (inFlightScopes.has(key)) {

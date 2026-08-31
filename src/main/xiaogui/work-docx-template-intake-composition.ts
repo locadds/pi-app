@@ -13,6 +13,14 @@ let defaultService: WorkDocxTemplateIntakeServiceV1 | null = null
 const stagedSourceByProject = new Map<string, { sourcePath: string; stagedAt: number }>()
 const STAGED_SOURCE_TTL_MS = 15 * 60 * 1000
 
+function currentStagedSource(projectId: string): { sourcePath: string; stagedAt: number } | null {
+  const staged = stagedSourceByProject.get(projectId) ?? null
+  if (!staged) return null
+  if (Date.now() - staged.stagedAt <= STAGED_SOURCE_TTL_MS) return staged
+  stagedSourceByProject.delete(projectId)
+  return null
+}
+
 async function chooseSource(): Promise<string | null> {
   const options: OpenDialogOptions = {
     title: '选择要整理的普通成品 Word',
@@ -27,11 +35,14 @@ async function chooseSource(): Promise<string | null> {
 }
 
 function consumeStagedSource(address: SessionAddressV1): { sourcePath: string } | null {
-  const staged = stagedSourceByProject.get(address.projectId)
+  const staged = currentStagedSource(address.projectId)
   if (!staged) return null
   stagedSourceByProject.delete(address.projectId)
-  if (Date.now() - staged.stagedAt > STAGED_SOURCE_TTL_MS) return null
   return { sourcePath: staged.sourcePath }
+}
+
+export function hasStagedTemplateIntakeSourceForProjectV1(projectId: string): boolean {
+  return currentStagedSource(projectId) != null
 }
 
 export async function chooseTemplateIntakeSourceForWorkspaceV1(

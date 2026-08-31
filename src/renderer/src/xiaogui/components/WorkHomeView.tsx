@@ -92,7 +92,7 @@ export function WorkHomeView() {
       }) as { cancelled?: boolean; fileDisplayName?: string }
       if (selected.cancelled || !selected.fileDisplayName) return
       submitComposerPrompt(
-        `整理我刚选择的普通成品文档“${selected.fileDisplayName}”。请立即开始只读分析并生成候选内容报告，不要再次让我选择文件；原文档不得修改。`,
+        `请使用普通文档模板整理能力，把我刚选择的普通成品文档“${selected.fileDisplayName}”整理成可复用模板。请立即开始只读分析并生成候选内容报告，不要再次让我选择文件；原文档不得修改。`,
       )
     } catch (reason) {
       console.error('[WorkHomeView] 快捷入口执行失败:', reason)

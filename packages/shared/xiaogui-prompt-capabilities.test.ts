@@ -159,6 +159,18 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
     }, input).capabilityIds).toEqual(expected)
   })
 
+  it('routes the ordinary-document quick action to template intake instead of generic materials', () => {
+    const input = '整理我刚选择的普通成品文档“8.26海火变更文件 .doc”。请立即开始只读分析并生成候选内容报告，不要再次让我选择文件；原文档不得修改。'
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, input)).toMatchObject({
+      decision: 'SELECTED',
+      inferredCapabilityIds: ['work.template-intake'],
+      reasonCodes: expect.arrayContaining(['LOCAL_TEMPLATE_INTAKE']),
+    })
+  })
+
   it('abandons mixed or cross-mode intent instead of pre-activating a high-risk capability', () => {
     expect(selectXiaoguiTurnCapabilitiesV1({
       mode: 'WORK',
@@ -230,5 +242,8 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
     expect(report.promptGuidelines.join('\n')).toContain('不得声称覆盖或修改了已有文件')
     expect(template.promptGuidelines.join('\n')).toContain('不得同一轮调用 CONFIRM')
     expect(template.promptGuidelines.join('\n')).toContain('不能猜测')
+    expect(
+      XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1.xiaogui_work_read_materials.promptGuidelines.join('\n'),
+    ).toContain('不得代替普通文档模板整理')
   })
 })

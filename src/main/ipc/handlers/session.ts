@@ -123,6 +123,7 @@ export function registerSessionHandlers(): void {
       const workspaceId = String(req.workspaceId || workerManager.cwd || configStore.get('currentProject') || '')
       const resolved = await resolveTrustedSessionScope(workspaceId, req.sessionFile)
       canonicalScope = publicSessionScope(resolved.scope)
+      workerManager.rememberSessionWorkspace(resolved.ref.sessionFile, resolved.ref.rootPath)
       xiaogui.setMode(resolved.scope.sessionMode)
       setPendingWorkerSessionFile(req.sessionFile)
       workerManager.focusExistingSession(req.sessionFile)
@@ -148,6 +149,7 @@ export function registerSessionHandlers(): void {
       const workspaceId = String(req.workspaceId || workerManager.cwd || configStore.get('currentProject') || '')
       const resolved = await resolveTrustedSessionScope(workspaceId, sessionFile)
       canonicalScope = publicSessionScope(resolved.scope)
+      workerManager.rememberSessionWorkspace(resolved.ref.sessionFile, resolved.ref.rootPath)
       xiaogui.setMode(resolved.scope.sessionMode)
     }
     setPendingWorkerSessionFile(sessionFile)
@@ -665,6 +667,7 @@ export function registerSessionHandlers(): void {
     if (!authorized.ok) return { ok: false, error: authorized.error }
     const r = await workerManager.deleteSessionFile(authorized.sessionFile)
     if (r.ok) {
+      workerManager.forgetSessionWorkspace(authorized.sessionFile)
       clearSessionDisplayName(authorized.sessionFile)
       await sessionPreviewProcess.invalidateListSessions(authorized.cwd)
     }

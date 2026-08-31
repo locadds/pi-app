@@ -65,6 +65,8 @@ export class WorkerManager {
   private lifecycleChain: Promise<unknown> = Promise.resolve()
   private idleTimer: ReturnType<typeof setInterval> | null = null
   private hostToolRequestHandler: WorkerHostToolRequestHandler | null = null
+  /** Main-process-authorized Session -> workspace hints outrank stale Pi header cwd values. */
+  private sessionWorkspaceHints = new Map<string, string>()
 
   constructor(
     private promptContextResolver?: XiaoguiPromptContextResolverV1,
@@ -132,6 +134,7 @@ export class WorkerManager {
 
   /** Acquire or create a worker bound to sessionFile without changing UI foreground. */
   async ensureSessionWorker(sessionFile: string, cwd: string): Promise<InitResult> {
+    this.rememberSessionWorkspace(sessionFile, cwd)
     const run = this.lifecycleChain.then(() => this.ensureSessionWorkerUnlocked(sessionFile, cwd))
     this.lifecycleChain = run.then(
       () => undefined,
@@ -480,8 +483,25 @@ export class WorkerManager {
     return null
   }
 
-  private sessionWorkspaceCwd(sessionFile: string): string | null {
-    return findSandboxWorkspaceForSessionFile(sessionFile) ?? readSessionMetaFromFile(sessionFile)?.cwd ?? null
+  rememberSessionWorkspace(sessionFile: string, cwd: string): void {
+    const key = normalizeSessionKey(sessionFile)
+    const workspace = String(cwd || '').trim()
+    if (key && workspace) this.sessionWorkspaceHints.set(key, workspace)
+  }
+
+  forgetSessionWorkspace(sessionFile: string): void {
+    const key = normalizeSessionKey(sessionFile)
+    if (key) this.sessionWorkspaceHints.delete(key)
+  }
+
+  resolveSessionWorkspaceCwd(sessionFile: string): string | null {
+    const key = normalizeSessionKey(sessionFile)
+    const live = key ? this.pool.get(key) : null
+    if (live && !live.stopping && live.cwd.trim()) return live.cwd
+    return findSandboxWorkspaceForSessionFile(sessionFile)
+      ?? (key ? this.sessionWorkspaceHints.get(key) : null)
+      ?? readSessionMetaFromFile(sessionFile)?.cwd
+      ?? null
   }
 
   private async resolveSlotForRpc(sessionFile?: string | null): Promise<WorkerSlot> {
@@ -489,7 +509,7 @@ export class WorkerManager {
       const sk = normalizeSessionKey(sessionFile)
       const bySession = this.pool.get(sk)
       if (bySession && !bySession.stopping) return bySession
-      const sessionCwd = this.sessionWorkspaceCwd(sessionFile)
+      const sessionCwd = this.resolveSessionWorkspaceCwd(sessionFile)
       const cwd = this.resolveWorkspaceCwd(sessionCwd)
       if (!cwd) throw new Error('Worker not started for session')
       await this.ensureSessionWorkerUnlocked(sessionFile, cwd)
@@ -583,7 +603,7 @@ export class WorkerManager {
   ): Promise<{ sessionId: string; sessionFile?: string }> {
     const run = this.lifecycleChain.then(async () => {
       const promptContext = await this.workspacePromptContext(cwd, options?.mode)
-      return createNewSessionInPool({
+      const result = await createNewSessionInPool({
         cwd,
         pool: this.pool,
         mainWindow: this.mainWindow,
@@ -598,6 +618,8 @@ export class WorkerManager {
         finalizePromptContext: (sessionFile) =>
           this.sessionPromptContext(cwd, sessionFile),
       })
+      if (result.sessionFile) this.rememberSessionWorkspace(result.sessionFile, cwd)
+      return result
     })
     this.lifecycleChain = run.then(
       () => undefined,
@@ -630,7 +652,7 @@ export class WorkerManager {
     model?: string
     thinkingLevel?: string
   }> {
-    const sessionCwd = this.sessionWorkspaceCwd(opts.sessionFile)
+    const sessionCwd = this.resolveSessionWorkspaceCwd(opts.sessionFile)
     const cwd = this.resolveWorkspaceCwd(sessionCwd)
     if (!cwd) return { error: 'worker_not_ready' }
     await this.focusSessionWorker(opts.sessionFile, cwd)
@@ -687,7 +709,7 @@ export class WorkerManager {
     model?: string
     thinkingLevel?: string
   }> {
-    const sessionCwd = this.sessionWorkspaceCwd(opts.sessionFile)
+    const sessionCwd = this.resolveSessionWorkspaceCwd(opts.sessionFile)
     const cwd = this.resolveWorkspaceCwd(sessionCwd)
     if (!cwd) return { error: 'worker_not_ready' }
     await this.focusSessionWorker(opts.sessionFile, cwd)
@@ -963,9 +985,10 @@ export class WorkerManager {
     thinkingLevel?: string
     modelFallbackMessage?: string
   }> {
-    // A session header owns its workspace identity. Foreground/config cwd is only a
-    // fallback for legacy or incomplete files without a header cwd.
-    const sessionCwd = this.sessionWorkspaceCwd(sessionFile)
+    if (opts?.cwd) this.rememberSessionWorkspace(sessionFile, opts.cwd)
+    // The authorized Session binding owns workspace identity. Pi's header cwd is
+    // only a last-resort fallback because new Sessions can contain process.cwd().
+    const sessionCwd = this.resolveSessionWorkspaceCwd(sessionFile)
     const cwd = this.resolveWorkspaceCwd(sessionCwd || opts?.cwd)
     if (!cwd) throw new Error('Worker not started for session')
     await this.ensureSessionWorker(sessionFile, cwd)

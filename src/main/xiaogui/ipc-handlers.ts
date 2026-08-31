@@ -32,7 +32,6 @@ import {
   chooseTemplateIntakeSourceForWorkspaceV1,
   getDefaultWorkDocxTemplateIntakeServiceV1,
 } from './work-docx-template-intake-composition'
-import { readSessionMetaFromFile } from '../session-file-meta'
 import { normalizeSessionKey } from '../worker-session-key'
 import { hasPendingDirectExtensionUI, requestDirectExtensionUI } from '../direct-extension-ui'
 import { currentVisibleSessionFile } from '../completion-notification-events'
@@ -250,7 +249,7 @@ export function registerXiaoguiHandlers(): void {
       if (!requestedSessionFile || requestedSessionFile !== visibleSessionFile) {
         return directReviewFailure('SESSION_SCOPE_MISMATCH')
       }
-      const cwd = readSessionMetaFromFile(requestedSessionFile)?.cwd
+      const cwd = workerManager.resolveSessionWorkspaceCwd(requestedSessionFile)
       if (!cwd) return directReviewFailure('SESSION_NOT_READY')
       const scope = await sessionScopeResolverV1.resolveExisting({
         rootPath: cwd,
