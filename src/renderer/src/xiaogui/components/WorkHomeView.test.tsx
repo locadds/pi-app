@@ -35,7 +35,15 @@ describe('WorkHomeView', () => {
   it('WORK 模式保留三张完整示例卡片', () => {
     render(<WorkHomeView />)
     expect(screen.getByText('试试这样说')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: /填写示例提示词/ })).toHaveLength(3)
+    expect(
+      screen
+        .getAllByRole('button', { name: /填写示例提示词/ })
+        .map((button) => button.getAttribute('aria-label')),
+    ).toEqual([
+      '填写示例提示词：整理资料',
+      '填写示例提示词：整理普通文档',
+      '填写示例提示词：按模板生成',
+    ])
     expect(
       screen.getByText('把我选择的普通成品文档整理成可复用模板，先给我一份候选内容报告'),
     ).toBeInTheDocument()
