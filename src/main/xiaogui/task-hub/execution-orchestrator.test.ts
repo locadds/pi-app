@@ -22,6 +22,7 @@ import type { RuntimeEventV1, RuntimeOutcomeV1 } from '@shared/xiaogui-agent-run
 import type { CollaborationHubApplicationV1 } from './application'
 import {
   XiaoguiTaskExecutionOrchestratorV1,
+  type TaskExecutionAttemptPlanGateV1,
   type TaskExecutionInputStageV1,
   type TaskExecutionPermissionPortV1,
   type TaskExecutionPermissionScopePortV1,
@@ -57,6 +58,69 @@ afterEach(async () => {
 })
 
 describe('XiaoguiTaskExecutionOrchestratorV1', () => {
+  it('keeps a prepared Attempt read-only until its exact execution plan is approved', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    let approved = false
+    const planGate: TaskExecutionAttemptPlanGateV1 = {
+      ensureAttemptPlan: vi.fn(async (input) => {
+        events.push(`plan:${input.attemptId}`)
+      }),
+      isAttemptPlanApproved: vi.fn(async () => approved),
+      markAttemptExecutionStarted: vi.fn(async (attemptId) => {
+        events.push(`plan-started:${attemptId}`)
+      }),
+    }
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
+      attemptPlanGate: planGate,
+    })
+
+    await expect(orchestrator.start(request())).resolves.toMatchObject({
+      ok: true,
+      value: { attempt: { attemptId: ATTEMPT_ID, status: 'READY' } },
+    })
+    expect(events).toEqual(['resolve', 'schedule', 'stage', 'prepare', `plan:${ATTEMPT_ID}`])
+
+    approved = true
+    await expect(orchestrator.resumeAttempt(ADDRESS, ATTEMPT_ID)).resolves.toMatchObject({
+      ok: true,
+      value: { attempt: { attemptId: ATTEMPT_ID, status: 'RUNNING' } },
+    })
+    expect(events).toEqual([
+      'resolve',
+      'schedule',
+      'stage',
+      'prepare',
+      `plan:${ATTEMPT_ID}`,
+      `plan:${ATTEMPT_ID}`,
+      `plan-started:${ATTEMPT_ID}`,
+      'dispatch',
+    ])
+    await orchestrator.close()
+  })
+
+  it('does not dispatch an unapproved prepared Attempt while recovering after restart', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    const dbPath = await tempDb()
+    const planGate: TaskExecutionAttemptPlanGateV1 = {
+      ensureAttemptPlan: vi.fn(async () => undefined),
+      isAttemptPlanApproved: vi.fn(async () => false),
+      markAttemptExecutionStarted: vi.fn(async () => undefined),
+    }
+    const first = await createOrchestrator(hub.application, events, undefined, dbPath, { attemptPlanGate: planGate })
+    await expect(first.start(request())).resolves.toMatchObject({
+      ok: true,
+      value: { attempt: { status: 'READY' } },
+    })
+    await first.close()
+
+    const restarted = await createOrchestrator(hub.application, events, undefined, dbPath, { attemptPlanGate: planGate })
+    await restarted.recover()
+    expect(events.filter((event) => event === 'dispatch')).toHaveLength(0)
+    await restarted.close()
+  })
+
   it('owns the fixed resolve -> schedule -> stage -> prepare -> dispatch sequence and returns the authoritative Attempt', async () => {
     const events: string[] = []
     const hub = fakeHub(events)
@@ -657,6 +721,7 @@ async function createOrchestrator(
     verificationCoordinator?: TaskVerificationCoordinatorV1
     permissionModule?: TaskExecutionPermissionPortV1
     permissionScope?: TaskExecutionPermissionScopePortV1
+    attemptPlanGate?: TaskExecutionAttemptPlanGateV1
   },
   inputStageOverride?: TaskExecutionInputStageV1,
 ): Promise<XiaoguiTaskExecutionOrchestratorV1> {

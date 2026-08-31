@@ -167,6 +167,18 @@ export interface CodingPermissionPromptV1 {
   readonly choices: readonly ['ALLOW_ONCE', 'ALLOW_TASK_RULE', 'DENY']
 }
 
+export type CodingPlanTodoStatusV1 = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'BLOCKED'
+
+export interface CodingPlanBodyV1 {
+  readonly objective: string
+  readonly steps: readonly {
+    readonly stepId: string
+    readonly title: string
+    readonly validation: string
+  }[]
+  readonly constraints: readonly string[]
+}
+
 export interface CodingPlanDraftV1 {
   readonly schemaVersion: 1
   readonly planId: string
@@ -175,12 +187,77 @@ export interface CodingPlanDraftV1 {
   readonly steps: readonly {
     readonly stepId: string
     readonly title: string
-    readonly status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'BLOCKED'
+    readonly status: CodingPlanTodoStatusV1
     readonly validation: string
   }[]
   readonly constraints: readonly string[]
   readonly revision: number
 }
+
+export const CODING_PLAN_LIFECYCLE_STATES_V1 = Object.freeze([
+  'AWAITING_APPROVAL',
+  'APPROVED',
+  'EXECUTING',
+] as const)
+
+export type CodingPlanLifecycleStateV1 = typeof CODING_PLAN_LIFECYCLE_STATES_V1[number]
+export type CodingPlanSourceV1 = 'PI_DRAFT' | 'TASK_OBJECTIVE_FALLBACK'
+
+/** Private Pi-to-Main draft keyed only by an opaque session address. */
+export interface CodingPlanPendingDraftV1 {
+  readonly schemaVersion: 1
+  readonly address: SessionAddressV1
+  readonly body: CodingPlanBodyV1
+}
+
+export type CodingPlanPendingDraftReceiptV1 =
+  | { readonly ok: true; readonly draftDigest: string }
+  | { readonly ok: false; readonly error: 'INVALID_COMMAND' }
+
+export interface CodingPlanProjectionV1 {
+  readonly schemaVersion: 1
+  readonly attemptId: string
+  readonly source: CodingPlanSourceV1
+  readonly state: CodingPlanLifecycleStateV1
+  readonly plan: CodingPlanDraftV1
+  readonly planDigest: string
+}
+
+export interface CodingPlanBindAttemptCommandV1 {
+  readonly schemaVersion: 1
+  readonly address: SessionAddressV1
+  readonly attemptId: string
+  readonly taskObjective: string
+}
+
+export interface CodingPlanVersionCommandV1 {
+  readonly schemaVersion: 1
+  readonly attemptId: string
+  readonly expectedRevision: number
+  readonly expectedPlanDigest: string
+}
+
+export interface CodingPlanReviseCommandV1 extends CodingPlanVersionCommandV1 {
+  readonly body: CodingPlanBodyV1
+}
+
+export interface CodingPlanTodoCommandV1 extends CodingPlanVersionCommandV1 {
+  readonly stepId: string
+  readonly nextStatus: CodingPlanTodoStatusV1
+}
+
+export type CodingPlanCommandErrorV1 =
+  | 'INVALID_COMMAND'
+  | 'PLAN_NOT_FOUND'
+  | 'VERSION_CONFLICT'
+  | 'PLAN_NOT_APPROVED'
+  | 'PLAN_BODY_LOCKED'
+  | 'TODO_NOT_FOUND'
+  | 'INVALID_TODO_TRANSITION'
+
+export type CodingPlanCommandOutcomeV1 =
+  | { readonly ok: true; readonly projection: CodingPlanProjectionV1 }
+  | { readonly ok: false; readonly error: CodingPlanCommandErrorV1 }
 
 export interface CodingReviewBundleV1 {
   readonly schemaVersion: 1

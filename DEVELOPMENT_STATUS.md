@@ -1,5 +1,96 @@
 # 小规开发阶段状态
 
+## 2026-08-31｜CODING-P1 P2 计划、Todo 与真实 Diff 审阅候选
+
+### 阶段状态
+
+- 状态：P2 实现、聚焦测试、类型检查、完整构建和一条真实 Electron 旅程均已通过；本节随独立 P2 提交推送，等待人工/审查 Agent 验收
+- 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`
+- 当前分支：`agent/coding-p1-pi-extension-pack-v1`
+- P1 固定起点：`c2c779d9b6943c8b21db27c40170163998615297`
+- 隔离边界：未修改或合并正在施工的 WORK 分支；未合并阶段线、未发布、未制作 Portable
+
+### 本阶段目标
+
+1. 在每个 TaskHub Attempt 真正执行前建立只读计划门，计划未经人工批准时不得调用 Agent Runtime。
+2. 让 Pi 在 `CODING + PLAN` 中通过隐藏工具提交结构化计划草稿；ASK、EXECUTE、WORK 不开放该工具。
+3. 在现有协作面板显示可修改的计划卡、Attempt 内 Todo 和“批准并开始执行/继续执行”。
+4. 只从真实 Attempt 工作树和真实验证制品生成 Diff、相对路径、退出码和未解决问题，不采信模型自述。
+
+### 实际修改文件
+
+- 共享契约与能力矩阵：`packages/shared/ipc-channels.ts`、`ipc-contract.ts`、`worker-host-tools.ts`、`xiaogui-coding-extension-control.ts`、`xiaogui-coding-extension-pack.ts`、`xiaogui-coding-extension-pack.test.ts`、`xiaogui-coding-plan-prompt.test.ts`、`xiaogui-prompt-capabilities.ts`、`xiaogui-prompt-matrix.ts`、`xiaogui-prompt-matrix.test.ts`
+- Pi / Worker：`src/worker/xiaogui-coding-plan-tool.ts`、`xiaogui-coding-plan-tool.test.ts`、`xiaogui-worker-tools.ts`、`xiaogui-tool-guidelines-baseline.test.ts`
+- Main / TaskHub：`src/main/xiaogui/coding-extensions/attempt-plan-module.ts`、`attempt-plan-module.test.ts`、`attempt-review-module.ts`、`attempt-review-module.test.ts`、`attempt-ipc.ts`、`attempt-ipc.test.ts`、`plan-worker-tool.ts`、`plan-worker-tool.test.ts`、`src/main/xiaogui/task-hub/execution-orchestrator.ts`、`execution-orchestrator.test.ts`、`runtime-composition.ts`、`ipc.ts`、`src/main/xiaogui/worker-host-tool-router.ts`、`worker-host-tool-router.test.ts`、`src/main/xiaogui/index.ts`、`index.test.ts`
+- Renderer：`src/renderer/src/xiaogui/lib/coding-attempt-client.ts`、`coding-attempt-client.test.ts`、`stores/coding-attempt-store.ts`、`coding-attempt-store.test.ts`、`components/CodingAttemptPlanCard.tsx`、`CodingAttemptPlanCard.test.tsx`、`CodingAttemptReviewCard.tsx`、`CodingAttemptReviewCard.test.tsx`、`CollaborationHubPanel.tsx`、`CollaborationHubPanel.test.tsx`
+- 真实旅程：`e2e/xiaogui-real-three-task-journey.spec.ts`
+- 阶段记录：`DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. TaskHub 为每个 Attempt 创建并持久化独立计划；有 Pi 草稿时使用草稿，否则根据已批准任务目标生成明确标识的保守计划。计划 revision、digest、批准状态和 Todo 状态在 SQLite 重启后可恢复。
+2. `WORKSPACE_READY` 状态现在必须先通过计划门。未批准时保持 `READY` 且运行时 dispatch 次数为零；批准精确 revision/digest 后才把状态切为执行中并且只 dispatch 一次。
+3. Pi 新增隐藏工具 `xiaogui_publish_coding_plan`，只在 `CODING + PLAN` 可见。模型只能提交目标、步骤、验证方法和约束，不能提交路径、SessionAddress、Attempt ID 或内部摘要；Main 从可信会话解析地址。
+4. 现有协作面板新增“等待批准计划”分组和计划卡；用户可改目标、步骤标题和验证方法，任何修改都会产生新 revision 并撤销旧版本的批准资格。
+5. “批准并开始执行”同时完成 TaskHub 批准和同一 Attempt 续接；若批准已落库但启动失败，界面保留“继续执行”，不会要求重新批准或静默换 Agent。
+6. Todo 只属于当前 Attempt 的执行步骤，不创建、不重排 TaskHub DAG；执行开始后只允许合法的状态迁移。
+7. 审阅模块从真实 Attempt 工作树生成统一 Diff，并校验 TaskChangeSet、补丁制品和验证制品的绑定。失败、未知或缺少退出状态会明确进入未解决问题，不能形成伪通过。
+8. Renderer 只展示相对路径、验证标签、状态、退出码、未解决问题和 Diff；不展示 Attempt ID、digest、绝对路径、私有会话编号或底层命令。
+
+### 未完成内容
+
+- P3 的 Git/会话联合检查点、恢复预览、角色配置和角色硬权限上限尚未计入本阶段完成范围。
+- 当前生产 TaskHub 默认外部 Runtime 不会自动产出 Pi 计划草稿；没有草稿时使用 TaskHub 任务目标兜底。嵌入式 Pi 的 `CODING + PLAN` 草稿工具链已接通。
+- 尚未提供计划步骤的新增、删除或拖拽重排；P2 只支持冻结规格要求的目标、步骤标题和验证方法修改。
+- 未运行全量测试，未发布，未制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 无架构偏差：计划、批准、Todo、真实工作树和验证继续由 TaskHub 作为唯一权威；Pi 只提交草稿，Renderer 只提交版本化意图。
+- Claude Code 仅作为交互行为基准；界面使用中文和小规品牌，没有复制其源码、像素样式、Agent Loop、权限系统或状态机。
+- P2 真实旅程使用受控 Scripted Runtime，证明计划门、独立工作树、真实 Diff 和验证退出码；不把 Scripted Runtime 宣称为生产模型质量证据。
+- WORK、DESIGN、Univer Office Surface、DOCX HTML 和 PDF 降级路径未修改。
+
+### 测试命令和测试结果
+
+#### 聚焦测试
+
+```powershell
+node_modules\.bin\vitest.cmd run packages/shared/xiaogui-coding-extension-pack.test.ts packages/shared/xiaogui-coding-plan-prompt.test.ts packages/shared/xiaogui-prompt-matrix.test.ts src/worker/xiaogui-coding-plan-tool.test.ts src/worker/xiaogui-tool-guidelines-baseline.test.ts src/main/xiaogui/coding-extensions/attempt-plan-module.test.ts src/main/xiaogui/coding-extensions/attempt-review-module.test.ts src/main/xiaogui/coding-extensions/plan-worker-tool.test.ts src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/execution-orchestrator.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/main/xiaogui/task-hub/ipc.test.ts src/main/xiaogui/worker-host-tool-router.test.ts src/main/xiaogui/index.test.ts src/renderer/src/xiaogui/lib/coding-attempt-client.test.ts src/renderer/src/xiaogui/stores/coding-attempt-store.test.ts src/renderer/src/xiaogui/components/CodingAttemptPlanCard.test.tsx src/renderer/src/xiaogui/components/CodingAttemptReviewCard.test.tsx src/renderer/src/xiaogui/components/CollaborationHubPanel.test.tsx
+```
+
+结果：首次联合运行 `127/128` 通过，唯一失败是入口装配测试未模拟新增 IPC 注册；补齐测试替身后相关入口组 `3/3` 通过。所有业务模块和 Renderer 用例均通过，没有修改生产逻辑来迎合失败断言。
+
+#### 类型检查与构建
+
+```powershell
+npm run typecheck
+npm run build
+```
+
+结果：两项退出码均为 `0`。Main、Preload、Renderer、Office Viewer 和 Office Gateway 构建成功；只保留既有动态导入和大 chunk 提示。
+
+#### 真实 Electron 旅程
+
+```powershell
+node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.ts --workers=1
+```
+
+结果：`1 passed`，耗时约 50 秒。真实窗口证实：A/B 的 Attempt 计划出现前 Runtime 启动事件为零；分别人工批准后 A/B 并行，C 等待 A；A/B 验证通过后可读取真实工作树 Diff、相对路径和两条退出码 `0` 的验证记录；C 再经计划批准后完成统一交付，未经最终人工批准前用户项目保持不变。
+
+证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788176415769`。关键截图为 `02-attempt-plans-awaiting-approval.png` 和 `04-real-diff-and-verification.png`；结构化证据为 `journey-events.jsonl`、`journey-rows.json`。
+
+### 已知风险
+
+1. 计划内容由当前模型或任务目标生成，计划门保证人工批准和执行顺序，不保证模型计划本身正确。
+2. 批准成功但进程在 Runtime dispatch 前中断时，计划保持 `APPROVED` 并由“继续执行”恢复；不会自动换 Runtime，也不会重复派发。
+3. 真实 Diff 依赖 Attempt 工作树和持久化 ChangeSet/验证制品一致；任何摘要漂移都会失败关闭并显示未解决问题。
+4. P3 角色与联合检查点仍在独立施工，不能从本阶段推断它们已可用。
+
+### 下一阶段计划
+
+P2 提交推送后等待人工或审查 Agent 验收。通过后进入 P3：接通 Pi 会话与 Attempt 工作树的联合检查点、恢复预览和人工确认；接入研究/实现/审阅角色配置及不可解除的只读上限；完成一条“研究 → 计划 → 实现 → 审阅 → 恢复 → 交付”真实 Electron 旅程。
+
 ## 2026-08-31｜CODING-P1 P1 代码上下文与权限候选
 
 ### 阶段状态

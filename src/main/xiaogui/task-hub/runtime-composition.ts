@@ -54,6 +54,11 @@ import {
 } from './pi-e2e-scripted-runtime'
 import { CodingPermissionModuleV1 } from '../coding-extensions/permission-module'
 import { MainProcessCodingPermissionUIAdapterV1 } from '../coding-extensions/permission-ui-adapter'
+import { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-module'
+import {
+  CodingAttemptReviewModuleV1,
+  GitAttemptReviewDiffPortV1,
+} from '../coding-extensions/attempt-review-module'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
@@ -77,6 +82,8 @@ export interface XiaoguiRuntimeCompositionV1 {
   readonly application: CollaborationHubApplicationV1
   readonly taskExecution: XiaoguiTaskExecutionOrchestratorV1
   readonly delivery: XiaoguiDeliveryWorkflowV1
+  readonly codingPlan: CodingAttemptPlanModuleV1
+  readonly codingReview: CodingAttemptReviewModuleV1
   stageAttemptInput(input: StageAttemptExecutionInputV1): ResolvedAttemptExecutionInputV1
   close(): Promise<void>
 }
@@ -114,6 +121,8 @@ export function createXiaoguiRuntimeCompositionV1(
   let deliveryWorkflow: XiaoguiDeliveryWorkflowV1 | undefined
   let deliveryApplyRegistry: SqliteDeliveryApplyAttemptRegistryV1 | undefined
   let codingPermissionModule: CodingPermissionModuleV1 | undefined
+  let codingAttemptPlanModule: CodingAttemptPlanModuleV1 | undefined
+  let codingReviewStore: CollaborationHubSqliteStoreV1 | undefined
 
   try {
     const projectResolver = options.projectResolver ?? new MainProjectWorkspaceResolverV1()
@@ -221,6 +230,17 @@ export function createXiaoguiRuntimeCompositionV1(
       timeoutMs: 60_000,
       now: options.now,
     })
+    codingAttemptPlanModule = new CodingAttemptPlanModuleV1({
+      dbPath: hubDbPath,
+      now: options.now,
+    })
+    codingReviewStore = new CollaborationHubSqliteStoreV1(hubDbPath)
+    const codingAttemptReviewModule = new CodingAttemptReviewModuleV1({
+      app: application,
+      store: codingReviewStore,
+      workspace: attemptWorkspaces,
+      diffPort: new GitAttemptReviewDiffPortV1(),
+    })
     taskExecution = new XiaoguiTaskExecutionOrchestratorV1({
       dbPath: hubDbPath,
       application,
@@ -245,6 +265,7 @@ export function createXiaoguiRuntimeCompositionV1(
       verificationCoordinator: taskVerificationCoordinator,
       permissionModule: codingPermissionModule,
       permissionScope: attemptWorkspaces,
+      attemptPlanGate: codingAttemptPlanModule,
       now: options.now,
     })
     void taskExecution.recover().catch(() => undefined)
@@ -272,6 +293,9 @@ export function createXiaoguiRuntimeCompositionV1(
       payloadVault,
       workspaceRegistry,
       codingPermissionModule,
+      codingAttemptPlanModule,
+      codingAttemptReviewModule,
+      codingReviewStore,
       options.piE2eScriptedRuntimeLaunch,
     )
   } catch (error) {
@@ -286,6 +310,8 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(payloadVault)
     closeQuietly(workspaceRegistry)
     closeQuietly(codingPermissionModule)
+    closeQuietly(codingAttemptPlanModule)
+    closeQuietly(codingReviewStore)
     if (options.piE2eScriptedRuntimeLaunch) {
       deactivatePiE2eScriptedRuntimeLaunchV1(options.piE2eScriptedRuntimeLaunch)
     }
@@ -303,6 +329,9 @@ function createCompositionInterface(
   payloadVault: PrivateRuntimePayloadVaultV1,
   workspaceRegistry: SqliteAttemptWorkspaceRegistryV1,
   codingPermissionModule: CodingPermissionModuleV1,
+  codingAttemptPlanModule: CodingAttemptPlanModuleV1,
+  codingAttemptReviewModule: CodingAttemptReviewModuleV1,
+  codingReviewStore: CollaborationHubSqliteStoreV1,
   piE2eLaunch: PiE2eScriptedRuntimeLaunchV1 | undefined,
 ): XiaoguiRuntimeCompositionV1 {
   let closed = false
@@ -312,6 +341,8 @@ function createCompositionInterface(
     application,
     taskExecution,
     delivery,
+    codingPlan: codingAttemptPlanModule,
+    codingReview: codingAttemptReviewModule,
     stageAttemptInput(input) {
       if (closed) throw new Error('XIAOGUI_RUNTIME_COMPOSITION_CLOSED')
       return inputStore.stage(input)
@@ -331,6 +362,8 @@ function createCompositionInterface(
             payloadVault,
             workspaceRegistry,
             codingPermissionModule,
+            codingAttemptPlanModule,
+            codingReviewStore,
           ])
         } finally {
           if (piE2eLaunch) deactivatePiE2eScriptedRuntimeLaunchV1(piE2eLaunch)

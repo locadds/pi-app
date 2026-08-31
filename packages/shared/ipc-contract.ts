@@ -48,6 +48,14 @@ import type {
   CodingContextSnapshotOutcomeV1,
   CodingContextSnapshotRequestV1,
 } from './xiaogui-coding-extension-pack'
+import type {
+  CodingPlanObserveOutcomeV1,
+  CodingPlanObserveRequestV1,
+  CodingPlanPerformOutcomeV1,
+  CodingPlanPerformRequestV1,
+  CodingReviewReadOutcomeV1,
+  CodingReviewReadRequestV1,
+} from './xiaogui-coding-extension-control'
 
 // ── Workspace ──
 export interface WorkspaceOpenRequest { path?: string; awaitWorker?: boolean }
@@ -353,6 +361,18 @@ export interface IpcMethodMap {
   'xiaogui.coding.context.snapshot': {
     request: CodingContextSnapshotRequestV1
     response: CodingContextSnapshotOutcomeV1
+  }
+  'xiaogui.coding.plan.observe': {
+    request: CodingPlanObserveRequestV1
+    response: CodingPlanObserveOutcomeV1
+  }
+  'xiaogui.coding.plan.perform': {
+    request: CodingPlanPerformRequestV1
+    response: CodingPlanPerformOutcomeV1
+  }
+  'xiaogui.coding.review.read': {
+    request: CodingReviewReadRequestV1
+    response: CodingReviewReadOutcomeV1
   }
   'session.list': { request: SessionListRequest; response: SessionListResponse }
   'session.open': { request: SessionOpenRequest; response: SessionOpenResponse }

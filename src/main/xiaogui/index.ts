@@ -13,6 +13,9 @@ import { registerXiaoguiHandlers } from './ipc-handlers'
 import { xiaogui } from './sidecar-bridge'
 import {
   closeDefaultCollaborationHubRuntimeComposition,
+  getDefaultCodingAttemptPlanModuleV1,
+  getDefaultCodingAttemptReviewModuleV1,
+  getDefaultTaskExecutionOrchestrator,
   registerCollaborationHubHandlers,
 } from './task-hub/ipc'
 import { getDefaultWorkDocxServiceV1, registerWorkDocxHandlers } from './work-docx-ipc'
@@ -55,6 +58,8 @@ import {
   registerOfficeSurfaceHandlersV1,
 } from './office-surface/ipc'
 import { registerCodingContextHandlersV1 } from './coding-extensions/context-ipc'
+import { registerCodingAttemptHandlersV1 } from './coding-extensions/attempt-ipc'
+import { createXiaoguiCodingPlanWorkerToolHandlerV1 } from './coding-extensions/plan-worker-tool'
 
 let initialized = false
 
@@ -69,8 +74,17 @@ export function initXiaogui(): void {
   registerDocumentReviewHandlersV1()
   registerOfficeSurfaceHandlersV1()
   registerCodingContextHandlersV1()
+  registerCodingAttemptHandlersV1({
+    plan: getDefaultCodingAttemptPlanModuleV1(),
+    review: getDefaultCodingAttemptReviewModuleV1(),
+    taskExecution: getDefaultTaskExecutionOrchestrator(),
+  })
   workerManager.setHostToolRequestHandler(
     createXiaoguiWorkerHostToolRouterV1({
+      codingPlan: createXiaoguiCodingPlanWorkerToolHandlerV1({
+        scopeResolver: sessionScopeResolverV1,
+        publishPendingDraft: (input) => getDefaultCodingAttemptPlanModuleV1().publishPendingDraft(input),
+      }),
       collaboration: createXiaoguiWorkerToolHandlerV1({
         application: getDefaultCollaborationHubApplication(),
         scopeResolver: sessionScopeResolverV1,

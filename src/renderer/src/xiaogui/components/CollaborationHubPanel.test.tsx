@@ -21,6 +21,7 @@ import type { AppEvent } from '@shared/app-events'
 import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { CanonicalSessionAddressScopeV1 } from '@shared/xiaogui-session-scope'
 import type { TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
+import { XIAOGUI_CODING_EXTENSION_CONTROL_VERSION_V1 } from '@shared/xiaogui-coding-extension-control'
 
 import { useUIStore } from '@renderer/stores/ui-store'
 import type { SessionItem } from '@renderer/stores/ui-store-types'
@@ -34,6 +35,9 @@ const returnDeliveryMock = vi.fn()
 const reconcileDeliveryMock = vi.fn()
 const retryDeliveryMock = vi.fn()
 const prepareRecoveryMock = vi.fn()
+const codingPlanObserveMock = vi.fn()
+const codingPlanPerformMock = vi.fn()
+const codingReviewReadMock = vi.fn()
 let requestCounter = 0
 let appEventHandler: ((event: AppEvent) => void) | null = null
 vi.mock('../lib/collaboration-hub-client', () => ({
@@ -51,8 +55,14 @@ vi.mock('../lib/collaboration-hub-client', () => ({
   prepareDeliveryRecovery: (address: HubAddressV1, request: unknown) => prepareRecoveryMock(address, request),
   newHubRequestId: () => `test-req-${++requestCounter}`,
 }))
+vi.mock('../lib/coding-attempt-client', () => ({
+  observeCodingAttemptPlans: (address: HubAddressV1) => codingPlanObserveMock(address),
+  performCodingAttemptPlan: (address: HubAddressV1, action: unknown) => codingPlanPerformMock(address, action),
+  readCodingAttemptReview: (address: HubAddressV1, attemptId: string) => codingReviewReadMock(address, attemptId),
+}))
 
 import { useCollaborationHubStore } from '../stores/collaboration-hub-store'
+import { useCodingAttemptStore } from '../stores/coding-attempt-store'
 import { CollaborationHubPanel } from './CollaborationHubPanel'
 
 function scopeOf(sessionKeyHex: string, mode: 'WORK' | 'DESIGN' | 'CODING'): CanonicalSessionAddressScopeV1 {
@@ -708,6 +718,13 @@ beforeEach(() => {
   reconcileDeliveryMock.mockReset()
   retryDeliveryMock.mockReset()
   prepareRecoveryMock.mockReset()
+  codingPlanObserveMock.mockReset()
+  codingPlanPerformMock.mockReset()
+  codingReviewReadMock.mockReset()
+  codingPlanObserveMock.mockResolvedValue({
+    ok: true,
+    value: { contractVersion: XIAOGUI_CODING_EXTENSION_CONTROL_VERSION_V1, plans: [] },
+  })
   requestCounter = 0
   appEventHandler = null
   window.piDesktop = {
@@ -720,12 +737,14 @@ beforeEach(() => {
   } as Window['piDesktop']
   uiSnapshot = useUIStore.getState()
   useCollaborationHubStore.getState().setAddress(null)
+  useCodingAttemptStore.getState().setAddress(null)
 })
 
 afterEach(() => {
   cleanup()
   useUIStore.setState(uiSnapshot, true)
   useCollaborationHubStore.getState().setAddress(null)
+  useCodingAttemptStore.getState().setAddress(null)
   delete window.piDesktop
 })
 
@@ -911,6 +930,51 @@ describe('CollaborationHubPanel', () => {
     // 不出现任何执行/领取/交付类按钮
     expect(screen.queryByRole('button', { name: '批准计划' })).toBeNull()
     expect(performMock).not.toHaveBeenCalled()
+  })
+
+  it('Attempt 已就绪但计划待批准时归入“等待批准计划”并显示批准入口', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    const base = activeProjection(address)
+    observeMock.mockResolvedValue({
+      ok: true,
+      value: {
+        ...base,
+        taskRuns: [{ ...base.taskRuns[0]!, status: 'READY' }],
+        attempts: [{ ...base.attempts[1]!, status: 'READY' }],
+      },
+    })
+    codingPlanObserveMock.mockResolvedValue({
+      ok: true,
+      value: {
+        contractVersion: XIAOGUI_CODING_EXTENSION_CONTROL_VERSION_V1,
+        plans: [{
+          schemaVersion: 1,
+          attemptId: 'xhba_1',
+          source: 'PI_DRAFT',
+          state: 'AWAITING_APPROVAL',
+          plan: {
+            schemaVersion: 1,
+            planId: 'xhbplan_1',
+            attemptId: 'xhba_1',
+            objective: '完成投影任务',
+            steps: [{ stepId: 's1', title: '修改界面', status: 'PENDING', validation: '组件测试通过' }],
+            constraints: ['只改项目内文件'],
+            revision: 1,
+          },
+          planDigest: `sha256:${'1'.repeat(64)}`,
+        }],
+      },
+    })
+    showSession(sessionWith('s-awaiting-attempt-plan', scopeCoding))
+    render(<CollaborationHubPanel />)
+
+    expect(await screen.findByTestId('hub-task-group-awaiting-plan')).toHaveTextContent('投影任务一')
+    expect(screen.getByTestId('hub-taskrun-status-t1')).toHaveTextContent('等待批准计划')
+    expect(screen.getByRole('button', { name: '批准并开始执行' })).toBeVisible()
+    expect(screen.getByTestId('hub-active-plan').textContent).not.toContain('xhba_1')
   })
 
   it('已验证任务只读展示安全检查、证据数量和任务变更集短摘要', async () => {

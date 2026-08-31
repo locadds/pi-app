@@ -227,6 +227,15 @@ async function refreshHubUi(page: Page): Promise<void> {
   await expect(button).toBeEnabled()
 }
 
+async function approveAwaitingAttemptPlans(page: Page, expectedCount: number): Promise<void> {
+  const buttons = page.getByRole('button', { name: '批准并开始执行', exact: true })
+  await expect(buttons).toHaveCount(expectedCount, { timeout: 45_000 })
+  for (let remaining = expectedCount; remaining > 0; remaining -= 1) {
+    await buttons.first().click()
+    await expect(buttons).toHaveCount(remaining - 1, { timeout: 45_000 })
+  }
+}
+
 async function waitForTaskBadges(
   page: Page,
   expected: Record<string, string>,
@@ -476,9 +485,11 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
     const scriptedRuntimeLaunchToken = randomBytes(32).toString('hex')
     const screenshots = {
       batchConfirm: join(evidenceDir, '01-batch-confirm.png'),
-      rootsRunning: join(evidenceDir, '02-ab-running-c-waiting.png'),
-      deliveryPending: join(evidenceDir, '03-three-task-delivery-pending.png'),
-      applied: join(evidenceDir, '04-apply-succeeded.png'),
+      plansAwaitingApproval: join(evidenceDir, '02-attempt-plans-awaiting-approval.png'),
+      rootsRunning: join(evidenceDir, '03-ab-running-c-waiting.png'),
+      review: join(evidenceDir, '04-real-diff-and-verification.png'),
+      deliveryPending: join(evidenceDir, '05-three-task-delivery-pending.png'),
+      applied: join(evidenceDir, '06-apply-succeeded.png'),
     }
     const consoleMessages: string[] = []
     let app: ElectronApplication | undefined
@@ -566,7 +577,10 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
 
       expect(await projectFingerprint(workspace)).toBe(baselineFingerprint)
       await page.getByRole('button', { name: '确认并执行本批', exact: true }).click()
-      await expect(page.getByRole('button', { name: '正在提交…', exact: true })).toBeVisible()
+      await expect(page.getByTestId('hub-task-group-awaiting-plan')).toBeVisible({ timeout: 45_000 })
+      await page.getByTestId('hub-task-group-awaiting-plan').screenshot({ path: screenshots.plansAwaitingApproval })
+      expect(readEvents(eventLogPath).some((event) => event.event === 'runtime.execution.entered')).toBe(false)
+      await approveAwaitingAttemptPlans(page, 2)
       let events: PiE2eEvent[]
       try {
         events = await waitForEvents(eventLogPath, (items) => {
@@ -589,8 +603,6 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       expect(enteredA).toBeGreaterThanOrEqual(0)
       expect(enteredB).toBeGreaterThanOrEqual(0)
       expect(firstSucceeded).toBe(-1)
-      await expect(page.getByRole('button', { name: '正在提交…', exact: true })).toHaveCount(0, { timeout: 30_000 })
-
       const runningProjection = await observe(page, address)
       expect(runningProjection.executionReadiness?.dependencyStates).toEqual(expect.arrayContaining([
         expect.objectContaining({ taskRunId: runA.taskRunId, state: 'IN_FLIGHT' }),
@@ -611,9 +623,16 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       expect(rootsVerified.executionReadiness?.dependencyStates).toEqual(expect.arrayContaining([
         expect.objectContaining({ taskRunId: runC.taskRunId, state: 'READY', dependencyTaskRunIds: [runA.taskRunId] }),
       ]))
+      const realReviewButtons = page.getByRole('button', { name: '查看真实修改', exact: true })
+      await expect(realReviewButtons).toHaveCount(2, { timeout: 30_000 })
+      await realReviewButtons.first().click()
+      await expect(page.getByText(A_PATH, { exact: true }).or(page.getByText(B_PATH, { exact: true }))).toBeVisible()
+      await expect(page.getByText('通过', { exact: true }).first()).toBeVisible()
+      await page.getByLabel('修改与验证').filter({ hasText: '变更文件' }).first().screenshot({ path: screenshots.review })
       await configureExecutionTask(page, runC.taskRunId, '任务 C', C_PATH)
       await page.getByRole('button', { name: '核对本批执行范围', exact: true }).click()
       await page.getByRole('button', { name: '确认并执行本批', exact: true }).click()
+      await approveAwaitingAttemptPlans(page, 1)
       await waitForEvents(eventLogPath, (items) =>
         items.some((event) => event.event === 'runtime.execution.entered' && event.details.label === 'C'))
       await writeFile(join(controlDir, 'release-c'), 'release\n', 'utf8')

@@ -31,6 +31,10 @@ import { useUIStore } from '@renderer/stores/ui-store'
 import { onAppEvent } from '@renderer/lib/ipc-client'
 import { sessionFilesEqual } from '@renderer/lib/session-file-key'
 
+import { CodingAttemptPlanCard } from './CodingAttemptPlanCard'
+import { CodingAttemptReviewCard } from './CodingAttemptReviewCard'
+import { useCodingAttemptStore } from '../stores/coding-attempt-store'
+
 import {
   DEFAULT_CANCEL_REASON,
   DELIVERY_ERROR_TEXT,
@@ -134,10 +138,11 @@ function agentDisplayName(selection: RuntimeAdapterSelectionV1): string {
 }
 
 /** 任务运行分组：同组为空就不显示。分组以 executionReadiness 实时快照为权威。 */
-type TaskGroupKey = 'executable' | 'running' | 'waiting' | 'verifying' | 'failed' | 'done'
+type TaskGroupKey = 'executable' | 'awaiting-plan' | 'running' | 'waiting' | 'verifying' | 'failed' | 'done'
 
 const TASK_GROUP_DEFS: readonly { key: TaskGroupKey; title: string }[] = [
   { key: 'executable', title: '可执行' },
+  { key: 'awaiting-plan', title: '等待批准计划' },
   { key: 'running', title: '执行中' },
   { key: 'waiting', title: '等待依赖' },
   { key: 'verifying', title: '验证中' },
@@ -176,7 +181,12 @@ function groupKeyForRun(
   run: TaskRunProjectionM2BV1,
   readiness: TaskDependencyStateV1 | undefined,
   attempts: readonly AttemptProjectionM2BV1[],
+  awaitingPlanAttemptIds: ReadonlySet<string>,
 ): TaskGroupKey {
+  const currentAttempt = currentAttemptOf(run, attempts)
+  if (currentAttempt?.status === 'READY' && awaitingPlanAttemptIds.has(currentAttempt.attemptId)) {
+    return 'awaiting-plan'
+  }
   if (readiness) {
     if (readiness.state === 'READY') return 'executable'
     if (readiness.state === 'WAITING_FOR_DEPENDENCIES' || readiness.state === 'BLOCKED_BY_FAILED_DEPENDENCY') {
@@ -200,7 +210,12 @@ function taskRunBadgeText(
   run: TaskRunProjectionM2BV1,
   readiness: TaskDependencyStateV1 | undefined,
   attempts: readonly AttemptProjectionM2BV1[],
+  awaitingPlanAttemptIds: ReadonlySet<string>,
 ): string {
+  const currentAttempt = currentAttemptOf(run, attempts)
+  if (currentAttempt?.status === 'READY' && awaitingPlanAttemptIds.has(currentAttempt.attemptId)) {
+    return '等待批准计划'
+  }
   if (readiness) {
     if (readiness.state === 'READY') return '就绪'
     if (readiness.state === 'WAITING_FOR_DEPENDENCIES') return '等待依赖'
@@ -945,6 +960,11 @@ function TaskRunCard({
           {attempt.verificationSummary && (
             <TaskVerificationSummaryCard attemptId={attempt.attemptId} summary={attempt.verificationSummary} />
           )}
+          <CodingAttemptPlanCard attemptId={attempt.attemptId} />
+          <CodingAttemptReviewCard
+            attemptId={attempt.attemptId}
+            available={['VERIFYING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED', 'OUTCOME_UNKNOWN'].includes(attempt.status)}
+          />
         </div>
       ))}
     </li>
@@ -952,6 +972,7 @@ function TaskRunCard({
 }
 
 function ActivePlanView({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
+  const plansByAttempt = useCodingAttemptStore((state) => state.plansByAttempt)
   const flow = projection.activeFlow
   if (!flow) return null
   const attemptsByRun = new Map<string, typeof projection.attempts>()
@@ -973,10 +994,20 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
   const historicalDepStateByRunId = new Map(
     (projection.lastExecutionWave?.dependencyStates ?? []).map((state) => [state.taskRunId, state]),
   )
+  const awaitingPlanAttemptIds = new Set(
+    Object.values(plansByAttempt)
+      .filter((plan) => plan.state === 'AWAITING_APPROVAL')
+      .map((plan) => plan.attemptId),
+  )
   const groups = TASK_GROUP_DEFS.map((def) => ({
     ...def,
     runs: projection.taskRuns.filter(
-      (run) => groupKeyForRun(run, readinessByRunId.get(run.taskRunId), attemptsByRun.get(run.taskRunId) ?? []) === def.key,
+      (run) => groupKeyForRun(
+        run,
+        readinessByRunId.get(run.taskRunId),
+        attemptsByRun.get(run.taskRunId) ?? [],
+        awaitingPlanAttemptIds,
+      ) === def.key,
     ),
   })).filter((group) => group.runs.length > 0)
   return (
@@ -1010,7 +1041,7 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
                       key={run.taskRunId}
                       run={run}
                       title={titleByRunId.get(run.taskRunId) ?? '协作任务'}
-                      badge={taskRunBadgeText(run, readiness, runAttempts)}
+                      badge={taskRunBadgeText(run, readiness, runAttempts, awaitingPlanAttemptIds)}
                       attempts={runAttempts}
                       reason={reason}
                     />
@@ -1047,6 +1078,8 @@ export function CollaborationHubPanel() {
   const error = useCollaborationHubStore((s) => s.error)
   const refresh = useCollaborationHubStore((s) => s.refresh)
   const clearError = useCollaborationHubStore((s) => s.clearError)
+  const codingPlansLoading = useCodingAttemptStore((s) => s.loadingPlans)
+  const refreshCodingPlans = useCodingAttemptStore((s) => s.refreshPlans)
 
   // address 只来自当前会话 canonicalScope 的 projectId + sessionKey；
   // 切换会话时 setAddress 会清空旧投影与临时表单
@@ -1054,7 +1087,18 @@ export function CollaborationHubPanel() {
     const next = scope ? { projectId: scope.projectId, sessionKey: scope.sessionKey } : null
     useCollaborationHubStore.getState().setAddress(next)
     if (next) void useCollaborationHubStore.getState().refresh()
+    const codingAddress = scope?.sessionMode === 'CODING' ? next : null
+    useCodingAttemptStore.getState().setAddress(codingAddress)
+    if (codingAddress) void useCodingAttemptStore.getState().refreshPlans()
   }, [addressKey, scope?.sessionMode])
+
+  const attemptStateKey = projection?.attempts
+    .map((attempt) => `${attempt.attemptId}:${attempt.status}`)
+    .join('|') ?? ''
+  useEffect(() => {
+    if (scope?.sessionMode !== 'CODING' || !attemptStateKey) return
+    void useCodingAttemptStore.getState().refreshPlans()
+  }, [addressKey, scope?.sessionMode, attemptStateKey])
 
   // 主进程已在工具返回前落好草稿；同一会话的工具结束事件只负责使投影失效并刷新。
   useEffect(() => {
@@ -1113,11 +1157,14 @@ export function CollaborationHubPanel() {
         <button
           type="button"
           aria-label="刷新协作计划"
-          disabled={loading}
-          onClick={() => void refresh()}
+          disabled={loading || codingPlansLoading}
+          onClick={() => {
+            void refresh()
+            if (scope.sessionMode === 'CODING') void refreshCodingPlans()
+          }}
           className="rounded-md border border-border/60 px-2 py-0.5 text-[11px] text-foreground-secondary hover:bg-accent disabled:opacity-40"
         >
-          {loading ? '加载中…' : '刷新'}
+          {loading || codingPlansLoading ? '加载中…' : '刷新'}
         </button>
       </div>
 

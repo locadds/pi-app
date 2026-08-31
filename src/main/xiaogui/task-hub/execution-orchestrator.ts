@@ -97,6 +97,20 @@ export interface TaskExecutionPermissionScopePortV1 {
   manifest(attemptId: string): AttemptFileManifestV1 | undefined
 }
 
+export interface TaskExecutionAttemptPlanGateV1 {
+  ensureAttemptPlan(input: {
+    readonly address: HubAddressV1
+    readonly flowId: FlowId
+    readonly taskRunId: TaskRunId
+    readonly attemptId: AttemptId
+    readonly objective: string
+    readonly taskTitle: string
+    readonly taskSummary?: string
+  }): Promise<void>
+  isAttemptPlanApproved(attemptId: AttemptId): Promise<boolean>
+  markAttemptExecutionStarted(attemptId: AttemptId): Promise<void>
+}
+
 export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly dbPath: string
   readonly application: CollaborationHubApplicationV1
@@ -107,6 +121,7 @@ export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly verificationCoordinator?: TaskVerificationCoordinatorV1
   readonly permissionModule?: TaskExecutionPermissionPortV1
   readonly permissionScope?: TaskExecutionPermissionScopePortV1
+  readonly attemptPlanGate?: TaskExecutionAttemptPlanGateV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
 }
@@ -155,6 +170,16 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     } finally {
       if (this.inFlight.get(key)?.outcome === outcome) this.inFlight.delete(key)
     }
+  }
+
+  async resumeAttempt(
+    address: HubAddressV1,
+    attemptId: AttemptId,
+  ): Promise<XiaoguiTaskExecutionStartOutcomeV1> {
+    if (this.closed) return executionError('INTERNAL')
+    await this.recover()
+    const operation = this.saga.byAttempt(address, attemptId)
+    return operation ? this.run(operation, false) : executionError('FLOW_NOT_READY')
   }
 
   async startBatch(
@@ -427,6 +452,29 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       if (!operation.task_run_id || !operation.attempt_id) return executionError('INTERNAL')
       const taskRunId = operation.task_run_id
       const attemptId = operation.attempt_id
+      if (this.options.attemptPlanGate) {
+        const authority = await this.authority(operation)
+        if (!authority.ok) return authority.outcome
+        const projection = await this.options.application.observeM2B(addressOf(operation))
+        if (!projection.ok) return executionError('SESSION_SCOPE_MISMATCH')
+        const taskSpec = projection.value.taskSpecs.find(
+          (candidate) => candidate.taskSpecId === authority.result.taskRun.taskSpecId,
+        )
+        if (!taskSpec || !projection.value.activeFlow) return executionError('INTERNAL')
+        await this.options.attemptPlanGate.ensureAttemptPlan({
+          address: addressOf(operation),
+          flowId: operation.flow_id,
+          taskRunId,
+          attemptId,
+          objective: projection.value.activeFlow.objective,
+          taskTitle: taskSpec.title,
+          ...(taskSpec.summary ? { taskSummary: taskSpec.summary } : {}),
+        })
+        if (!(await this.options.attemptPlanGate.isAttemptPlanApproved(attemptId))) {
+          return { ok: true, value: authority.result }
+        }
+        await this.options.attemptPlanGate.markAttemptExecutionStarted(attemptId)
+      }
       this.saga.advance(operation.operation_id, 'DISPATCHING')
       operation = this.saga.byId(operation.operation_id)!
       const dispatched = await this.options.application.executeSystem({
@@ -930,6 +978,19 @@ class SqliteTaskExecutionSagaStoreV1 {
           from task_execution_sagas where operation_id = ?
       `)
       .get(operationId) as ExecutionSagaRowV1 | undefined
+  }
+
+  byAttempt(address: HubAddressV1, attemptId: AttemptId): ExecutionSagaRowV1 | undefined {
+    return this.db
+      .prepare(`
+        select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
+               prompt_blob, grants_json, phase, task_run_id, attempt_id, last_safe_code
+          from task_execution_sagas
+         where project_id = ? and session_key = ? and attempt_id = ?
+           and phase not in ('FAILED', 'SETTLED')
+         limit 1
+      `)
+      .get(address.projectId, address.sessionKey, attemptId) as ExecutionSagaRowV1 | undefined
   }
 
   acquire(

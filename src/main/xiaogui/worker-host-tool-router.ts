@@ -1,4 +1,5 @@
 import {
+  XIAOGUI_CODING_PLAN_DRAFT_METHOD_V1,
   XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1,
   XIAOGUI_WORK_DOCX_METHOD_V1,
   XIAOGUI_WORK_REPORT_DOCX_METHOD_V1,
@@ -13,6 +14,7 @@ import {
 import type { WorkerHostToolRequestHandler } from '../worker-manager-types'
 
 export interface XiaoguiWorkerHostToolRouterOptionsV1 {
+  codingPlan: WorkerHostToolRequestHandler
   collaboration: WorkerHostToolRequestHandler
   workDocx: WorkerHostToolRequestHandler
   workReportDocx: WorkerHostToolRequestHandler
@@ -30,6 +32,8 @@ export function createXiaoguiWorkerHostToolRouterV1(
 ): WorkerHostToolRequestHandler {
   return (payload) => {
     switch (payload.request.method) {
+      case XIAOGUI_CODING_PLAN_DRAFT_METHOD_V1:
+        return options.codingPlan(payload)
       case XIAOGUI_CREATE_COLLABORATION_PLAN_METHOD_V1:
         return options.collaboration(payload)
       case XIAOGUI_WORK_DOCX_METHOD_V1:
