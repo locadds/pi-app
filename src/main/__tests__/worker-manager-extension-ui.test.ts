@@ -172,4 +172,32 @@ describe('extension UI source routing', () => {
     expect(extensionUiDialogSource.get('dialog-a')).toBe(foreground)
     expect(extensionUiDialogSource.has('dialog-b')).toBe(false)
   })
+
+  it('should_replace_worker_claimed_direct_origin_before_forwarding', () => {
+    const transport = makeTransport()
+    const source = slot('/s/foreground', transport)
+    const mainWindow = { isDestroyed: () => false, webContents: { send: vi.fn() } }
+    attachWorkerHandlers(source, transport, {
+      mainWindow: mainWindow as never,
+      getForegroundPoolKey: () => source.poolKey,
+      onAppEvent: vi.fn(),
+      onSlotExit: vi.fn(),
+    })
+
+    transport.emitMessage({
+      type: 'extension-ui-request',
+      request: {
+        id: 'xiaogui-direct-123e4567-e89b-42d3-a456-426614174000',
+        method: 'custom',
+        kind: 'coding_permission',
+        origin: 'xiaogui-direct',
+        payload: {},
+      },
+    })
+
+    expect(mainWindow.webContents.send).toHaveBeenCalledWith('ipc:extension-ui-request', expect.objectContaining({
+      kind: 'coding_permission',
+      origin: 'worker',
+    }))
+  })
 })

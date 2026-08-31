@@ -23,6 +23,8 @@ import type { CollaborationHubApplicationV1 } from './application'
 import {
   XiaoguiTaskExecutionOrchestratorV1,
   type TaskExecutionInputStageV1,
+  type TaskExecutionPermissionPortV1,
+  type TaskExecutionPermissionScopePortV1,
 } from './execution-orchestrator'
 import type {
   AttemptFileScopeResolverV1,
@@ -414,9 +416,25 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     const hub = fakeHub(events, dbPath)
     const monitor = fakeRuntimeMonitor()
     const coordinator = fakeVerificationCoordinator()
+    const permissionIntents: Parameters<TaskExecutionPermissionPortV1['decide']>[0][] = []
+    const permissionModule: TaskExecutionPermissionPortV1 = {
+      decide: vi.fn(async (intent) => {
+        permissionIntents.push(intent)
+        return 'ALLOW_ONCE' as const
+      }),
+    }
     const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
       runtimeMonitor: monitor,
       verificationCoordinator: coordinator,
+      permissionModule,
+      permissionScope: {
+        manifest: () => ({
+          attemptId: ATTEMPT_ID,
+          version: 1,
+          grants: [{ operation: 'MODIFY', relativePath: 'src/index.ts', baselineDigest: 'sha256:baseline' }],
+          manifestDigest: 'sha256:manifest',
+        }),
+      },
     })
 
     await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true })
@@ -433,6 +451,12 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
       scope: permission.scope,
     })
     expect(first).toHaveProperty('proofDigest', expect.stringMatching(/^sha256:[0-9a-f]{64}$/))
+    expect(permissionIntents[0]).toMatchObject({
+      attemptId: ATTEMPT_ID,
+      operation: 'WRITE',
+      relativePaths: ['src/index.ts'],
+      dataEgress: 'NONE',
+    })
 
     const { permissionPurpose: _permissionPurpose, ...unclassified } = permission
     expect(await monitor.decide('runtime-1', unclassified)).toMatchObject({
@@ -443,6 +467,121 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
       ...permission,
       scope: { ...permission.scope, workspaceReceiptId: 'workspace-receipt-other' },
     }))).rejects.toThrow('RUNTIME_PERMISSION_SCOPE_MISMATCH')
+    await orchestrator.close()
+  })
+
+  it('passes exact command and egress metadata and rejects out-of-scope or pathless writes', async () => {
+    const events: string[] = []
+    const dbPath = await tempDb()
+    const hub = fakeHub(events, dbPath)
+    const monitor = fakeRuntimeMonitor()
+    const coordinator = fakeVerificationCoordinator()
+    const permissionIntents: Parameters<TaskExecutionPermissionPortV1['decide']>[0][] = []
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      runtimeMonitor: monitor,
+      verificationCoordinator: coordinator,
+      permissionModule: {
+        decide: vi.fn(async (intent) => {
+          permissionIntents.push(intent)
+          return 'ALLOW_ONCE' as const
+        }),
+      },
+      permissionScope: {
+        manifest: () => ({
+          attemptId: ATTEMPT_ID,
+          version: 1,
+          grants: [{ operation: 'MODIFY', relativePath: 'src/index.ts', baselineDigest: 'sha256:baseline' }],
+          manifestDigest: 'sha256:manifest',
+        }),
+      },
+    })
+    await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true })
+
+    await expect(monitor.decide('runtime-1', permissionRequestedEvent({
+      permissionRequestId: 'command-perm-1',
+      challengeDigest: 'sha256:command-challenge',
+      permissionPurpose: 'COMMAND',
+      requestedRelativePaths: ['src/index.ts'],
+      actionDigest: `sha256:${'a'.repeat(64)}`,
+      commandSummary: 'npm run typecheck',
+    }))).resolves.toMatchObject({ type: 'ALLOW_ONCE' })
+    await expect(monitor.decide('runtime-1', permissionRequestedEvent({
+      permissionRequestId: 'egress-perm-1',
+      challengeDigest: 'sha256:egress-challenge',
+      permissionPurpose: 'DATA_EGRESS',
+      requestedRelativePaths: ['src/index.ts'],
+      actionDigest: `sha256:${'b'.repeat(64)}`,
+      egressDestination: 'approved.example.test',
+    }))).resolves.toMatchObject({ type: 'ALLOW_ONCE' })
+    await expect(monitor.decide('runtime-1', permissionRequestedEvent({
+      permissionRequestId: 'outside-perm-1',
+      challengeDigest: 'sha256:outside-challenge',
+      requestedRelativePaths: ['src/outside.ts'],
+    }))).resolves.toMatchObject({ type: 'DENY', reasonCode: 'PERMISSION_REQUEST_INVALID' })
+    await expect(monitor.decide('runtime-1', permissionRequestedEvent({
+      permissionRequestId: 'pathless-perm-1',
+      challengeDigest: 'sha256:pathless-challenge',
+      requestedRelativePaths: [],
+    }))).resolves.toMatchObject({ type: 'DENY', reasonCode: 'PERMISSION_REQUEST_INVALID' })
+    await expect(monitor.decide('runtime-1', permissionRequestedEvent({
+      permissionRequestId: 'command-no-digest-1',
+      challengeDigest: 'sha256:command-no-digest',
+      permissionPurpose: 'COMMAND',
+      requestedRelativePaths: ['src/index.ts'],
+      commandSummary: 'npm run typecheck',
+    }))).resolves.toMatchObject({ type: 'DENY', reasonCode: 'PERMISSION_REQUEST_INVALID' })
+    await expect(monitor.decide('runtime-1', permissionRequestedEvent({
+      permissionRequestId: 'egress-no-path-1',
+      challengeDigest: 'sha256:egress-no-path',
+      permissionPurpose: 'DATA_EGRESS',
+      requestedRelativePaths: [],
+      actionDigest: `sha256:${'c'.repeat(64)}`,
+      egressDestination: 'approved.example.test',
+    }))).resolves.toMatchObject({ type: 'DENY', reasonCode: 'PERMISSION_REQUEST_INVALID' })
+
+    expect(permissionIntents).toEqual([
+      expect.objectContaining({
+        operation: 'COMMAND',
+        relativePaths: ['src/index.ts'],
+        actionDigest: `sha256:${'a'.repeat(64)}`,
+        commandSummary: 'npm run typecheck',
+        dataEgress: 'NONE',
+      }),
+      expect.objectContaining({
+        operation: 'DATA_EGRESS',
+        relativePaths: ['src/index.ts'],
+        actionDigest: `sha256:${'b'.repeat(64)}`,
+        egressDestination: 'approved.example.test',
+        dataEgress: 'REQUESTED',
+      }),
+    ])
+    await orchestrator.close()
+  })
+
+  it('权限 Module 缺失或用户拒绝时保持 fail-closed', async () => {
+    const events: string[] = []
+    const dbPath = await tempDb()
+    const hub = fakeHub(events, dbPath)
+    const monitor = fakeRuntimeMonitor()
+    const coordinator = fakeVerificationCoordinator()
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      runtimeMonitor: monitor,
+      verificationCoordinator: coordinator,
+      permissionScope: {
+        manifest: () => ({
+          attemptId: ATTEMPT_ID,
+          version: 1,
+          grants: [{ operation: 'MODIFY', relativePath: 'src/index.ts', baselineDigest: 'sha256:baseline' }],
+          manifestDigest: 'sha256:manifest',
+        }),
+      },
+    })
+
+    await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true })
+    await expect(monitor.decide('runtime-1', permissionRequestedEvent())).resolves.toMatchObject({
+      type: 'DENY',
+      reasonCode: 'USER_DENIED_OR_PERMISSION_MODULE_UNAVAILABLE',
+    })
     await orchestrator.close()
   })
 
@@ -516,6 +655,8 @@ async function createOrchestrator(
     runtimeMonitor?: RuntimeOutcomeMonitorV1
     runtimeBindingRestorer?: ConstructorParameters<typeof XiaoguiTaskExecutionOrchestratorV1>[0]['runtimeBindingRestorer']
     verificationCoordinator?: TaskVerificationCoordinatorV1
+    permissionModule?: TaskExecutionPermissionPortV1
+    permissionScope?: TaskExecutionPermissionScopePortV1
   },
   inputStageOverride?: TaskExecutionInputStageV1,
 ): Promise<XiaoguiTaskExecutionOrchestratorV1> {
@@ -1026,7 +1167,9 @@ function writePrivateRuntimeAttempt(
   }
 }
 
-function permissionRequestedEvent(): Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> {
+function permissionRequestedEvent(
+  overrides: Partial<Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }>> = {},
+): Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> {
   return {
     type: 'PERMISSION_REQUESTED',
     permissionRequestId: 'write-perm-1',
@@ -1035,6 +1178,7 @@ function permissionRequestedEvent(): Extract<RuntimeEventV1, { type: 'PERMISSION
     challengeDigest: 'sha256:challenge',
     decisionRequired: 'ALLOW_ONCE_OR_DENY',
     permissionPurpose: 'FILE_WRITE',
+    requestedRelativePaths: ['src/index.ts'],
     scope: {
       projectId: ADDRESS.projectId,
       sessionKey: ADDRESS.sessionKey,
@@ -1046,6 +1190,7 @@ function permissionRequestedEvent(): Extract<RuntimeEventV1, { type: 'PERMISSION
       workspaceReceiptId: 'workspace-receipt-1',
       workspaceReceiptDigest: 'sha256:workspace-receipt',
     },
+    ...overrides,
   }
 }
 

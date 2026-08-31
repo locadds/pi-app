@@ -4,6 +4,7 @@ import type { BrowserWindow } from 'electron'
 export interface DirectExtensionUIResponse {
   id: string
   cancelled?: boolean
+  reason?: 'timeout'
   result?: unknown
 }
 
@@ -18,18 +19,33 @@ const pending = new Map<string, DirectPending>()
 export function requestDirectExtensionUI(
   win: BrowserWindow,
   request: Record<string, unknown>,
+  options: { timeoutMs?: number } = {},
 ): Promise<DirectExtensionUIResponse> {
   const id = `xiaogui-direct-${randomUUID()}`
   return new Promise((resolve) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
     const onClosed = () => finish({ id, cancelled: true })
     const cleanup = () => {
       pending.delete(id)
       win.removeListener('closed', onClosed)
+      if (timeout) clearTimeout(timeout)
     }
     const finish = (response: DirectExtensionUIResponse) => {
       const active = pending.get(id)
       if (!active) return
+      const shouldDismiss = response.reason === 'timeout' && !win.isDestroyed()
       active.cleanup()
+      if (shouldDismiss) {
+        try {
+          win.webContents.send('ipc:extension-ui-dismiss', {
+            type: 'extension-ui-dismiss',
+            id,
+            reason: 'timeout',
+          })
+        } catch {
+          // Renderer may disappear between the destroyed check and send; cleanup already ran.
+        }
+      }
       resolve(response)
     }
 
@@ -39,11 +55,18 @@ export function requestDirectExtensionUI(
       finish({ id, cancelled: true })
       return
     }
-    win.webContents.send('ipc:extension-ui-request', {
-      ...request,
-      id,
-      origin: 'xiaogui-direct',
-    })
+    if (typeof options.timeoutMs === 'number' && options.timeoutMs > 0) {
+      timeout = setTimeout(() => finish({ id, cancelled: true, reason: 'timeout' }), options.timeoutMs)
+    }
+    try {
+      win.webContents.send('ipc:extension-ui-request', {
+        ...request,
+        id,
+        origin: 'xiaogui-direct',
+      })
+    } catch {
+      finish({ id, cancelled: true })
+    }
   })
 }
 

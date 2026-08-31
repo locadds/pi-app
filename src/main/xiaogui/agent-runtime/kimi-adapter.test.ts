@@ -686,6 +686,10 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       let events = await collect(adapter.stream(created.runtimeSessionId, 0))
       const permission = events.find((event): event is Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> => event.type === 'PERMISSION_REQUESTED')
       if (!permission) throw new Error('write permission missing')
+      expect(permission).toMatchObject({
+        permissionPurpose: 'FILE_WRITE',
+        requestedRelativePaths: ['a.txt'],
+      })
       await expect(adapter.permission({
         type: 'ALLOW_ONCE',
         permissionRequestId: permission.permissionRequestId,
@@ -1241,6 +1245,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     expect(permissionEvent).toMatchObject({
       decisionRequired: 'ALLOW_ONCE_OR_DENY',
       permissionPurpose: 'APPROVED_FILE_TOOL',
+      requestedRelativePaths: ['a.txt'],
     })
     const decision = {
       type: 'ALLOW_ONCE',

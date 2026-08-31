@@ -133,6 +133,7 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.delivery.batch.return',
   'ipc:xiaogui.delivery.gate.approve',
   'ipc:xiaogui.delivery.selection.submit',
+  'ipc:xiaogui.coding.context.snapshot',
   'ipc:xiaogui.hub.observe',
   'ipc:xiaogui.hub.execution.start',
   'ipc:xiaogui.hub.execution.startBatch',

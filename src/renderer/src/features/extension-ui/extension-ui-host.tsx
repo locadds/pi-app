@@ -7,6 +7,7 @@ import { ImageReviewDialog, type ImageReviewPayload } from './image-review-dialo
 import { TemplateIntakeReviewDialog } from './template-intake-review-dialog'
 import { TemplateReviewV2Dialog } from './template-review-v2-dialog'
 import { TemplateMaterializePreviewDialog } from './template-materialize-preview-dialog'
+import { CodingPermissionDialog } from './coding-permission-dialog'
 import type { TemplateIntakeReviewRequestV1 } from '@shared/xiaogui-work-docx-template-intake'
 import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
 import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from '@shared/xiaogui-work-template-review'
@@ -170,6 +171,14 @@ export function ExtensionUIHost() {
             const tid = findToolContextForUi().timelineItemId || s?.timelineItemId
             respond({ id: pending.id, result })
             clearExtensionToolRowFlags(tid)
+            clearAfterRespond()
+          }}
+        />
+      ) : pending.method === 'coding_permission' ? (
+        <CodingPermissionDialog
+          prompt={pending.prompt}
+          onChoose={(choice) => {
+            respond({ id: pending.id, result: { choice } })
             clearAfterRespond()
           }}
         />

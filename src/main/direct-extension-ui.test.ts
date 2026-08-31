@@ -57,4 +57,43 @@ describe('direct extension UI bridge', () => {
     await expect(resultPromise).resolves.toEqual({ id: request.id, cancelled: true })
     expect(__test.pendingCount()).toBe(0)
   })
+
+  it('直接请求超时后取消并清理 pending，避免权限请求悬挂', async () => {
+    vi.useFakeTimers()
+    const win = new FakeWindow()
+    const resultPromise = requestDirectExtensionUI(
+      win as unknown as BrowserWindow,
+      { method: 'custom', kind: 'coding_permission' },
+      { timeoutMs: 50 },
+    )
+
+    await vi.advanceTimersByTimeAsync(60)
+    await expect(resultPromise).resolves.toMatchObject({ cancelled: true, reason: 'timeout' })
+    expect(__test.pendingCount()).toBe(0)
+    expect(win.webContents.send).toHaveBeenLastCalledWith('ipc:extension-ui-dismiss', {
+      type: 'extension-ui-dismiss',
+      id: expect.any(String),
+      reason: 'timeout',
+    })
+    vi.useRealTimers()
+  })
+
+  it('超时通知发送失败时仍先清理 pending 和窗口监听器', async () => {
+    vi.useFakeTimers()
+    const win = new FakeWindow()
+    win.webContents.send
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => { throw new Error('renderer gone') })
+    const resultPromise = requestDirectExtensionUI(
+      win as unknown as BrowserWindow,
+      { method: 'custom', kind: 'coding_permission' },
+      { timeoutMs: 50 },
+    )
+
+    await vi.advanceTimersByTimeAsync(60)
+    await expect(resultPromise).resolves.toMatchObject({ cancelled: true, reason: 'timeout' })
+    expect(__test.pendingCount()).toBe(0)
+    expect(win.listenerCount('closed')).toBe(0)
+    vi.useRealTimers()
+  })
 })

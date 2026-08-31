@@ -1,4 +1,4 @@
-import type { SessionMode } from './xiaogui-session-scope'
+import type { SessionAddressV1, SessionMode } from './xiaogui-session-scope'
 
 export type CodingExtensionIdV1 =
   | 'coding.context'
@@ -94,11 +94,52 @@ export interface CodingContextSnapshotV1 {
     readonly relativePath: string
     readonly symbol?: string
     readonly diagnosticCount?: number
+    readonly byteLength: number
     readonly contentDigest: string
+    readonly contentSummary: {
+      readonly lineCount: number
+      readonly includedBytes: number
+      readonly truncated: boolean
+    }
   }[]
   readonly symbolService: 'AVAILABLE' | 'UNAVAILABLE'
+  readonly diagnosticService: 'AVAILABLE' | 'UNAVAILABLE'
+  readonly resolutionMode: 'SYMBOL' | 'CONTROLLED_TEXT_FALLBACK'
+  readonly degradationReason?: 'SYMBOL_SERVICE_UNAVAILABLE'
+  readonly diagnosticDegradationReason?: 'DIAGNOSTIC_SERVICE_UNAVAILABLE'
   readonly truncated: boolean
 }
+
+export interface CodingContextSnapshotRequestV1 {
+  /** Opaque canonical scope; Main derives the local project root. */
+  readonly address: SessionAddressV1
+  readonly relativePaths: readonly string[]
+}
+
+/** Main-to-Worker private turn payload. It is never returned to Renderer. */
+export interface CodingContextAgentPayloadV1 {
+  readonly schemaVersion: 1
+  readonly snapshotIds: readonly string[]
+  readonly sources: readonly {
+    readonly relativePath: string
+    readonly content: string
+    readonly truncated: boolean
+  }[]
+  readonly symbolService: 'AVAILABLE' | 'UNAVAILABLE'
+  readonly diagnosticService: 'AVAILABLE' | 'UNAVAILABLE'
+}
+
+export type CodingContextSnapshotOutcomeV1 =
+  | { readonly ok: true; readonly snapshot: CodingContextSnapshotV1 }
+  | {
+      readonly ok: false
+      readonly error:
+        | 'INVALID_REQUEST'
+        | 'OUTSIDE_WORKSPACE'
+        | 'SOURCE_NOT_FOUND'
+        | 'SOURCE_NOT_FILE'
+        | 'SNAPSHOT_FAILED'
+    }
 
 export interface CodingPermissionIntentV1 {
   readonly schemaVersion: 1
@@ -107,6 +148,23 @@ export interface CodingPermissionIntentV1 {
   readonly operation: 'READ' | 'WRITE' | 'COMMAND' | 'DATA_EGRESS'
   readonly relativePaths: readonly string[]
   readonly dataEgress: 'NONE' | 'REQUESTED'
+  /** Digest of the private authoritative action. Required for command and egress rules. */
+  readonly actionDigest?: string
+  readonly commandSummary?: string
+  readonly egressDestination?: string
+}
+
+export type CodingPermissionUserChoiceV1 = 'ALLOW_ONCE' | 'ALLOW_TASK_RULE' | 'DENY'
+
+export interface CodingPermissionPromptV1 {
+  readonly schemaVersion: 1
+  readonly operation: CodingPermissionIntentV1['operation']
+  readonly relativePaths: readonly string[]
+  readonly dataEgress: CodingPermissionIntentV1['dataEgress']
+  readonly commandSummary?: string
+  readonly egressDestination?: string
+  readonly summary: string
+  readonly choices: readonly ['ALLOW_ONCE', 'ALLOW_TASK_RULE', 'DENY']
 }
 
 export interface CodingPlanDraftV1 {

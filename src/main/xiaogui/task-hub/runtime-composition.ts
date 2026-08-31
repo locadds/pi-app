@@ -52,6 +52,8 @@ import {
   PiE2eWorkspaceScriptedRuntimeAdapterV1,
   type PiE2eScriptedRuntimeLaunchV1,
 } from './pi-e2e-scripted-runtime'
+import { CodingPermissionModuleV1 } from '../coding-extensions/permission-module'
+import { MainProcessCodingPermissionUIAdapterV1 } from '../coding-extensions/permission-ui-adapter'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
@@ -111,6 +113,7 @@ export function createXiaoguiRuntimeCompositionV1(
   let taskVerificationCoordinator: TaskVerificationCoordinatorV1 | undefined
   let deliveryWorkflow: XiaoguiDeliveryWorkflowV1 | undefined
   let deliveryApplyRegistry: SqliteDeliveryApplyAttemptRegistryV1 | undefined
+  let codingPermissionModule: CodingPermissionModuleV1 | undefined
 
   try {
     const projectResolver = options.projectResolver ?? new MainProjectWorkspaceResolverV1()
@@ -210,6 +213,14 @@ export function createXiaoguiRuntimeCompositionV1(
       now: options.now,
     })
 
+    codingPermissionModule = new CodingPermissionModuleV1({
+      dbPath: hubDbPath,
+      // The UI Adapter dismisses first; the Module's longer timeout remains a
+      // fail-closed backstop for any future Adapter implementation.
+      ui: new MainProcessCodingPermissionUIAdapterV1({ timeoutMs: 55_000 }),
+      timeoutMs: 60_000,
+      now: options.now,
+    })
     taskExecution = new XiaoguiTaskExecutionOrchestratorV1({
       dbPath: hubDbPath,
       application,
@@ -232,6 +243,8 @@ export function createXiaoguiRuntimeCompositionV1(
         }
       },
       verificationCoordinator: taskVerificationCoordinator,
+      permissionModule: codingPermissionModule,
+      permissionScope: attemptWorkspaces,
       now: options.now,
     })
     void taskExecution.recover().catch(() => undefined)
@@ -258,6 +271,7 @@ export function createXiaoguiRuntimeCompositionV1(
       inputStore,
       payloadVault,
       workspaceRegistry,
+      codingPermissionModule,
       options.piE2eScriptedRuntimeLaunch,
     )
   } catch (error) {
@@ -271,6 +285,7 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(inputStore)
     closeQuietly(payloadVault)
     closeQuietly(workspaceRegistry)
+    closeQuietly(codingPermissionModule)
     if (options.piE2eScriptedRuntimeLaunch) {
       deactivatePiE2eScriptedRuntimeLaunchV1(options.piE2eScriptedRuntimeLaunch)
     }
@@ -287,6 +302,7 @@ function createCompositionInterface(
   inputStore: AttemptExecutionInputStoreV1,
   payloadVault: PrivateRuntimePayloadVaultV1,
   workspaceRegistry: SqliteAttemptWorkspaceRegistryV1,
+  codingPermissionModule: CodingPermissionModuleV1,
   piE2eLaunch: PiE2eScriptedRuntimeLaunchV1 | undefined,
 ): XiaoguiRuntimeCompositionV1 {
   let closed = false
@@ -314,6 +330,7 @@ function createCompositionInterface(
             inputStore,
             payloadVault,
             workspaceRegistry,
+            codingPermissionModule,
           ])
         } finally {
           if (piE2eLaunch) deactivatePiE2eScriptedRuntimeLaunchV1(piE2eLaunch)

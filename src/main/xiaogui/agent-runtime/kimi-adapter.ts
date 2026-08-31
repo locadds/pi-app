@@ -538,7 +538,8 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
     const optionIds = options.map((option) => option.optionId)
     const optionsValid = optionIds.every((optionId) => typeof optionId === 'string' && optionId.length > 0 && optionId === optionId.trim()) && new Set(optionIds).size === optionIds.length
     const allowOnce = options.filter((option) => option.kind === 'allow_once')
-    if (!optionsValid || allowOnce.length !== 1 || !isApprovedVendorFileToolRequest(state, params)) {
+    const requestedRelativePath = approvedVendorFileToolTarget(state, params)
+    if (!optionsValid || allowOnce.length !== 1 || !requestedRelativePath) {
       return Promise.resolve({ outcome: { outcome: 'cancelled' } })
     }
     const rejectOnce = options.find((option) => option.kind === 'reject_once')
@@ -552,13 +553,17 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       challengeDigest,
       decisionRequired: 'ALLOW_ONCE_OR_DENY',
       permissionPurpose: 'APPROVED_FILE_TOOL',
+      requestedRelativePaths: [requestedRelativePath],
     })
     return new Promise((resolve) => {
       state.pendingPermissions.set(permissionRequestId, { kind: 'vendor', challengeDigest, allowOnceOptionId: allowOnce[0].optionId, rejectOptionId: rejectOnce?.optionId, resolve, consumed: false })
     })
   }
 
-  private requestWritePermission(state: RuntimeSessionState, preflight: { targetDigest: string; contentDigest: string }): Promise<boolean> {
+  private requestWritePermission(
+    state: RuntimeSessionState,
+    preflight: { relativePath: string; targetDigest: string; contentDigest: string },
+  ): Promise<boolean> {
     state.writeSequence += 1
     const writeSequence = state.writeSequence
     const challengeDigest = digestJson({
@@ -577,6 +582,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
       challengeDigest,
       decisionRequired: 'ALLOW_ONCE_OR_DENY',
       permissionPurpose: 'FILE_WRITE',
+      requestedRelativePaths: [preflight.relativePath],
     })
     return new Promise((resolve) => {
       state.pendingPermissions.set(permissionRequestId, { kind: 'write', challengeDigest, resolve, consumed: false })
@@ -780,44 +786,44 @@ function clearPendingPermissions(state: RuntimeSessionState): void {
   state.pendingPermissions.clear()
 }
 
-function isApprovedVendorFileToolRequest(
+function approvedVendorFileToolTarget(
   state: RuntimeSessionState,
   params: AcpRequestPermissionParamsV1,
-): boolean {
+): string | null {
   // Kimi 0.34 asks permission after announcing the tool kind, but before it
   // publishes rawInput/locations. Bind the request to that toolCallId and use
   // the permission diff as the path-bearing evidence. Actual writes are still
   // checked independently by the workspace policy.
-  if (params.sessionId !== state.vendorSessionId) return false
+  if (params.sessionId !== state.vendorSessionId) return null
   const toolCallId = safeToolCallId(params.toolCall?.toolCallId)
   const cached = toolCallId ? state.vendorToolCalls.get(toolCallId) : undefined
   const kind = normalizedToolKind(cached?.kind)
-  if (!cached || kind !== 'edit') return false
+  if (!cached || kind !== 'edit') return null
   try {
-    const targetDigest = permissionDiffTargetDigest(state.policy, params.toolCall?.content)
-    if (!targetDigest) return false
+    const target = permissionDiffTarget(state.policy, params.toolCall?.content)
+    if (!target) return null
 
     const rawPath = fileToolInputPath(cached.rawInput)
-    if (cached.rawInput !== undefined && !rawPath) return false
-    if (rawPath && state.policy.approvedTargetDigest(rawPath) !== targetDigest) return false
+    if (cached.rawInput !== undefined && !rawPath) return null
+    if (rawPath && state.policy.approvedTargetDigest(rawPath) !== target.digest) return null
     if (
       cached.locations !== undefined &&
-      !allLocationsMatchTarget(state.policy, cached.locations, targetDigest)
+      !allLocationsMatchTarget(state.policy, cached.locations, target.digest)
     ) {
-      return false
+      return null
     }
 
     const requestKind = params.toolCall?.kind
-    if (requestKind !== undefined && normalizedToolKind(requestKind) !== kind) return false
+    if (requestKind !== undefined && normalizedToolKind(requestKind) !== kind) return null
     if (
       params.toolCall?.locations !== undefined &&
-      !allLocationsMatchTarget(state.policy, params.toolCall.locations, targetDigest)
+      !allLocationsMatchTarget(state.policy, params.toolCall.locations, target.digest)
     ) {
-      return false
+      return null
     }
-    return true
+    return target.relativePath
   } catch {
-    return false
+    return null
   }
 }
 
@@ -872,10 +878,10 @@ function allLocationsMatchTarget(
   ))
 }
 
-function permissionDiffTargetDigest(
+function permissionDiffTarget(
   policy: PreparedKimiAcpWorkspacePolicyV1,
   content: unknown,
-): string | null {
+): { digest: string; relativePath: string } | null {
   if (!Array.isArray(content)) return null
   const diffEntries = content.filter((entry) => (
     typeof entry === 'object' &&
@@ -884,14 +890,18 @@ function permissionDiffTargetDigest(
   ))
   if (diffEntries.length === 0) return null
   let targetDigest: string | null = null
+  let targetRelativePath: string | null = null
   for (const entry of diffEntries) {
     const path = (entry as { path?: unknown }).path
     if (typeof path !== 'string' || path.length === 0 || path !== path.trim()) return null
     const digest = policy.approvedTargetDigest(path)
     if (targetDigest && targetDigest !== digest) return null
     targetDigest = digest
+    targetRelativePath = policy.approvedRelativePath(path)
   }
-  return targetDigest
+  return targetDigest && targetRelativePath
+    ? { digest: targetDigest, relativePath: targetRelativePath }
+    : null
 }
 
 function releaseTransport(state: RuntimeSessionState): Promise<void> {

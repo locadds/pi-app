@@ -17,6 +17,7 @@ import {
   createXiaoguiPromptAssemblyGateV1,
   resetXiaoguiPromptAssemblyGateV1,
 } from '../worker-runtime.js'
+import { freezeCodingContextAgentPayloadV1 } from '../xiaogui-coding-extensions/context-extension.js'
 
 export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
         try {
@@ -59,11 +60,19 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
         if (!promptSession) { reply({ type: 'error', error: 'No session' }); return }
         const promptText = String(msg.text ?? '').trim()
         const alreadyStreaming = promptSession.isStreaming || st.agentTurnActive
+        if (alreadyStreaming && msg.codingContext) {
+          reply({ type: 'error', error: 'Coding context cannot be attached to a queued turn' })
+          return
+        }
         try {
+          st.promptCodingContext = msg.codingContext
+            ? freezeCodingContextAgentPayloadV1(msg.codingContext)
+            : null
           if (!alreadyStreaming) prepareXiaoguiPromptTurnV1(promptText)
           runXiaoguiPromptPreflightV1()
         } catch (error) {
           if (!alreadyStreaming) clearXiaoguiPromptTurnV1()
+          st.promptCodingContext = null
           reply({ type: 'error', error: `prompt preflight failed: ${errorMessage(error)}` })
           return
         }
@@ -145,6 +154,7 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
               if (turnCompleted) completeXiaoguiPromptTurnV1()
               else clearXiaoguiPromptTurnV1()
             }
+            st.promptCodingContext = null
             resetXiaoguiPromptAssemblyGateV1()
           }
         })()

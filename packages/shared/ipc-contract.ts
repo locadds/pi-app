@@ -44,6 +44,10 @@ import type {
   XiaoguiTaskExecutionStartOutcomeV1,
   XiaoguiTaskExecutionStartRequestV1,
 } from './xiaogui-task-execution'
+import type {
+  CodingContextSnapshotOutcomeV1,
+  CodingContextSnapshotRequestV1,
+} from './xiaogui-coding-extension-pack'
 
 // ── Workspace ──
 export interface WorkspaceOpenRequest { path?: string; awaitWorker?: boolean }
@@ -141,7 +145,12 @@ export interface ContextPreviewRequest { sessionFile: string; workspaceId: strin
 export interface ContextPreviewResponse { preview: SessionContextPreview | null }
 
 // ── Prompt ──
-export interface PromptSendRequest { sessionId: string; text: string }
+export interface PromptSendRequest {
+  sessionId: string
+  text: string
+  sessionFile?: string
+  codingContextSnapshotIds?: readonly string[]
+}
 export interface PromptSendResponse { messageId: string }
 export interface PromptSteerRequest { sessionId: string; text: string }
 export interface PromptSteerResponse { steered: boolean }
@@ -341,6 +350,10 @@ export interface IpcMethodMap {
   'workspace.ensureWorker': { request: WorkspaceEnsureWorkerRequest; response: WorkspaceEnsureWorkerResponse }
   'workspace.switch': { request: WorkspaceSwitchRequest; response: WorkspaceSwitchResponse }
   'workspace.fs.search': { request: WorkspaceFsSearchRequest; response: WorkspaceFsSearchResponse }
+  'xiaogui.coding.context.snapshot': {
+    request: CodingContextSnapshotRequestV1
+    response: CodingContextSnapshotOutcomeV1
+  }
   'session.list': { request: SessionListRequest; response: SessionListResponse }
   'session.open': { request: SessionOpenRequest; response: SessionOpenResponse }
   'session.new': { request: SessionNewRequest; response: SessionNewResponse }

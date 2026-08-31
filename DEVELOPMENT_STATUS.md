@@ -1,5 +1,123 @@
 # 小规开发阶段状态
 
+## 2026-08-31｜CODING-P1 P1 代码上下文与权限候选
+
+### 阶段状态
+
+- 状态：P1 实现、必要边界复核、聚焦测试、类型检查、完整构建、唯一一条真实 Electron 冒烟和最终双轴审查均已完成；本阶段提交推送后停止并等待人工验收
+- 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`
+- 当前分支：`agent/coding-p1-pi-extension-pack-v1`
+- P0 固定起点：`ad7564c9d53d48479bf1a384c276290285080fa2`
+- 隔离边界：未修改或合并正在施工 WORK 的工作树/分支；未合并阶段线、未发布、未制作 Portable
+
+### 本阶段目标
+
+1. 让 CODING 模式的 `@` 文件上下文从项目内相对路径形成受控快照，并由 Pi Extension 真正加入当前 Agent turn。
+2. Main 依据当前 canonical session scope 解析权威项目根，不信任 Renderer 提供的绝对根目录。
+3. 把文件写入、命令和数据外传请求转换为 TaskHub 权威的精确权限意图，提供“允许一次 / 允许本次任务中的相同规则 / 拒绝”。
+4. 验证越界、缺少精确目标、UI 超时、拒绝和重启规则恢复均 fail-closed。
+
+### 实际修改文件
+
+- 共享契约：`packages/shared/ipc-channels.ts`、`packages/shared/ipc-contract.ts`、`packages/shared/xiaogui-agent-runtime.ts`、`packages/shared/xiaogui-coding-extension-pack.ts`
+- Main 上下文链：`src/main/xiaogui/coding-extensions/context-composition.ts`、`context-ipc.ts`、`context-module.ts`、`context-module.test.ts`、`src/main/ipc/handlers/prompt.ts`、`src/main/ipc/schemas.ts`、`src/main/worker-manager.ts`、`src/main/xiaogui/index.ts`
+- Worker / Pi Extension：`src/worker/xiaogui-coding-extensions/context-extension.ts`、`context-extension.test.ts`、`src/worker/handlers/worker-handlers-turn.ts`、`src/worker/worker-port-types.ts`、`src/worker/worker-runtime.ts`
+- TaskHub 权限链：`src/main/xiaogui/coding-extensions/permission-module.ts`、`permission-module.test.ts`、`permission-ui-adapter.ts`、`safe-display-metadata.ts`、`safe-display-metadata.test.ts`、`src/main/xiaogui/task-hub/execution-orchestrator.ts`、`execution-orchestrator.test.ts`、`runtime-composition.ts`
+- Kimi ACP 精确目标：`src/main/xiaogui/agent-runtime/acp/workspace-policy.ts`、`src/main/xiaogui/agent-runtime/kimi-adapter.ts`、`kimi-adapter.test.ts`
+- Renderer 上下文：`src/renderer/src/features/composer/attachments.tsx`、`coding-context-status.ts`、`coding-context-status.test.ts`、`composer.tsx`、`use-composer-file-search.ts`、`use-composer-file-search.test.tsx`、`use-composer-send.ts`、`use-composer-send.test.tsx`
+- Renderer 权限：`src/renderer/src/features/extension-ui/coding-permission-dialog.tsx`、`coding-permission-dialog.test.tsx`、`extension-ui-host.tsx`、`src/renderer/src/lib/extension-ui-channel.ts`、`extension-ui-channel.test.ts`、`src/renderer/src/stores/extension-ui-store.ts`、`src/renderer/src/stores/__tests__/extension-ui-store.test.ts`
+- Direct Extension UI 与来源封套：`src/main/direct-extension-ui.ts`、`src/main/direct-extension-ui.test.ts`、`src/main/worker-manager-pool.ts`、`src/main/__tests__/worker-manager-extension-ui.test.ts`
+- 阶段记录：`DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. `@` 文件搜索仍只产生项目内相对路径；Renderer 只持有 canonical session address、公开摘要和一次性 `xgctx_*` 令牌，不持有 Main 的项目根或源文件全文。
+2. Main 通过 session scope 与 project resolver 解析权威根，拒绝伪造会话、绝对路径、越界路径、目录、二进制和超限内容；公开快照只有相对路径、SHA-256、字节/行数和截断摘要。
+3. Renderer 选择 `@` 文件时只记录相对来源；正式发送前才读取最新正文并生成快照。Main 对快照设置 10 分钟主动到期、最多 64 条和总计 8 MiB 的硬上限，绑定同一 canonical CODING 会话并在发送时一次性消费。
+4. Worker 的隐藏 Pi Extension 使用稳定 `context` hook，把受控 JSON 作为当前模型调用的临时 custom/user context 返回；不修改 `systemPrompt`，也不把正文追加到 Pi 会话历史。文件内容明确标记为不可信用户资料；符号服务不可用时明确使用受控文本降级，不伪装 LSP 结果。
+5. TaskHub 权限意图使用 Runtime 事件中的精确相对路径；所有操作均须至少绑定一个 Attempt manifest 已批准的路径。`COMMAND` 和 `DATA_EGRESS` 还必须携带只在 Main/TaskHub 内部流转的 `sha256:` 动作摘要，展示摘要不能替代权威动作身份。
+6. Kimi ACP 的厂商 edit 权限和主机写入权限均携带精确相对目标；工作区策略继续在实际读写时独立校验文件身份、摘要和 Attempt 工作树边界。
+7. Main 统一的展示元数据边界会在原始值归一化前拒绝控制字符，并拒绝字符串任意位置的 Windows/UNC/POSIX 绝对路径、`file:` URL、Authorization/Bearer/token 等凭据形态及 URL userinfo；原始命令、凭据、绝对路径和动作摘要均不进入 Renderer 公开契约。
+8. Task 级规则按 Attempt + 操作 + 精确路径 + 私有动作摘要持久化；重启后只复用完全相同的规则。UI 不可用或 55/60 秒超时均自动拒绝并清理悬挂对话框。
+9. Renderer 权限请求改为 FIFO 队列，并发 Attempt 不再互相覆盖；Direct Extension UI 在超时或窗口发送异常时先清理 pending/listener，再安全失败。
+10. Main 给 Worker 转发请求强制覆盖为 `origin: worker`；Renderer 只接受 Main 直发、编号格式与完整 Prompt 契约均通过校验的 `xiaogui-direct` Coding 权限弹窗，Worker 无法冒充权威权限界面。
+
+### 未完成内容
+
+- 尚未接入真实 LSP 服务；当前按冻结规格明确降级为受控文本搜索/上下文，界面显示“符号服务不可用”，不会伪装符号级结果。
+- 当前生产 Kimi Adapter 继续禁用终端，因此 `COMMAND` 由版本化契约、TaskHub 和 Scripted 事件测试证明，尚无生产 Kimi 命令执行入口；本阶段没有为验收而放宽终端白名单。
+- 当前 Kimi 本机运行时不会主动发起 `DATA_EGRESS` 工具事件；外传目标链已在 TaskHub/Renderer 聚焦测试中验证，但真实云端 Adapter 仍须在后续运行时工作包中接入。
+- P2 计划卡、Todo、真实 Diff/验证审阅和 P3 检查点/角色配置未施工。
+- 未运行全量测试、未合并、未发布、未制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 没有产品或架构偏差：继续复用 Pi Extension、Renderer Extension UI、TaskHub 和既有 Agent Runtime；未复制 Claude Code 源码，未引入第二套 Agent Loop、权限系统或状态机。
+- 规格允许 LSP 不可用时明确降级；本阶段选择 `CONTROLLED_TEXT_FALLBACK`，而不是引入新的 LSP 依赖或伪造符号结果。
+- 命令与外传的生产 Adapter 触发尚未开放，这是既有 Kimi 终端禁用和云端运行时未接入的真实边界，已明确记录而非宣称生产可用。
+- WORK、DESIGN、Univer Office Surface、DOCX HTML 和 PDF 降级路径均未修改。
+
+### 测试命令和测试结果
+
+#### 聚焦测试
+
+```bat
+set TEMP=D:\CodexTemp\xiaogui-coding-p1-evidence\final-tmp
+set TMP=D:\CodexTemp\xiaogui-coding-p1-evidence\final-tmp
+set NODE_OPTIONS=--max-old-space-size=4096
+node_modules\.bin\vitest.cmd run packages/shared/xiaogui-coding-extension-pack.test.ts packages/shared/xiaogui-agent-runtime.test.ts src/worker/xiaogui-coding-extensions/extension-pack.test.ts src/worker/xiaogui-coding-extensions/context-extension.test.ts src/main/xiaogui/task-hub/coding-extension-seam-bridge.test.ts src/main/xiaogui/coding-extensions/context-module.test.ts src/renderer/src/features/composer/coding-context-status.test.ts src/renderer/src/features/composer/use-composer-file-search.test.tsx src/renderer/src/features/composer/use-composer-send.test.tsx src/main/xiaogui/coding-extensions/permission-module.test.ts src/renderer/src/features/extension-ui/coding-permission-dialog.test.tsx src/main/xiaogui/task-hub/execution-orchestrator.test.ts src/main/xiaogui/agent-runtime/kimi-adapter.test.ts src/main/xiaogui/agent-runtime/runtime-host.test.ts src/main/direct-extension-ui.test.ts src/renderer/src/stores/__tests__/extension-ui-store.test.ts src/renderer/src/lib/extension-ui-channel.test.ts --maxWorkers=1 --reporter=dot
+```
+
+结果：`17 test files passed`，`101 tests passed`，退出码 `0`。覆盖权威项目根、发送前读取、全文私有注入、快照容量/主动到期、一次性会话绑定、越界拒绝、精确文件目标、私有动作摘要、安全展示元数据、权限 FIFO、超时清理、规则重启恢复和 Kimi ACP 精确路径。原始日志：`D:\CodexTemp\xiaogui-coding-p1-evidence\focused-tests.log`。
+
+最终工程复核只补跑 5 个直接相关文件，没有重复上述 101 项或全量测试：
+
+```bat
+node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/safe-display-metadata.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts src/main/__tests__/worker-manager-extension-ui.test.ts src/renderer/src/lib/extension-ui-channel.test.ts src/worker/xiaogui-coding-extensions/context-extension.test.ts
+```
+
+结果：`5 test files passed`，`29 tests passed`，退出码 `0`。新增覆盖敏感摘要绕过、Worker 来源冒充、Renderer 完整契约校验，以及正文只进入临时 user-context、不进入 systemPrompt。原始日志：`D:\CodexTemp\xiaogui-coding-p1-evidence\boundary-tests.log`。
+
+最终审查只针对新增的 POSIX 绝对路径边界补跑两个直接相关文件：
+
+```bat
+node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/safe-display-metadata.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts
+```
+
+结果：`2 test files passed`，`21 tests passed`，退出码 `0`；覆盖单段路径以及 `> ; | &` 等 shell 分隔符后的绝对路径。原始日志：`D:\CodexTemp\xiaogui-coding-p1-evidence\sanitizer-final.log`。最终 Standards/Spec 复核结果均为 `APPROVE`，且确认未扩展至 P2、P3 或 WORK。
+
+#### 类型检查、构建与差异检查
+
+```powershell
+npm run typecheck
+npm run build
+git diff --check
+```
+
+结果：最终边界修复后的类型检查和完整构建退出码均为 `0`；主进程、Preload、Renderer、Office Viewer、Office Gateway 均构建成功。构建仅保留既有动态导入/大 chunk 提示。最终构建日志：`D:\CodexTemp\xiaogui-coding-p1-evidence\build-final.log`。差异检查在最终暂存前执行。
+
+#### 真实 Electron 冒烟
+
+- 只执行一条桌面冒烟：`node D:\CodexTemp\xiaogui-coding-p1-evidence\p1-electron-turn-smoke.mjs`，退出码 `0`；没有另增 E2E 测试文件。
+- 本机临时 OpenAI-compatible 模型桩收到且只收到一次真实 Electron Main → Worker → Pi Extension 发出的 Agent 请求；请求中包含 `src/answer.ts` 的当前正文和受控上下文标记，并确认正文位于 user-role context、systemPrompt 不含正文。
+- Main IPC 公开快照不含源文本和项目绝对根；结构化证据只保存布尔检查、相对路径、SHA-256 和字节数，不保存请求正文。
+- 真实 Renderer 先拒绝一份 `origin: worker` 的伪造 Coding 权限请求，再显示 Main 直发的权限对话框；界面精确展示 `src/answer.ts` 和三个冻结决定，并实际点击完成“允许一次”。
+- 结构化证据：`D:\CodexTemp\xiaogui-coding-p1-evidence\p1-electron-smoke.json`。
+- 可见证据：`D:\CodexTemp\xiaogui-coding-p1-evidence\p1-permission-dialog.png`。
+
+### 已知风险
+
+1. 快照在正式发送前才生成并立即消费；若进程在两步之间异常中断，未消费快照仍会在 10 分钟后主动删除，并受 64 条/8 MiB 总量硬上限保护。
+2. 单次上下文总量上限 1 MiB、最多 20 个来源；大文件会明确标记截断，不能视为已读取全文。
+3. 当前快照正文使用 UTF-8 文本回退；包含 NUL 的二进制会拒绝，但其他非 UTF-8 文本可能出现替换字符，后续 LSP/编码探测接入前不得声称语义完整。
+4. Permission Task Rule 持久化在本机 TaskHub SQLite，仅绑定 Attempt、精确路径和私有动作摘要；没有新增账号或多人身份语义。
+5. 当前生产 Kimi 仍未开放终端，云端 Adapter 也未接入外传事件，因此 `COMMAND` / `DATA_EGRESS` 的真实生产触发仍是后续运行时工作包边界。
+6. 唯一 Electron 冒烟使用本机模型桩验证传输与 UI 接缝，不代表任一真实云模型的生成质量或语义能力。
+
+### 下一阶段计划
+
+本阶段双审和提交推送完成后停止，等待人工验收。人工验收通过后才进入 P2：只读计划阶段、计划卡修改/批准、Attempt 内 Todo、真实工作树 Diff 与验证证据；不提前施工 P3。
+
 ## 2026-08-31｜CODING-P1 P0 六个受控扩展契约与三接缝 Spike
 
 ### 阶段状态

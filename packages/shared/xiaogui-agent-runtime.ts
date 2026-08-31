@@ -268,7 +268,13 @@ export interface RuntimePermissionRequestV1 {
   sequence: number
   challengeDigest: RuntimeDigestV1 | string
   decisionRequired: 'ALLOW_ONCE_OR_DENY'
-  permissionPurpose?: 'APPROVED_FILE_TOOL' | 'FILE_WRITE'
+  permissionPurpose?: 'APPROVED_FILE_TOOL' | 'FILE_WRITE' | 'COMMAND' | 'DATA_EGRESS'
+  /** Exact requested targets; TaskHub verifies these against the Attempt manifest. */
+  requestedRelativePaths?: readonly string[]
+  /** Safe display metadata only. Raw commands and credentials remain private. */
+  actionDigest?: string
+  commandSummary?: string
+  egressDestination?: string
 }
 
 export interface RuntimeSendRequestV1 {

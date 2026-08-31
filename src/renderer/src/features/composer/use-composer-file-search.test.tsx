@@ -101,7 +101,8 @@ describe('useComposerFileSearch', () => {
     await act(async () => vi.advanceTimersByTime(120))
     await act(async () => Promise.resolve())
 
-    act(() => result.current.acceptSelected())
+    await result.current.acceptSelected()
+    await act(async () => Promise.resolve())
     expect(editor.textContent).toBe('@src/')
     expect(onAccepted).toHaveBeenCalled()
 
@@ -114,4 +115,5 @@ describe('useComposerFileSearch', () => {
       maxResults: 20,
     })
   })
+
 })

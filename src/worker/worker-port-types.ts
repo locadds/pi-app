@@ -1,10 +1,13 @@
 /** Messages from Main → Worker utilityProcess. */
+import type { CodingContextAgentPayloadV1 } from '@shared/xiaogui-coding-extension-pack'
+
 export type WorkerIncomingMessage = {
   type?: string
   requestId?: string
   cwd?: string
   sdkPath?: string | null
   text?: string
+  codingContext?: CodingContextAgentPayloadV1
   options?: unknown
   sessionFile?: string
   offset?: number

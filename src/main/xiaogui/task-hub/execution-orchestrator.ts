@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
+import { isAbsolute, posix, win32 } from 'node:path'
 
 import type {
   AgentFailureSignalV1,
@@ -12,6 +13,8 @@ import type {
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
+import type { CodingPermissionIntentV1 } from '@shared/xiaogui-coding-extension-pack'
+import { safeCodingPermissionDisplayMetadata } from '../coding-extensions/safe-display-metadata'
 import { XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 } from '@shared/xiaogui-task-execution'
 import type {
   XiaoguiTaskExecutionStartBatchItemOutcomeV1,
@@ -29,6 +32,7 @@ import type { CollaborationHubApplicationV1 } from './application'
 import type { StageAttemptExecutionInputV1 } from './attempt-execution-input'
 import type {
   AttemptFileGrantV1,
+  AttemptFileManifestV1,
   AttemptFileScopeResolverV1,
 } from './attempt-workspace'
 import { PRIVATE_RUNTIME_PAYLOAD_MAX_BYTES } from './private-payload-vault'
@@ -85,6 +89,14 @@ export interface TaskExecutionInputStageV1 {
   stageAttemptInput(input: StageAttemptExecutionInputV1): unknown
 }
 
+export interface TaskExecutionPermissionPortV1 {
+  decide(intent: CodingPermissionIntentV1): Promise<'ALLOW_ONCE' | 'DENY'>
+}
+
+export interface TaskExecutionPermissionScopePortV1 {
+  manifest(attemptId: string): AttemptFileManifestV1 | undefined
+}
+
 export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly dbPath: string
   readonly application: CollaborationHubApplicationV1
@@ -93,6 +105,8 @@ export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly runtimeMonitor?: RuntimeOutcomeMonitorV1
   readonly runtimeBindingRestorer?: (input: { attemptId: AttemptId; runtimeSessionId: string }) => Promise<{ ok: true } | { ok: false; reasonCode: string }>
   readonly verificationCoordinator?: TaskVerificationCoordinatorV1
+  readonly permissionModule?: TaskExecutionPermissionPortV1
+  readonly permissionScope?: TaskExecutionPermissionScopePortV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
 }
@@ -600,7 +614,7 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     current: XiaoguiTaskExecutionStartResultV1,
     runtimeSessionId: string,
   ): RuntimePermissionDecisionFactoryV1 {
-    return (event) => {
+    return async (event) => {
       assertPermissionEventScope(operation, current, runtimeSessionId, event)
       const binding = {
         domain: 'xiaogui.task-execution.scope-approval-proof.v1',
@@ -610,9 +624,14 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
         permissionRequestId: event.permissionRequestId,
         challengeDigest: event.challengeDigest,
         scope: event.scope,
+        requestedRelativePaths: event.requestedRelativePaths ?? [],
+        actionDigest: event.actionDigest ?? null,
+        commandSummary: event.commandSummary ?? null,
+        egressDestination: event.egressDestination ?? null,
       }
       const decisionKey = hashHex(JSON.stringify(binding))
-      if (event.permissionPurpose !== 'APPROVED_FILE_TOOL' && event.permissionPurpose !== 'FILE_WRITE') {
+      const permissionOperation = runtimePermissionOperation(event.permissionPurpose)
+      if (!permissionOperation) {
         return {
           type: 'DENY',
           permissionRequestId: event.permissionRequestId,
@@ -621,6 +640,48 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
           scope: event.scope,
           runtimeSessionId,
           reasonCode: 'UNAPPROVED_PERMISSION_PURPOSE',
+        }
+      }
+      const permissionManifest = this.options.permissionScope?.manifest(current.attempt.attemptId)
+      if (!permissionManifest || permissionManifest.grants.length === 0) {
+        return {
+          type: 'DENY',
+          permissionRequestId: event.permissionRequestId,
+          challengeDigest: event.challengeDigest,
+          decisionRequestId: `xhbrpd_${decisionKey.slice(0, 48)}`,
+          scope: event.scope,
+          runtimeSessionId,
+          reasonCode: 'PERMISSION_SCOPE_UNAVAILABLE',
+        }
+      }
+      const permissionIntent = runtimePermissionIntent(
+        event,
+        permissionOperation,
+        permissionManifest,
+        current.attempt.attemptId,
+        `sha256:${decisionKey}`,
+      )
+      if (!permissionIntent) {
+        return {
+          type: 'DENY',
+          permissionRequestId: event.permissionRequestId,
+          challengeDigest: event.challengeDigest,
+          decisionRequestId: `xhbrpd_${decisionKey.slice(0, 48)}`,
+          scope: event.scope,
+          runtimeSessionId,
+          reasonCode: 'PERMISSION_REQUEST_INVALID',
+        }
+      }
+      const moduleDecision = await this.options.permissionModule?.decide(permissionIntent) ?? 'DENY'
+      if (moduleDecision !== 'ALLOW_ONCE') {
+        return {
+          type: 'DENY',
+          permissionRequestId: event.permissionRequestId,
+          challengeDigest: event.challengeDigest,
+          decisionRequestId: `xhbrpd_${decisionKey.slice(0, 48)}`,
+          scope: event.scope,
+          runtimeSessionId,
+          reasonCode: 'USER_DENIED_OR_PERMISSION_MODULE_UNAVAILABLE',
         }
       }
       return {
@@ -732,6 +793,82 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       this.saga.advance(operation.operation_id, 'OUTCOME_UNKNOWN', { lastSafeCode: 'OUTCOME_UNKNOWN' })
     }
   }
+}
+
+function runtimePermissionOperation(
+  purpose: RuntimePermissionRequestEventV1['permissionPurpose'],
+): CodingPermissionIntentV1['operation'] | null {
+  if (purpose === 'APPROVED_FILE_TOOL') return 'WRITE'
+  if (purpose === 'FILE_WRITE') return 'WRITE'
+  if (purpose === 'COMMAND') return 'COMMAND'
+  if (purpose === 'DATA_EGRESS') return 'DATA_EGRESS'
+  return null
+}
+
+function runtimePermissionIntent(
+  event: RuntimePermissionRequestEventV1,
+  operation: CodingPermissionIntentV1['operation'],
+  manifest: AttemptFileManifestV1,
+  attemptId: string,
+  requestDigest: string,
+): CodingPermissionIntentV1 | null {
+  const rawPaths = event.requestedRelativePaths ?? []
+  if (rawPaths.length > 256) return null
+  const relativePaths: string[] = []
+  for (const rawPath of rawPaths) {
+    const normalized = normalizePermissionRelativePath(rawPath)
+    if (!normalized) return null
+    relativePaths.push(normalized)
+  }
+  const uniquePaths = [...new Set(relativePaths)].sort()
+  if (uniquePaths.length === 0) return null
+  const grants = new Map(
+    manifest.grants.map((grant) => [normalizePermissionRelativePath(grant.relativePath), grant]),
+  )
+  for (const relativePath of uniquePaths) {
+    const grant = grants.get(relativePath)
+    if (!grant) return null
+    if (operation === 'WRITE' && grant.operation === 'DELETE') return null
+  }
+  const commandSummary = safeCodingPermissionDisplayMetadata(event.commandSummary)
+  const egressDestination = safeCodingPermissionDisplayMetadata(event.egressDestination)
+  const actionDigest = safePermissionActionDigest(event.actionDigest)
+  if (operation === 'COMMAND' && (!actionDigest || !commandSummary || egressDestination)) return null
+  if (operation === 'DATA_EGRESS' && (!actionDigest || !egressDestination || commandSummary)) return null
+  if ((operation === 'READ' || operation === 'WRITE') && (actionDigest || commandSummary || egressDestination)) {
+    return null
+  }
+  return {
+    schemaVersion: 1,
+    attemptId,
+    requestDigest,
+    operation,
+    relativePaths: uniquePaths,
+    dataEgress: operation === 'DATA_EGRESS' ? 'REQUESTED' : 'NONE',
+    ...(actionDigest ? { actionDigest } : {}),
+    ...(commandSummary ? { commandSummary } : {}),
+    ...(egressDestination ? { egressDestination } : {}),
+  }
+}
+
+function normalizePermissionRelativePath(value: string): string | null {
+  if (
+    typeof value !== 'string' ||
+    !value ||
+    value !== value.trim() ||
+    isAbsolute(value) ||
+    win32.isAbsolute(value)
+  ) return null
+  const normalized = posix.normalize(value.replace(/\\/g, '/'))
+  if (!normalized || normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
+    return null
+  }
+  return normalized
+}
+
+
+function safePermissionActionDigest(value: string | undefined): string | undefined {
+  return value && /^sha256:[a-f0-9]{64}$/i.test(value) ? value.toLowerCase() : undefined
 }
 
 class SqliteTaskExecutionSagaStoreV1 {

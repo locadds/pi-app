@@ -77,6 +77,7 @@ export function Composer() {
   const slashPopoverAnchorRef = useRef<HTMLDivElement>(null)
   const currentWorkspace = useUIStore((s) => s.currentWorkspace)
   const currentSessionId = useUIStore((s) => s.currentSessionId)
+  const sessions = useUIStore((s) => s.sessions)
   const historySessionFile = useUIStore((s) => s.historySessionFile)
   const subagentSessionGroup = useUIStore((s) => s.subagentSessionGroup)
   const workerLiveSnapshot = useUIStore((s) => s.workerLiveSnapshot)
@@ -117,6 +118,12 @@ export function Composer() {
     ],
   )
   const canSendMessages = canCompose && !sessionPreview && !modeSwitching
+  const codingContextAddress = useMemo(() => {
+    if (mode !== 'CODING' || !currentSessionId) return null
+    const scope = sessions.find((session) => session.sessionId === currentSessionId)?.canonicalScope
+    if (!scope || scope.sessionMode !== 'CODING') return null
+    return { projectId: scope.projectId, sessionKey: scope.sessionKey }
+  }, [currentSessionId, mode, sessions])
   const extensionDialogOpen = useExtensionUIStore((s) => s.activePending != null)
   const sessionChrome = useSessionChrome({ extensionDialogOpen })
   const isRunning = sessionChrome.canStop || sessionChrome.showSpinner
@@ -258,6 +265,8 @@ export function Composer() {
     revision: editorRevision,
     workspaceRoot: currentWorkspace,
     enabled: canSendMessages && voiceState !== 'recording' && voiceState !== 'transcribing',
+    codingContextEnabled: mode === 'CODING',
+    codingContextAddress,
     onAccepted: updateFromEditor,
   })
 

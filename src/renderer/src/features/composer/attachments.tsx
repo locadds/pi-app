@@ -35,6 +35,9 @@ export interface AttachmentMeta {
   line?: number
   endLine?: number
   snippet?: string
+  codingContextStatus?: 'READY' | 'SYMBOL_SERVICE_UNAVAILABLE' | 'PENDING_SESSION' | 'SNAPSHOT_FAILED'
+  /** Opaque one-turn handle. Source bytes and workspace roots stay in Main. */
+  codingContextSnapshotId?: string
   /**
    * Stable DOM / React identity for chips. Same path may appear multiple times
    * (file + line-refs, or duplicate attaches) — never use path alone as a React key.
@@ -139,12 +142,24 @@ export function createAttachmentChip(meta: AttachmentMeta): HTMLSpanElement {
   if (meta.line != null) span.dataset.attachmentLine = String(meta.line)
   if (meta.endLine != null) span.dataset.attachmentEndLine = String(meta.endLine)
   if (meta.snippet) span.dataset.attachmentSnippet = meta.snippet
+  if (meta.codingContextStatus) span.dataset.codingContextStatus = meta.codingContextStatus
+  if (meta.codingContextSnapshotId) {
+    span.dataset.codingContextSnapshotId = meta.codingContextSnapshotId
+  }
   span.className =
     meta.kind === 'line-ref' ? 'rich-attachment-chip rich-attachment-chip--line-ref' : 'rich-attachment-chip'
+  const contextStatus = meta.codingContextStatus === 'SYMBOL_SERVICE_UNAVAILABLE'
+    ? '\n符号服务不可用，已按受控文件上下文加入'
+    : meta.codingContextStatus === 'PENDING_SESSION'
+      ? '\n发送时将读取文件最新内容；符号服务不可用时使用受控文本上下文'
+    : meta.codingContextStatus === 'SNAPSHOT_FAILED'
+      ? '\n上下文快照不可用'
+      : ''
   const tooltip =
     meta.kind === 'line-ref'
-      ? `${meta.path}:${meta.line ?? ''}${meta.snippet ? `\n${meta.snippet}` : ''}`
-      : meta.path
+      ? `${meta.path}:${meta.line ?? ''}${meta.snippet ? `\n${meta.snippet}` : ''}${contextStatus}`
+      : `${meta.path}${contextStatus}`
+  span.title = tooltip
   wireDelayedTooltip(span, tooltip)
   const displayName = escapeHtml(meta.name)
   span.innerHTML =
@@ -247,6 +262,12 @@ export function serializeRichInput(el: HTMLElement): {
             ...(lineRaw ? { line: Number(lineRaw) } : {}),
             ...(endLineRaw ? { endLine: Number(endLineRaw) } : {}),
             ...(e.dataset.attachmentSnippet ? { snippet: e.dataset.attachmentSnippet } : {}),
+            ...(e.dataset.codingContextStatus
+              ? { codingContextStatus: e.dataset.codingContextStatus as AttachmentMeta['codingContextStatus'] }
+              : {}),
+            ...(e.dataset.codingContextSnapshotId
+              ? { codingContextSnapshotId: e.dataset.codingContextSnapshotId }
+              : {}),
           }
           segments.push({ type: 'file', attachment: meta })
           // Include line-ref so composer treats chips as content (send button / empty check).

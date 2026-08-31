@@ -54,6 +54,7 @@ import {
   closeOfficeSurfaceSessionsV1,
   registerOfficeSurfaceHandlersV1,
 } from './office-surface/ipc'
+import { registerCodingContextHandlersV1 } from './coding-extensions/context-ipc'
 
 let initialized = false
 
@@ -67,6 +68,7 @@ export function initXiaogui(): void {
   registerTemplateLibraryHandlersV1()
   registerDocumentReviewHandlersV1()
   registerOfficeSurfaceHandlersV1()
+  registerCodingContextHandlersV1()
   workerManager.setHostToolRequestHandler(
     createXiaoguiWorkerHostToolRouterV1({
       collaboration: createXiaoguiWorkerToolHandlerV1({

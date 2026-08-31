@@ -21,6 +21,7 @@ import type {
   WorkerSkillInfo,
   WorkerState,
 } from '@shared/worker-rpc-types'
+import type { CodingContextAgentPayloadV1 } from '@shared/xiaogui-coding-extension-pack'
 import {
   attachWorkerHandlers,
   canAcquireNewWorker,
@@ -535,8 +536,12 @@ export class WorkerManager {
     return out
   }
 
-  async sendPrompt(text: string, sessionFile?: string): Promise<void> {
-    await this.request('prompt', { text, sessionFile })
+  async sendPrompt(
+    text: string,
+    sessionFile?: string,
+    codingContext?: CodingContextAgentPayloadV1,
+  ): Promise<void> {
+    await this.request('prompt', { text, sessionFile, codingContext })
   }
   /**
    * Abort agent turn on the session's existing worker only.

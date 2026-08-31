@@ -12,6 +12,7 @@ import type {
   XiaoguiEffectivePromptDiagnosticsV1,
   XiaoguiPromptContextV1,
 } from '@shared/xiaogui-prompt-contract'
+import type { CodingContextAgentPayloadV1 } from '@shared/xiaogui-coding-extension-pack'
 import {
   activeToolNamesForPromptContextV1,
   selectXiaoguiTurnCapabilitiesV1,
@@ -40,6 +41,7 @@ import {
   type XiaoguiEffectivePromptSessionStateV1,
 } from './xiaogui-prompt/session-extension.js'
 import { freezeXiaoguiPromptContextV1 } from './xiaogui-prompt/session-binding.js'
+import { createXiaoguiCodingContextExtensionV1 } from './xiaogui-coding-extensions/context-extension.js'
 
 export type WorkerModelRuntime = Pick<
   ModelRuntime,
@@ -92,6 +94,8 @@ export type WorkerMutableState = {
   promptPreflight: (() => XiaoguiEffectivePromptSessionStateV1) | null
   promptAssemblyStatus: 'IDLE' | 'PENDING' | 'CONFIRMED' | 'FAILED'
   promptAssemblyError: string | null
+  /** Main-validated, one-turn context consumed only by the inline Pi extension. */
+  promptCodingContext: CodingContextAgentPayloadV1 | null
 }
 
 export const st: WorkerMutableState = {
@@ -124,6 +128,7 @@ export const st: WorkerMutableState = {
   promptPreflight: null,
   promptAssemblyStatus: 'IDLE',
   promptAssemblyError: null,
+  promptCodingContext: null,
 }
 
 function nextSeq(): number {
@@ -435,6 +440,9 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
               }
             },
           ),
+          ...(promptContext.mode === 'CODING'
+            ? [createXiaoguiCodingContextExtensionV1(() => st.promptCodingContext).factory]
+            : []),
         ],
         extensionsOverride: (result) => {
           const collaborationToolOptions = {

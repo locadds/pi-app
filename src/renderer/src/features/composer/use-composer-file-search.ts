@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { WorkspaceFsSearchEntry } from '@shared/ipc-contract'
+import type { SessionAddressV1 } from '@shared/xiaogui-session-scope'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { getAttachmentKind } from './attachments'
 import {
@@ -7,12 +8,15 @@ import {
   replaceComposerFileToken,
   type ComposerFileToken,
 } from './composer-file-search'
+import { resolveCodingContextStatus } from './coding-context-status'
 
 interface UseComposerFileSearchOptions {
   editorRef: React.RefObject<HTMLDivElement | null>
   revision: number
   workspaceRoot: string | null
   enabled: boolean
+  codingContextEnabled?: boolean
+  codingContextAddress?: SessionAddressV1 | null
   onAccepted: () => void
 }
 
@@ -21,6 +25,8 @@ export function useComposerFileSearch({
   revision,
   workspaceRoot,
   enabled,
+  codingContextEnabled = false,
+  codingContextAddress = null,
   onAccepted,
 }: UseComposerFileSearchOptions) {
   const [token, setToken] = useState<ComposerFileToken | null>(null)
@@ -106,7 +112,7 @@ export function useComposerFileSearch({
   }, [token])
 
   const acceptEntry = useCallback(
-    (entry: WorkspaceFsSearchEntry) => {
+    async (entry: WorkspaceFsSearchEntry) => {
       const el = editorRef.current
       const currentToken = activeToken.current
       if (!el || !currentToken) return
@@ -114,10 +120,16 @@ export function useComposerFileSearch({
         previousTokenKey.current = null
         replaceComposerFileToken(el, currentToken, `${entry.path.replace(/\/+$/, '')}/`)
       } else {
+        const codingContext = await resolveCodingContextStatus({
+          enabled: codingContextEnabled,
+          address: codingContextAddress,
+          relativePath: entry.path,
+        })
         replaceComposerFileToken(el, currentToken, {
           path: entry.path,
           name: entry.name,
           kind: getAttachmentKind(entry.name),
+          ...codingContext,
         })
       }
       onAccepted()
@@ -129,12 +141,12 @@ export function useComposerFileSearch({
         setDismissedKey(null)
       }
     },
-    [editorRef, onAccepted],
+    [codingContextAddress, codingContextEnabled, editorRef, onAccepted],
   )
 
-  const acceptSelected = useCallback(() => {
+  const acceptSelected = useCallback(async () => {
     const entry = entries[selectedIdx]
-    if (entry) acceptEntry(entry)
+    if (entry) await acceptEntry(entry)
   }, [acceptEntry, entries, selectedIdx])
 
   const show =
