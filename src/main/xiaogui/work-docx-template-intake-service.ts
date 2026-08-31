@@ -51,7 +51,6 @@ import {
   DocxSafetyErrorV1,
   inspectSafeDocxArchiveV1,
 } from './docx-safety'
-import type { WorkDocxServiceV1 } from './work-docx-service'
 import {
   parseTemplateIntakeSourceV1,
   sliceUnicode,
@@ -83,7 +82,12 @@ const MAX_PARSE_MS = 60_000
 const UNSAFE_DISPLAY_NAME = /[\/\\\u0000-\u001f\u007f-\u009f]/
 
 type TemplateIntakeDialogPortV1 = { chooseSource(): Promise<string | null> }
-type TemplateIntakeHandoffPortV1 = Pick<WorkDocxServiceV1, 'consumeTemplateIntakeHandoff'>
+type TemplateIntakeHandoffPortV1 = {
+  consumeTemplateIntakeHandoff(address: SessionAddressV1): {
+    sourcePath: string
+    templateSha256?: string
+  } | null
+}
 
 export type TemplateIntakeServiceOutcomeV1 =
   | { ok: true; value: XiaoguiWorkDocxTemplateIntakeResultV1 }
@@ -653,7 +657,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
       true,
       signal,
     )
-    if (handoff && source.sha256 !== handoff.templateSha256) {
+    if (handoff?.templateSha256 && source.sha256 !== handoff.templateSha256) {
       if (source.preparedReview) this.options.reviewRenderer?.release(source.preparedReview.manifestId)
       throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_SOURCE_CHANGED')
     }

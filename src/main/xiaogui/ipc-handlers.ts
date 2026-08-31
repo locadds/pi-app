@@ -28,7 +28,10 @@ import { readGuardStatus } from './guard-status'
 import { ensureDesignExtensionDeployed } from './design-extension-deploy'
 import type { ExecutionPhase, XiaoguiMode } from './config'
 import { sessionScopeResolverV1 } from './scope-service'
-import { getDefaultWorkDocxTemplateIntakeServiceV1 } from './work-docx-template-intake-composition'
+import {
+  chooseTemplateIntakeSourceForWorkspaceV1,
+  getDefaultWorkDocxTemplateIntakeServiceV1,
+} from './work-docx-template-intake-composition'
 import { readSessionMetaFromFile } from '../session-file-meta'
 import { normalizeSessionKey } from '../worker-session-key'
 import { hasPendingDirectExtensionUI, requestDirectExtensionUI } from '../direct-extension-ui'
@@ -78,6 +81,10 @@ const DirectTemplateReviewOpenSchema = z.object({
   sessionFile: z.string().trim().min(1).max(4_096),
   reportId: z.string().trim().min(1).max(160),
 })
+
+const DirectTemplateIntakeSourceChooseSchema = z.object({
+  workspaceRoot: z.string().trim().min(1).max(4_096),
+}).strict()
 
 const DirectReviewRangeSchema = z
   .object({
@@ -221,6 +228,12 @@ export function registerXiaoguiHandlers(): void {
   registerHandler('ipc:xiaogui.sidecar.status', async () => {
     return xiaogui.status()
   })
+
+  registerHandlerWithSchema(
+    'ipc:xiaogui.work.template-intake.source.choose',
+    DirectTemplateIntakeSourceChooseSchema,
+    async ({ workspaceRoot }) => chooseTemplateIntakeSourceForWorkspaceV1(workspaceRoot),
+  )
 
   registerHandlerWithSchema(
     'ipc:xiaogui.work.template-intake.review.open',

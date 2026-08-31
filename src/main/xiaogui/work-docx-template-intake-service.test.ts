@@ -77,6 +77,35 @@ function lookup(): SessionScopeLookupV1 {
 }
 
 describe('WORK 普通成品 Word 整理最小闭环', () => {
+  it('优先消费主进程暂存文档且不再次打开选择框', async () => {
+    const root = await fixtureRoot()
+    const sourcePath = join(root, '直接选择.docx')
+    await writeFile(sourcePath, await makeDocx())
+    const chooseSource = vi.fn(async () => null)
+    const store = new WorkDocxTemplateIntakeStoreV1(join(root, 'private', 'direct.sqlite'))
+    const service = new WorkDocxTemplateIntakeServiceV1({
+      lookup: lookup(),
+      dialogs: { chooseSource },
+      handoffs: { consumeTemplateIntakeHandoff: vi.fn(() => ({ sourcePath })) },
+      store,
+      semanticParser: vi.fn(async () => ({
+        mainText: '项目概况 联系人：张三 电话：13800000000 表格字段',
+        headerText: '项目页眉',
+        footerText: '',
+        tableCount: 1,
+        warningCount: 0,
+      })),
+    })
+
+    const started = await service.execute(ADDRESS, { action: 'START', ...COMMON })
+
+    expect(started.ok && started.value.kind).toBe(
+      'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_ANALYSIS_REQUIRED',
+    )
+    expect(chooseSource).not.toHaveBeenCalled()
+    service.close()
+  })
+
   it('安全门先于语义解析，表格计数不一致时降级为无法对齐', async () => {
     const semantic = vi.fn(async () => ({
       mainText: '项目概况 联系人：张三 电话：13800000000 表格字段',

@@ -11,18 +11,17 @@ import type {
   TemplateLibraryUsageV1,
 } from '@shared/xiaogui-template-library'
 import { ipcClient } from '@renderer/lib/ipc-client'
+import { submitComposerPrompt } from '@renderer/lib/composer-quick-submit'
 import { TemplateLibraryView } from './TemplateLibraryView'
 
 vi.mock('@renderer/lib/ipc-client', () => ({
   ipcClient: { invoke: vi.fn() },
 }))
 
-vi.mock('@renderer/stores/ui-store', () => ({
-  useUIStore: (selector: (state: { setComposerPrefill: (value: string) => void }) => unknown) =>
-    selector({ setComposerPrefill: vi.fn() }),
-}))
+vi.mock('@renderer/lib/composer-quick-submit', () => ({ submitComposerPrompt: vi.fn() }))
 
 const invoke = vi.mocked(ipcClient.invoke)
+const submit = vi.mocked(submitComposerPrompt)
 const manifestId = '8a11fa90-09dc-40da-aa18-3f1283350618'
 const version = {
   versionId: 'version-1',
@@ -79,6 +78,7 @@ const fallbackPreview: TemplateLibraryPreviewV1 = {
 
 beforeEach(() => {
   invoke.mockReset()
+  submit.mockReset()
   invoke.mockImplementation(async (method) => {
     if (method === 'xiaogui.templateLibrary.configuration.get') return { configured: true }
     if (method === 'xiaogui.templateLibrary.list') return list
@@ -96,6 +96,20 @@ afterEach(() => {
 })
 
 describe('TemplateLibraryView preview seam', () => {
+  it('选择历史模板后直接进入生成对话且不暴露内部编号', async () => {
+    const user = userEvent.setup()
+    render(<TemplateLibraryView onBack={vi.fn()} />)
+
+    await screen.findByText('项目周报模板')
+    await user.click(screen.getByRole('button', { name: '使用最新版' }))
+
+    expect(submit).toHaveBeenCalledWith(
+      '使用本机模板库中的“项目周报模板”第 1 版生成新文档，先把需要填写的内容列给我确认',
+    )
+    expect(submit.mock.calls[0]![0]).not.toContain('entry-1')
+    expect(submit.mock.calls[0]![0]).not.toContain('version-1')
+  })
+
   it('preserves tag filtering and opens preview from a version record with release on close', async () => {
     const user = userEvent.setup()
     render(<TemplateLibraryView onBack={vi.fn()} />)

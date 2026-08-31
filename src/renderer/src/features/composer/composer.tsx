@@ -63,6 +63,7 @@ import {
   canPreserveComposerSegments,
   switchModePreservingComposerDraftV1,
 } from './mode-recommendation-draft'
+import { onComposerQuickSubmit } from '@renderer/lib/composer-quick-submit'
 
 export function Composer() {
   const { t } = useTranslation()
@@ -272,6 +273,16 @@ export function Composer() {
     showComposerStop,
     isRunning,
   })
+
+  useEffect(
+    () =>
+      onComposerQuickSubmit((prompt) => {
+        if (!canSendMessages) return
+        setContent(prompt)
+        window.setTimeout(() => void sendCurrent(), 0)
+      }),
+    [canSendMessages, sendCurrent, setContent],
+  )
 
   const attachmentHandlers = useComposerAttachments({
     editorRef,

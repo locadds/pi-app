@@ -1,13 +1,17 @@
 import { app, BrowserWindow, dialog, type OpenDialogOptions } from 'electron'
-import { join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 
 import { sessionScopeResolverV1 } from './scope-service'
 import { getDefaultWorkDocxServiceV1 } from './work-docx-ipc'
 import { WorkDocxTemplateIntakeServiceV1 } from './work-docx-template-intake-service'
 import { WorkDocxTemplateIntakeStoreV1 } from './work-docx-template-intake-store'
 import { getDefaultDocumentReviewRendererV1 } from './work-document-review-renderer-composition'
+import { opaqueScopeIdDeriverV1 } from './scope-derive'
+import type { SessionAddressV1 } from '@shared/xiaogui-session-scope'
 
 let defaultService: WorkDocxTemplateIntakeServiceV1 | null = null
+const stagedSourceByProject = new Map<string, { sourcePath: string; stagedAt: number }>()
+const STAGED_SOURCE_TTL_MS = 15 * 60 * 1000
 
 async function chooseSource(): Promise<string | null> {
   const options: OpenDialogOptions = {
@@ -22,11 +26,37 @@ async function chooseSource(): Promise<string | null> {
   return result.canceled ? null : (result.filePaths[0] ?? null)
 }
 
+function consumeStagedSource(address: SessionAddressV1): { sourcePath: string } | null {
+  const staged = stagedSourceByProject.get(address.projectId)
+  if (!staged) return null
+  stagedSourceByProject.delete(address.projectId)
+  if (Date.now() - staged.stagedAt > STAGED_SOURCE_TTL_MS) return null
+  return { sourcePath: staged.sourcePath }
+}
+
+export async function chooseTemplateIntakeSourceForWorkspaceV1(
+  workspaceRoot: string,
+): Promise<{ cancelled: true } | { cancelled: false; fileDisplayName: string }> {
+  const selectedPath = await chooseSource()
+  if (!selectedPath) return { cancelled: true }
+  if (!['.doc', '.docx'].includes(extname(selectedPath).toLowerCase())) {
+    throw new Error('TEMPLATE_INTAKE_INPUT_INVALID')
+  }
+  const projectId = opaqueScopeIdDeriverV1.deriveProject(workspaceRoot).projectId
+  stagedSourceByProject.set(projectId, { sourcePath: selectedPath, stagedAt: Date.now() })
+  return { cancelled: false, fileDisplayName: basename(selectedPath) }
+}
+
 export function getDefaultWorkDocxTemplateIntakeServiceV1(): WorkDocxTemplateIntakeServiceV1 {
   defaultService ??= new WorkDocxTemplateIntakeServiceV1({
     lookup: sessionScopeResolverV1,
     dialogs: { chooseSource },
-    handoffs: getDefaultWorkDocxServiceV1(),
+    handoffs: {
+      consumeTemplateIntakeHandoff(address) {
+        return consumeStagedSource(address)
+          ?? getDefaultWorkDocxServiceV1().consumeTemplateIntakeHandoff(address)
+      },
+    },
     store: new WorkDocxTemplateIntakeStoreV1(
       join(
         app.getPath('userData'),
@@ -45,4 +75,5 @@ export function getDefaultWorkDocxTemplateIntakeServiceV1(): WorkDocxTemplateInt
 export function closeDefaultWorkDocxTemplateIntakeServiceV1(): void {
   defaultService?.close()
   defaultService = null
+  stagedSourceByProject.clear()
 }

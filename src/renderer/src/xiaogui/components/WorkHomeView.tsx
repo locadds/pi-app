@@ -1,15 +1,16 @@
 /**
  * WORK 模式首屏视图（小规 Agent · WORK 模式专用）。
  *
- * 定位：轻量引导面板——WORK 模式以自然语言对话为入口。用户在常驻对话框
- * 直接说明需求，由小规选择已接入的能力执行；需要选择资料、确认范围或
- * 展示结果时，界面才出现卡片或对话框。本页只说明用法，不提供直接执行任务的
- * 功能按钮，也不宣称未接入的能力。示例快捷项只把自然语言填入对话框。
+ * 定位：轻量业务入口。三个快捷项负责完成必要的本机选择，再把无绝对路径的
+ * 自然语言请求交给常驻 Composer；后续分析仍由 WORK 会话及其受控工具完成。
  *
  * 仅在 WORK 模式下呈现；其他模式渲染占位提示（与 ProjectInspectView 一致）。
  */
 
 import { useState } from 'react'
+import { activateWorkspace } from '@renderer/lib/activate-workspace'
+import { submitComposerPrompt } from '@renderer/lib/composer-quick-submit'
+import { ipcClient } from '@renderer/lib/ipc-client'
 import { useUIStore } from '@renderer/stores/ui-store'
 import { useXiaoguiStore } from '../stores/xiaogui-store'
 import { TemplateLibraryView } from './TemplateLibraryView'
@@ -17,26 +18,134 @@ import { TemplateLibraryView } from './TemplateLibraryView'
 /** 朱砂红——与 ModeSelector / ProjectInspectView 保持同一强调色。 */
 const ACCENT = '#c0392b'
 
-/** 示例提示词：只覆盖当前对话能力，不暗示尚未接通的自然语言工具调用。 */
-const EXAMPLE_PROMPTS: { title: string; prompt: string }[] = [
+type QuickActionId = 'FOLDER' | 'DOCUMENT' | 'TEMPLATE'
+
+const QUICK_ACTIONS: { id: QuickActionId; title: string; description: string; ariaLabel: string }[] = [
   {
+    id: 'FOLDER',
     title: '整理资料',
-    prompt: '帮我看看当前目录里有哪些文件，按类型归类列一份清单',
+    description: '选择文件夹后，按类型归类并概括其中资料',
+    ariaLabel: '选择文件夹并整理资料',
   },
   {
+    id: 'DOCUMENT',
     title: '整理普通文档',
-    prompt: '把我选择的普通成品文档整理成可复用模板，先给我一份候选内容报告',
+    description: '选择 DOC 或 DOCX，开始只读分析和模板整理',
+    ariaLabel: '选择普通文档并开始分析',
   },
   {
+    id: 'TEMPLATE',
     title: '按模板生成',
-    prompt: '按我选择的文档模板，根据刚才的资料生成新文档，先把要填的内容列给我确认',
+    description: '从本机模板库选择历史模板和版本',
+    ariaLabel: '从历史模板生成文档',
   },
 ]
 
+type FolderEntry = {
+  name: string
+  path: string
+  isDirectory: boolean
+}
+
+const INVENTORY_LIMIT = 200
+const DIRECTORY_LIMIT = 40
+const DIRECTORY_DEPTH_LIMIT = 4
+const SKIPPED_DIRECTORIES = new Set(['node_modules', '.git'])
+
+function displayName(path: string): string {
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '所选资料'
+}
+
+function pathDepth(path: string): number {
+  return path === '.' ? 0 : path.split('/').filter(Boolean).length
+}
+
+async function collectFolderInventory(workspaceRoot: string): Promise<string[]> {
+  const queue = ['.']
+  const rows: string[] = []
+  let visitedDirectories = 0
+  while (queue.length > 0 && rows.length < INVENTORY_LIMIT && visitedDirectories < DIRECTORY_LIMIT) {
+    const relativeDirectory = queue.shift()!
+    visitedDirectories += 1
+    const result = await ipcClient.invoke('workspace.fs.listDir', {
+      workspaceRoot,
+      path: relativeDirectory,
+    }) as { ok?: boolean; entries?: FolderEntry[] }
+    if (!result.ok) continue
+    for (const entry of result.entries ?? []) {
+      if (rows.length >= INVENTORY_LIMIT) break
+      const relativePath = entry.path.replace(/\\/g, '/')
+      rows.push(`${entry.isDirectory ? '[目录]' : '[文件]'} ${relativePath}`)
+      if (
+        entry.isDirectory &&
+        pathDepth(relativePath) < DIRECTORY_DEPTH_LIMIT &&
+        !SKIPPED_DIRECTORIES.has(entry.name)
+      ) {
+        queue.push(relativePath)
+      }
+    }
+  }
+  return rows
+}
+
+async function ensureWorkWorkspace(label: string): Promise<string | null> {
+  const state = useUIStore.getState()
+  if (state.currentWorkspace) return state.currentWorkspace
+  if (!state.ephemeralSandboxDraft) return null
+  const response = await ipcClient.invoke('workspace.sandbox.create', { label }) as {
+    sandbox?: { path?: string }
+  }
+  const path = response.sandbox?.path
+  if (!path) return null
+  await activateWorkspace(path, { preferHome: true })
+  return path
+}
+
 export function WorkHomeView() {
   const mode = useXiaoguiStore((s) => s.mode)
-  const setComposerPrefill = useUIStore((s) => s.setComposerPrefill)
   const [view, setView] = useState<'HOME' | 'TEMPLATE_LIBRARY'>('HOME')
+  const [busyAction, setBusyAction] = useState<QuickActionId | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const runQuickAction = async (action: QuickActionId) => {
+    if (busyAction) return
+    setBusyAction(action)
+    setError(null)
+    try {
+      if (action === 'TEMPLATE') {
+        setView('TEMPLATE_LIBRARY')
+        return
+      }
+      if (action === 'FOLDER') {
+        const selected = await ipcClient.invoke('dialog:openDirectory') as { path?: string | null }
+        if (!selected.path) return
+        await activateWorkspace(selected.path, { preferHome: true })
+        const inventory = await collectFolderInventory(selected.path)
+        const listed = inventory.length > 0 ? inventory.join('\n') : '（文件夹为空，或没有可读取的目录项）'
+        submitComposerPrompt(
+          `整理我刚选择的文件夹“${displayName(selected.path)}”。下面是小规通过受控目录清单取得的相对路径，不包含绝对路径：\n${listed}\n请先按类型归类并概括；需要理解具体内容时，直接读取上面列出的相对文件，不要让我再次输入路径。`,
+        )
+        return
+      }
+      const workspaceRoot = await ensureWorkWorkspace('普通文档整理')
+      if (!workspaceRoot) {
+        setError('请先新建对话或打开一个工作区，再选择普通文档。')
+        return
+      }
+      const selected = await ipcClient.invoke('xiaogui.work.template-intake.source.choose', {
+        workspaceRoot,
+      }) as { cancelled?: boolean; fileDisplayName?: string }
+      if (selected.cancelled || !selected.fileDisplayName) return
+      submitComposerPrompt(
+        `整理我刚选择的普通成品文档“${selected.fileDisplayName}”。请立即开始只读分析并生成候选内容报告，不要再次让我选择文件；原文档不得修改。`,
+      )
+    } catch (reason) {
+      console.error('[WorkHomeView] 快捷入口执行失败:', reason)
+      setError('没有完成选择或启动，请重试。')
+    } finally {
+      setBusyAction(null)
+    }
+  }
 
   if (mode !== 'WORK') {
     return (
@@ -70,27 +179,31 @@ export function WorkHomeView() {
         </span>
       </div>
       <ul className="grid gap-2 sm:grid-cols-3">
-        {EXAMPLE_PROMPTS.map((ex) => (
-          <li key={ex.title}>
+        {QUICK_ACTIONS.map((action) => (
+          <li key={action.id}>
             <button
               type="button"
-              aria-label={`填写示例提示词：${ex.title}`}
-              onClick={() => setComposerPrefill(ex.prompt)}
+              aria-label={action.ariaLabel}
+              data-testid="work-quick-action"
+              disabled={busyAction != null}
+              onClick={() => void runQuickAction(action.id)}
               className="group flex h-full w-full flex-col gap-1.5 rounded-lg border border-border/70 bg-background/40 px-3 py-2.5 text-left transition-colors hover:border-foreground/30 hover:bg-background/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             >
               <span
                 className="w-fit rounded border px-1.5 py-px font-mono text-[10px] font-bold tracking-wider"
                 style={{ color: ACCENT, borderColor: `${ACCENT}55` }}
               >
-                {ex.title}
+                {action.title}
               </span>
               <span className="text-[12px] leading-relaxed text-muted-foreground transition-colors group-hover:text-foreground">
-                {ex.prompt}
+                {busyAction === action.id ? '正在打开…' : action.description}
               </span>
             </button>
           </li>
         ))}
       </ul>
+
+      {error && <p role="alert" className="mt-3 text-[11px] text-destructive">{error}</p>}
 
       <footer className="mt-6 border-t border-dashed border-border/70 pt-2 font-mono text-[10px] text-muted-foreground">
         自然语言是主入口；专用能力以实际接入状态为准。

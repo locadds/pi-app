@@ -169,6 +169,7 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.templateLibrary.preview.release',
   'ipc:xiaogui.templateReview.document.read',
   'ipc:xiaogui.templateReview.image.choose',
+  'ipc:xiaogui.work.template-intake.source.choose',
   'ipc:xiaogui.work.template-intake.review.open',
   'ipc:xiaogui.work.docx.confirm',
   'ipc:xiaogui.work.docx.cancel',

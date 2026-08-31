@@ -1,10 +1,129 @@
 # 小规开发阶段状态
 
+## 2026-08-31｜WORK 三个快捷入口受控选择修复
+
+### 阶段状态
+
+- 状态：代码修改、聚焦测试和真实窗口接缝验证完成，等待人工验收
+- 当前分支：`agent/next-phase-prompt-office-v1`
+- 修改基线：`157447b`
+- 合并与发布：未合并阶段线、未覆盖正式主线、未制作发布包
+
+### 本阶段目标
+
+把 WORK 首页三个快捷项从“只向输入框填写一句提示词”改为可测试的受控入口，并保持最终顺序：
+
+```text
+整理资料 → 整理普通文档 → 按模板生成
+```
+
+目标交互为：
+
+1. `整理资料`：打开原生文件夹选择器，取得受控的相对目录清单后自动进入会话；
+2. `整理普通文档`：打开原生 DOC/DOCX 选择器，源文件路径只留在主进程，随后自动启动既有只读模板分析；
+3. `按模板生成`：打开本机历史模板库，选择模板或版本后自动进入既有生成会话。
+
+### 实际修改文件
+
+- `packages/shared/ipc-channels.ts`
+- `src/main/xiaogui/ipc-handlers.ts`
+- `src/main/xiaogui/work-docx-template-intake-composition.ts`
+- `src/main/xiaogui/work-docx-template-intake-service.ts`
+- `src/main/xiaogui/work-docx-template-intake-service.test.ts`
+- `src/renderer/src/features/composer/composer.tsx`
+- `src/renderer/src/lib/composer-quick-submit.ts`
+- `src/renderer/src/lib/composer-quick-submit.test.ts`
+- `src/renderer/src/xiaogui/components/WorkHomeView.tsx`
+- `src/renderer/src/xiaogui/components/WorkHomeView.test.tsx`
+- `src/renderer/src/xiaogui/components/TemplateLibraryView.tsx`
+- `src/renderer/src/xiaogui/components/TemplateLibraryView.test.tsx`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 三个快捷项不再调用旧的 `setComposerPrefill`：文件夹和文档先完成原生选择，历史模板先进入模板库。
+2. 文件夹入口复用已有 `workspace.fs.listDir` 安全边界，递归生成相对目录清单：最多 200 项、40 个目录、4 层，并跳过 `.git` 与 `node_modules` 深入遍历。
+3. 文件夹的绝对根路径不写入自动发送的提示词；Agent 后续只按已激活工作区中的相对路径读取资料。
+4. 新增主进程专用的普通文档选择通道。Renderer 只收到显示文件名；源路径以项目不透明编号临时暂存 15 分钟，并由下一次模板整理 `START` 一次性消费。
+5. 模板整理服务允许消费只有源路径的直接选择交接；原有带 SHA-256 的旧模板生成交接仍继续校验摘要，行为不变。
+6. 本机模板库的“使用最新版”和“使用此版本”改为选择后自动发送无路径请求；提示词只包含模板名称和版本号，不包含内部编号或资产路径。
+7. 新增 Composer 内部快速提交事件，程序化填入后直接走现有 `sendCurrent` 正式发送链，不复制第二套会话发送逻辑。
+8. 真实 Electron 窗口已确认三个按钮顺序正确，并分别验证：
+   - `整理资料` 打开标题为“选择项目目录”的 Windows 原生对话框；
+   - `整理普通文档` 打开标题为“选择要整理的普通成品 Word”的 Windows 原生对话框；
+   - `按模板生成` 进入“本机模板库”页面。
+
+### 未完成内容
+
+- 本轮没有改造左下角通用“添加文件”附件通道；其绝对路径序列化问题仍是独立待办。三个首页快捷入口已经绕开该旧通道。
+- 自动识别任意上传文件并在 PDF、DOC、DOCX 等能力间统一路由仍属于后续 P1，不由本轮 DOC/DOCX 专用入口代替。
+- 本机尚未配置模板库目录，因此真实窗口只验证到历史模板选择页面；模板版本选择后的自动发送由组件测试覆盖，仍需用户用自己的模板库完成最终验收。
+- 为避免擅自把真实业务文档交给模型，自动化没有替用户选中真实 DOC/DOCX；选择后的完整分析结果留给人工验收。
+- 未运行全量测试、未制作 Portable、未合并或发布。
+
+### 与规格文档存在的偏差
+
+- 保持自然语言为主入口；三个快捷项只承担用户已经确认的必要选择和启动动作，没有新增独立业务状态机。
+- 普通文档仍复用模板资产化规格中的只读分析、人工复核、原文件不可变和既有降级路径；没有修改 Univer、DOCX HTML 或 PDF 降级实现。
+- Prompt 架构、模式边界和轻量推荐契约没有变化；快速入口发送的仍是普通 WORK 用户消息。
+- 本轮没有解决通用附件路径令牌化，已明确登记为差距，没有伪装为完成。
+
+### 测试命令和测试结果
+
+#### 红灯证据
+
+```powershell
+node node_modules\vitest\vitest.mjs run src\renderer\src\xiaogui\components\WorkHomeView.test.tsx src\renderer\src\xiaogui\components\TemplateLibraryView.test.tsx --reporter=verbose --pool=threads
+```
+
+生产实现前结果：`2 test files failed`；失败原因为受控快速提交模块尚不存在，证明新交互断言先于实现生效。
+
+#### 修复后聚焦测试
+
+```powershell
+$env:XIAOGUI_TEST_TEMP_ROOT='D:\CodexTemp'
+node node_modules\vitest\vitest.mjs run src\renderer\src\lib\composer-quick-submit.test.ts src\renderer\src\xiaogui\components\WorkHomeView.test.tsx src\renderer\src\xiaogui\components\TemplateLibraryView.test.tsx src\main\xiaogui\work-docx-template-intake-service.test.ts --reporter=verbose --pool=threads
+```
+
+结果：`4 test files passed`，`13 tests passed`，退出码 `0`。
+
+#### 类型检查
+
+```powershell
+npm run typecheck
+```
+
+结果：Web 与 Node 两段 TypeScript 检查均通过，退出码 `0`。
+
+#### Electron 构建与真实窗口验证
+
+```powershell
+node node_modules\electron-vite\bin\electron-vite.js dev --remoteDebuggingPort 9333
+```
+
+- Main、Preload 构建成功，Renderer 服务启动成功。
+- 首次热更新保留了旧主进程白名单，真实窗口捕获到 `IPC channel not allowed`；重启开发应用后新 Main/Preload 生效，错误不再出现。
+- 通过 `agent-browser` 连接 9333 CDP 检查真实 Electron 页面；当前环境未提供 Browser plugin，因此没有使用该插件。
+- Windows 顶层窗口实查到“选择项目目录”和“选择要整理的普通成品 Word”两个 `#32770` 原生对话框。
+- 历史模板按钮实查进入“本机模板库”。
+- 可见截图：`D:\CodexTemp\xiaogui-work-quick-actions-evidence\work-quick-actions.png`（不提交仓库）。
+
+### 已知风险
+
+1. 文件夹清单是有界清单；超过 200 项、40 个目录或 4 层时不会继续展开，后续需要增加明确的“清单未完全展开”提示。
+2. 同一项目在 15 分钟内由多个窗口同时选择不同文档时，当前项目级临时交接以最后一次选择为准；单窗口正常使用不受影响。
+3. 快速入口仍依赖当前 WORK 模型正确调用既有模板整理工具；源文件接缝已建立，但模型和真实业务文档质量需人工验收。
+4. 开发环境仍存在与本阶段无关的可选 `better-sqlite3` 索引原生绑定警告，不影响三个入口或模板私有存储的既有降级行为。
+
+### 下一阶段计划
+
+等待用户在当前已打开的小规窗口完成三条旅程验收。若发现问题，只修本阶段入口接缝；验收通过前不进入统一附件令牌化、PDF/DOC 自动路由或其他功能阶段。
+
 ## 2026-08-31｜WORK 首页快捷项顺序调整
 
 ### 阶段状态
 
-- 状态：代码修改与聚焦验证完成，等待人工验收
+- 状态：人工验收未通过；仅完成顺序，三项业务入口当时无法选择文件或历史模板。后续修复见上方“WORK 三个快捷入口受控选择修复”阶段
 - 当前分支：`agent/next-phase-prompt-office-v1`
 - 修改基线：`72ee27a`
 - 合并与发布：未合并阶段线、未覆盖正式主线、未制作发布包

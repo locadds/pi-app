@@ -8,7 +8,7 @@ import type {
   TemplateLibraryVersionSummaryV1,
 } from '@shared/xiaogui-template-library'
 import { ipcClient } from '@renderer/lib/ipc-client'
-import { useUIStore } from '@renderer/stores/ui-store'
+import { submitComposerPrompt } from '@renderer/lib/composer-quick-submit'
 import { TemplateLibraryPreviewDialog } from './TemplateLibraryPreviewDialog'
 
 function readableBytes(value: number): string {
@@ -23,7 +23,6 @@ function templatePrompt(entry: TemplateLibrarySummaryV1, versionNumber: number):
 }
 
 export function TemplateLibraryView({ onBack }: { onBack: () => void }) {
-  const setComposerPrefill = useUIStore((state) => state.setComposerPrefill)
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [query, setQuery] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
@@ -116,7 +115,7 @@ export function TemplateLibraryView({ onBack }: { onBack: () => void }) {
             <div className="flex items-start justify-between gap-2"><div><h2 className="text-[13px] font-semibold">{entry.name}</h2><p className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">{entry.purpose || '暂无用途说明'}</p></div><span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px]">v{entry.latestVersion.versionNumber}</span></div>
             <p className="mt-3 text-[11px] text-muted-foreground">{entry.fields.length} 个字段 · {entry.versionCount} 个版本 · {readableBytes(entry.latestVersion.byteLength)}</p>
             <div className="mt-auto flex flex-wrap gap-2 pt-4">
-              {!showTrash && <button type="button" onClick={() => setComposerPrefill(templatePrompt(entry, entry.latestVersion.versionNumber))} className="rounded-md bg-primary px-2.5 py-1.5 text-[11px] text-primary-foreground">使用最新版</button>}
+              {!showTrash && <button type="button" onClick={() => submitComposerPrompt(templatePrompt(entry, entry.latestVersion.versionNumber))} className="rounded-md bg-primary px-2.5 py-1.5 text-[11px] text-primary-foreground">使用最新版</button>}
               <button type="button" onClick={() => void openDetail(entry.entryId)} className="rounded-md border px-2.5 py-1.5 text-[11px]">版本记录</button>
               <button type="button" disabled={busy} onClick={() => void mutate(showTrash ? 'restore' : 'trash', entry.entryId)} className="rounded-md border px-2.5 py-1.5 text-[11px]">{showTrash ? '恢复' : '放入回收站'}</button>
               {showTrash && <button type="button" disabled={busy} onClick={() => void mutate('purge', entry.entryId)} className="rounded-md border border-destructive/50 px-2.5 py-1.5 text-[11px] text-destructive">彻底删除</button>}
@@ -126,7 +125,7 @@ export function TemplateLibraryView({ onBack }: { onBack: () => void }) {
         </div>
       </>}
 
-      {detail && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/45 p-5"><div className="w-full max-w-xl rounded-xl bg-background p-5 shadow-xl"><div className="flex items-start gap-3"><div><h2 className="text-[15px] font-semibold">{detail.name}</h2><p className="mt-1 text-[11px] text-muted-foreground">选择最新版或任一历史版本，提示词只会填入对话框，不会自动发送。</p></div><button type="button" className="ml-auto rounded-md border px-2 py-1 text-[11px]" onClick={() => setDetail(null)}>关闭</button></div><div className="mt-4 max-h-[55vh] space-y-2 overflow-auto">{detail.versions.map((version) => <div key={version.versionId} className="flex items-center gap-3 rounded-lg border p-3"><div><p className="text-[12px] font-medium">第 {version.versionNumber} 版{version.isLatest ? '（最新版）' : ''}</p><p className="mt-1 text-[10px] text-muted-foreground">{new Date(version.createdAt).toLocaleString()} · {version.fields.length} 个字段 · {readableBytes(version.byteLength)}</p></div>{detail.status === 'ACTIVE' && <div className="ml-auto flex gap-2"><button type="button" onClick={() => setPreviewVersion(version)} className="rounded-md border px-2.5 py-1.5 text-[11px]">预览</button><button type="button" onClick={() => { setComposerPrefill(templatePrompt(detail, version.versionNumber)); setDetail(null) }} className="rounded-md bg-primary px-2.5 py-1.5 text-[11px] text-primary-foreground">使用此版本</button></div>}</div>)}</div></div></div>}
+      {detail && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/45 p-5"><div className="w-full max-w-xl rounded-xl bg-background p-5 shadow-xl"><div className="flex items-start gap-3"><div><h2 className="text-[15px] font-semibold">{detail.name}</h2><p className="mt-1 text-[11px] text-muted-foreground">选择最新版或任一历史版本后，会直接进入生成对话。</p></div><button type="button" className="ml-auto rounded-md border px-2 py-1 text-[11px]" onClick={() => setDetail(null)}>关闭</button></div><div className="mt-4 max-h-[55vh] space-y-2 overflow-auto">{detail.versions.map((version) => <div key={version.versionId} className="flex items-center gap-3 rounded-lg border p-3"><div><p className="text-[12px] font-medium">第 {version.versionNumber} 版{version.isLatest ? '（最新版）' : ''}</p><p className="mt-1 text-[10px] text-muted-foreground">{new Date(version.createdAt).toLocaleString()} · {version.fields.length} 个字段 · {readableBytes(version.byteLength)}</p></div>{detail.status === 'ACTIVE' && <div className="ml-auto flex gap-2"><button type="button" onClick={() => setPreviewVersion(version)} className="rounded-md border px-2.5 py-1.5 text-[11px]">预览</button><button type="button" onClick={() => { submitComposerPrompt(templatePrompt(detail, version.versionNumber)); setDetail(null) }} className="rounded-md bg-primary px-2.5 py-1.5 text-[11px] text-primary-foreground">使用此版本</button></div>}</div>)}</div></div></div>}
       {detail && previewVersion && <TemplateLibraryPreviewDialog entryName={detail.name} version={previewVersion} onClose={() => setPreviewVersion(null)} />}
     </div>
   )
