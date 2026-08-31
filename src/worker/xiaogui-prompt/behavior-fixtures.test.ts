@@ -65,7 +65,11 @@ describe('P01-P16 offline Prompt behavior fixtures', () => {
   it('P01 raw input: WORK + ASK explains template intake without write tools', () => {
     const fixture = turn('WORK', 'ASK', '帮我解释模板整理的流程')
     expect(fixture.selection.capabilityIds).toEqual(['work.file-organize'])
-    expect(fixture.activeTools).toEqual(['read', 'xiaogui_read_pdf'])
+    expect(fixture.activeTools).toEqual([
+      'read',
+      'xiaogui_read_pdf',
+      'xiaogui_work_read_materials',
+    ])
     expect(fixture.result.productPrompt).toContain('不要创建持久成果')
   })
 
@@ -235,6 +239,7 @@ describe('P01-P16 offline Prompt behavior fixtures', () => {
           "toolNames": [
             "read",
             "xiaogui_read_pdf",
+            "xiaogui_work_read_materials",
           ],
         },
       }

@@ -52,10 +52,14 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       ...reportContext(),
       enabledCapabilities: ['work.file-organize' as const],
     }
-    expect(resolveEffectiveXiaoguiCapabilitiesV1(base, ['read']).map((entry) => entry.id))
+    expect(resolveEffectiveXiaoguiCapabilitiesV1(base, [
+      'read',
+      'xiaogui_work_read_materials',
+    ]).map((entry) => entry.id))
       .toEqual(['work.file-organize'])
     expect(resolveEffectiveXiaoguiCapabilitiesV1(base, [
       'read',
+      'xiaogui_work_read_materials',
       'xiaogui_work_report_docx',
     ]).map((entry) => entry.id)).toEqual(['work.file-organize'])
     expect(resolveEffectiveXiaoguiCapabilitiesV1({
@@ -63,6 +67,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       enabledCapabilities: ['work.file-organize', 'work.report-docx'],
     }, [
       'read',
+      'xiaogui_work_read_materials',
       'xiaogui_work_report_docx',
     ]).map((entry) => entry.id)).toEqual(['work.file-organize', 'work.report-docx'])
     expect(resolveEffectiveXiaoguiCapabilitiesV1({
@@ -71,6 +76,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       enabledCapabilities: ['work.file-organize', 'work.report-docx'],
     }, [
       'read',
+      'xiaogui_work_read_materials',
       'xiaogui_work_report_docx',
     ]).map((entry) => entry.id)).toEqual(['work.file-organize'])
   })
@@ -112,9 +118,10 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       workspaceAvailable: true,
       enabledCapabilities: ['work.file-organize' as const],
     }
-    expect(workerBuiltinToolNamesForPromptContextV1(work)).toEqual(['xiaogui_read_pdf'])
+    expect(workerBuiltinToolNamesForPromptContextV1(work))
+      .toEqual(['xiaogui_read_pdf', 'xiaogui_work_read_materials'])
     expect(workerBuiltinToolNamesForPromptContextV1({ ...work, phase: 'PLAN' }))
-      .toEqual(['xiaogui_read_pdf'])
+      .toEqual(['xiaogui_read_pdf', 'xiaogui_work_read_materials'])
     expect(workerBuiltinToolNamesForPromptContextV1({
       ...work,
       enabledCapabilities: ['work.file-organize', 'collaboration.execution'],
@@ -124,7 +131,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
   it('enforces ASK/PLAN against the final registered Tool set', () => {
     const registered = [
       'read', 'bash', 'edit', 'write', 'design_gis',
-      'xiaogui_read_pdf', 'xiaogui_work_report_docx',
+      'xiaogui_read_pdf', 'xiaogui_work_read_materials', 'xiaogui_work_report_docx',
     ]
     const plan = {
       mode: 'CODING' as const,

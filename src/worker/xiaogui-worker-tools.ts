@@ -12,6 +12,7 @@ import {
 } from './xiaogui-collaboration-tool'
 import { addXiaoguiWorkDocxAdvancedGenerationTool } from './xiaogui-work-docx-advanced-generation-tool'
 import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool'
+import { addXiaoguiWorkMaterialsToolV1 } from './xiaogui-work-materials-tool'
 import { addXiaoguiWorkReportDocxTool } from './xiaogui-work-report-docx-tool'
 import {
   addXiaoguiWorkDocxTemplateDataTool,
@@ -63,6 +64,9 @@ export function addXiaoguiWorkerToolsV1(
   }
   if (allowed.has('xiaogui_read_pdf')) {
     loaded = addXiaoguiWorkDocumentSnapshotTool(loaded, options.session)
+  }
+  if (allowed.has('xiaogui_work_read_materials')) {
+    loaded = addXiaoguiWorkMaterialsToolV1(loaded, options.session)
   }
   if (allowed.has('xiaogui_work_docx_advanced_generation')) {
     loaded = addXiaoguiWorkDocxAdvancedGenerationTool(loaded, options.session)

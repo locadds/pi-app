@@ -41,6 +41,7 @@ import type {
 import type { TemplateLibraryDetailV1 } from './xiaogui-template-library'
 import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from './xiaogui-work-template-review'
 import type { TemplateDraftReviewRequestV2 } from './xiaogui-template-draft-review'
+import type { WorkMaterialsSnapshotV1 } from './xiaogui-work-materials'
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
@@ -60,6 +61,7 @@ export const XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1 =
 export const XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1 =
   'xiaogui.work.docx-advanced-generation.v1' as const
 export const XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 = 'xiaogui.work.document-snapshot.v1' as const
+export const XIAOGUI_WORK_MATERIALS_METHOD_V1 = 'xiaogui.work.materials.v1' as const
 
 export interface XiaoguiCreateCollaborationPlanPayloadV1 {
   draft: InitialPlanDraftInputV1
@@ -298,6 +300,12 @@ export type WorkerHostToolRequestV1 =
       method: typeof XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1
       payload: XiaoguiWorkDocumentSnapshotPayloadV1
     }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: typeof XIAOGUI_WORK_MATERIALS_METHOD_V1
+      payload: XiaoguiWorkMaterialsPayloadV1
+    }
 
 /**
  * WORK 文档快照的模型侧接口同样不携带地址、路径、文件句柄或密码。
@@ -309,6 +317,18 @@ export interface XiaoguiWorkDocumentSnapshotPayloadV1 {
   startPage?: number
   /** 1 起始含端点；省略时最多读取 20 页。 */
   endPage?: number
+  sourceSessionId: string
+  sourceRunId: string
+  toolCallId: string
+}
+
+/**
+ * WORK 通用资料读取不再设置扩展名白名单，也不限制在当前工作区。
+ * 用户已明确批准绝对路径进入模型上下文、聊天记录与工具结果。
+ */
+export interface XiaoguiWorkMaterialsPayloadV1 {
+  /** 绝对或相对路径均可；省略时读取当前会话 cwd。 */
+  paths?: readonly string[]
   sourceSessionId: string
   sourceRunId: string
   toolCallId: string
@@ -503,6 +523,11 @@ export type XiaoguiWorkDocumentSnapshotResultV1 =
       snapshot: DocumentSnapshotV1
     }
 
+export type XiaoguiWorkMaterialsResultV1 = {
+  kind: 'XIAOGUI_WORK_MATERIALS_READY'
+  snapshot: WorkMaterialsSnapshotV1
+}
+
 export type WorkerHostToolErrorCodeV1 =
   | 'HOST_TOOL_UNAVAILABLE'
   | 'HOST_TOOL_REQUEST_INVALID'
@@ -539,6 +564,7 @@ export type WorkerHostToolOutcomeV1 =
         | XiaoguiWorkDocxTemplateMaterializeResultV1
         | XiaoguiWorkDocxAdvancedGenerationResultV1
         | XiaoguiWorkDocumentSnapshotResultV1
+        | XiaoguiWorkMaterialsResultV1
     }
   | {
       ok: false

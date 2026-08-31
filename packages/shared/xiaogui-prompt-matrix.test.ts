@@ -66,6 +66,7 @@ describe('Xiaogui Prompt Mode / Phase / Capability / Tool Matrix V1', () => {
       'xiaogui_work_docx_advanced_generation',
       'xiaogui_work_docx_template_intake',
       'xiaogui_work_docx_template_materialize',
+      'xiaogui_work_read_materials',
       'xiaogui_work_report_docx',
     ])
     expect(XIAOGUI_CAPABILITY_MATRIX_V1['design.analysis'].tools.map((tool) => tool.name))

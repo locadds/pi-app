@@ -119,9 +119,9 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
         promptContext('WORK', phase),
         ['read', ...registered],
       )
-      expect(active).toEqual(['read', 'xiaogui_read_pdf'])
+      expect(active).toEqual(['read', 'xiaogui_read_pdf', 'xiaogui_work_read_materials'])
       expect(workerBuiltinToolNamesForPromptContextV1(promptContext('WORK', phase)))
-        .toEqual(['xiaogui_read_pdf'])
+        .toEqual(['xiaogui_read_pdf', 'xiaogui_work_read_materials'])
     }
   })
 
@@ -145,6 +145,13 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
         promptGuidelines: expect.arrayContaining([
           expect.stringContaining('不要让用户输入路径'),
           expect.stringContaining('快照被截断或没有正文时如实告知用户'),
+        ]),
+      },
+      xiaogui_work_read_materials: {
+        promptSnippet: '读取任意类型的本机资料或整个文件夹；能解析则提取内容，否则保留元数据并明确说明',
+        promptGuidelines: expect.arrayContaining([
+          expect.stringContaining('不限制在当前工作区'),
+          expect.stringContaining('METADATA_ONLY'),
         ]),
       },
       xiaogui_work_report_docx: {

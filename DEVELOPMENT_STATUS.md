@@ -1,5 +1,122 @@
 # 小规开发阶段状态
 
+## 2026-08-31｜WORK 全类型资料读取与路径边界调整
+
+### 阶段状态
+
+- 状态：代码修改、聚焦验证、完整构建和真实窗口冒烟完成，等待人工验收
+- 当前分支：`agent/next-phase-prompt-office-v1`
+- 修改基线：`7e97304`
+- 合并与发布：未合并阶段线、未覆盖正式主线、未制作发布包
+
+### 本阶段目标
+
+根据用户验收反馈，修正“整理资料”仍只是有界目录清单、Agent 只能读取少数格式的问题：
+
+1. 用户点击“整理资料”后仍先打开原生文件夹选择器；
+2. Agent 获得通用资料读取工具，对目录中的所有文件建立总账；
+3. 普通文本和常见办公文档尽量提取正文，不支持语义读取的二进制仍进入总账并明确标为“仅元数据”；
+4. 按用户明确决定，通用 WORK 资料读取不再受“只能访问已选文件夹”的路径边界限制，并允许把绝对路径提供给模型、聊天回复和工具结果；
+5. 不把任意二进制“进入总账”伪装成已经理解其正文。
+
+### 实际修改文件
+
+- `packages/shared/worker-host-tools.ts`
+- `packages/shared/xiaogui-prompt-capabilities.ts`
+- `packages/shared/xiaogui-prompt-capabilities.test.ts`
+- `packages/shared/xiaogui-prompt-matrix.ts`
+- `packages/shared/xiaogui-prompt-matrix.test.ts`
+- `packages/shared/xiaogui-work-materials.ts`
+- `src/main/xiaogui/index.ts`
+- `src/main/xiaogui/index.test.ts`
+- `src/main/xiaogui/work-docx-template-intake-parser.ts`
+- `src/main/xiaogui/work-materials-composition.ts`
+- `src/main/xiaogui/work-materials-service.ts`
+- `src/main/xiaogui/work-materials-service.test.ts`
+- `src/main/xiaogui/work-materials-worker-tool.ts`
+- `src/main/xiaogui/worker-host-tool-router.ts`
+- `src/main/xiaogui/worker-host-tool-router.test.ts`
+- `src/renderer/src/xiaogui/components/WorkHomeView.tsx`
+- `src/renderer/src/xiaogui/components/WorkHomeView.test.tsx`
+- `src/worker/handlers/worker-handlers-turn.test.ts`
+- `src/worker/worker-host-tool-channel.ts`
+- `src/worker/xiaogui-prompt/behavior-fixtures.test.ts`
+- `src/worker/xiaogui-prompt/builder.test.ts`
+- `src/worker/xiaogui-tool-guidelines-baseline.test.ts`
+- `src/worker/xiaogui-work-materials-tool.ts`
+- `src/worker/xiaogui-work-materials-tool.test.ts`
+- `src/worker/xiaogui-worker-tools.ts`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 新增版本化 Worker→Main 能力 `xiaogui.work.materials.v1` 和隐藏工具 `xiaogui_work_read_materials`，只在 WORK 对应能力下暴露。
+2. 工具可接收当前目录、相对路径或任意绝对路径；目录递归扫描，文件类型不再使用 DOCX/PDF 白名单过滤。
+3. 文本类文件直接读取；DOCX、PPTX、XLSX、ODT、ODP、ODS、PDF、RTF、EPUB 复用 `officeparser/slim` 提取文本；其他格式仍返回绝对路径、扩展名、大小和“仅元数据”状态。
+4. 所有读取失败、过大、截断、不支持语义解析、符号链接和解析异常都会作为逐文件警告返回，不静默漏项或伪装成功。
+5. “整理资料”不再先在 Renderer 生成 200 项、4 层的清单，而是选择目录后直接让 Agent 调用通用资料工具；三个入口顺序继续保持“整理资料、整理普通文档、按模板生成”。
+6. Prompt Capability、Tool Guidelines 和行为基线已同步实际工具能力，避免模型再次声称只有单文件/PDF 能力。
+7. `officeparser/slim` 从主进程静态加载改为按需动态加载：主进程主包由约 5.10 MB 降到约 1.54 MB，解析器进入独立约 3.56 MB chunk，减少应用冷启动时无关办公解析代码加载。
+8. 未修改 Pi 上游基础 `SYSTEM.md`；本阶段只更新小规叠加的 Capability、工具说明和模式行为层。
+
+### 未完成内容
+
+- “全部类型”表示所有文件都会进入总账，不表示小规已经拥有 CAD、视频、音频、压缩包、数据库或任意专有二进制的语义解析器；这些格式首期为元数据级。
+- 仍保留资源安全上限：最多 2,500 个文件、1,000 个目录节点、16 层、单文件 20 MiB、单文件正文 100,000 字符、总正文 500,000 字符；超限会明确警告。
+- 新建会话首条消息仍承担 Worker、Pi 会话壳、工具注册和模型连接冷启动。真实窗口本轮显示“思考了 8 秒”；后台预热尚未实施。
+- 真实窗口中发现：在新会话首条消息被用户中止后，直接在同一会话重试可能出现 `XIAOGUI_PROMPT_CONTEXT_SESSION_MISMATCH`。新建会话可正常工作；该问题登记为下一独立修复项。
+- 未运行全量测试、未制作 Portable、未合并阶段线或正式主线。
+
+### 与规格文档存在的偏差
+
+- 用户明确撤销了通用 WORK 资料能力中的两项旧约束：“只能访问用户选择的文件夹”和“不向模型/会话/公开工具结果暴露绝对路径”。本阶段按该新决定实施，并在长期总控中记录为对旧约束的局部取代。
+- 该取代只适用于通用 WORK 资料读取，不改动模板资产、Univer 工作副本、模板库、Office 临时令牌和原文件不可变等已有专用契约。
+- 未改变《Prompt 架构、模式边界与轻量智能推荐规格》的模式分层；只把 `work.file-organize` 的 Capability 与真实工具能力对齐。
+
+### 测试命令和测试结果
+
+#### 聚焦测试
+
+```powershell
+$env:XIAOGUI_TEST_TEMP='D:\CodexTemp\xiaogui-test-temp'
+npm run test:unit -- <12 个 WORK 资料、Prompt、Worker、Router、首页和模板解析相关测试文件>
+```
+
+结果：`12 test files passed`，`69 tests passed`，退出码 `0`。
+
+#### 类型检查、构建与差异检查
+
+```powershell
+npm run typecheck
+npm run build
+git diff --check
+```
+
+结果：三项退出码均为 `0`。完整主构建、Renderer、Office Viewer 和 Office Gateway 构建成功；只有既有 chunk 体积与动态导入提示，没有新增构建失败。
+
+#### Electron 真实窗口冒烟
+
+- 使用 D 盘隔离目录 `D:\CodexTemp\xiaogui-work-materials-stage\mixed-folder`，内含 JSON 文本与 PNG 图片。
+- 在全新 WORK 会话要求读取该绝对路径；模型实际调用 `xiaogui_work_read_materials`，首轮界面显示“思考了 8 秒”。
+- JSON 返回 `CONTENT_EXTRACTED`、绝对路径和正文摘要；PNG 返回 `METADATA_ONLY`、绝对路径、类型、大小及 `FORMAT_NOT_SEMANTICALLY_SUPPORTED`，没有假装理解图片内容。
+- 成功证据：`D:\CodexTemp\xiaogui-work-materials-stage\materials-tool-success.png`；首页证据：`D:\CodexTemp\xiaogui-work-materials-stage\work-home-all-materials.png`。证据不提交仓库。
+
+### 已知风险
+
+1. 用户已允许把绝对路径放入模型输入、聊天和工具结果，路径中可能包含人员名、项目名或内部目录结构；这是已接受的新产品边界，不再由产品自动隐藏。
+2. 任意路径读取扩大了模型可请求的本机资料范围；当前仍需要模型主动调用工具，且受文件数量、深度、体积和字符预算限制，但不再有选定目录边界。
+3. 不支持格式只有元数据，用户若要求内容级理解仍需后续专用解析器或转换能力。
+4. 首句冷启动尚未优化；建议下一阶段做“主界面可见后异步预热 Worker/Pi 会话壳”，不得阻塞界面、不得提前调用模型或消耗额度。
+5. 开发环境仍有与本阶段无关的可选 `better-sqlite3` 原生绑定警告，不影响本次通用资料工具成功运行。
+
+### 下一阶段计划
+
+等待人工验收本阶段。验收通过后优先单独处理：
+
+1. 主界面显示后的轻量后台预热，并对比预热前后首句耗时；
+2. 新会话首条消息被中止后重试的 Session Context 不匹配；
+3. 再按真实业务需要逐项补充 CAD、表格高级结构、图片 OCR、压缩包等专用解析器，不把“全类型总账”误写为“全格式正文理解”。
+
 ## 2026-08-31｜WORK 三个快捷入口受控选择修复
 
 ### 阶段状态

@@ -15,6 +15,7 @@ const INTERACTIVE_TEMPLATE_MATERIALIZE_TIMEOUT_MS = 15 * 60_000
 const INTERACTIVE_ADVANCED_GENERATION_TIMEOUT_MS = 15 * 60_000
 const INTERACTIVE_REPORT_DOCX_TIMEOUT_MS = 15 * 60_000
 const INTERACTIVE_DOCUMENT_SNAPSHOT_TIMEOUT_MS = 15 * 60_000
+const INTERACTIVE_MATERIALS_TIMEOUT_MS = 15 * 60_000
 
 interface PendingRequest {
   resolve: (outcome: WorkerHostToolOutcomeV1) => void
@@ -62,6 +63,9 @@ function requestTimeoutMs(request: WorkerHostToolRequestInputV1): number | null 
   if (request.method === 'xiaogui.work.document-snapshot.v1') {
     // 系统选择器是交互式长等待；主进程解析阶段有自己的 60 秒时限与取消响应。
     return INTERACTIVE_DOCUMENT_SNAPSHOT_TIMEOUT_MS
+  }
+  if (request.method === 'xiaogui.work.materials.v1') {
+    return INTERACTIVE_MATERIALS_TIMEOUT_MS
   }
   if (request.method === 'xiaogui.work.docx-template-intake.v1') {
     // 文件选择、解析与复核卡均可能跨越较长的人机交互；提交确认后必须等待真实落库回执。

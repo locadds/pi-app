@@ -73,21 +73,10 @@ describe('WorkHomeView', () => {
     expect(screen.queryByText(/直接告诉小规你想完成什么/)).toBeNull()
   })
 
-  it('整理资料先选择文件夹，再把相对目录清单交给 Agent', async () => {
+  it('整理资料先选择文件夹，再要求 Agent 读取其中所有文件类型', async () => {
     const user = userEvent.setup()
-    invoke.mockImplementation(async (method, request) => {
+    invoke.mockImplementation(async (method) => {
       if (method === 'dialog:openDirectory') return { path: 'D:\\资料目录' }
-      if (method === 'workspace.fs.listDir') {
-        if (request.path !== '.') return { ok: true, entries: [] }
-        expect(request).toEqual({ workspaceRoot: 'D:\\资料目录', path: '.' })
-        return {
-          ok: true,
-          entries: [
-            { name: '方案.docx', path: '方案.docx', isDirectory: false, size: 1024 },
-            { name: '附图', path: '附图', isDirectory: true },
-          ],
-        }
-      }
       throw new Error(`UNEXPECTED_METHOD:${method}`)
     })
     render(<WorkHomeView />)
@@ -96,9 +85,10 @@ describe('WorkHomeView', () => {
     expect(activate).toHaveBeenCalledWith('D:\\资料目录', { preferHome: true })
     expect(submit).toHaveBeenCalledOnce()
     const prompt = submit.mock.calls[0]![0]
-    expect(prompt).toContain('方案.docx')
-    expect(prompt).toContain('[目录] 附图')
-    expect(prompt).not.toContain('D:\\资料目录')
+    expect(prompt).toContain('所有类型的文件')
+    expect(prompt).toContain('暂时不能语义解析的格式也必须')
+    expect(prompt).toContain('D:\\资料目录')
+    expect(invoke).not.toHaveBeenCalledWith('workspace.fs.listDir', expect.anything())
     expect(useUIStore.getState().composerPrefill).toBeNull()
   })
 

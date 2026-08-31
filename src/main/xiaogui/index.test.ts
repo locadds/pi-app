@@ -14,20 +14,24 @@ const mocks = vi.hoisted(() => ({
   workDocxService: { kind: 'work-docx-service' },
   workReportDocxService: { kind: 'work-report-docx-service' },
   workDocumentSnapshotService: { kind: 'work-document-snapshot-service' },
+  workMaterialsService: { kind: 'work-materials-service' },
   collaborationHandler: vi.fn(),
   workDocxHandler: vi.fn(),
   workReportDocxHandler: vi.fn(),
   workDocumentSnapshotHandler: vi.fn(),
+  workMaterialsHandler: vi.fn(),
   routedHandler: vi.fn(),
   createCollaborationHandler: vi.fn(),
   createWorkDocxHandler: vi.fn(),
   createWorkReportDocxHandler: vi.fn(),
   createWorkDocumentSnapshotHandler: vi.fn(),
+  createWorkMaterialsHandler: vi.fn(),
   createRouter: vi.fn(),
   getCollaborationApplication: vi.fn(),
   getWorkDocxService: vi.fn(),
   getWorkReportDocxService: vi.fn(),
   getWorkDocumentSnapshotService: vi.fn(),
+  getWorkMaterialsService: vi.fn(),
   setHostToolRequestHandler: vi.fn(),
   scopeResolver: { kind: 'scope-resolver' },
 }))
@@ -89,6 +93,14 @@ vi.mock('./work-document-snapshot-worker-tool', () => ({
   createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1: mocks.createWorkDocumentSnapshotHandler,
 }))
 
+vi.mock('./work-materials-composition', () => ({
+  getDefaultWorkMaterialsServiceV1: mocks.getWorkMaterialsService,
+}))
+
+vi.mock('./work-materials-worker-tool', () => ({
+  createXiaoguiWorkMaterialsWorkerToolHandlerV1: mocks.createWorkMaterialsHandler,
+}))
+
 vi.mock('./worker-host-tool-router', () => ({
   createXiaoguiWorkerHostToolRouterV1: mocks.createRouter,
 }))
@@ -139,10 +151,12 @@ describe('xiaogui Worker host-tool wiring', () => {
     mocks.getWorkDocxService.mockReturnValue(mocks.workDocxService)
     mocks.getWorkReportDocxService.mockReturnValue(mocks.workReportDocxService)
     mocks.getWorkDocumentSnapshotService.mockReturnValue(mocks.workDocumentSnapshotService)
+    mocks.getWorkMaterialsService.mockReturnValue(mocks.workMaterialsService)
     mocks.createCollaborationHandler.mockReturnValue(mocks.collaborationHandler)
     mocks.createWorkDocxHandler.mockReturnValue(mocks.workDocxHandler)
     mocks.createWorkReportDocxHandler.mockReturnValue(mocks.workReportDocxHandler)
     mocks.createWorkDocumentSnapshotHandler.mockReturnValue(mocks.workDocumentSnapshotHandler)
+    mocks.createWorkMaterialsHandler.mockReturnValue(mocks.workMaterialsHandler)
     mocks.createRouter.mockReturnValue(mocks.routedHandler)
 
     initXiaogui()
@@ -163,11 +177,16 @@ describe('xiaogui Worker host-tool wiring', () => {
       getService: mocks.getWorkDocumentSnapshotService,
       scopeResolver: mocks.scopeResolver,
     })
+    expect(mocks.createWorkMaterialsHandler).toHaveBeenCalledWith({
+      getService: mocks.getWorkMaterialsService,
+      scopeResolver: mocks.scopeResolver,
+    })
     expect(mocks.createRouter).toHaveBeenCalledWith(expect.objectContaining({
       collaboration: mocks.collaborationHandler,
       workDocx: mocks.workDocxHandler,
       workReportDocx: mocks.workReportDocxHandler,
       workDocumentSnapshot: mocks.workDocumentSnapshotHandler,
+      workMaterials: mocks.workMaterialsHandler,
     }))
     expect(mocks.setHostToolRequestHandler).toHaveBeenCalledWith(mocks.routedHandler)
   })

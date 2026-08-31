@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { parseOffice, type OfficeContentNode, type OfficeParserAST } from 'officeparser/slim'
+import type { OfficeContentNode, OfficeParserAST } from 'officeparser/slim'
 
 import type {
   TemplateIntakeCandidateV1,
@@ -253,6 +253,8 @@ export const defaultTemplateIntakeSemanticParserV1: TemplateIntakeSemanticParser
   signal,
 ) => {
   let warningCount = 0
+  // 模板解析只在用户明确选择文档后加载，避免普通首轮对话承担 Office 解析器成本。
+  const { parseOffice } = await import('officeparser/slim')
   const ast: OfficeParserAST = await parseOffice(content, {
     fileType: 'docx',
     ocr: false,

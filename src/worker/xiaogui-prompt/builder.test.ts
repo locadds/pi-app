@@ -19,7 +19,7 @@ const context = (mode: 'WORK' | 'DESIGN' | 'CODING' = 'WORK', phase: 'ASK' | 'PL
     : mode === 'CODING'
       ? ['coding.workspace' as const]
       : ['work.file-organize' as const],
-  availableToolNames: ['read', 'xiaogui_read_pdf'],
+  availableToolNames: ['read', 'xiaogui_read_pdf', 'xiaogui_work_read_materials'],
   sessionKey: 'xgs1_session',
   projectId: 'xgp1_project',
 })
@@ -93,6 +93,11 @@ describe('Xiaogui effective Prompt Builder V1', () => {
       runtimeTools: [
         { name: 'read', promptSnippet: '读取文件', promptGuidelines: ['只读所需内容'] },
         { name: 'xiaogui_read_pdf', promptSnippet: '读取 PDF', promptGuidelines: ['不让用户输入路径'] },
+        {
+          name: 'xiaogui_work_read_materials',
+          promptSnippet: '读取所有类型资料',
+          promptGuidelines: ['不支持语义解析时保留元数据'],
+        },
       ],
       generatedAt: '2026-08-30T00:00:00.000Z',
     })
@@ -102,6 +107,7 @@ describe('Xiaogui effective Prompt Builder V1', () => {
       piCustomSystem: false,
       runtimeTools: [
         { name: 'read', promptSnippet: '读取文件', promptGuidelines: ['只读所需内容'] },
+        { name: 'xiaogui_work_read_materials' },
       ],
       generatedAt: '2026-08-30T00:00:00.000Z',
     })
@@ -219,6 +225,7 @@ describe('Xiaogui effective Prompt Builder V1', () => {
       runtimeTools: [
         { name: 'read' },
         { name: 'xiaogui_read_pdf' },
+        { name: 'xiaogui_work_read_materials' },
         { name: 'xiaogui_work_report_docx' },
         { name: 'xiaogui_work_docx_template_intake' },
         { name: 'xiaogui_work_docx_template_materialize' },

@@ -7,6 +7,7 @@ import {
   XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1,
   XIAOGUI_WORK_DOCX_TEMPLATE_MATERIALIZE_METHOD_V1,
   XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1,
+  XIAOGUI_WORK_MATERIALS_METHOD_V1,
 } from '@shared/worker-host-tools'
 
 import type { WorkerHostToolRequestHandler } from '../worker-manager-types'
@@ -20,6 +21,7 @@ export interface XiaoguiWorkerHostToolRouterOptionsV1 {
   workDocxTemplateIntake: WorkerHostToolRequestHandler
   workDocxTemplateMaterialize: WorkerHostToolRequestHandler
   workDocumentSnapshot: WorkerHostToolRequestHandler
+  workMaterials: WorkerHostToolRequestHandler
 }
 
 /** WorkerManager 只暴露一个 host-tool 接缝；领域 Adapter 在主进程内按版本化方法路由。 */
@@ -44,6 +46,8 @@ export function createXiaoguiWorkerHostToolRouterV1(
         return options.workDocxTemplateMaterialize(payload)
       case XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1:
         return options.workDocumentSnapshot(payload)
+      case XIAOGUI_WORK_MATERIALS_METHOD_V1:
+        return options.workMaterials(payload)
       default:
         return Promise.resolve({
           ok: false,

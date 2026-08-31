@@ -1,8 +1,8 @@
 /**
  * WORK 模式首屏视图（小规 Agent · WORK 模式专用）。
  *
- * 定位：轻量业务入口。三个快捷项负责完成必要的本机选择，再把无绝对路径的
- * 自然语言请求交给常驻 Composer；后续分析仍由 WORK 会话及其受控工具完成。
+ * 定位：轻量业务入口。三个快捷项负责完成必要的本机选择，再把自然语言请求
+ * 交给常驻 Composer；后续分析仍由 WORK 会话及其受控工具完成。
  *
  * 仅在 WORK 模式下呈现；其他模式渲染占位提示（与 ProjectInspectView 一致）。
  */
@@ -24,7 +24,7 @@ const QUICK_ACTIONS: { id: QuickActionId; title: string; description: string; ar
   {
     id: 'FOLDER',
     title: '整理资料',
-    description: '选择文件夹后，按类型归类并概括其中资料',
+    description: '选择文件夹后，读取所有类型并整理归纳',
     ariaLabel: '选择文件夹并整理资料',
   },
   {
@@ -41,51 +41,8 @@ const QUICK_ACTIONS: { id: QuickActionId; title: string; description: string; ar
   },
 ]
 
-type FolderEntry = {
-  name: string
-  path: string
-  isDirectory: boolean
-}
-
-const INVENTORY_LIMIT = 200
-const DIRECTORY_LIMIT = 40
-const DIRECTORY_DEPTH_LIMIT = 4
-const SKIPPED_DIRECTORIES = new Set(['node_modules', '.git'])
-
 function displayName(path: string): string {
   return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '所选资料'
-}
-
-function pathDepth(path: string): number {
-  return path === '.' ? 0 : path.split('/').filter(Boolean).length
-}
-
-async function collectFolderInventory(workspaceRoot: string): Promise<string[]> {
-  const queue = ['.']
-  const rows: string[] = []
-  let visitedDirectories = 0
-  while (queue.length > 0 && rows.length < INVENTORY_LIMIT && visitedDirectories < DIRECTORY_LIMIT) {
-    const relativeDirectory = queue.shift()!
-    visitedDirectories += 1
-    const result = await ipcClient.invoke('workspace.fs.listDir', {
-      workspaceRoot,
-      path: relativeDirectory,
-    }) as { ok?: boolean; entries?: FolderEntry[] }
-    if (!result.ok) continue
-    for (const entry of result.entries ?? []) {
-      if (rows.length >= INVENTORY_LIMIT) break
-      const relativePath = entry.path.replace(/\\/g, '/')
-      rows.push(`${entry.isDirectory ? '[目录]' : '[文件]'} ${relativePath}`)
-      if (
-        entry.isDirectory &&
-        pathDepth(relativePath) < DIRECTORY_DEPTH_LIMIT &&
-        !SKIPPED_DIRECTORIES.has(entry.name)
-      ) {
-        queue.push(relativePath)
-      }
-    }
-  }
-  return rows
 }
 
 async function ensureWorkWorkspace(label: string): Promise<string | null> {
@@ -120,10 +77,8 @@ export function WorkHomeView() {
         const selected = await ipcClient.invoke('dialog:openDirectory') as { path?: string | null }
         if (!selected.path) return
         await activateWorkspace(selected.path, { preferHome: true })
-        const inventory = await collectFolderInventory(selected.path)
-        const listed = inventory.length > 0 ? inventory.join('\n') : '（文件夹为空，或没有可读取的目录项）'
         submitComposerPrompt(
-          `整理我刚选择的文件夹“${displayName(selected.path)}”。下面是小规通过受控目录清单取得的相对路径，不包含绝对路径：\n${listed}\n请先按类型归类并概括；需要理解具体内容时，直接读取上面列出的相对文件，不要让我再次输入路径。`,
+          `整理我刚选择的文件夹“${displayName(selected.path)}”（${selected.path}）。请读取其中所有类型的文件并形成完整资料总账：能提取内容的请结合正文归类和概括；暂时不能语义解析的格式也必须按路径、类型和大小列入清单，并明确标注正文未读取。不要再次让我选择文件。`,
         )
         return
       }

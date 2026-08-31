@@ -44,6 +44,8 @@ import {
 } from './work-docx-template-materialize-composition'
 import { createXiaoguiWorkDocxTemplateMaterializeWorkerToolHandlerV1 } from './work-docx-template-materialize-worker-tool'
 import { createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1 } from './work-document-snapshot-worker-tool'
+import { getDefaultWorkMaterialsServiceV1 } from './work-materials-composition'
+import { createXiaoguiWorkMaterialsWorkerToolHandlerV1 } from './work-materials-worker-tool'
 import { createXiaoguiWorkerHostToolRouterV1 } from './worker-host-tool-router'
 import { registerTemplateLibraryHandlersV1 } from './template-library-ipc'
 import { closeDefaultTemplateLibraryServiceV1 } from './template-library-composition'
@@ -97,6 +99,10 @@ export function initXiaogui(): void {
       }),
       workDocumentSnapshot: createXiaoguiWorkDocumentSnapshotWorkerToolHandlerV1({
         getService: getDefaultWorkDocumentSnapshotServiceV1,
+        scopeResolver: sessionScopeResolverV1,
+      }),
+      workMaterials: createXiaoguiWorkMaterialsWorkerToolHandlerV1({
+        getService: getDefaultWorkMaterialsServiceV1,
         scopeResolver: sessionScopeResolverV1,
       }),
     }),

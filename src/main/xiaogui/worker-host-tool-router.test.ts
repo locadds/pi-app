@@ -46,6 +46,24 @@ describe('xiaogui Worker host-tool router', () => {
       ok: true as const,
       value: { kind: 'XIAOGUI_WORK_DOCUMENT_SELECTION_CANCELLED' as const },
     }))
+    const workMaterials = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        kind: 'XIAOGUI_WORK_MATERIALS_READY' as const,
+        snapshot: {
+          version: 'work-materials-snapshot.v1' as const,
+          requestedPaths: ['D:/project'],
+          totalFileCount: 0,
+          totalDirectoryCount: 1,
+          extractedFileCount: 0,
+          metadataOnlyFileCount: 0,
+          failedFileCount: 0,
+          files: [],
+          warnings: [],
+          originalInputsUnchanged: true as const,
+        },
+      },
+    }))
     const router = createXiaoguiWorkerHostToolRouterV1({
       collaboration,
       workDocx,
@@ -55,6 +73,7 @@ describe('xiaogui Worker host-tool router', () => {
       workDocxTemplateMaterialize,
       workDocxAdvancedGeneration,
       workDocumentSnapshot,
+      workMaterials,
     })
     const collaborationRequest: WorkerHostToolRequestV1 = {
       type: 'host-tool-request',
@@ -87,6 +106,17 @@ describe('xiaogui Worker host-tool router', () => {
         sourceSessionId: 'session-1',
         sourceRunId: 'run-1',
         toolCallId: 'call-3',
+      },
+    }
+    const materialsRequest: WorkerHostToolRequestV1 = {
+      type: 'host-tool-request',
+      requestId: 'materials-1',
+      method: 'xiaogui.work.materials.v1',
+      payload: {
+        paths: ['D:/other'],
+        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
+        toolCallId: 'call-materials',
       },
     }
     const reportRequest: WorkerHostToolRequestV1 = {
@@ -153,6 +183,7 @@ describe('xiaogui Worker host-tool router', () => {
     await router(metadata(templateMaterializeRequest))
     await router(metadata(advancedGenerationRequest))
     await router(metadata(snapshotRequest))
+    await router(metadata(materialsRequest))
 
     expect(collaboration).toHaveBeenCalledOnce()
     expect(workDocx).toHaveBeenCalledOnce()
@@ -162,6 +193,7 @@ describe('xiaogui Worker host-tool router', () => {
     expect(workDocxTemplateMaterialize).toHaveBeenCalledOnce()
     expect(workDocxAdvancedGeneration).toHaveBeenCalledOnce()
     expect(workDocumentSnapshot).toHaveBeenCalledOnce()
+    expect(workMaterials).toHaveBeenCalledOnce()
     expect(collaboration).toHaveBeenCalledWith(metadata(collaborationRequest))
     expect(workDocx).toHaveBeenCalledWith(metadata(workRequest))
     expect(workReportDocx).toHaveBeenCalledWith(metadata(reportRequest))
@@ -170,5 +202,6 @@ describe('xiaogui Worker host-tool router', () => {
     expect(workDocxTemplateMaterialize).toHaveBeenCalledWith(metadata(templateMaterializeRequest))
     expect(workDocxAdvancedGeneration).toHaveBeenCalledWith(metadata(advancedGenerationRequest))
     expect(workDocumentSnapshot).toHaveBeenCalledWith(metadata(snapshotRequest))
+    expect(workMaterials).toHaveBeenCalledWith(metadata(materialsRequest))
   })
 })

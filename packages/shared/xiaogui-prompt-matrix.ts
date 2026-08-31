@@ -85,6 +85,7 @@ export const XIAOGUI_CAPABILITY_MATRIX_V1 = {
     tools: [
       { name: 'read', source: 'PI_CORE' },
       { name: 'xiaogui_read_pdf', source: 'WORKER_BUILTIN' },
+      { name: 'xiaogui_work_read_materials', source: 'WORKER_BUILTIN' },
     ],
   },
   'work.report-docx': {

@@ -104,6 +104,7 @@ describe('Worker Prompt dispatch preflight', () => {
     const registered = [
       'read',
       'xiaogui_read_pdf',
+      'xiaogui_work_read_materials',
       'xiaogui_work_docx',
       'xiaogui_work_docx_advanced_generation',
       'xiaogui_work_report_docx',
@@ -213,6 +214,7 @@ describe('Worker Prompt dispatch preflight', () => {
     const registered = [
       'read',
       'xiaogui_read_pdf',
+      'xiaogui_work_read_materials',
       'xiaogui_work_docx',
       'xiaogui_work_docx_advanced_generation',
     ]
@@ -295,7 +297,14 @@ describe('Worker Prompt dispatch preflight', () => {
   })
 
   it('P16 reuses a Worker while active tools and Prompt manifest follow each frozen turn', async () => {
-    const registered = ['read', 'bash', 'edit', 'write', 'xiaogui_read_pdf']
+    const registered = [
+      'read',
+      'bash',
+      'edit',
+      'write',
+      'xiaogui_read_pdf',
+      'xiaogui_work_read_materials',
+    ]
     let activeTools: string[] = []
     const manifests: Array<{ mode: string; tools: readonly string[] }> = []
     const prompt = vi.fn(async (
@@ -353,7 +362,7 @@ describe('Worker Prompt dispatch preflight', () => {
     await vi.waitFor(() => expect(st.promptTurnContext).toBeNull())
 
     expect(manifests).toEqual([
-      { mode: 'WORK', tools: ['read', 'xiaogui_read_pdf'] },
+      { mode: 'WORK', tools: ['read', 'xiaogui_read_pdf', 'xiaogui_work_read_materials'] },
       { mode: 'CODING', tools: ['bash', 'edit', 'read', 'write'] },
     ])
     expect(activeTools).toEqual(['bash', 'edit', 'read', 'write'])
