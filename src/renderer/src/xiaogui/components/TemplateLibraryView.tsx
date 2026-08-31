@@ -22,7 +22,13 @@ function templatePrompt(entry: TemplateLibrarySummaryV1, versionNumber: number):
   return `使用本机模板库中的“${entry.name}”第 ${versionNumber} 版生成新文档，先把需要填写的内容列给我确认`
 }
 
-export function TemplateLibraryView({ onBack }: { onBack: () => void }) {
+export function TemplateLibraryView({
+  onBack,
+  compact = false,
+}: {
+  onBack?: () => void
+  compact?: boolean
+}) {
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [query, setQuery] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
@@ -95,22 +101,24 @@ export function TemplateLibraryView({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-6 py-6">
-      <header className="flex items-center gap-3 border-b border-border/70 pb-4">
-        <button type="button" onClick={onBack} className="rounded-md border px-2.5 py-1.5 text-[12px] hover:bg-muted">返回工作台</button>
+    <div className={compact ? 'flex h-full min-w-0 flex-col px-3 py-3' : 'mx-auto flex h-full w-full max-w-5xl flex-col px-6 py-6'}>
+      <header className={compact ? 'flex flex-col gap-2 border-b border-border/70 pb-3' : 'flex items-center gap-3 border-b border-border/70 pb-4'}>
+        {onBack && <button type="button" onClick={onBack} className="rounded-md border px-2.5 py-1.5 text-[12px] hover:bg-muted">返回工作台</button>}
         <div><h1 className="text-[16px] font-semibold">本机模板库</h1><p className="mt-0.5 text-[11px] text-muted-foreground">保存复核完成的模板，并可按历史版本继续生成文档</p></div>
-        {usage && <span className="ml-auto text-[11px] text-muted-foreground">{usage.activeTemplateCount} 个模板 · {usage.versionCount} 个版本 · {readableBytes(usage.totalAssetBytes)}</span>}
+        {usage && <span className={compact ? 'text-[11px] text-muted-foreground' : 'ml-auto text-[11px] text-muted-foreground'}>{usage.activeTemplateCount} 个模板 · {usage.versionCount} 个版本 · {readableBytes(usage.totalAssetBytes)}</span>}
       </header>
 
       {configured === false ? <div className="m-auto max-w-md text-center"><h2 className="text-[15px] font-semibold">先选择模板库文件夹</h2><p className="mt-2 text-[12px] leading-6 text-muted-foreground">模板和版本记录由你放在指定磁盘，不固定占用 C 盘。小规不会自动删除。</p><button type="button" disabled={busy} onClick={configure} className="mt-5 rounded-md bg-primary px-4 py-2 text-[12px] text-primary-foreground disabled:opacity-40">选择文件夹</button></div> : <>
-        <div className="flex items-center gap-2 py-4">
+        <div className={compact ? 'flex flex-col gap-2 py-3' : 'flex items-center gap-2 py-4'}>
           <input value={query} onChange={(event) => setQuery(event.target.value)} className="min-w-0 flex-1 rounded-md border px-3 py-2 text-[12px]" placeholder="搜索名称、用途或标签" />
-          <button type="button" onClick={() => setShowTrash(false)} className={`rounded-md border px-3 py-2 text-[12px] ${!showTrash ? 'bg-muted font-medium' : ''}`}>模板</button>
-          <button type="button" onClick={() => setShowTrash(true)} className={`rounded-md border px-3 py-2 text-[12px] ${showTrash ? 'bg-muted font-medium' : ''}`}>回收站</button>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setShowTrash(false)} className={`flex-1 rounded-md border px-3 py-2 text-[12px] ${!showTrash ? 'bg-muted font-medium' : ''}`}>模板</button>
+            <button type="button" onClick={() => setShowTrash(true)} className={`flex-1 rounded-md border px-3 py-2 text-[12px] ${showTrash ? 'bg-muted font-medium' : ''}`}>回收站</button>
+          </div>
         </div>
         {!!availableTags.length && <div className="mb-3 flex flex-wrap gap-1 text-[10px] text-muted-foreground">{availableTags.map((tag) => <button type="button" key={tag} onClick={() => setSelectedTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])} className={`rounded border px-1.5 py-0.5 ${selectedTags.includes(tag) ? 'bg-muted font-medium text-foreground' : ''}`}>{tag}</button>)}</div>}
         {error && <p className="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</p>}
-        <div className="grid min-h-0 flex-1 gap-3 overflow-auto pb-5 sm:grid-cols-2 xl:grid-cols-3">
+        <div className={compact ? 'grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto pb-4' : 'grid min-h-0 flex-1 gap-3 overflow-auto pb-5 sm:grid-cols-2 xl:grid-cols-3'}>
           {result?.items.map((entry) => <article key={entry.entryId} className="flex min-h-44 flex-col rounded-xl border bg-background p-4">
             <div className="flex items-start justify-between gap-2"><div><h2 className="text-[13px] font-semibold">{entry.name}</h2><p className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">{entry.purpose || '暂无用途说明'}</p></div><span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px]">v{entry.latestVersion.versionNumber}</span></div>
             <p className="mt-3 text-[11px] text-muted-foreground">{entry.fields.length} 个字段 · {entry.versionCount} 个版本 · {readableBytes(entry.latestVersion.byteLength)}</p>

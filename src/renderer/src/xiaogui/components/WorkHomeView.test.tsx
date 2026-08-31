@@ -107,6 +107,43 @@ describe('WorkHomeView', () => {
     expect(submit.mock.calls[0]![0]).not.toMatch(/[A-Za-z]:[\\/]/)
   })
 
+  it('没有工作区时自动建立内部 WORK 工作区并打开普通文档选择器', async () => {
+    const user = userEvent.setup()
+    useUIStore.setState({
+      currentWorkspace: null,
+      ephemeralSandboxDraft: false,
+    })
+    invoke.mockImplementation(async (method) => {
+      if (method === 'workspace.sandbox.create') {
+        return { sandbox: { path: 'D:\\sandbox-workspaces\\普通文档整理' } }
+      }
+      if (method === 'xiaogui.work.template-intake.source.choose') {
+        return { cancelled: false, fileDisplayName: '个人小结.docx' }
+      }
+      throw new Error(`UNEXPECTED_METHOD:${method}`)
+    })
+    render(<WorkHomeView />)
+
+    await user.click(screen.getByRole('button', { name: '选择普通文档并开始分析' }))
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'workspace.sandbox.create', {
+      label: '普通文档整理',
+    })
+    expect(activate).toHaveBeenCalledWith('D:\\sandbox-workspaces\\普通文档整理', {
+      preferHome: true,
+    })
+    expect(invoke).toHaveBeenNthCalledWith(2, 'xiaogui.work.template-intake.source.choose', {
+      workspaceRoot: 'D:\\sandbox-workspaces\\普通文档整理',
+    })
+    expect(submit).toHaveBeenCalledWith(expect.stringContaining('个人小结.docx'))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('首页标题栏不再渲染会与右侧浮动控件重叠的模板库按钮', () => {
+    render(<WorkHomeView />)
+    expect(screen.queryByRole('button', { name: '模板库' })).toBeNull()
+  })
+
   it('按模板生成直接打开历史模板选择界面', async () => {
     const user = userEvent.setup()
     render(<WorkHomeView />)

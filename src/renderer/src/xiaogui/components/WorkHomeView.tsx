@@ -48,7 +48,6 @@ function displayName(path: string): string {
 async function ensureWorkWorkspace(label: string): Promise<string | null> {
   const state = useUIStore.getState()
   if (state.currentWorkspace) return state.currentWorkspace
-  if (!state.ephemeralSandboxDraft) return null
   const response = await ipcClient.invoke('workspace.sandbox.create', { label }) as {
     sandbox?: { path?: string }
   }
@@ -124,7 +123,6 @@ export function WorkHomeView() {
         <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
           work · 日常工作
         </span>
-        <button type="button" onClick={() => setView('TEMPLATE_LIBRARY')} className="ml-auto text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">模板库</button>
       </header>
 
       <div className="mb-1 mt-6 flex items-baseline justify-between">

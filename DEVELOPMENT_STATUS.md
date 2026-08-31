@@ -1,5 +1,113 @@
 # 小规开发阶段状态
 
+## 2026-08-31｜WORK 普通文档直达选择器与模板库右栏迁移
+
+### 阶段状态
+
+- 状态：代码修改、红绿回归、类型检查和真实 Electron 窗口冒烟完成，等待人工验收
+- 当前分支：`agent/next-phase-prompt-office-v1`
+- 修改基线：`97a2c8c1ce14c866cf2be70630d6f8fc4183db35`
+- 合并与发布：未合并阶段线、未覆盖正式主线、未制作发布包
+
+### 本阶段目标
+
+1. 修复 WORK 首页在“新对话/无工作区”状态点击“整理普通文档”时，只显示“请先新建对话或打开一个工作区”而不弹文件选择框的问题。
+2. 移除会与主区右上角折叠、刷新浮动控件重叠的标题栏“模板库”按钮，把本机模板库作为右侧栏栏目显示。
+
+### 实际修改文件
+
+- `packages/shared/right-panels.ts`
+- `packages/shared/right-panels.test.ts`
+- `src/renderer/src/features/side-panels/side-panel-host.tsx`
+- `src/renderer/src/features/side-panels/side-panel-host.test.tsx`
+- `src/renderer/src/lib/right-panel-catalog.tsx`
+- `src/renderer/src/xiaogui/components/TemplateLibraryView.tsx`
+- `src/renderer/src/xiaogui/components/WorkHomeView.tsx`
+- `src/renderer/src/xiaogui/components/WorkHomeView.test.tsx`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 删除“只有已经存在临时草稿时才允许建立 WORK 工作区”的错误前置条件；没有工作区时，入口会自动建立内部 WORK 工作区、激活空白工作台，再由主进程打开受控 DOC/DOCX 选择器。
+2. 用户取消选择时不发送提示词、不进入分析，也不再显示旧的“请先新建对话或打开一个工作区”错误。
+3. 从 WORK 首页标题栏移除独立“模板库”文字按钮；最右侧“按模板生成”卡片仍可进入原有完整模板库视图。
+4. 将“模板库”注册为核心右侧栏栏目，默认可见，并接入本机模板库真实内容与历史版本能力。
+5. 为右侧栏增加紧凑布局：搜索、模板/回收站切换和单列模板卡片适配窄栏，不再与主区浮动按钮抢占位置。
+
+### 未完成内容
+
+- 尚未由用户选择一份真实 DOC/DOCX 完成“选择—分析—复核”的完整业务旅程；本阶段只证明选择器入口和模板库位置正确。
+- 未改变已登记的“根据已选文件真实类型自动路由 PDF、DOC、DOCX 等能力”后续 P1；本次普通文档入口仍按既有 DOC/DOCX 接缝工作。
+- 未运行全量测试、未制作 Portable、未合并阶段线或正式主线。
+
+### 与规格文档存在的偏差
+
+- 无新增模板资产、Univer Office Surface 或 Prompt/模式架构偏差；原文件只读、模板资产本机保存、Agent 结果先进入草稿/工作副本、人工确认后生成等冻结决定不变。
+- DOCX HTML/PDF 降级路径未删除，模板领域状态机和 Univer 文档表面未修改。
+- 为满足私有文档交接当前仍需先建立内部 WORK 工作区；若用户随后取消文件选择，会留下一个尚未产生会话和提示词的空内部工作区目录。这是本阶段最小修复的已知限制。
+
+### 测试命令和测试结果
+
+#### 红灯证据
+
+```powershell
+npm run test:unit -- src/renderer/src/xiaogui/components/WorkHomeView.test.tsx packages/shared/right-panels.test.ts src/renderer/src/features/side-panels/side-panel-host.test.tsx
+```
+
+生产代码修改前结果：`3 test files failed`。失败分别证明：无工作区时 `workspace.sandbox.create` 调用次数为 `0`、首页仍存在“模板库”按钮、右侧栏返回 `panel.unregistered`，且目录中不存在模板库栏目。
+
+#### 修复后聚焦测试
+
+```powershell
+npm run test:unit -- src/renderer/src/xiaogui/components/WorkHomeView.test.tsx packages/shared/right-panels.test.ts src/renderer/src/features/side-panels/side-panel-host.test.tsx src/renderer/src/xiaogui/components/TemplateLibraryView.test.tsx
+```
+
+结果：`4 test files passed`，`16 tests passed`。
+
+#### 类型检查
+
+```powershell
+npm run typecheck
+```
+
+结果：退出码 `0`。
+
+#### 定向静态检查与差异检查
+
+```powershell
+node node_modules\eslint\bin\eslint.js packages/shared/right-panels.ts packages/shared/right-panels.test.ts src/renderer/src/features/side-panels/side-panel-host.tsx src/renderer/src/features/side-panels/side-panel-host.test.tsx src/renderer/src/lib/right-panel-catalog.tsx src/renderer/src/xiaogui/components/TemplateLibraryView.tsx src/renderer/src/xiaogui/components/WorkHomeView.tsx src/renderer/src/xiaogui/components/WorkHomeView.test.tsx
+git diff --check
+```
+
+结果：两项均退出码 `0`。
+
+#### Electron 真实窗口冒烟
+
+```powershell
+node node_modules\electron-vite\bin\electron-vite.js dev --remoteDebuggingPort 9333
+```
+
+- Main、Preload 和 Renderer 均启动成功；重启主进程后复核，排除了仅由热更新造成的旧右栏目录覆盖。
+- 在“新对话/无工作区”状态点击“整理普通文档”，Windows 顶层窗口实查出现 `#32770` 原生对话框，标题为“选择要整理的普通成品 Word”；页面进入“正在打开…”且没有旧错误。关闭选择框后按钮恢复，未发送提示词。
+- 真实右侧栏稳定显示“模板库”页签；点击后显示“本机模板库”、搜索框、模板/回收站及当前资产统计，主区标题栏不再显示重叠按钮。
+- 可见截图证据：`D:\CodexEvidence\xiaogui\2026-08-31-work-home-picker-right-template-library\template-library-right-panel-restarted.png`（不提交仓库）。
+
+### 已知风险
+
+1. 用户取消普通文档选择后，已创建的空内部 WORK 工作区目录不会自动删除；它没有会话、提示词或所选文档内容，但长期多次取消可能产生少量空目录。
+2. 模板库当前作为核心右侧栏栏目，在其他一级模式切换后仍可见；其行为仍是本机模板资产管理，不会改变 DESIGN、CODING 的任务状态机或 Agent 能力。
+3. 开发环境存在与本阶段无关的可选 `better-sqlite3` 原生绑定警告；本阶段模板库通过既有降级路径正常显示，未修改 SQLite 装配。
+
+### 下一阶段计划
+
+停止施工并等待用户在当前已打开的小规窗口验收：
+
+1. 直接点“整理普通文档”是否立即出现文件选择框；
+2. 取消后是否可继续操作且没有旧错误；
+3. 右侧“模板库”位置和紧凑布局是否符合预期。
+
+验收通过前不进入文件类型自动路由、模板分析质量或其他功能阶段。
+
 ## 2026-08-31｜WORK 模型语义驱动的局部模板范围
 
 ### 阶段状态

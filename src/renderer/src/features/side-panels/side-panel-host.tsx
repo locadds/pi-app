@@ -14,6 +14,9 @@ const WorkspaceFilesPanel = lazy(() =>
 const CollaborationHubPanel = lazy(() =>
   import('@renderer/xiaogui/components/CollaborationHubPanel').then((m) => ({ default: m.CollaborationHubPanel })),
 )
+const TemplateLibraryView = lazy(() =>
+  import('@renderer/xiaogui/components/TemplateLibraryView').then((m) => ({ default: m.TemplateLibraryView })),
+)
 
 const ADAPTER_PANEL_COMPONENTS: Record<string, React.ComponentType<import('./side-panel-registry').SidePanelComponentProps>> = {
   'workspace-tasks': WorkspaceTasksSidePanel,
@@ -44,6 +47,7 @@ export function SidePanelHost({ item }: { item: RightPanelCatalogItem | undefine
   if (item.id === 'tree') return wrap(<TreePanel />)
   if (item.id === 'files') return wrap(<WorkspaceFilesPanel />)
   if (item.id === 'collaboration') return wrap(<CollaborationHubPanel />)
+  if (item.id === 'template-library') return wrap(<TemplateLibraryView compact />)
 
   return <div className="p-4 text-[12px] text-muted-foreground">{t('common:panel.unregistered', { id: item.id })}</div>
 }

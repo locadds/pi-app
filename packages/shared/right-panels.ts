@@ -1,6 +1,6 @@
 /** 右侧栏 Tab：核心栏目 + 适配器声明的 sidePanel（合并后用于 Tab / 设置开关） */
 
-export const CORE_RIGHT_PANEL_IDS = ['review', 'run', 'context', 'tree', 'files', 'collaboration'] as const
+export const CORE_RIGHT_PANEL_IDS = ['review', 'run', 'context', 'tree', 'files', 'collaboration', 'template-library'] as const
 
 export type CoreRightPanelId = (typeof CORE_RIGHT_PANEL_IDS)[number]
 
@@ -29,6 +29,7 @@ export const CORE_RIGHT_PANEL_CATALOG: RightPanelCatalogItem[] = [
   { id: 'tree', labelKey: 'panel.tree', fallbackLabel: 'Tree', description: 'Session tree / rewind (like /tree)', descriptionKey: 'panel.treeDesc', icon: 'ListTree', source: 'core' },
   { id: 'files', labelKey: 'panel.files', fallbackLabel: 'Files', description: 'Workspace file preview & explorer', descriptionKey: 'panel.filesDesc', icon: 'FolderTree', source: 'core' },
   { id: 'collaboration', fallbackLabel: '协作', description: 'Collaboration planning and read-only task status', icon: 'Network', source: 'core' },
+  { id: 'template-library', fallbackLabel: '模板库', description: '本机模板与历史版本', icon: 'BookOpen', source: 'core' },
 ]
 
 /** @deprecated */
@@ -36,7 +37,7 @@ export const RIGHT_PANEL_CATALOG = CORE_RIGHT_PANEL_CATALOG
 
 export type RightPanelPrefs = Record<string, boolean>
 
-/** Default: Files + Run + Collaboration enabled. */
+/** Default: Files + Run + Collaboration + Template Library enabled. */
 export function defaultCoreRightPanelPrefs(): RightPanelPrefs {
   return {
     review: false,
@@ -46,6 +47,7 @@ export function defaultCoreRightPanelPrefs(): RightPanelPrefs {
     files: true,
     // Composer 的「协作计划」入口必须默认可用，不在点击时隐式改写用户设置。
     collaboration: true,
+    'template-library': true,
   }
 }
 
