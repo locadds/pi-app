@@ -1,5 +1,111 @@
 # 小规开发阶段状态
 
+## 2026-08-31｜WORK 模型语义驱动的局部模板范围
+
+### 阶段状态
+
+- 状态：代码修改、聚焦测试、类型检查、完整构建和真实 Office Surface 浏览器冒烟完成，等待人工验收
+- 当前分支：`agent/next-phase-prompt-office-v1`
+- 修改基线：`98782a1`
+- 合并与发布：未合并阶段线、未覆盖正式主线、未制作发布包
+
+### 本阶段目标
+
+修复模板整理把含有少量项目专属信息的整段文字整体标黄、整体变量化的问题。语义判断交给当前接入模型：模型在理解全文后直接引用需要变化、移除或人工判断的最小连续原文；程序不再用关键词或正则脚本替模型分类，只机械验证引用确实存在、重复文字指向明确、范围互不重叠，并把通过验证的精确范围交给字段图、Univer 和物化器。
+
+### 实际修改文件
+
+- `packages/shared/worker-host-tools.ts`
+- `packages/shared/xiaogui-prompt-capabilities.ts`
+- `packages/shared/xiaogui-work-docx-template-intake.ts`
+- `src/worker/xiaogui-work-docx-template-intake-tool.ts`
+- `src/worker/xiaogui-work-docx-template-intake-tool.test.ts`
+- `src/main/xiaogui/work-docx-template-intake-worker-tool.ts`
+- `src/main/xiaogui/work-docx-template-intake-service.ts`
+- `src/main/xiaogui/work-docx-template-intake-service.test.ts`
+- `src/main/xiaogui/template-intelligence/template-field-graph-builder-v2.ts`
+- `src/main/xiaogui/template-intelligence/template-field-graph-builder-v2.test.ts`
+- `src/main/xiaogui/office-surface/docx-univer-projection.test.ts`
+- `src/main/xiaogui/work-docx-template-materializer.ts`
+- `src/main/xiaogui/work-docx-template-materializer.test.ts`
+- `src/main/__tests__/pi-prompt-catalog-effective.test.ts`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 模板分析 Prompt 升级为 `template-intake-analysis@1.1.0`：模型可先自由理解全文，只输出真正需要处理的原文片段；未输出内容默认保留，不再要求逐段分类。
+2. 模型建议支持 `SELECTION` 和 `WHOLE_FRAGMENT`。通常由模型逐字返回 `selectedText`；只有整块确实需要处理时才允许整块建议。
+3. Worker 对模型建议执行机械校验：原文不存在、重复文字未指定出现次序、范围重叠、跨片段局部选择或非法组合都会拒绝，并继续沿用“最多修复一次、之后安全降级”。模型不需要自行计算字符偏移。
+4. 主进程候选契约新增 UTF-16 局部范围；同一段可以同时包含多个互不重叠的变量、排除项或待判断项，未被模型选择的前后文字原样保留。
+5. 删除了主进程中按“签字、电话、旧项目”等中文关键词替模型进行文本风险分类的规则脚本。非文本对象的 OOXML 结构安全检查仍保留。
+6. 字段图和 Univer 投影使用精确范围，同一句相同文字出现两次时可以只标黄模型指定的那一次；高风险文本也能定位到对应片段。
+7. 物化器支持同一段内多个局部动作合并执行，例如只把项目名变成字段、只删除日期，而不改动段落其余格式和文字。
+
+### 未完成内容
+
+- 尚未让用户用真实业务文档和当前实际接入模型完成一次端到端人工验收；模型的语义质量仍取决于所选模型能力和文档质量。
+- DOCX HTML 兼容降级视图仍保留；本阶段保证 Univer 主视图的精确范围，未扩展旧降级视图的每一种复杂对象局部标注能力。
+- 图片、浮动对象、文本框等非纯文本内容仍依照既有结构检测和人工复核，不由本阶段的文本片段协议替代。
+- 未运行全量测试、未制作 Portable、未合并阶段线或正式主线。
+
+### 与规格文档存在的偏差
+
+- 无新增产品架构偏差。仍遵循原文件只读、Agent 结果先进入草稿/工作副本、人工确认后才生成、Univer 单一主视图和保留 DOCX HTML/PDF 降级路径等冻结决定。
+- 用户所说的“通过 skill 分析”在本阶段落为小规内部版本化分析 Prompt 与隐藏模板工具能力，而不是新增一个对用户公开的页面或规则引擎；语义决定由接入模型完成。
+- 为避免模型输出不可靠偏移，偏移量由程序根据模型逐字引用的原文机械求得。这是数据完整性校验，不参与语义分类。
+
+### 测试命令和测试结果
+
+#### 红灯证据
+
+修改生产实现前，新增用例分别复现：Prompt 仍为 `1.0.0`、同段项目名与日期被返回为整段候选，以及同一锚点的多个局部物化动作触发 `TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT`。这些用例在修复前均失败。
+
+#### 修复后聚焦测试
+
+```powershell
+npm run test:unit -- src/worker/xiaogui-work-docx-template-intake-tool.test.ts src/main/xiaogui/work-docx-template-intake-service.test.ts src/main/xiaogui/template-intelligence/template-field-graph-builder-v2.test.ts src/main/xiaogui/work-docx-template-materializer.test.ts src/main/xiaogui/office-surface/docx-univer-projection.test.ts src/main/__tests__/pi-prompt-catalog-effective.test.ts
+```
+
+结果：`6 test files passed`，`33 tests passed`，退出码 `0`。覆盖空建议默认保留、重复文本出现次序、选择范围重叠拒绝、同段多变量、精确标黄和局部物化。
+
+#### 类型检查与完整构建
+
+```powershell
+npm run typecheck
+npm run build
+```
+
+结果：两项退出码均为 `0`。主进程、Renderer、Office Viewer 和 Office Gateway 构建成功；只有既有动态导入与 chunk 体积提示。
+
+#### Office Surface 真实浏览器冒烟
+
+```powershell
+$env:XIAOGUI_OFFICE_BROWSER_PROFILE='D:\CodexTemp\xiaogui-partial-range-browser-20260831'
+npm run smoke:office-browser
+```
+
+结果：`ok: true`。验证精确字段范围和黄色标记、正文/表格/页眉/页脚图片解码、Univer 真实挂载、字段更新、保存后重载及零页面/图片控制台错误。
+
+#### Electron 环境门
+
+```powershell
+$env:XIAOGUI_OFFICE_SMOKE_USER_DATA='D:\CodexTemp\xiaogui-partial-range-smoke-20260831'
+npm run smoke:office
+```
+
+结果：退出码 `1`，命中这台主机既有的 `Electron app ready timeout`。该脚本在 Office Viewer 载入前即超时，因此不能作为本阶段功能失败或通过的证据；真实 Office Surface 改由上述浏览器冒烟验证，没有伪装成功。
+
+### 已知风险
+
+1. 不同模型对“最小可变片段”的判断可能不同；程序只保证引用和落位正确，不把模型语义意见当成最终事实，仍须人工复核。
+2. 同样文字在一个片段内重复时，模型必须给出第几次出现；否则建议会被拒绝并触发一次修复或安全降级。
+3. 模型若漏掉可变内容，该处会按默认规则保留。后续可通过用户自然语言补充或在 Univer 中主动选择，而不应重新引入脚本猜测。
+4. Electron 隐藏冒烟的主机就绪超时仍待单独诊断；本阶段没有扩大到 Electron 启动链修复。
+
+### 下一阶段计划
+
+等待人工验收本阶段。验收时使用一份同时含“固定前文 + 项目名 + 日期 + 固定后文”的真实 DOC/DOCX，重点确认只有项目名和日期被标黄、前后正文不变，并尝试在同一段补充一个人工选择。验收通过后再决定是否根据真实模型表现微调分析 Prompt；不得在未观察真实样本前新增关键词脚本或扩大规则体系。
+
 ## 2026-08-31｜WORK 普通文档路由与会话续发修复
 
 ### 阶段状态

@@ -121,22 +121,77 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
   it('uses a separately versioned analysis Prompt and rejects invalid structured output explicitly', () => {
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.id)
       .toBe('template-intake-analysis')
-    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.version).toBe('1.0.0')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.version).toBe('1.1.0')
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
-      .toContain('template-intake-analysis@1.0.0')
+      .toContain('template-intake-analysis@1.1.0')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
+      .toContain('未提到的原文默认保留')
 
-    expect(() => __test.validateSuggestions('not json', new Set(['F001'])))
+    const fragments = [{
+      fragmentId: 'F001',
+      kind: 'PARAGRAPH' as const,
+      anchor: { part: 'BODY' as const, paragraphIndex: 1 },
+      text: '项目名称：下盐公路工程（一期）',
+    }]
+
+    expect(() => __test.validateSuggestions('not json', fragments))
       .toThrow('MODEL_JSON_INVALID')
     expect(() => __test.validateSuggestions(JSON.stringify({
       suggestions: [{
         fragmentIds: ['F999'],
-        kind: 'FIXED',
-        reason: '固定',
+        scope: 'SELECTION',
+        selectedText: '下盐公路工程',
+        kind: 'VARIABLE',
+        reason: '项目名称每次使用时变化',
         confidence: 0.9,
+        suggestedName: '项目名称',
       }],
-    }), new Set(['F001']))).toThrow('MODEL_FRAGMENT_UNKNOWN')
-    expect(() => __test.validateSuggestions('{"suggestions":[]}', new Set(['F001'])))
-      .toThrow('MODEL_FRAGMENT_INCOMPLETE')
+    }), fragments)).toThrow('MODEL_FRAGMENT_UNKNOWN')
+
+    expect(__test.validateSuggestions(JSON.stringify({
+      suggestions: [{
+        fragmentIds: ['F001'],
+        scope: 'SELECTION',
+        selectedText: '下盐公路工程',
+        kind: 'VARIABLE',
+        reason: '项目名称每次使用时变化',
+        confidence: 0.97,
+        suggestedName: '项目名称',
+      }],
+    }), fragments)).toEqual([expect.objectContaining({
+      fragmentIds: ['F001'],
+      scope: 'SELECTION',
+      selection: {
+        originalText: '下盐公路工程',
+        startUtf16: 5,
+        endUtf16Exclusive: 11,
+      },
+    })])
+
+    // 模型不必穷举固定段落；没有建议即表示原文保留。
+    expect(__test.validateSuggestions('{"suggestions":[]}', fragments)).toEqual([])
+
+    const repeated = [{ ...fragments[0], text: '项目简称：小规；曾用简称：小规' }]
+    const ambiguous = {
+      suggestions: [{
+        fragmentIds: ['F001'],
+        scope: 'SELECTION',
+        selectedText: '小规',
+        kind: 'VARIABLE',
+        reason: '简称随项目变化',
+        confidence: 0.9,
+        suggestedName: '项目简称',
+      }],
+    }
+    expect(() => __test.validateSuggestions(JSON.stringify(ambiguous), repeated))
+      .toThrow('MODEL_SELECTION_NOT_FOUND')
+    expect(__test.validateSuggestions(JSON.stringify({
+      suggestions: [{ ...ambiguous.suggestions[0], occurrence: 2 }],
+    }), repeated)[0]?.selection).toEqual({
+      originalText: '小规',
+      startUtf16: 13,
+      endUtf16Exclusive: 15,
+    })
   })
 
   it('is a hidden natural-language intake ending at a read-only report', () => {
@@ -189,6 +244,8 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
             suggestions: [
               {
                 fragmentIds: ['F001'],
+                scope: 'SELECTION',
+                selectedText: '旧项目',
                 kind: 'VARIABLE',
                 reason: '不同项目需要替换',
                 confidence: 0.9,
@@ -322,6 +379,7 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
           suggestions: [
             {
               fragmentIds: aliases,
+              scope: 'WHOLE_FRAGMENT',
               kind: 'FIXED',
               reason: '全文结构中的通用固定内容',
               confidence: 0.9,
@@ -349,7 +407,7 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     const prompt = String(complete.mock.calls[0]?.[1]?.messages?.[0]?.content?.[0]?.text)
     expect(prompt).toContain('F001')
     expect(prompt).toContain('F131')
-    expect(prompt).toContain('最多包含 20 个')
+    expect(prompt).toContain('未输出的原文自动保留')
     expect(prompt).not.toContain(fragmentIds[0])
     expect(complete.mock.calls[0]?.[2]?.maxTokens).toBeGreaterThan(4_096)
     expect(
@@ -391,7 +449,7 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
         },
       })
     const truncated =
-      '{"suggestions":[{"fragmentIds":["F001"],"kind":"FIXED","reason":"固定","confidence":0.9}'
+      '{"suggestions":[{"fragmentIds":["F001"],"scope":"WHOLE_FRAGMENT","kind":"FIXED","reason":"固定","confidence":0.9}'
     const complete = vi
       .fn()
       .mockResolvedValueOnce(modelResponse(truncated, 'length'))

@@ -129,6 +129,11 @@ describe('buildTemplateFieldGraphV2', () => {
     expect(result.fieldGraph.issues).toHaveLength(1)
     const risk = result.fieldGraph.issues.find((item) => item.kind === 'HIGH_RISK_CONTENT')
     expect(risk?.question).toContain('2 处联系方式')
+    expect(risk?.occurrenceIds).toHaveLength(2)
+    expect(result.fieldGraph.occurrences.map((item) => item.originalText)).toEqual([
+      '联系电话：13800000000',
+      '联系人电话：021-12345678',
+    ])
     expect(result.targetBindings.filter((item) => item.issueIds.includes(risk!.issueId))).toHaveLength(2)
   })
 

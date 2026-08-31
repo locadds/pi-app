@@ -130,6 +130,16 @@ async function makeNestedTableDocx(): Promise<Buffer> {
   return zip.generateAsync({ type: 'nodebuffer' })
 }
 
+async function makeRepeatedTextDocx(): Promise<Buffer> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<Types/>')
+  zip.file(
+    'word/document.xml',
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>名称：旧项目；简称：旧项目</w:t></w:r></w:p><w:sectPr/></w:body></w:document>',
+  )
+  return zip.generateAsync({ type: 'nodebuffer' })
+}
+
 async function makeHeaderFooterTableDocx(): Promise<Buffer> {
   const zip = new JSZip()
   zip.file('[Content_Types].xml', '<Types/>')
@@ -213,6 +223,45 @@ async function makeMultiSectionHeaderDocx(): Promise<Buffer> {
 }
 
 describe('DOCX 到 Office Surface 结构化投影', () => {
+  it('同段相同文字按模型给出的局部范围只标黄指定一次', async () => {
+    const paragraph = '名称：旧项目；简称：旧项目'
+    const selected = '旧项目'
+    const secondStart = paragraph.lastIndexOf(selected)
+    const projection = await projectDocxToUniverV1({
+      content: await makeRepeatedTextDocx(),
+      title: '重复文字.docx',
+      purpose: 'TEMPLATE_DRAFT',
+      readOnly: false,
+      occurrences: [{
+        occurrenceId: 'second-project-name',
+        fieldId: 'project.short-name',
+        originalText: selected,
+        sourceAnchor: { part: 'BODY', paragraphIndex: 1 },
+        textRange: {
+          startUtf16: secondStart,
+          endUtf16Exclusive: secondStart + selected.length,
+        },
+        state: 'FIELD',
+      }],
+    })
+    const document = projection.univerDocument as {
+      body: { dataStream: string; textRuns: Array<{ st: number; ed: number; ts?: { bg?: { rgb?: string } } }> }
+    }
+    const firstDocumentStart = document.body.dataStream.indexOf(selected)
+    const secondDocumentStart = document.body.dataStream.lastIndexOf(selected)
+
+    expect(projection.occurrences[0]).toMatchObject({
+      startUtf16: secondDocumentStart,
+      endUtf16Exclusive: secondDocumentStart + selected.length,
+    })
+    expect(document.body.textRuns.some((run) => (
+      run.st <= secondDocumentStart && secondDocumentStart < run.ed && run.ts?.bg?.rgb === '#FFF2B2'
+    ))).toBe(true)
+    expect(document.body.textRuns.some((run) => (
+      run.st <= firstDocumentStart && firstDocumentStart < run.ed && run.ts?.bg?.rgb
+    ))).toBe(false)
+  })
+
   it('保留正文和表格文字，并按逻辑锚点区分重复字段', async () => {
     const projection = await projectDocxToUniverV1({
       content: await makeDocx(),

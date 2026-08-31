@@ -88,10 +88,17 @@ const IssueChoiceSchema = z.object({
 const ModelSuggestionSchema = z
   .object({
     fragmentIds: z.array(z.string().min(1).max(160)).min(1).max(200),
+    scope: z.enum(['SELECTION', 'WHOLE_FRAGMENT']).optional(),
+    selection: z.object({
+      originalText: z.string().min(1).max(500),
+      startUtf16: z.number().int().nonnegative(),
+      endUtf16Exclusive: z.number().int().positive(),
+    }).strict().optional(),
     kind: CandidateKindSchema,
     reason: z.string().min(1).max(1_000),
     confidence: z.number().min(0).max(1).nullable(),
     suggestedName: z.string().min(1).max(120).optional(),
+    riskFlags: z.array(RiskFlagSchema).max(8).optional(),
   })
   .strict()
 const ModelAnalysisSchema = z.discriminatedUnion('status', [

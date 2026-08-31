@@ -911,7 +911,7 @@ function localWarnings(
   if (variableCount > 0 && !hasLocalRanges) {
     warnings.push('未拆分的待填写内容会替换整个来源段落或整个表格单元格')
   }
-  if (hasLocalRanges) warnings.push('已按人工框选范围完成局部修改，框选范围外内容保持不变')
+  if (hasLocalRanges) warnings.push('已按模型识别或人工框选范围完成局部修改，范围外内容保持不变')
   if (structuralCount > 0) warnings.push('重复块和条件块已写入 Word 内容控件；当前简单字段生成器不会展开这些结构')
   if (retainedHighRiskCount > 0) warnings.push(`有 ${retainedHighRiskCount} 项高风险内容经人工覆盖后保留，请在预览中再次核对`)
   return warnings
@@ -965,7 +965,12 @@ export async function materializeConfirmedTemplateV1(
   const targets = adjustTargetsAfterRemovals(originalTargets, drawingRemovals)
   const textEdits = new Map<string, RangeEdit[]>()
   const structuralActions: AnchorAction[] = []
-  const claimedV2Targets = new Set<string>()
+  const claimedFullV2Targets = new Set<string>()
+  const rangeEditsByTarget = new Map<string, {
+    target: AnchorTarget
+    claimedRanges: TemplateReviewTextRangeV2[]
+    replacements: VisibleRangeReplacement[]
+  }>()
   for (const [candidateId, reviewActions] of actions.reviewActionsV2ByCandidate) {
     const candidate = input.report.candidates.find((item) => item.candidateId === candidateId)
     if (!candidate) fail('TEMPLATE_MATERIALIZE_DECISION_CHANGED')
@@ -973,7 +978,7 @@ export async function materializeConfirmedTemplateV1(
       (anchor) => anchor.part !== 'DRAWING' && anchor.part !== 'TEXT_BOX',
     )
     if (logicalAnchors.length === 0) continue
-    const hasRanges = reviewActions.some((action) => Boolean(action.range))
+    const hasRanges = Boolean(candidate.textRange) || reviewActions.some((action) => Boolean(action.range))
     if (hasRanges && logicalAnchors.length !== 1) {
       fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
     }
@@ -986,8 +991,6 @@ export async function materializeConfirmedTemplateV1(
           `${candidate.candidateId}:${key}`,
         )
       }
-      if (claimedV2Targets.has(key)) fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
-      claimedV2Targets.add(key)
       return target
     })
 
@@ -995,34 +998,83 @@ export async function materializeConfirmedTemplateV1(
       const target = candidateTargets[0]
       const part = parts.find((item) => item.name === target.partName)
       if (!part) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
-      const rangeReplacements: VisibleRangeReplacement[] = reviewActions.flatMap((action) => {
-        if (!action.range || action.kind === 'KEEP') return []
+      const key = anchorKey(logicalAnchors[0])
+      if (claimedFullV2Targets.has(key)) fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+      const current = part.xml.slice(target.start, target.end)
+      const currentText = visibleText(current)
+      if (
+        candidate.textRange &&
+        (
+          candidate.textRange.endUtf16Exclusive > currentText.length ||
+          currentText.slice(candidate.textRange.startUtf16, candidate.textRange.endUtf16Exclusive) !== candidate.preview
+        )
+      ) {
+        fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+      }
+      const group = rangeEditsByTarget.get(key) ?? {
+        target,
+        claimedRanges: [],
+        replacements: [],
+      }
+      for (const action of reviewActions) {
+        const localRange = action.range ?? (
+          candidate.textRange
+            ? { startUtf16: 0, endUtf16Exclusive: candidate.preview.length }
+            : undefined
+        )
+        if (!localRange) fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+        if (
+          localRange.startUtf16 < 0 ||
+          localRange.endUtf16Exclusive <= localRange.startUtf16 ||
+          (candidate.textRange && localRange.endUtf16Exclusive > candidate.preview.length)
+        ) {
+          fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+        }
+        const effectiveRange = candidate.textRange
+          ? {
+              startUtf16: candidate.textRange.startUtf16 + localRange.startUtf16,
+              endUtf16Exclusive: candidate.textRange.startUtf16 + localRange.endUtf16Exclusive,
+            }
+          : localRange
+        if (
+          effectiveRange.endUtf16Exclusive > currentText.length ||
+          group.claimedRanges.some(
+            (range) =>
+              effectiveRange.startUtf16 < range.endUtf16Exclusive &&
+              range.startUtf16 < effectiveRange.endUtf16Exclusive,
+          )
+        ) {
+          fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+        }
+        group.claimedRanges.push(effectiveRange)
+        if (action.kind === 'KEEP') continue
         switch (action.kind) {
           case 'REMOVE':
-            return [{ ...action.range, replacement: '' }]
+            group.replacements.push({ ...effectiveRange, replacement: '' })
+            break
           case 'REPLACE_TEXT':
-            return [{ ...action.range, replacement: action.replacementText }]
+            group.replacements.push({ ...effectiveRange, replacement: action.replacementText })
+            break
           case 'FIELD':
-            return [{ ...action.range, replacement: `{{${action.fieldName.normalize('NFKC').trim()}}}` }]
+            group.replacements.push({ ...effectiveRange, replacement: `{{${action.fieldName.normalize('NFKC').trim()}}}` })
+            break
           case 'REPLACE_IMAGE':
           case 'REPEAT':
           case 'CONDITIONAL':
             fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
         }
-      })
-      if (rangeReplacements.length > 0) {
-        const current = part.xml.slice(target.start, target.end)
-        const edits = textEdits.get(target.partName) ?? []
-        edits.push({
-          start: target.start,
-          end: target.end,
-          replacement: replaceVisibleTextRanges(current, rangeReplacements),
-        })
-        textEdits.set(target.partName, edits)
       }
+      rangeEditsByTarget.set(key, group)
       continue
     }
 
+    for (const anchor of logicalAnchors) {
+      const key = anchorKey(anchor)
+      if (claimedFullV2Targets.has(key) || rangeEditsByTarget.has(key)) {
+        fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
+      }
+      claimedFullV2Targets.add(key)
+    }
     if (reviewActions.length !== 1) fail('TEMPLATE_MATERIALIZE_ANCHOR_CONFLICT')
     const reviewAction = reviewActions[0]
     switch (reviewAction.kind) {
@@ -1078,6 +1130,19 @@ export async function materializeConfirmedTemplateV1(
       case 'REPLACE_IMAGE':
         fail('TEMPLATE_MATERIALIZE_UNSUPPORTED_CONTENT')
     }
+  }
+  for (const { target, replacements } of rangeEditsByTarget.values()) {
+    if (replacements.length === 0) continue
+    const part = parts.find((item) => item.name === target.partName)
+    if (!part) fail('TEMPLATE_MATERIALIZE_ANCHOR_NOT_FOUND')
+    const current = part.xml.slice(target.start, target.end)
+    const edits = textEdits.get(target.partName) ?? []
+    edits.push({
+      start: target.start,
+      end: target.end,
+      replacement: replaceVisibleTextRanges(current, replacements),
+    })
+    textEdits.set(target.partName, edits)
   }
   for (const [key, action] of actions.byAnchor) {
     const target = targets.get(key)
@@ -1173,7 +1238,10 @@ export async function materializeConfirmedTemplateV1(
       variables.length,
       repeatBlocks.length + conditionalBlocks.length,
       actions.retainedHighRiskCount,
-      Boolean(input.decision.reviewActionsV2?.some((action) => action.range)),
+      Boolean(
+        input.decision.reviewActionsV2?.some((action) => action.range) ||
+        input.report.candidates.some((candidate) => candidate.textRange),
+      ),
     ),
     requiresSecondConfirmation: true,
     originalSourceUnchanged: true,

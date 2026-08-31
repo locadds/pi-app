@@ -113,6 +113,11 @@ export interface TemplateIntakeCandidateV1 {
   /** 最多 500 个 Unicode 字符；不得包含文件路径或完整 OOXML。 */
   preview: string
   sourceAnchors: readonly TemplateIntakeSourceAnchorV1[]
+  /** 局部候选相对唯一来源锚点原文的 UTF-16 范围；省略表示完整锚点。 */
+  textRange?: {
+    startUtf16: number
+    endUtf16Exclusive: number
+  }
   reason: string
   /** 确定性规则可使用 1；无法可靠判断时为 null。 */
   confidence: number | null

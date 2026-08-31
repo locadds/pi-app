@@ -317,7 +317,43 @@ describe('WORK 已确认整理报告物化', () => {
     expect(xml).toContain('<w:rPr><w:b/></w:rPr><w:t>{{项目名称}}</w:t>')
     expect(xml).not.toContain('旧项目名称')
     expect(result.plan.variables.map((item) => item.name)).toContain('项目名称')
-    expect(result.plan.warnings).toContain('已按人工框选范围完成局部修改，框选范围外内容保持不变')
+    expect(result.plan.warnings).toContain('已按模型识别或人工框选范围完成局部修改，范围外内容保持不变')
+  })
+
+  it('把模型给出的两个段内候选分别设为字段和移除，不替换整个段落', async () => {
+    const source = await makeSource()
+    const base = reportFor(source)
+    const anchor = { part: 'BODY' as const, sectionIndex: 1, paragraphIndex: 1 }
+    const report: TemplateIntakeReportV1 = {
+      ...base,
+      candidates: [
+        {
+          ...candidate('partial-field', 'VARIABLE', [anchor], '项目名称'),
+          preview: '旧项目',
+          textRange: { startUtf16: 0, endUtf16Exclusive: 3 },
+        },
+        {
+          ...candidate('partial-remove', 'EXCLUDE', [anchor]),
+          preview: '名称',
+          textRange: { startUtf16: 3, endUtf16Exclusive: 5 },
+        },
+      ],
+    }
+    const decision = decisionFor(report)
+    decision.reviewActionsV2 = [
+      { targetId: 'partial-field', kind: 'FIELD', fieldName: '项目名称' },
+      { targetId: 'partial-remove', kind: 'REMOVE' },
+    ]
+
+    const result = await materializeConfirmedTemplateV1({ source, report, decision })
+    const output = await JSZip.loadAsync(result.content)
+    const xml = await output.file('word/document.xml')!.async('string')
+
+    expect(xml).toContain('<w:t>{{项目名称}}</w:t>')
+    expect(xml).not.toContain('旧项目')
+    expect(xml).not.toContain('<w:t>名称</w:t>')
+    expect(xml).toContain('<w:t>应排除的联系方式</w:t>')
+    expect(result.plan.warnings).toContain('已按模型识别或人工框选范围完成局部修改，范围外内容保持不变')
   })
 
   it('只替换指定图片并保留同一文档中的其他图片及其关系', async () => {

@@ -10,7 +10,6 @@ import type {
   TemplateIntakeErrorCodeV1,
   TemplateIntakeFinalDecisionItemV1,
   TemplateIntakeReportV1,
-  TemplateIntakeRiskFlagV1,
   TemplateIntakeUpdateOperationV1,
   TemplateIntakeWarningV1,
 } from '@shared/xiaogui-work-docx-template-intake'
@@ -257,46 +256,33 @@ async function readPrivateSource(
   }
 }
 
-function riskFlagsForText(text: string): TemplateIntakeRiskFlagV1[] {
-  const flags: TemplateIntakeRiskFlagV1[] = []
-  if (/(?:签字|签名|签署|编制人|审核人|审定人|批准人)/i.test(text)) flags.push('SIGNATURE')
-  if (/(?:印章|盖章|公章|签章)/i.test(text)) flags.push('SEAL')
-  if (/(?:联系方式|联系人|联系电话|手机号码|电子邮箱|邮箱|电话\s*[:：])/i.test(text)) {
-    flags.push('CONTACT_INFORMATION')
-  }
-  if (/(?:旧项目|原项目|原方案图|旧图件|历史图件)/i.test(text)) flags.push('OLD_PROJECT_DRAWING')
-  if (/(?:扫描件|扫描附件|签章页扫描|附件扫描)/i.test(text)) flags.push('SCANNED_ATTACHMENT')
-  return [...new Set(flags)]
-}
-
-function buildDeterministicCandidate(fragment: ParsedTemplateIntakeFragmentV1): TemplateIntakeCandidateV1 | null {
-  const flags = riskFlagsForText(fragment.text)
-  if (flags.length === 0) return null
-  return {
-    candidateId: `xgtic1_${randomUUID()}`,
-    kind: 'EXCLUDE',
-    preview: sliceUnicode(fragment.text, TEMPLATE_INTAKE_MAX_PREVIEW_CHARS_V1),
-    sourceAnchors: [fragment.anchor],
-    reason: '命中签字、印章、联系方式、旧项目图件或扫描附件的确定性风险规则，默认排除并等待人工确认',
-    confidence: 1,
-    riskFlags: flags,
-    defaultDecision: 'EXCLUDE',
-  }
-}
-
 function candidateFromSuggestion(
   suggestion: TemplateIntakeModelSuggestionV1,
   fragments: readonly ParsedTemplateIntakeFragmentV1[],
 ): TemplateIntakeCandidateV1 {
-  const text = fragments.map((fragment) => fragment.text).join('\n')
+  const selection = suggestion.scope === 'SELECTION' ? suggestion.selection : undefined
+  const text = selection?.originalText ?? fragments.map((fragment) => fragment.text).join('\n')
+  const riskFlags = suggestion.riskFlags?.length
+    ? [...new Set(suggestion.riskFlags)]
+    : suggestion.kind === 'EXCLUDE'
+      ? (['OTHER'] as const)
+      : []
   return {
     candidateId: `xgtic1_${randomUUID()}`,
     kind: suggestion.kind,
     preview: sliceUnicode(text, TEMPLATE_INTAKE_MAX_PREVIEW_CHARS_V1),
     sourceAnchors: fragments.map((fragment) => fragment.anchor),
+    ...(selection
+      ? {
+          textRange: {
+            startUtf16: selection.startUtf16,
+            endUtf16Exclusive: selection.endUtf16Exclusive,
+          },
+        }
+      : {}),
     reason: sliceUnicode(suggestion.reason, MAX_REASON_CHARS),
     confidence: suggestion.confidence,
-    riskFlags: [],
+    riskFlags,
     defaultDecision: suggestion.kind,
     ...(suggestion.suggestedName
       ? { suggestedName: sliceUnicode(suggestion.suggestedName, MAX_FIELD_NAME_CHARS) }
@@ -317,46 +303,96 @@ function unresolvedCandidate(fragment: ParsedTemplateIntakeFragmentV1, reason: s
   }
 }
 
+function defaultFixedCandidate(fragment: ParsedTemplateIntakeFragmentV1): TemplateIntakeCandidateV1 {
+  return {
+    candidateId: `xgtic1_${randomUUID()}`,
+    kind: 'FIXED',
+    preview: sliceUnicode(fragment.text, TEMPLATE_INTAKE_MAX_PREVIEW_CHARS_V1),
+    sourceAnchors: [fragment.anchor],
+    reason: '模型未将此处列为需要变化、移除或人工判断的内容，按默认规则原样保留',
+    confidence: 1,
+    riskFlags: [],
+    defaultDecision: 'FIXED',
+  }
+}
+
 function buildCandidates(
   parsed: ParsedTemplateIntakeSourceV1,
   analysis: TemplateIntakeModelAnalysisV1 | null,
 ): TemplateIntakeCandidateV1[] {
   const byId = new Map(parsed.fragments.map((fragment) => [fragment.fragmentId, fragment]))
-  const used = new Set<string>()
+  const usedWhole = new Set<string>()
+  const ranged = new Map<string, Array<{ start: number; end: number }>>()
+  const invalid = new Set<string>()
   const candidates = [...parsed.deterministicCandidates]
-
-  for (const fragment of parsed.fragments) {
-    const deterministic = buildDeterministicCandidate(fragment)
-    if (!deterministic) continue
-    used.add(fragment.fragmentId)
-    candidates.push(deterministic)
-  }
 
   if (analysis?.status === 'COMPLETE') {
     for (const suggestion of analysis.suggestions) {
       const ids = [...new Set(suggestion.fragmentIds)]
       if (ids.length !== suggestion.fragmentIds.length) continue
       const fragments = ids.map((id) => byId.get(id)).filter(Boolean) as ParsedTemplateIntakeFragmentV1[]
-      if (fragments.length !== ids.length || fragments.some((fragment) => used.has(fragment.fragmentId))) {
+      if (fragments.length !== ids.length) {
+        ids.forEach((id) => invalid.add(id))
         continue
       }
-      if (fragments.some((fragment) => !fragment.semanticAligned)) continue
+      if (fragments.some((fragment) => !fragment.semanticAligned)) {
+        ids.forEach((id) => invalid.add(id))
+        continue
+      }
+      if (suggestion.scope === 'SELECTION') {
+        const fragment = fragments[0]
+        const selection = suggestion.selection
+        if (
+          fragments.length !== 1 ||
+          !selection ||
+          selection.startUtf16 < 0 ||
+          selection.endUtf16Exclusive <= selection.startUtf16 ||
+          selection.endUtf16Exclusive > fragment.text.length ||
+          fragment.text.slice(selection.startUtf16, selection.endUtf16Exclusive) !== selection.originalText ||
+          usedWhole.has(fragment.fragmentId)
+        ) {
+          invalid.add(fragment.fragmentId)
+          continue
+        }
+        const occupied = ranged.get(fragment.fragmentId) ?? []
+        if (
+          occupied.some(
+            (range) =>
+              selection.startUtf16 < range.end && range.start < selection.endUtf16Exclusive,
+          )
+        ) {
+          invalid.add(fragment.fragmentId)
+          continue
+        }
+        occupied.push({ start: selection.startUtf16, end: selection.endUtf16Exclusive })
+        ranged.set(fragment.fragmentId, occupied)
+        candidates.push(candidateFromSuggestion(suggestion, [fragment]))
+        continue
+      }
+      if (fragments.some((fragment) => usedWhole.has(fragment.fragmentId) || ranged.has(fragment.fragmentId))) {
+        ids.forEach((id) => invalid.add(id))
+        continue
+      }
       // 模型可以判断多个片段属于同一业务字段，但每个文档位置必须保持独立候选。
       // 字段图谱会按 suggestedName/kind 重新合并；这里绝不能把多段原文拼成一个 occurrence。
       if (ids.length > 1) {
         for (const fragment of fragments) {
-          used.add(fragment.fragmentId)
+          usedWhole.add(fragment.fragmentId)
           candidates.push(candidateFromSuggestion(suggestion, [fragment]))
         }
         continue
       }
-      fragments.forEach((fragment) => used.add(fragment.fragmentId))
+      fragments.forEach((fragment) => usedWhole.add(fragment.fragmentId))
       candidates.push(candidateFromSuggestion(suggestion, fragments))
     }
   }
 
   for (const fragment of parsed.fragments) {
-    if (used.has(fragment.fragmentId)) continue
+    if (usedWhole.has(fragment.fragmentId) || ranged.has(fragment.fragmentId)) continue
+    if (analysis?.status === 'COMPLETE' && !invalid.has(fragment.fragmentId)) {
+      candidates.push(defaultFixedCandidate(fragment))
+      continue
+    }
     candidates.push(
       unresolvedCandidate(
         fragment,
@@ -487,7 +523,10 @@ function reviewRiskFlagsV2(candidate: TemplateIntakeCandidateV1): TemplateReview
   return [...new Set(flags)]
 }
 
-function reviewAnchorV2(anchor: TemplateIntakeCandidateV1['sourceAnchors'][number] | undefined) {
+function reviewAnchorV2(
+  anchor: TemplateIntakeCandidateV1['sourceAnchors'][number] | undefined,
+  textRange?: TemplateIntakeCandidateV1['textRange'],
+) {
   if (!anchor) return { part: 'UNMAPPED' as const }
   return {
     part:
@@ -501,6 +540,7 @@ function reviewAnchorV2(anchor: TemplateIntakeCandidateV1['sourceAnchors'][numbe
     ...(anchor.rowIndex != null ? { rowIndex: anchor.rowIndex } : {}),
     ...(anchor.cellIndex != null ? { cellIndex: anchor.cellIndex } : {}),
     ...(anchor.drawingIndex != null ? { drawingIndex: anchor.drawingIndex } : {}),
+    ...(textRange ? { textRange } : {}),
   }
 }
 
@@ -980,7 +1020,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
               ? ('TEXT' as const)
               : ('UNMAPPED' as const),
         preview: candidate.preview,
-        sourceAnchor: reviewAnchorV2(candidate.sourceAnchors[0]),
+        sourceAnchor: reviewAnchorV2(candidate.sourceAnchors[0], candidate.textRange),
       }
     })
     if (cached && cached.prepared.projections.length !== record.report.candidates.length) {
@@ -1058,7 +1098,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
         targetId: candidate.candidateId,
         kind,
         preview: candidate.preview,
-        sourceAnchor: reviewAnchorV2(candidate.sourceAnchors[0]),
+        sourceAnchor: reviewAnchorV2(candidate.sourceAnchors[0], candidate.textRange),
         renderAnchor,
         reason: candidate.reason,
         confidence: candidate.confidence,

@@ -21,6 +21,7 @@ import type {
   TemplateIntakeErrorCodeV1,
   TemplateIntakeFinalDecisionItemV1,
   TemplateIntakeReportV1,
+  TemplateIntakeRiskFlagV1,
   TemplateIntakeSourceAnchorV1,
   TemplateIntakeUpdateOperationV1,
   TemplateIntakeWarningV1,
@@ -143,10 +144,19 @@ export interface TemplateIntakeAnalysisBatchV1 {
 
 export interface TemplateIntakeModelSuggestionV1 {
   fragmentIds: readonly string[]
+  /** 模型只负责语义选择；未出现于建议中的原文默认保留。 */
+  scope?: 'SELECTION' | 'WHOLE_FRAGMENT'
+  /** Worker 已用原文机械校验并解析出的精确局部范围，不由 Main 猜测。 */
+  selection?: {
+    originalText: string
+    startUtf16: number
+    endUtf16Exclusive: number
+  }
   kind: 'FIXED' | 'VARIABLE' | 'REPEAT' | 'CONDITIONAL' | 'EXCLUDE' | 'UNRESOLVED'
   reason: string
   confidence: number | null
   suggestedName?: string
+  riskFlags?: readonly TemplateIntakeRiskFlagV1[]
 }
 
 export type TemplateIntakeModelAnalysisV1 =

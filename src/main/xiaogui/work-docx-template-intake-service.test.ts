@@ -77,6 +77,92 @@ function lookup(): SessionScopeLookupV1 {
 }
 
 describe('WORK 普通成品 Word 整理最小闭环', () => {
+  it('把模型引用的段内原文拆成多个局部候选，而不是把整段设为变量', async () => {
+    const root = await fixtureRoot()
+    const sourcePath = join(root, '局部字段.docx')
+    const paragraph = '项目名称：下盐公路工程，计划于2026年9月开工。'
+    await writeFile(sourcePath, await makeParagraphDocx([paragraph]))
+    const store = new WorkDocxTemplateIntakeStoreV1(join(root, 'private', 'partial.sqlite'))
+    const service = new WorkDocxTemplateIntakeServiceV1({
+      lookup: lookup(),
+      dialogs: { chooseSource: vi.fn(async () => sourcePath) },
+      handoffs: { consumeTemplateIntakeHandoff: vi.fn(() => null) },
+      store,
+      semanticParser: vi.fn(async () => ({
+        mainText: paragraph,
+        headerText: '',
+        footerText: '',
+        tableCount: 0,
+        warningCount: 0,
+      })),
+    })
+
+    const started = await service.execute(ADDRESS, { action: 'START', ...COMMON })
+    if (!started.ok || started.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_ANALYSIS_REQUIRED') {
+      throw new Error('expected analysis request')
+    }
+    const fragment = started.value.analysisBatches.flatMap((batch) => batch.fragments)[0]
+    const projectName = '下盐公路工程'
+    const startDate = '2026年9月'
+    const projectStart = paragraph.indexOf(projectName)
+    const dateStart = paragraph.indexOf(startDate)
+    const completed = await service.execute(ADDRESS, {
+      action: 'START',
+      ...COMMON,
+      reportId: started.value.reportId,
+      analysis: {
+        status: 'COMPLETE',
+        modelVersion: 'test/model',
+        suggestions: [
+          {
+            fragmentIds: [fragment.fragmentId],
+            scope: 'SELECTION',
+            selection: {
+              originalText: projectName,
+              startUtf16: projectStart,
+              endUtf16Exclusive: projectStart + projectName.length,
+            },
+            kind: 'VARIABLE',
+            reason: '项目名称随项目变化',
+            confidence: 0.97,
+            suggestedName: '项目名称',
+          },
+          {
+            fragmentIds: [fragment.fragmentId],
+            scope: 'SELECTION',
+            selection: {
+              originalText: startDate,
+              startUtf16: dateStart,
+              endUtf16Exclusive: dateStart + startDate.length,
+            },
+            kind: 'VARIABLE',
+            reason: '开工日期随项目变化',
+            confidence: 0.96,
+            suggestedName: '计划开工日期',
+          },
+        ],
+      },
+    })
+    if (!completed.ok || completed.value.kind !== 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY') {
+      throw new Error('expected report')
+    }
+
+    const variables = completed.value.report.candidates.filter((candidate) => candidate.kind === 'VARIABLE')
+    expect(variables.map((candidate) => candidate.preview)).toEqual([projectName, startDate])
+    expect(variables.map((candidate) => candidate.textRange)).toEqual([
+      { startUtf16: projectStart, endUtf16Exclusive: projectStart + projectName.length },
+      { startUtf16: dateStart, endUtf16Exclusive: dateStart + startDate.length },
+    ])
+    expect(variables.every((candidate) => candidate.preview !== paragraph)).toBe(true)
+
+    const graph = buildTemplateFieldGraphV2(completed.value.report).fieldGraph
+    service.close()
+    expect(new Map(graph.occurrences.map((occurrence) => [occurrence.originalText, occurrence.textRange]))).toEqual(new Map([
+      [projectName, { startUtf16: projectStart, endUtf16Exclusive: projectStart + projectName.length }],
+      [startDate, { startUtf16: dateStart, endUtf16Exclusive: dateStart + startDate.length }],
+    ]))
+  })
+
   it('优先消费主进程暂存文档且不再次打开选择框', async () => {
     const root = await fixtureRoot()
     const sourcePath = join(root, '直接选择.docx')
@@ -185,6 +271,9 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
     expect(JSON.stringify(started.value.analysisBatches)).toContain(fullText)
 
     const fragments = started.value.analysisBatches.flatMap((batch) => batch.fragments)
+    const contactFragment = fragments.find((fragment) => fragment.text.includes('13800000000'))!
+    const selectedContact = '张三 电话：13800000000'
+    const contactStart = contactFragment.text.indexOf(selectedContact)
     const completed = await service.execute(ADDRESS, {
       action: 'START',
       ...COMMON,
@@ -192,12 +281,19 @@ describe('WORK 普通成品 Word 整理最小闭环', () => {
       analysis: {
         status: 'COMPLETE',
         modelVersion: 'test/model',
-        suggestions: fragments.map((fragment) => ({
-          fragmentIds: [fragment.fragmentId],
-          kind: 'FIXED' as const,
-          reason: '测试建议',
-          confidence: 0.8,
-        })),
+        suggestions: [{
+          fragmentIds: [contactFragment.fragmentId],
+          scope: 'SELECTION',
+          selection: {
+            originalText: selectedContact,
+            startUtf16: contactStart,
+            endUtf16Exclusive: contactStart + selectedContact.length,
+          },
+          kind: 'EXCLUDE',
+          reason: '联系人和电话不应继承到新模板',
+          confidence: 0.98,
+          riskFlags: ['CONTACT_INFORMATION'],
+        }],
       },
     })
     expect(completed.ok && completed.value.kind).toBe(

@@ -199,6 +199,7 @@ export function buildTemplateFieldGraphV2(
           'xgocc2',
           report.file.sha256,
           JSON.stringify(mappedAnchor),
+          JSON.stringify(candidate.textRange ?? null),
           String(index),
           normalizedText(candidate.preview),
         )
@@ -207,6 +208,7 @@ export function buildTemplateFieldGraphV2(
           occurrenceId,
           fieldId,
           sourceAnchor: mappedAnchor,
+          ...(candidate.textRange ? { textRange: candidate.textRange } : {}),
           originalText: candidate.preview,
           confidence: candidate.confidence ?? 0,
           riskFlags: riskFlagsV2(candidate.riskFlags),
@@ -229,6 +231,36 @@ export function buildTemplateFieldGraphV2(
         ? 'AUTO_ACCEPTED'
         : 'NEEDS_REVIEW',
     })
+  }
+
+  const riskOccurrenceIdsByCandidate = new Map<string, string[]>()
+  for (const candidate of report.candidates) {
+    if (candidate.riskFlags.length === 0) continue
+    const ids: string[] = []
+    for (const [index, anchor] of candidate.sourceAnchors.entries()) {
+      if (anchor.part === 'DRAWING' || anchor.part === 'TEXT_BOX') continue
+      const mappedAnchor = sourceAnchorV2(anchor)
+      const occurrenceId = hashId(
+        'xgriskocc2',
+        report.file.sha256,
+        JSON.stringify(mappedAnchor),
+        JSON.stringify(candidate.textRange ?? null),
+        String(index),
+        normalizedText(candidate.preview),
+      )
+      ids.push(occurrenceId)
+      occurrences.push({
+        occurrenceId,
+        fieldId: `risk.${candidate.riskFlags[0].toLowerCase()}`,
+        sourceAnchor: mappedAnchor,
+        ...(candidate.textRange ? { textRange: candidate.textRange } : {}),
+        originalText: candidate.preview,
+        confidence: candidate.confidence ?? 0,
+        riskFlags: riskFlagsV2(candidate.riskFlags),
+        status: 'MAPPED',
+      })
+    }
+    if (ids.length) riskOccurrenceIdsByCandidate.set(candidate.candidateId, ids)
   }
 
   const issues: TemplateIssueV2[] = []
@@ -264,13 +296,16 @@ export function buildTemplateFieldGraphV2(
     OTHER: '高风险内容',
   }
   for (const [flag, candidates] of highRiskByFlag) {
+    const occurrenceIds = candidates.flatMap(
+      (candidate) => riskOccurrenceIdsByCandidate.get(candidate.candidateId) ?? [],
+    )
     issues.push(issue(report.file.sha256, {
       kind: ['FLOATING_OBJECT', 'TEXT_BOX'].includes(flag) ? 'UNSUPPORTED_OBJECT' : 'HIGH_RISK_CONTENT',
       severity: 'BLOCKING',
       title: `处理${riskLabels[flag]}`,
       question: `发现 ${candidates.length} 处${riskLabels[flag]}。默认不继承到新模板，请确认全部移除、保留，或进入高级检查逐处处理。`,
       fieldIds: [],
-      occurrenceIds: [],
+      occurrenceIds,
       suggestedActions: ['REMOVE_CONTENT', 'KEEP_ORIGINAL', 'OPEN_ADVANCED_REVIEW'],
     }))
   }

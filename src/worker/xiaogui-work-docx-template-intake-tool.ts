@@ -33,6 +33,7 @@ import type {
 import {
   XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_METHOD_V1,
   type TemplateIntakeAnalysisBatchV1,
+  type TemplateIntakeAnalysisFragmentV1,
   type TemplateIntakeModelAnalysisV1,
   type TemplateIntakeModelSuggestionV1,
   type XiaoguiWorkDocxTemplateIntakeResultV1,
@@ -154,10 +155,23 @@ const ActionSchema = Type.Object(
 const ModelSuggestionSchema = z
   .object({
     fragmentIds: z.array(z.string().min(1).max(160)).min(1).max(200),
+    scope: z.enum(['SELECTION', 'WHOLE_FRAGMENT']),
+    selectedText: z.string().min(1).max(500).optional(),
+    occurrence: z.number().int().min(1).max(1_000).optional(),
     kind: z.enum(['FIXED', 'VARIABLE', 'REPEAT', 'CONDITIONAL', 'EXCLUDE', 'UNRESOLVED']),
     reason: z.string().min(1).max(1_000),
     confidence: z.number().min(0).max(1).nullable(),
     suggestedName: z.string().min(1).max(120).optional(),
+    riskFlags: z.array(z.enum([
+      'SIGNATURE',
+      'SEAL',
+      'CONTACT_INFORMATION',
+      'OLD_PROJECT_DRAWING',
+      'SCANNED_ATTACHMENT',
+      'FLOATING_OBJECT',
+      'TEXT_BOX',
+      'OTHER',
+    ])).max(8).optional(),
   })
   .strict()
 
@@ -224,7 +238,7 @@ function parseJsonValue(text: string): unknown {
 
 function validateSuggestions(
   rawText: string,
-  allowedFragmentIds: ReadonlySet<string>,
+  fragments: readonly TemplateIntakeAnalysisFragmentV1[],
 ): readonly TemplateIntakeModelSuggestionV1[] {
   let parsed: z.infer<typeof ModelResponseSchema>
   try {
@@ -233,18 +247,87 @@ function validateSuggestions(
     if (error instanceof Error && error.message === 'MODEL_JSON_INVALID') throw error
     throw new Error('MODEL_SCHEMA_INVALID')
   }
-  const seen = new Set<string>()
+  const fragmentsById = new Map(fragments.map((fragment) => [fragment.fragmentId, fragment]))
+  const wholeFragments = new Set<string>()
+  const rangesByFragment = new Map<string, Array<{ start: number; end: number }>>()
+  const suggestions: TemplateIntakeModelSuggestionV1[] = []
   for (const suggestion of parsed.suggestions) {
     const unique = new Set(suggestion.fragmentIds)
     if (unique.size !== suggestion.fragmentIds.length) throw new Error('MODEL_FRAGMENT_DUPLICATED')
     for (const fragmentId of suggestion.fragmentIds) {
-      if (!allowedFragmentIds.has(fragmentId)) throw new Error('MODEL_FRAGMENT_UNKNOWN')
-      if (seen.has(fragmentId)) throw new Error('MODEL_FRAGMENT_DUPLICATED')
-      seen.add(fragmentId)
+      if (!fragmentsById.has(fragmentId)) throw new Error('MODEL_FRAGMENT_UNKNOWN')
     }
+    if (
+      ['VARIABLE', 'REPEAT', 'CONDITIONAL'].includes(suggestion.kind) &&
+      !suggestion.suggestedName?.trim()
+    ) {
+      throw new Error('MODEL_SCHEMA_INVALID')
+    }
+    if (suggestion.scope === 'SELECTION') {
+      if (
+        suggestion.fragmentIds.length !== 1 ||
+        !suggestion.selectedText ||
+        suggestion.kind === 'FIXED' ||
+        suggestion.kind === 'REPEAT' ||
+        suggestion.kind === 'CONDITIONAL'
+      ) {
+        throw new Error('MODEL_SCHEMA_INVALID')
+      }
+      const fragmentId = suggestion.fragmentIds[0]
+      if (wholeFragments.has(fragmentId)) throw new Error('MODEL_FRAGMENT_DUPLICATED')
+      const fragment = fragmentsById.get(fragmentId)!
+      const matches: number[] = []
+      let cursor = 0
+      while (cursor <= fragment.text.length - suggestion.selectedText.length) {
+        const index = fragment.text.indexOf(suggestion.selectedText, cursor)
+        if (index < 0) break
+        matches.push(index)
+        cursor = index + Math.max(1, suggestion.selectedText.length)
+      }
+      const occurrence = suggestion.occurrence ?? (matches.length === 1 ? 1 : 0)
+      const startUtf16 = occurrence > 0 ? matches[occurrence - 1] : undefined
+      if (startUtf16 == null) throw new Error('MODEL_SELECTION_NOT_FOUND')
+      const endUtf16Exclusive = startUtf16 + suggestion.selectedText.length
+      const occupied = rangesByFragment.get(fragmentId) ?? []
+      if (occupied.some((range) => startUtf16 < range.end && range.start < endUtf16Exclusive)) {
+        throw new Error('MODEL_SELECTION_OVERLAP')
+      }
+      occupied.push({ start: startUtf16, end: endUtf16Exclusive })
+      rangesByFragment.set(fragmentId, occupied)
+      suggestions.push({
+        fragmentIds: suggestion.fragmentIds,
+        scope: 'SELECTION',
+        selection: {
+          originalText: suggestion.selectedText,
+          startUtf16,
+          endUtf16Exclusive,
+        },
+        kind: suggestion.kind,
+        reason: suggestion.reason,
+        confidence: suggestion.confidence,
+        ...(suggestion.suggestedName ? { suggestedName: suggestion.suggestedName } : {}),
+        ...(suggestion.riskFlags?.length ? { riskFlags: suggestion.riskFlags } : {}),
+      })
+      continue
+    }
+    if (suggestion.selectedText || suggestion.occurrence) throw new Error('MODEL_SCHEMA_INVALID')
+    for (const fragmentId of suggestion.fragmentIds) {
+      if (wholeFragments.has(fragmentId) || (rangesByFragment.get(fragmentId)?.length ?? 0) > 0) {
+        throw new Error('MODEL_FRAGMENT_DUPLICATED')
+      }
+      wholeFragments.add(fragmentId)
+    }
+    suggestions.push({
+      fragmentIds: suggestion.fragmentIds,
+      scope: 'WHOLE_FRAGMENT',
+      kind: suggestion.kind,
+      reason: suggestion.reason,
+      confidence: suggestion.confidence,
+      ...(suggestion.suggestedName ? { suggestedName: suggestion.suggestedName } : {}),
+      ...(suggestion.riskFlags?.length ? { riskFlags: suggestion.riskFlags } : {}),
+    })
   }
-  if (seen.size !== allowedFragmentIds.size) throw new Error('MODEL_FRAGMENT_INCOMPLETE')
-  return parsed.suggestions
+  return suggestions
 }
 
 function batchPrompt(batch: TemplateIntakeAnalysisBatchV1): string {
@@ -254,15 +337,9 @@ function batchPrompt(batch: TemplateIntakeAnalysisBatchV1): string {
         `<fragment id="${fragment.fragmentId}" kind="${fragment.kind}">\n${fragment.text}\n</fragment>`,
     )
     .join('\n')
-  return `下面是同一份普通成品文档按原文顺序排列的全部待分析片段。先结合全文语境理解文档用途和结构，再逐项判断：
-- FIXED：以后使用模板时原样保留的通用内容；
-- VARIABLE：每次使用时需要填写或替换的内容；
-- REPEAT：可按数量重复的整块结构；
-- CONDITIONAL：只在特定条件下保留的整块结构；
-- EXCLUDE：签字、印章、联系方式、旧项目图件、扫描附件等不应继承的内容；
-- UNRESOLVED：结合全文仍无法可靠判断，必须交给人工。
+  return `下面是同一份普通成品文档按原文顺序排列的全部待分析片段。请先结合全文语境理解用途，再只输出需要变化、移除或人工判断的位置。未输出的原文自动保留。
 
-必须让每个 fragment id 在 suggestions 中恰好出现一次。没有明确动态证据的普通正文必须判断为 FIXED，不要因为“不确定它是否可变”而使用 UNRESOLVED。VARIABLE、REPEAT、CONDITIONAL 必须给出面向用户的中文 suggestedName；同一业务字段在全文多处出现时应合并为一项。只有确属同一字段的多处位置，或同一个重复块、条件块时才允许合并，并且每一项最多包含 20 个 fragment id。只输出 JSON。
+优先使用 scope=SELECTION 并逐字复制最小连续原文到 selectedText；同一片段可以有多个互不重叠的建议。只有整块确实需要处理时才使用 scope=WHOLE_FRAGMENT。不要为了覆盖所有 fragment 而输出 FIXED。只输出 JSON。
 
 ${fragments}`
 }
@@ -404,7 +481,6 @@ async function analyzeBatches(
     for (const sourceBatch of mergeBatchesForWholeDocument(context, batches)) {
       if (signal?.aborted) throw new Error('MODEL_ABORTED')
       const { batch, aliasesToOriginalIds } = aliasBatch(sourceBatch)
-      const allowed = new Set(batch.fragments.map((fragment) => fragment.fragmentId))
       let first: string
       try {
         first = await completeBatch(context, batch, signal)
@@ -414,20 +490,20 @@ async function analyzeBatches(
         repairUsed = true
         const repaired = await completeBatch(context, batch, signal, error.output)
         suggestions.push(
-          ...restoreOriginalFragmentIds(validateSuggestions(repaired, allowed), aliasesToOriginalIds),
+          ...restoreOriginalFragmentIds(validateSuggestions(repaired, batch.fragments), aliasesToOriginalIds),
         )
         continue
       }
       try {
         suggestions.push(
-          ...restoreOriginalFragmentIds(validateSuggestions(first, allowed), aliasesToOriginalIds),
+          ...restoreOriginalFragmentIds(validateSuggestions(first, batch.fragments), aliasesToOriginalIds),
         )
       } catch {
         if (repairUsed) throw new Error('MODEL_OUTPUT_INVALID')
         repairUsed = true
         const repaired = await completeBatch(context, batch, signal, first)
         suggestions.push(
-          ...restoreOriginalFragmentIds(validateSuggestions(repaired, allowed), aliasesToOriginalIds),
+          ...restoreOriginalFragmentIds(validateSuggestions(repaired, batch.fragments), aliasesToOriginalIds),
         )
       }
     }
