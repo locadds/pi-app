@@ -8,6 +8,13 @@ export type XiaoguiMode = (typeof XIAOGUI_PROMPT_MODES_V1)[number]
 export const XIAOGUI_PROMPT_PHASES_V1 = ['ASK', 'PLAN', 'EXECUTE'] as const
 export type XiaoguiExecutionPhase = (typeof XIAOGUI_PROMPT_PHASES_V1)[number]
 
+/**
+ * New conversations are ready for controlled execution by default. ASK and PLAN
+ * remain explicit user-selected modes; safety still comes from tool, permission,
+ * worktree and delivery gates rather than a mandatory read-only first turn.
+ */
+export const XIAOGUI_DEFAULT_EXECUTION_PHASE_V1 = 'EXECUTE' as const satisfies XiaoguiExecutionPhase
+
 export const XIAOGUI_CAPABILITY_IDS_V1 = [
   'collaboration.execution',
   'work.file-organize',

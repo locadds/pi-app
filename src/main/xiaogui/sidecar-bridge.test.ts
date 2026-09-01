@@ -317,6 +317,16 @@ describe('planSidecarLifecycle（项目切换生命周期策略）', () => {
 })
 
 describe('XiaoguiIntegration sidecar lifecycle regressions', () => {
+  it('新会话默认允许受控执行，不强制先进入 ASK', () => {
+    const integration = createXiaoguiIntegrationForTest({
+      config: baseConfig,
+      mode: 'CODING',
+      spawnSidecar: () => new FakeChildProcess() as unknown as ChildProcessWithoutNullStreams,
+    })
+
+    expect(integration.getExecutionPhase()).toBe('EXECUTE')
+  })
+
   it('spawn 未完成时 shutdown 会快速取消启动、kill child，迟到 spawn 不会发 RPC', async () => {
     const children: FakeChildProcess[] = []
     const integration = createXiaoguiIntegrationForTest({

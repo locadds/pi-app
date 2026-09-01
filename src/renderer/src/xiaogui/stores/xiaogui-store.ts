@@ -12,6 +12,10 @@ import { create } from 'zustand'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { navigateToModeHome } from '@renderer/xiaogui/lib/navigate-mode-home'
 import { refreshWorkspaceSessionLists } from '@renderer/lib/refresh-workspace-session-lists'
+import {
+  XIAOGUI_DEFAULT_EXECUTION_PHASE_V1,
+  type XiaoguiExecutionPhase,
+} from '@shared/xiaogui-prompt-contract'
 
 export type XiaoguiMode = 'WORK' | 'DESIGN' | 'CODING'
 
@@ -22,7 +26,7 @@ export const XIAOGUI_MODES: { id: XiaoguiMode; zhLabel: string }[] = [
 ]
 
 /** 执行方式（与一级工作模式正交，与主进程 src/main/xiaogui/config.ts 保持一致）。 */
-export type ExecutionPhase = 'ASK' | 'PLAN' | 'EXECUTE'
+export type ExecutionPhase = XiaoguiExecutionPhase
 
 /** ToolResult（与小规仓库 docs/DESIGN_TOOLS.md 统一返回结构一致）。 */
 export interface XiaoguiEvidence {
@@ -91,7 +95,7 @@ interface XiaoguiStoreState {
 
 export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
   mode: 'WORK',
-  executionPhase: 'ASK',
+  executionPhase: XIAOGUI_DEFAULT_EXECUTION_PHASE_V1,
   sidecar: null,
   guardStatus: null,
   invoking: false,

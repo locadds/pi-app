@@ -65,6 +65,10 @@ Pi 最终 System Context
 - `PLAN`：只分析和制定方案，不实施写入。
 - `EXECUTE`：允许可逆草稿和经人工确认的持久操作。
 
+新会话默认进入 `EXECUTE`，不强制先经历 `ASK`。用户明确选择问答或计划时才进入
+`ASK` / `PLAN`；安全边界继续由最终 Tool Schema、权限、受控工作区、验证和人工交付门
+强制，不能依赖“先问一次”代替。
+
 ResourceLoader 可以注册当前模式允许的候选工具，但“已注册”不等于“本轮可调用”。每条用户消息到达 Worker 后，版本化本地选择器先根据结构化 Context、`DEFAULT` 和原始用户输入生成冻结的 Turn Context；随后 Agent Session 通过 `setActiveToolsByName()` 激活 `Mode ∩ Phase ∩ Capability ∩ Runtime` 的最终集合。`ASK`、`PLAN` 的 Provider Tool Schema 只保留 `read` 和已明确登记为只读的 `xiaogui_read_pdf`，不含 `bash/edit/write` 或 `design_*`。
 
 ### Capability

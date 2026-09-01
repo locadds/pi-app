@@ -1,5 +1,71 @@
 # 小规开发阶段状态
 
+## 2026-09-01｜CODING 单机试用修复：取消强制 ASK 起步
+
+### 阶段状态
+
+- 状态：实现与聚焦验证完成，提交并推送后等待人工验收。
+- 当前分支：`codex/coding-work-integration-v1`。
+- 起点：`41f48e8343cd5b7869a1dc838faaa5e96bcf5c8c`。
+- 边界：只调整新会话的默认执行阶段；未修改 WORK、TaskHub 状态机、权限规则、工作树、验证或交付审批。
+
+### 本阶段目标
+
+取消“所有编程请求必须先处于 ASK，再由用户手工切换 EXECUTE”的硬性流程。新会话默认具备受控执行能力；用户明确要求问答或计划时仍可使用 ASK / PLAN，既有安全门保持不变。
+
+### 实际修改文件
+
+- `packages/shared/xiaogui-prompt-contract.ts`
+- `src/main/xiaogui/config.ts`
+- `src/main/xiaogui/sidecar-bridge.ts`
+- `src/main/xiaogui/sidecar-bridge.test.ts`
+- `src/renderer/src/xiaogui/stores/xiaogui-store.ts`
+- `doc/architecture/xiaogui-prompt-inventory.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 新增共享默认阶段常量 `XIAOGUI_DEFAULT_EXECUTION_PHASE_V1=EXECUTE`，Main 与 Renderer 使用同一事实源。
+2. 新会话及新 Worker 默认获得 EXECUTE Prompt 与对应受控工具集合，不再先收到“建议切换到 EXECUTE”的 ASK 回复。
+3. ASK 与 PLAN 的只读 Tool Schema、Prompt 语义和显式切换接口全部保留。
+4. TaskHub 权限、独立工作树、真实验证、Diff 审阅和人工交付门未放宽；默认 EXECUTE 只表示可以申请并执行受控操作。
+
+### 未完成内容
+
+- 未增加基于自然语言猜测 ASK / PLAN / EXECUTE 的自动分类器；用户说“先规划”时由模型按用户要求先规划，不新增隐式模式跳转。
+- 未修改当前隐藏的执行阶段切换控件，也未制作 Portable；均不属于本次缺陷修复。
+- 已经运行中的旧 Worker 仍保留其启动时冻结的阶段，需重启小规或重建 Worker 后观察新默认值。
+
+### 与规格文档存在的偏差
+
+- 无 Phase 语义偏差：ASK 仍只读、PLAN 仍只规划、EXECUTE 仍受权限和交付门约束。
+- 本次只取消强制 ASK 起步。它没有改变《Prompt 架构、模式边界与轻量智能推荐规格》中的 Mode / Phase / Capability / Tool 分层，也没有引入完整 AUTO 模式。
+- Claude Code 交互仅作为“明确执行请求不被强制反问”的行为参照；未复制源码、品牌或插件。
+
+### 测试命令和测试结果
+
+```powershell
+node_modules\.bin\vitest.cmd run src/main/xiaogui/sidecar-bridge.test.ts --reporter=default
+node_modules\.bin\vitest.cmd run src/main/xiaogui/sidecar-bridge.test.ts packages/shared/xiaogui-prompt-contract.test.ts src/main/xiaogui/worker-env.test.ts --reporter=default
+npm run typecheck
+git diff --check
+```
+
+- TDD 红灯：新增回归先稳定复现 `expected 'ASK' to be 'EXECUTE'`，`1 failed / 24 passed`。
+- 修复后聚焦回归：`3 test files passed`，`32 tests passed`。
+- 类型检查：Web 与 Node 两段均通过，退出码 `0`。
+- 差异检查：通过；仅有仓库既有的 Windows LF → CRLF 提示，无空白错误。
+
+### 已知风险
+
+1. EXECUTE 会向模型提供当前模式允许且本轮被选择的工具，但写入、命令、越界路径和外传仍必须经过既有硬门；若后续有人绕过这些门，默认 EXECUTE 会放大该独立缺陷的影响。
+2. 当前阶段值是进程内状态；用户显式切换后仅对重建的 Worker 生效，现有实现仍会为切换重启空闲 Worker。
+3. 本次未运行真实模型长旅程；聚焦测试证明默认阶段和 Worker 装配输入，生成质量仍由单机人工试用验收。
+
+### 下一阶段计划
+
+提交并推送当前独立集成分支，重启小规后由用户用“直接创建一个文件”的真实请求验收。验收前不继续扩大 CODING 或 WORK 范围。
+
 ## 2026-09-01｜CODING-P1 P3 三角色生产接缝最终候选
 
 ### 阶段状态
