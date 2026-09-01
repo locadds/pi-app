@@ -2,9 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   closeRuntimeComposition: vi.fn(),
+  closeHubTaskWorkerService: vi.fn(),
   closeWorkReportDocxService: vi.fn(),
+  closeTemplateLibraryService: vi.fn(),
+  closeTemplateIntakeService: vi.fn(),
+  closeTemplateMaterializeService: vi.fn(),
+  closeAdvancedGenerationService: vi.fn(),
   registerCollaborationHubHandlers: vi.fn(),
+  registerHubTaskWorkerHandlers: vi.fn(),
   registerWorkDocxHandlers: vi.fn(),
+  registerTemplateLibraryHandlers: vi.fn(),
+  registerDocumentReviewHandlers: vi.fn(),
   registerXiaoguiHandlers: vi.fn(),
   shutdownSidecar: vi.fn(),
   collaborationApplication: { kind: 'collaboration-application' },
@@ -22,6 +30,8 @@ const mocks = vi.hoisted(() => ({
   createWorkDocumentSnapshotHandler: vi.fn(),
   createRouter: vi.fn(),
   getCollaborationApplication: vi.fn(),
+  getHubTaskWorkerService: vi.fn(),
+  getHubTaskWorkerInstallationIdDigest: vi.fn(),
   getWorkDocxService: vi.fn(),
   getWorkReportDocxService: vi.fn(),
   getWorkDocumentSnapshotService: vi.fn(),
@@ -43,9 +53,46 @@ vi.mock('./task-hub/ipc', () => ({
   registerCollaborationHubHandlers: mocks.registerCollaborationHubHandlers,
 }))
 
+vi.mock('./hub-task/worker-composition', () => ({
+  closeDefaultHubTaskWorkerServiceV1: mocks.closeHubTaskWorkerService,
+  getDefaultHubTaskWorkerServiceV1: mocks.getHubTaskWorkerService,
+  getDefaultHubTaskWorkerInstallationIdDigestV1: mocks.getHubTaskWorkerInstallationIdDigest,
+}))
+
+vi.mock('./hub-task/worker-ipc', () => ({
+  registerHubTaskWorkerHandlers: mocks.registerHubTaskWorkerHandlers,
+}))
+
 vi.mock('./work-docx-ipc', () => ({
   getDefaultWorkDocxServiceV1: mocks.getWorkDocxService,
   registerWorkDocxHandlers: mocks.registerWorkDocxHandlers,
+}))
+
+vi.mock('./template-library-ipc', () => ({
+  registerTemplateLibraryHandlersV1: mocks.registerTemplateLibraryHandlers,
+}))
+
+vi.mock('./template-library-composition', () => ({
+  closeDefaultTemplateLibraryServiceV1: mocks.closeTemplateLibraryService,
+}))
+
+vi.mock('./work-document-review-ipc', () => ({
+  registerDocumentReviewHandlersV1: mocks.registerDocumentReviewHandlers,
+}))
+
+vi.mock('./work-docx-template-intake-composition', () => ({
+  closeDefaultWorkDocxTemplateIntakeServiceV1: mocks.closeTemplateIntakeService,
+  getDefaultWorkDocxTemplateIntakeServiceV1: vi.fn(),
+}))
+
+vi.mock('./work-docx-template-materialize-composition', () => ({
+  closeDefaultWorkDocxTemplateMaterializeServiceV1: mocks.closeTemplateMaterializeService,
+  getDefaultWorkDocxTemplateMaterializeServiceV1: vi.fn(),
+}))
+
+vi.mock('./work-docx-advanced-generation-composition', () => ({
+  closeDefaultWorkDocxAdvancedGenerationServiceV1: mocks.closeAdvancedGenerationService,
+  getDefaultWorkDocxAdvancedGenerationServiceV1: vi.fn(),
 }))
 
 vi.mock('./task-hub/worker-tool', () => ({
@@ -106,6 +153,7 @@ describe('xiaogui shutdown lifecycle', () => {
     await Promise.resolve()
     expect(mocks.shutdownSidecar).toHaveBeenCalledOnce()
     expect(mocks.closeRuntimeComposition).toHaveBeenCalledOnce()
+    expect(mocks.closeHubTaskWorkerService).toHaveBeenCalledOnce()
 
     sidecar.resolve()
     await Promise.resolve()
@@ -120,6 +168,8 @@ describe('xiaogui shutdown lifecycle', () => {
 describe('xiaogui Worker host-tool wiring', () => {
   it('routes collaboration, WORK DOCX, and WORK document snapshot through the single WorkerManager handler', () => {
     mocks.getCollaborationApplication.mockReturnValue(mocks.collaborationApplication)
+    mocks.getHubTaskWorkerService.mockReturnValue({ kind: 'hub-task-worker-service' })
+    mocks.getHubTaskWorkerInstallationIdDigest.mockReturnValue(`sha256:${'a'.repeat(64)}`)
     mocks.getWorkDocxService.mockReturnValue(mocks.workDocxService)
     mocks.getWorkReportDocxService.mockReturnValue(mocks.workReportDocxService)
     mocks.getWorkDocumentSnapshotService.mockReturnValue(mocks.workDocumentSnapshotService)
@@ -130,6 +180,11 @@ describe('xiaogui Worker host-tool wiring', () => {
     mocks.createRouter.mockReturnValue(mocks.routedHandler)
 
     initXiaogui()
+
+    expect(mocks.registerHubTaskWorkerHandlers).toHaveBeenCalledWith(
+      { kind: 'hub-task-worker-service' },
+      `sha256:${'a'.repeat(64)}`,
+    )
 
     expect(mocks.createCollaborationHandler).toHaveBeenCalledWith({
       application: mocks.collaborationApplication,

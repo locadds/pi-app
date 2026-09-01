@@ -30,6 +30,7 @@ import type { TaskVerificationFailureSourceV1, TaskVerificationSummaryV1 } from 
 import { useUIStore } from '@renderer/stores/ui-store'
 import { onAppEvent } from '@renderer/lib/ipc-client'
 import { sessionFilesEqual } from '@renderer/lib/session-file-key'
+import { HubTaskInboxSection } from './HubTaskInboxSection'
 
 import {
   DEFAULT_CANCEL_REASON,
@@ -1122,6 +1123,13 @@ export function CollaborationHubPanel() {
       </div>
 
       {error && <ErrorBanner error={error} onDismiss={clearError} />}
+
+      {scope.sessionMode !== 'DESIGN' && (
+        <HubTaskInboxSection
+          address={{ projectId: scope.projectId, sessionKey: scope.sessionKey }}
+          onPlanDraftCreated={() => void refresh()}
+        />
+      )}
 
       {!projection && loading && <div className="text-[12px] text-muted-foreground">加载中…</div>}
 

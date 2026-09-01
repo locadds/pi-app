@@ -48,6 +48,12 @@ import { createXiaoguiWorkerHostToolRouterV1 } from './worker-host-tool-router'
 import { registerTemplateLibraryHandlersV1 } from './template-library-ipc'
 import { closeDefaultTemplateLibraryServiceV1 } from './template-library-composition'
 import { registerDocumentReviewHandlersV1 } from './work-document-review-ipc'
+import {
+  closeDefaultHubTaskWorkerServiceV1,
+  getDefaultHubTaskWorkerInstallationIdDigestV1,
+  getDefaultHubTaskWorkerServiceV1,
+} from './hub-task/worker-composition'
+import { registerHubTaskWorkerHandlers } from './hub-task/worker-ipc'
 
 let initialized = false
 
@@ -57,6 +63,10 @@ export function initXiaogui(): void {
 
   registerXiaoguiHandlers()
   registerCollaborationHubHandlers()
+  registerHubTaskWorkerHandlers(
+    getDefaultHubTaskWorkerServiceV1(),
+    getDefaultHubTaskWorkerInstallationIdDigestV1(),
+  )
   registerWorkDocxHandlers()
   registerTemplateLibraryHandlersV1()
   registerDocumentReviewHandlersV1()
@@ -105,6 +115,7 @@ export async function shutdownXiaoguiSidecar(): Promise<void> {
   const results = await Promise.allSettled([
     Promise.resolve().then(() => xiaogui.shutdown()),
     Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),
+    Promise.resolve().then(() => closeDefaultHubTaskWorkerServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateIntakeServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateMaterializeServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxAdvancedGenerationServiceV1()),
