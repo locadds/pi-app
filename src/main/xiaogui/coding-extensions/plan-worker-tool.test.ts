@@ -23,7 +23,10 @@ const request: WorkerHostToolRequestV1 = {
   },
 }
 
-function setup(sessionMode: 'WORK' | 'DESIGN' | 'CODING' = 'CODING') {
+function setup(
+  sessionMode: 'WORK' | 'DESIGN' | 'CODING' = 'CODING',
+  recordTrustedSessionAddress = vi.fn(),
+) {
   const resolveExisting = vi.fn(async (): Promise<PiSessionScopeV1 | null> => ({
     projectId: `xgp1_${'1'.repeat(64)}` as never,
     sessionKey: `xgs1_${'2'.repeat(64)}` as never,
@@ -37,9 +40,10 @@ function setup(sessionMode: 'WORK' | 'DESIGN' | 'CODING' = 'CODING') {
   }))
   const handler = createXiaoguiCodingPlanWorkerToolHandlerV1({
     scopeResolver: { resolveExisting } as unknown as SessionScopeResolverV1,
+    recordTrustedSessionAddress,
     publishPendingDraft,
   })
-  return { handler, resolveExisting, publishPendingDraft }
+  return { handler, resolveExisting, recordTrustedSessionAddress, publishPendingDraft }
 }
 
 const metadata = (overrides: Record<string, unknown> = {}) => ({
@@ -53,7 +57,7 @@ const metadata = (overrides: Record<string, unknown> = {}) => ({
 
 describe('CODING plan Worker host adapter', () => {
   it('derives the trusted CODING SessionAddress and hides the stored digest', async () => {
-    const { handler, resolveExisting, publishPendingDraft } = setup()
+    const { handler, resolveExisting, recordTrustedSessionAddress, publishPendingDraft } = setup()
 
     const outcome = await handler(metadata())
 
@@ -69,8 +73,18 @@ describe('CODING plan Worker host adapter', () => {
       },
       body,
     })
+    expect(recordTrustedSessionAddress).toHaveBeenCalledWith({
+      address: {
+        projectId: `xgp1_${'1'.repeat(64)}`,
+        sessionKey: `xgs1_${'2'.repeat(64)}`,
+      },
+      sourceSessionId: 'session-1',
+      sessionFile: 'D:/session.jsonl',
+    })
+    expect(recordTrustedSessionAddress.mock.invocationCallOrder[0])
+      .toBeLessThan(publishPendingDraft.mock.invocationCallOrder[0]!)
     expect(outcome).toEqual({ ok: true, value: { kind: 'XIAOGUI_CODING_PLAN_DRAFT_SAVED' } })
-    expect(JSON.stringify(outcome)).not.toMatch(/sha256|digest|D:\/project/i)
+    expect(JSON.stringify(outcome)).not.toMatch(/sha256|digest|D:\/project|session-1|session\.jsonl/i)
   })
 
   it('rejects non-CODING sessions and stale Worker ownership before persistence', async () => {
@@ -80,6 +94,7 @@ describe('CODING plan Worker host adapter', () => {
       error: { code: 'CODING_PLAN_MODE_REQUIRED' },
     })
     expect(work.publishPendingDraft).not.toHaveBeenCalled()
+    expect(work.recordTrustedSessionAddress).not.toHaveBeenCalled()
 
     const stale = setup()
     await expect(stale.handler(metadata({ fromSessionId: 'session-2' }))).resolves.toMatchObject({
@@ -88,6 +103,7 @@ describe('CODING plan Worker host adapter', () => {
     })
     expect(stale.resolveExisting).not.toHaveBeenCalled()
     expect(stale.publishPendingDraft).not.toHaveBeenCalled()
+    expect(stale.recordTrustedSessionAddress).not.toHaveBeenCalled()
   })
 
   it('rejects model-supplied path, address or Attempt identifiers', async () => {
@@ -107,5 +123,23 @@ describe('CODING plan Worker host adapter', () => {
     expect(outcome).toMatchObject({ ok: false, error: { code: 'HOST_TOOL_REQUEST_INVALID' } })
     expect(resolveExisting).not.toHaveBeenCalled()
     expect(publishPendingDraft).not.toHaveBeenCalled()
+  })
+
+  it('fails closed with a redacted receipt when the private session-address callback fails', async () => {
+    const privatePath = 'D:/private/sessions/secret.jsonl'
+    const callback = vi.fn(() => {
+      throw new Error(`cannot persist ${privatePath}`)
+    })
+    const { handler, publishPendingDraft } = setup('CODING', callback)
+
+    const outcome = await handler(metadata())
+
+    expect(callback).toHaveBeenCalledOnce()
+    expect(publishPendingDraft).not.toHaveBeenCalled()
+    expect(outcome).toEqual({
+      ok: false,
+      error: { code: 'HOST_TOOL_FAILED', message: '当前编程会话绑定保存失败，请稍后重试' },
+    })
+    expect(JSON.stringify(outcome)).not.toContain(privatePath)
   })
 })

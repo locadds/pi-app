@@ -45,7 +45,10 @@ import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { canonicalizePlanDraft, payloadDigest, type CanonicalPlanDraftV1 } from './digest'
 import { hubError } from './errors'
-import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import {
+  CollaborationHubSqliteStoreV1,
+  type CheckpointRestoreOutcomeUnknownRecordV1,
+} from './sqlite-store'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import type { AgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import {
@@ -128,6 +131,14 @@ export interface CollaborationHubApplicationV1 {
   observe(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>>
   observeM2B(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionM2BV1>>
   perform(address: HubAddressV1, request: UserIntentRequestV1): Promise<HubOutcomeV1<PerformReceiptV1>>
+  markVerifiedCheckpointOutcomeUnknown(input: {
+    readonly address: HubAddressV1
+    readonly flowId: FlowId
+    readonly taskRunId: import('@shared/xiaogui-collaboration-hub').TaskRunId
+    readonly attemptId: AttemptId
+    readonly reasonCode: string
+    readonly receiptDigest: string
+  }): Promise<void>
   close(): void
 }
 
@@ -145,6 +156,29 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
 
   async observe(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>> {
     return this.read(address, { type: 'session.current' })
+  }
+
+  async markVerifiedCheckpointOutcomeUnknown(input: {
+    readonly address: HubAddressV1
+    readonly flowId: FlowId
+    readonly taskRunId: import('@shared/xiaogui-collaboration-hub').TaskRunId
+    readonly attemptId: AttemptId
+    readonly reasonCode: string
+    readonly receiptDigest: string
+  }): Promise<void> {
+    const scope = await this.resolve(input.address)
+    if (!scope.ok || scope.value.mode !== 'CODING') {
+      throw new Error('CHECKPOINT_RESTORE_SCOPE_MISMATCH')
+    }
+    const record: CheckpointRestoreOutcomeUnknownRecordV1 = {
+      flowId: input.flowId,
+      taskRunId: input.taskRunId,
+      attemptId: input.attemptId,
+      reasonCode: input.reasonCode,
+      receiptDigest: input.receiptDigest,
+      now: this.now(),
+    }
+    this.getStore().markVerifiedCheckpointOutcomeUnknown(input.address, record)
   }
 
   async observeM2B(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionM2BV1>> {

@@ -16,6 +16,7 @@ import type {
   AttemptProjectionM2BV1,
   AttemptStatusM2BV1,
   CollaborationFlowSummaryV1,
+  HubAddressV1,
   HubSafeErrorV1,
   SessionCollaborationProjectionM2BV1,
   TaskDependencyStateV1,
@@ -33,6 +34,8 @@ import { sessionFilesEqual } from '@renderer/lib/session-file-key'
 
 import { CodingAttemptPlanCard } from './CodingAttemptPlanCard'
 import { CodingAttemptReviewCard } from './CodingAttemptReviewCard'
+import { CodingCheckpointCard } from './CodingCheckpointCard'
+import { CodingRoleCard } from './CodingRoleCard'
 import { useCodingAttemptStore } from '../stores/coding-attempt-store'
 
 import {
@@ -930,12 +933,14 @@ function TaskRunCard({
   badge,
   attempts,
   reason,
+  codingAddress,
 }: {
   run: TaskRunProjectionM2BV1
   title: string
   badge: string
   attempts: readonly AttemptProjectionM2BV1[]
   reason: string | null
+  codingAddress: HubAddressV1 | null
 }) {
   return (
     <li className="rounded-md border border-border/30 px-2 py-1 text-[11px]">
@@ -960,11 +965,26 @@ function TaskRunCard({
           {attempt.verificationSummary && (
             <TaskVerificationSummaryCard attemptId={attempt.attemptId} summary={attempt.verificationSummary} />
           )}
-          <CodingAttemptPlanCard attemptId={attempt.attemptId} />
-          <CodingAttemptReviewCard
-            attemptId={attempt.attemptId}
-            available={['VERIFYING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED', 'OUTCOME_UNKNOWN'].includes(attempt.status)}
-          />
+          {codingAddress && (
+            <>
+              <CodingRoleCard
+                address={codingAddress}
+                attemptId={attempt.attemptId}
+                canBind={['CREATED', 'WORKSPACE_PREPARING', 'READY'].includes(attempt.status)}
+              />
+              <CodingCheckpointCard
+                address={codingAddress}
+                attemptId={attempt.attemptId}
+                captureEnabled={attempt.status === 'READY' || attempt.status === 'SUCCEEDED'}
+                restoreEnabled={attempt.status === 'READY' || attempt.status === 'SUCCEEDED'}
+              />
+              <CodingAttemptPlanCard attemptId={attempt.attemptId} />
+              <CodingAttemptReviewCard
+                attemptId={attempt.attemptId}
+                available={['VERIFYING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED', 'OUTCOME_UNKNOWN'].includes(attempt.status)}
+              />
+            </>
+          )}
         </div>
       ))}
     </li>
@@ -1044,6 +1064,7 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
                       badge={taskRunBadgeText(run, readiness, runAttempts, awaitingPlanAttemptIds)}
                       attempts={runAttempts}
                       reason={reason}
+                      codingAddress={projection.authoritativeMode === 'CODING' ? projection.address : null}
                     />
                   )
                 })}

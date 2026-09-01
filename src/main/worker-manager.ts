@@ -22,6 +22,9 @@ import type {
   WorkerState,
 } from '@shared/worker-rpc-types'
 import type { CodingContextAgentPayloadV1 } from '@shared/xiaogui-coding-extension-pack'
+import type { CodingRoleKindV1 } from '@shared/xiaogui-coding-extension-pack'
+import type { CodingRoleAgentSnapshotV1 } from '@shared/xiaogui-coding-role-control'
+import type { SessionAddressV1 } from '@shared/xiaogui-session-scope'
 import {
   attachWorkerHandlers,
   canAcquireNewWorker,
@@ -49,6 +52,7 @@ import { createNewSessionInPool } from './worker-manager-new-session'
 import { readSessionMetaFromFile } from './session-file-meta'
 import {
   applySettledRunToSessionLeafOverride,
+  clearSessionLeafOverride,
   getSessionLeafOverride,
   setSessionLeafOverride,
 } from './session-leaf-override'
@@ -57,6 +61,14 @@ import type { XiaoguiPromptContextResolverV1 } from './xiaogui/prompt-context'
 import { findSandboxWorkspaceForSessionFile } from './sandbox-workspaces'
 
 interface InitResult extends WorkerInitResult {}
+
+export interface CodingRoleWorkerProjectionV1 {
+  readonly attemptId: string
+  readonly profileId: string
+  readonly role: CodingRoleKindV1
+  readonly snapshotDigest: string
+  readonly model: string
+}
 
 export class WorkerManager {
   private mainWindow: BrowserWindow | null = null
@@ -542,6 +554,61 @@ export class WorkerManager {
     codingContext?: CodingContextAgentPayloadV1,
   ): Promise<void> {
     await this.request('prompt', { text, sessionFile, codingContext })
+  }
+
+  /** Main-only role preflight. The private prompt body crosses only this Worker RPC. */
+  async inspectCodingRoleSupport(
+    address: SessionAddressV1,
+    codingRole: CodingRoleAgentSnapshotV1,
+  ): Promise<CodingRoleWorkerProjectionV1> {
+    const slot = this.codingRoleSlot(address)
+    const response = await this.requestOnSlot(slot, 'codingRoleBinding', {
+      action: 'CHECK',
+      codingRole,
+    })
+    return projectCodingRoleWorkerResponse(response, codingRole)
+  }
+
+  /** Bind an immutable Attempt role to the already-active CODING Worker session. */
+  async bindCodingAttemptRole(
+    address: SessionAddressV1,
+    codingRole: CodingRoleAgentSnapshotV1,
+  ): Promise<CodingRoleWorkerProjectionV1> {
+    const slot = this.codingRoleSlot(address)
+    const response = await this.requestOnSlot(slot, 'codingRoleBinding', {
+      action: 'BIND',
+      codingRole,
+    })
+    return projectCodingRoleWorkerResponse(response, codingRole)
+  }
+
+  /** Release requires the currently bound Attempt id; another Attempt cannot clear it. */
+  async releaseCodingAttemptRole(
+    address: SessionAddressV1,
+    expectedAttemptId: string,
+  ): Promise<{ readonly attemptId: string; readonly released: boolean }> {
+    const slot = this.codingRoleSlot(address)
+    const response = await this.requestOnSlot(slot, 'codingRoleBinding', {
+      action: 'RELEASE',
+      expectedAttemptId,
+    })
+    if (
+      response.action !== 'RELEASE' ||
+      response.attemptId !== expectedAttemptId ||
+      response.released !== true
+    ) throw new Error('XIAOGUI_CODING_ROLE_RUNTIME_RESPONSE_MISMATCH')
+    return { attemptId: expectedAttemptId, released: true }
+  }
+
+  private codingRoleSlot(address: SessionAddressV1): WorkerSlot {
+    const matches = [...this.pool.values()].filter((slot) => (
+      !slot.stopping &&
+      slot.promptContext?.mode === 'CODING' &&
+      slot.promptContext.projectId === address.projectId &&
+      slot.promptContext.sessionKey === address.sessionKey
+    ))
+    if (matches.length !== 1) throw new Error('XIAOGUI_CODING_ROLE_RUNTIME_UNAVAILABLE')
+    return matches[0]
   }
   /**
    * Abort agent turn on the session's existing worker only.
@@ -1038,6 +1105,65 @@ export class WorkerManager {
       error: r.error as string | undefined,
     }
   }
+
+  /** Main-only Pi Session checkpoint RPC. No path or leaf is returned to callers. */
+  async inspectPiSessionCheckpoint(input: {
+    sessionFile: string
+    expectedSessionId: string
+  }): Promise<{ sessionId: string; snapshotDigest: string }> {
+    const r = await this.request('codingSessionCheckpoint', {
+      action: 'INSPECT',
+      sessionFile: input.sessionFile,
+      expectedSessionId: input.expectedSessionId,
+    })
+    return {
+      sessionId: String(r.sessionId ?? ''),
+      snapshotDigest: String(r.snapshotDigest ?? ''),
+    }
+  }
+
+  /** Main-only Pi Session checkpoint RPC. Snapshot refs stay behind TaskHub. */
+  async capturePiSessionCheckpoint(input: {
+    sessionFile: string
+    expectedSessionId: string
+    snapshotRef: string
+  }): Promise<{ sessionId: string; snapshotRef: string; snapshotDigest: string }> {
+    const r = await this.request('codingSessionCheckpoint', {
+      action: 'CAPTURE',
+      sessionFile: input.sessionFile,
+      expectedSessionId: input.expectedSessionId,
+      snapshotRef: input.snapshotRef,
+    })
+    return {
+      sessionId: String(r.sessionId ?? ''),
+      snapshotRef: String(r.snapshotRef ?? ''),
+      snapshotDigest: String(r.snapshotDigest ?? ''),
+    }
+  }
+
+  /** Main-only Pi Session checkpoint RPC. Restore remains session-scoped. */
+  async restorePiSessionCheckpoint(input: {
+    sessionFile: string
+    expectedSessionId: string
+    snapshotRef: string
+    expectedDigest: string
+  }): Promise<{ sessionId: string; restoredSnapshotDigest: string }> {
+    const r = await this.request('codingSessionCheckpoint', {
+      action: 'RESTORE',
+      sessionFile: input.sessionFile,
+      expectedSessionId: input.expectedSessionId,
+      snapshotRef: input.snapshotRef,
+      expectedDigest: input.expectedDigest,
+    })
+    // The Worker persisted a RESTORE_HEAD as the latest Session entry. Any
+    // earlier manual rewind override would otherwise defeat it on reload.
+    clearSessionLeafOverride(input.sessionFile)
+    return {
+      sessionId: String(r.sessionId ?? ''),
+      restoredSnapshotDigest: String(r.restoredSnapshotDigest ?? ''),
+    }
+  }
+
   async navigateTree(
     targetId: string,
     options?: { summarize?: boolean; label?: string; sessionFile?: string },
@@ -1124,6 +1250,28 @@ export class WorkerManager {
   get foregroundSessionFile(): string | null {
     return this.foregroundSlot()?.sessionFile ?? null
   }
+}
+
+function projectCodingRoleWorkerResponse(
+  response: WorkerResponsePayload,
+  expected: CodingRoleAgentSnapshotV1,
+): CodingRoleWorkerProjectionV1 {
+  if (
+    (response.action !== 'CHECK' && response.action !== 'BIND') ||
+    response.attemptId !== expected.attemptId ||
+    response.profileId !== expected.snapshot.profileId ||
+    response.role !== expected.snapshot.role ||
+    response.snapshotDigest !== expected.snapshotDigest ||
+    typeof response.model !== 'string' ||
+    !response.model
+  ) throw new Error('XIAOGUI_CODING_ROLE_RUNTIME_RESPONSE_MISMATCH')
+  return Object.freeze({
+    attemptId: expected.attemptId,
+    profileId: expected.snapshot.profileId,
+    role: expected.snapshot.role,
+    snapshotDigest: expected.snapshotDigest,
+    model: response.model,
+  })
 }
 
 export const workerManager = new WorkerManager()

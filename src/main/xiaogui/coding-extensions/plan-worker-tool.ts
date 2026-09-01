@@ -12,6 +12,7 @@ import {
 
 import type { WorkerHostToolRequestHandler } from '../../worker-manager-types'
 import type { SessionScopeResolverV1 } from '../scope-resolver'
+import type { CheckpointSessionAddressRecordV1 } from './checkpoint-session-binding-registry'
 
 const StepSchema = z
   .object({
@@ -60,6 +61,10 @@ const RequestSchema = z
 
 export interface XiaoguiCodingPlanWorkerToolHandlerOptionsV1 {
   readonly scopeResolver: SessionScopeResolverV1
+  /** Main-only private callback. Its input must never be copied into a public receipt or log. */
+  readonly recordTrustedSessionAddress?: (
+    input: CheckpointSessionAddressRecordV1,
+  ) => void | Promise<void>
   readonly publishPendingDraft: (
     input: CodingPlanPendingDraftV1,
   ) => CodingPlanPendingDraftReceiptV1 | Promise<CodingPlanPendingDraftReceiptV1>
@@ -104,11 +109,22 @@ export function createXiaoguiCodingPlanWorkerToolHandlerV1(
       return failure('CODING_PLAN_MODE_REQUIRED', '编程计划草稿只能在编程模式的计划阶段提交')
     }
 
+    const address = { projectId: scope.projectId, sessionKey: scope.sessionKey }
+    try {
+      await options.recordTrustedSessionAddress?.({
+        address,
+        sourceSessionId: fromSessionId,
+        sessionFile: scope.sessionFile,
+      })
+    } catch {
+      return failure('HOST_TOOL_FAILED', '当前编程会话绑定保存失败，请稍后重试')
+    }
+
     let receipt: CodingPlanPendingDraftReceiptV1
     try {
       receipt = await options.publishPendingDraft({
         schemaVersion: 1,
-        address: { projectId: scope.projectId, sessionKey: scope.sessionKey },
+        address,
         body: parsed.data.payload.body,
       })
     } catch {

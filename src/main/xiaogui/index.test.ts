@@ -10,6 +10,11 @@ const mocks = vi.hoisted(() => ({
   registerOfficeSurfaceHandlers: vi.fn(),
   registerCodingContextHandlers: vi.fn(),
   registerCodingAttemptHandlers: vi.fn(),
+  registerCodingRoleHandlers: vi.fn(),
+  closeCodingRoleProfiles: vi.fn(),
+  registerCodingCheckpointHandlers: vi.fn(),
+  closeCodingCheckpointComposition: vi.fn(),
+  recordCodingCheckpointSessionAddress: vi.fn(),
   registerXiaoguiHandlers: vi.fn(),
   shutdownSidecar: vi.fn(),
   collaborationApplication: { kind: 'collaboration-application' },
@@ -66,6 +71,17 @@ vi.mock('./coding-extensions/context-ipc', () => ({
 
 vi.mock('./coding-extensions/attempt-ipc', () => ({
   registerCodingAttemptHandlersV1: mocks.registerCodingAttemptHandlers,
+}))
+
+vi.mock('./coding-extensions/role-production-composition', () => ({
+  registerDefaultCodingRoleHandlersV1: mocks.registerCodingRoleHandlers,
+  closeDefaultCodingRoleProfileModuleV1: mocks.closeCodingRoleProfiles,
+}))
+
+vi.mock('./coding-extensions/checkpoint-default-composition', () => ({
+  registerDefaultCodingCheckpointHandlersV1: mocks.registerCodingCheckpointHandlers,
+  closeDefaultCodingCheckpointProductionCompositionV1: mocks.closeCodingCheckpointComposition,
+  recordDefaultCodingCheckpointSessionAddressV1: mocks.recordCodingCheckpointSessionAddress,
 }))
 
 vi.mock('./coding-extensions/plan-worker-tool', () => ({
@@ -156,6 +172,8 @@ describe('xiaogui shutdown lifecycle', () => {
     await Promise.resolve()
     expect(mocks.shutdownSidecar).toHaveBeenCalledOnce()
     expect(mocks.closeRuntimeComposition).toHaveBeenCalledOnce()
+    expect(mocks.closeCodingRoleProfiles).toHaveBeenCalledOnce()
+    expect(mocks.closeCodingCheckpointComposition).toHaveBeenCalledOnce()
 
     sidecar.resolve()
     await Promise.resolve()
@@ -189,8 +207,11 @@ describe('xiaogui Worker host-tool wiring', () => {
       review: mocks.codingReviewModule,
       taskExecution: mocks.taskExecutionOrchestrator,
     })
+    expect(mocks.registerCodingRoleHandlers).toHaveBeenCalledOnce()
+    expect(mocks.registerCodingCheckpointHandlers).toHaveBeenCalledOnce()
     expect(mocks.createCodingPlanHandler).toHaveBeenCalledWith({
       scopeResolver: mocks.scopeResolver,
+      recordTrustedSessionAddress: mocks.recordCodingCheckpointSessionAddress,
       publishPendingDraft: expect.any(Function),
     })
 

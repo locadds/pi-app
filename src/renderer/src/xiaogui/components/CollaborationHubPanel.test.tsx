@@ -927,6 +927,11 @@ describe('CollaborationHubPanel', () => {
     expect(view.textContent).not.toContain('xhba_0')
     expect(view.textContent).not.toContain('xhba_1')
     expect(view.textContent).not.toContain('rs-1')
+    // CODING Attempt 复用同一协作卡片，角色与检查点不另建页面；
+    // 未注册的接缝在卡片内明确 fail closed。
+    expect(view).toHaveTextContent('执行角色')
+    expect(view).toHaveTextContent('Git 检查点与恢复')
+    expect(view).toHaveTextContent('当前执行不处于可安全恢复的就绪状态')
     // 不出现任何执行/领取/交付类按钮
     expect(screen.queryByRole('button', { name: '批准计划' })).toBeNull()
     expect(performMock).not.toHaveBeenCalled()

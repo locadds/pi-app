@@ -16,6 +16,7 @@ import { join, relative, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import type { HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
+import { CheckpointSessionBindingRegistryV1 } from '../src/main/xiaogui/coding-extensions/checkpoint-session-binding-registry'
 
 type PiDesktopWindow = Window & {
   piDesktop: { invoke(channel: string, request?: unknown): Promise<unknown> }
@@ -71,6 +72,7 @@ const C_PATH = 'src/c.ts'
 const A_CONTENT = 'export const alpha = "A-verified";\n'
 const B_CONTENT = 'export const beta = "B-verified";\n'
 const C_CONTENT = 'import { alpha } from "./a";\nexport const gamma = `${alpha}:C`;\n'
+const SESSION_ID = '77777777-7777-4777-8777-777777777777'
 
 const require = createRequire(import.meta.url)
 const electronExecutable = require('electron') as string
@@ -112,7 +114,7 @@ function encodedSessionDirectory(agentDir: string, workspace: string): string {
 }
 
 function writeSessionFixture(sessionDir: string, workspace: string) {
-  const id = '77777777-7777-4777-8777-777777777777'
+  const id = SESSION_ID
   const timestamp = '2026-08-28T02:00:00.000Z'
   const file = join(sessionDir, `${timestamp.replace(/[:.]/g, '-')}_${id}.jsonl`)
   const entries = [
@@ -128,10 +130,92 @@ function writeSessionFixture(sessionDir: string, workspace: string) {
         timestamp: Date.parse(timestamp),
       },
     },
-    { type: 'session_info', id: 'journey-info', parentId: 'journey-user', timestamp, name: '三任务真实交付旅程' },
+    {
+      type: 'message',
+      id: 'journey-assistant',
+      parentId: 'journey-user',
+      timestamp,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'fixture ready' }],
+        api: 'openai-completions',
+        provider: 'fixture',
+        model: 'fixture-model',
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: 'stop',
+        timestamp: Date.parse(timestamp),
+      },
+    },
+    { type: 'session_info', id: 'journey-info', parentId: 'journey-assistant', timestamp, name: '三任务真实交付旅程' },
   ]
   writeFileSync(file, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8')
   return { file, title: '三任务真实交付旅程' }
+}
+
+function writeAgentModelFixture(agentDir: string): void {
+  writeFileSync(join(agentDir, 'models.json'), `${JSON.stringify({
+    providers: {
+      fixture: {
+        name: 'Local E2E fixture',
+        api: 'openai-completions',
+        baseUrl: 'http://127.0.0.1:9/v1',
+        apiKey: 'not-a-secret-e2e-fixture',
+        models: [{
+          id: 'fixture-model',
+          name: 'Fixture model',
+          contextWindow: 8192,
+          maxTokens: 2048,
+        }],
+      },
+    },
+  }, null, 2)}\n`, 'utf8')
+  writeFileSync(join(agentDir, 'settings.json'), `${JSON.stringify({
+    defaultProvider: 'fixture',
+    defaultModel: 'fixture-model',
+  }, null, 2)}\n`, 'utf8')
+}
+
+function recordTrustedCheckpointSession(
+  userDataDir: string,
+  address: HubAddressV1,
+  sessionFile: string,
+): void {
+  const checkpointDir = join(userDataDir, 'xiaogui', 'coding-checkpoints')
+  mkdirSync(checkpointDir, { recursive: true })
+  const registry = new CheckpointSessionBindingRegistryV1({
+    dbPath: join(checkpointDir, 'checkpoint-private-v1.sqlite'),
+  })
+  try {
+    registry.recordAddress({ address, sourceSessionId: SESSION_ID, sessionFile })
+  } finally {
+    registry.close()
+  }
+}
+
+function attemptWorktreeRoot(userDataDir: string, attemptId: string): string {
+  const db = new DatabaseSync(join(userDataDir, 'xiaogui', 'task-hub', 'attempt-workspaces.sqlite'), {
+    readOnly: true,
+  })
+  try {
+    const row = db.prepare(
+      'select lease_json from attempt_workspace_leases where attempt_id = ? limit 1',
+    ).get(attemptId) as { lease_json: string } | undefined
+    if (!row) throw new Error('missing Attempt worktree lease')
+    const lease = JSON.parse(row.lease_json) as { worktreeRoot?: unknown }
+    if (typeof lease.worktreeRoot !== 'string' || !lease.worktreeRoot) {
+      throw new Error('invalid Attempt worktree lease')
+    }
+    return lease.worktreeRoot
+  } finally {
+    db.close()
+  }
 }
 
 async function git(cwd: string, args: readonly string[], allowFailure = false): Promise<string> {
@@ -479,6 +563,7 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       mkdirSync(dir, { recursive: true })
     }
     const session = writeSessionFixture(sessionDir, workspace)
+    writeAgentModelFixture(agentDir)
     const baseline = await initProjectRepository(workspace)
     const baselineFingerprint = await projectFingerprint(workspace)
     const { scenarioPath, eventLogPath } = writeRuntimeScenario(evidenceDir)
@@ -486,6 +571,9 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
     const screenshots = {
       batchConfirm: join(evidenceDir, '01-batch-confirm.png'),
       plansAwaitingApproval: join(evidenceDir, '02-attempt-plans-awaiting-approval.png'),
+      roleBound: join(evidenceDir, '02a-role-bound.png'),
+      checkpointRestorePreview: join(evidenceDir, '02b-checkpoint-restore-preview.png'),
+      checkpointRestored: join(evidenceDir, '02c-checkpoint-restored.png'),
       rootsRunning: join(evidenceDir, '03-ab-running-c-waiting.png'),
       review: join(evidenceDir, '04-real-diff-and-verification.png'),
       deliveryPending: join(evidenceDir, '05-three-task-delivery-pending.png'),
@@ -536,6 +624,10 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
         projectId: canonicalScope.projectId,
         sessionKey: canonicalScope.sessionKey,
       }
+      // The production path records this private association when the Pi plan
+      // host tool publishes a draft. This E2E seeds the same trusted fixture
+      // because the flow itself is intentionally created through test-only IPC.
+      recordTrustedCheckpointSession(userDataDir, address, session.file)
       await openSessionAndHub(page, '一次性Git项目', session.title)
 
       const seeded = await invoke<{ ok: boolean; error?: unknown }>(page, 'ipc:xiaogui.hub.perform', {
@@ -580,6 +672,42 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       await expect(page.getByTestId('hub-task-group-awaiting-plan')).toBeVisible({ timeout: 45_000 })
       await page.getByTestId('hub-task-group-awaiting-plan').screenshot({ path: screenshots.plansAwaitingApproval })
       expect(readEvents(eventLogPath).some((event) => event.event === 'runtime.execution.entered')).toBe(false)
+
+      const awaitingPlans = await waitForProjection(page, address, (projection) => (
+        projection.attempts.filter((attempt) => attempt.status === 'READY').length === 2
+      ))
+      const attemptA = awaitingPlans.attempts.find((attempt) => attempt.taskRunId === runA.taskRunId)
+      if (!attemptA) throw new Error('missing READY Attempt A')
+      const taskACard = page.getByTestId('hub-taskrun-status-a').locator('xpath=ancestor::li[1]')
+      const roleCard = taskACard.getByLabel('执行角色')
+      const roleSelect = roleCard.getByLabel('选择角色')
+      await expect(roleSelect.locator('option')).toHaveText([
+        '研究（研究）',
+        '实现（实现）',
+        '审阅（审阅）',
+      ])
+      await roleSelect.selectOption('xiaogui.role.implement.default')
+      await roleCard.getByRole('button', { name: '使用此角色', exact: true }).click()
+      await expect(roleCard.getByText('当前角色：实现', { exact: true })).toBeVisible()
+      await roleCard.screenshot({ path: screenshots.roleBound })
+
+      const checkpointCard = taskACard.getByLabel('Git 检查点与恢复')
+      await checkpointCard.getByRole('button', { name: '创建检查点', exact: true }).click()
+      await expect(checkpointCard.getByText('检查点已创建。', { exact: true })).toBeVisible()
+      const scratchPath = join(attemptWorktreeRoot(userDataDir, attemptA.attemptId), 'p3-restore-scratch.txt')
+      await writeFile(scratchPath, 'temporary checkpoint change\n', 'utf8')
+      await checkpointCard.getByRole('button', { name: '预览恢复影响', exact: true }).click()
+      await expect(checkpointCard.getByText('p3-restore-scratch.txt', { exact: true })).toBeVisible()
+      await expect(checkpointCard.getByRole('button', { name: '确认恢复到此检查点', exact: true })).toBeDisabled()
+      await checkpointCard.screenshot({ path: screenshots.checkpointRestorePreview })
+      await checkpointCard.getByRole('checkbox', { name: '我已了解上述影响', exact: true }).check()
+      await checkpointCard.getByRole('button', { name: '确认恢复到此检查点', exact: true }).click()
+      await expect(checkpointCard.getByText('已恢复到检查点。', { exact: true })).toBeVisible()
+      expect(existsSync(scratchPath)).toBe(false)
+      expect((await observe(page, address)).attempts.find((attempt) => attempt.attemptId === attemptA.attemptId)?.status)
+        .toBe('READY')
+      await checkpointCard.screenshot({ path: screenshots.checkpointRestored })
+
       await approveAwaitingAttemptPlans(page, 2)
       let events: PiE2eEvent[]
       try {

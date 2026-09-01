@@ -60,6 +60,15 @@ import {
 import { registerCodingContextHandlersV1 } from './coding-extensions/context-ipc'
 import { registerCodingAttemptHandlersV1 } from './coding-extensions/attempt-ipc'
 import { createXiaoguiCodingPlanWorkerToolHandlerV1 } from './coding-extensions/plan-worker-tool'
+import {
+  closeDefaultCodingRoleProfileModuleV1,
+  registerDefaultCodingRoleHandlersV1,
+} from './coding-extensions/role-production-composition'
+import {
+  closeDefaultCodingCheckpointProductionCompositionV1,
+  recordDefaultCodingCheckpointSessionAddressV1,
+  registerDefaultCodingCheckpointHandlersV1,
+} from './coding-extensions/checkpoint-default-composition'
 
 let initialized = false
 
@@ -79,10 +88,13 @@ export function initXiaogui(): void {
     review: getDefaultCodingAttemptReviewModuleV1(),
     taskExecution: getDefaultTaskExecutionOrchestrator(),
   })
+  registerDefaultCodingRoleHandlersV1()
+  registerDefaultCodingCheckpointHandlersV1()
   workerManager.setHostToolRequestHandler(
     createXiaoguiWorkerHostToolRouterV1({
       codingPlan: createXiaoguiCodingPlanWorkerToolHandlerV1({
         scopeResolver: sessionScopeResolverV1,
+        recordTrustedSessionAddress: recordDefaultCodingCheckpointSessionAddressV1,
         publishPendingDraft: (input) => getDefaultCodingAttemptPlanModuleV1().publishPendingDraft(input),
       }),
       collaboration: createXiaoguiWorkerToolHandlerV1({
@@ -132,6 +144,8 @@ export async function shutdownXiaoguiSidecar(): Promise<void> {
   const results = await Promise.allSettled([
     Promise.resolve().then(() => xiaogui.shutdown()),
     Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),
+    Promise.resolve().then(() => closeDefaultCodingRoleProfileModuleV1()),
+    Promise.resolve().then(() => closeDefaultCodingCheckpointProductionCompositionV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateIntakeServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateMaterializeServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxAdvancedGenerationServiceV1()),
