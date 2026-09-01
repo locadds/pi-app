@@ -6,7 +6,7 @@
 - 工作树：`D:\CodexWorktrees\xiaogui-taskhub-h1-desktop-spike-v1`
 - 分支：`agent/taskhub-h1-desktop-spike-v1`
 - 基线：`agent/stage-integration-v1@0d2deece4c35851363b918313cb27d2848207c73`
-- 阶段状态：已完成代码与聚焦验证；等待人工或审查验收，未进入 H1-1。
+- 阶段状态：已完成代码、聚焦验证和独立代码审查；因 Hub C2 仍有活动未提交工作区，未进入 H1-1。
 
 ### 本阶段目标
 
@@ -49,12 +49,17 @@
 | `npm run typecheck` | 通过：`TYPECHECK_EXIT=0`。 |
 | `npm run build` | 通过：Electron Vite 主进程、预加载和 Renderer 均构建完成；仅出现既有动态导入优化警告。 |
 
+### 审查验收
+
+- 2026-09-01：独立代码审查结论为 `APPROVE`，无 CRITICAL / HIGH / MEDIUM 问题。审查复跑了聚焦测试、`npm run typecheck` 和 `git diff --check`，并确认 `planning-agent/agent/taskhub-h1-desktop-spike-v1` 指向本阶段提交。
+- 审查遗留的 LOW 观察项已转入 H1-1：HTTP 接入前补 Offer / Assignment / Result 的运行时解析与隐私校验；配对私钥与设备 Token 只能经过主进程安全通道，不能进入 Renderer；补错误主体、节点、`keyId` 与任务包摘要的负向测试。
+
 ### 已知风险
 
 - 当前为内存 Spike，不是 Hub 服务端持久化实现，也尚未证明 HTTP 边界、SQLite 条件更新或断网补传。
-- 私钥的 Windows `safeStorage` 落盘和旧设备 Token 的真实吊销，必须在 H1-1/H1-3 对接时验证。
+- 私钥的 Windows `safeStorage` 落盘和旧设备 Token 的真实吊销，必须在 H1-1/H1-3 对接时验证；共享契约中的一次性配对响应不得被未来 IPC 误投影到 Renderer。
 - Hub C2 的活动改动仍是 H1 的外部前置条件；未经其已提交、已推送、工作区干净的检查点，不得修改 `D:\PI\xiaoguishequ`。
 
 ### 下一阶段计划
 
-等待人工或审查 Agent 对 H1-0 验收，同时等待 Hub C2 提供已提交、已推送的基线 SHA 与 `device_pairing` 接缝说明。验收通过后，从该基线建立独立 Hub H1-1 分支，复用而不是平行新建设备绑定表。
+H1-0 审查已通过。等待 Hub C2 提供工作区干净、已提交、已推送的基线 SHA 与 `device_pairing` / `user_account` 接缝说明；随后从该基线建立独立 Hub H1-1 分支，复用而不是平行新建设备绑定表。
