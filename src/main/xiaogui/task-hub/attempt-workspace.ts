@@ -128,7 +128,10 @@ export interface AttemptTaskPatchCaptureV1 {
 }
 
 export interface AttemptTaskPatchCapturePortV1 {
-  captureTaskPatch(attemptId: string): Promise<AttemptTaskPatchCaptureV1>
+  captureTaskPatch(
+    attemptId: string,
+    options?: { readonly allowNoApprovedChanges?: boolean },
+  ): Promise<AttemptTaskPatchCaptureV1>
 }
 
 export interface AttemptRuntimeAllowedFileV1 {
@@ -506,7 +509,10 @@ export interface AttemptWorkspacePortV1 {
     ownerId: string
   }): Promise<AttemptFileManifestV1>
   auditChanges(attemptId: string): Promise<AttemptWorkspaceInspectionV1>
-  captureTaskPatch(attemptId: string): Promise<AttemptTaskPatchCaptureV1>
+  captureTaskPatch(
+    attemptId: string,
+    options?: { readonly allowNoApprovedChanges?: boolean },
+  ): Promise<AttemptTaskPatchCaptureV1>
 }
 
 export interface ProjectWorkspaceResolverV1 {
@@ -674,10 +680,15 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     return this.inspect(prepared.result.handle)
   }
 
-  async captureTaskPatch(attemptId: string): Promise<AttemptTaskPatchCaptureV1> {
+  async captureTaskPatch(
+    attemptId: string,
+    options: { readonly allowNoApprovedChanges?: boolean } = {},
+  ): Promise<AttemptTaskPatchCaptureV1> {
     const audit = await this.auditChanges(attemptId)
     if (!audit.ok) throw new AttemptWorkspaceError(audit.rejectedReasonCode ?? 'PATH_FORBIDDEN')
-    if (audit.actualRelativePaths.length === 0) throw new AttemptWorkspaceError('NO_APPROVED_CHANGES')
+    if (audit.actualRelativePaths.length === 0 && !options.allowNoApprovedChanges) {
+      throw new AttemptWorkspaceError('NO_APPROVED_CHANGES')
+    }
 
     const manifest = this.registry.getManifest(attemptId)
     const lease = this.registry.getLease(attemptId)
@@ -688,7 +699,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
       (await git(rootPath, ['status', '--porcelain=v1', '--untracked-files=all'])).stdout,
     )
     if (
-      beforeStatus.length === 0 ||
+      (beforeStatus.length === 0 && !options.allowNoApprovedChanges) ||
       beforeStatus.some((change) => !isManifestSubsetChange(change, manifest)) ||
       !sameStringList(
         beforeStatus.map((change) => change.relativePath),
@@ -746,7 +757,13 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     }
     const patchArtifactBytes = Buffer.from(JSON.stringify(patchArtifact), 'utf8')
     const patchArtifactDigest = digestBytes(patchArtifactBytes)
-    const patchArtifactId = `xhart_${patchArtifactDigest.slice('sha256:'.length, 'sha256:'.length + 32)}`
+    // Every read-only attempt produces the same canonical empty patch bytes.
+    // Bind that empty artifact identity to the attempt so a later read-only
+    // task cannot collide with an earlier immutable artifact row.
+    const patchArtifactIdentityDigest = canonicalFiles.length === 0 && options.allowNoApprovedChanges
+      ? digestJson({ kind: 'EMPTY_TASK_PATCH_ARTIFACT_ID_V1', attemptId, patchArtifactDigest })
+      : patchArtifactDigest
+    const patchArtifactId = `xhart_${patchArtifactIdentityDigest.slice('sha256:'.length, 'sha256:'.length + 32)}`
 
     const afterStatus = parsePorcelainStatus(
       (await git(rootPath, ['status', '--porcelain=v1', '--untracked-files=all'])).stdout,

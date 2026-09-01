@@ -5,6 +5,7 @@ import type {
   AgentRuntimeAdapterV1,
   AgentRuntimeRegistryV1,
   RuntimeAdapterSelectionV1,
+  RuntimeCodingRoleBindingV1,
   RuntimeRoutingPolicyV1,
 } from '@shared/xiaogui-agent-runtime'
 import type { SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
@@ -102,6 +103,21 @@ const KIMI_PRODUCTION_SELECTION_V1 = {
   inspect: 'RECONCILE',
 } satisfies RuntimeAdapterSelectionV1
 
+function runtimeCodingRoleBinding(
+  binding: NonNullable<ReturnType<CodingRoleProfileModuleV1['readAttemptBinding']>>,
+): RuntimeCodingRoleBindingV1 {
+  return Object.freeze({
+    schemaVersion: 1,
+    profileId: binding.snapshot.profileId,
+    role: binding.snapshot.role,
+    modelSelector: binding.snapshot.modelSelector,
+    runtimePolicyId: binding.snapshot.runtimePolicyId,
+    effectiveToolAllowlist: Object.freeze([...binding.snapshot.effectiveToolAllowlist]),
+    profileDigest: binding.snapshot.profileDigest,
+    snapshotDigest: binding.snapshotDigest,
+  })
+}
+
 export function createXiaoguiRuntimeCompositionV1(
   options: XiaoguiRuntimeCompositionOptionsV1,
 ): XiaoguiRuntimeCompositionV1 {
@@ -188,12 +204,24 @@ export function createXiaoguiRuntimeCompositionV1(
       resolve: runtimeRegistry.resolve.bind(runtimeRegistry),
     })
 
+    const codingRoleDir = join(xiaoguiDir, 'coding-roles')
+    mkdirSync(codingRoleDir, { recursive: true })
+    codingRoleProfiles = new CodingRoleProfileModuleV1({
+      dbPath: join(codingRoleDir, 'role-profiles-v1.sqlite'),
+      now: options.now,
+    })
+
     const fixedVerificationPort = new FixedTypecheckVerificationPortV1()
     taskVerificationCoordinator = createTaskVerificationCoordinatorV1({
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
       candidateAudit: new TaskCandidateAuditServiceV1(attemptWorkspaces),
       verificationPort: fixedVerificationPort,
       projectResolver,
+      attemptRoleProvider: {
+        readAttemptRole(attemptId) {
+          return codingRoleProfiles!.readAttemptBinding(attemptId)?.snapshot.role ?? null
+        },
+      },
       now: options.now,
     })
     runtimeMonitor = createRuntimeOutcomeMonitorV1({ runtime: runtimeHost })
@@ -221,6 +249,12 @@ export function createXiaoguiRuntimeCompositionV1(
       derivedBaselineProvider,
       workspaceBridge: inputStore.bridge,
       runtimePromptVault: inputStore,
+      attemptRoleProvider: {
+        readAttemptRoleBinding(attemptId) {
+          const binding = codingRoleProfiles!.readAttemptBinding(attemptId)
+          return binding ? runtimeCodingRoleBinding(binding) : null
+        },
+      },
       taskVerificationCoordinator,
       now: options.now,
     })
@@ -235,12 +269,6 @@ export function createXiaoguiRuntimeCompositionV1(
     })
     codingAttemptPlanModule = new CodingAttemptPlanModuleV1({
       dbPath: hubDbPath,
-      now: options.now,
-    })
-    const codingRoleDir = join(xiaoguiDir, 'coding-roles')
-    mkdirSync(codingRoleDir, { recursive: true })
-    codingRoleProfiles = new CodingRoleProfileModuleV1({
-      dbPath: join(codingRoleDir, 'role-profiles-v1.sqlite'),
       now: options.now,
     })
     codingReviewStore = new CollaborationHubSqliteStoreV1(hubDbPath)
@@ -278,7 +306,7 @@ export function createXiaoguiRuntimeCompositionV1(
       attemptRoleGate: {
         async isAttemptRoleExecutable(attemptId) {
           try {
-            return codingRoleProfiles!.readAttemptBinding(attemptId)?.snapshot.role === 'IMPLEMENT'
+            return codingRoleProfiles!.readAttemptBinding(attemptId) !== null
           } catch {
             return false
           }

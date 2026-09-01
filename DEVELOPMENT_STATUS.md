@@ -1,6 +1,81 @@
 # 小规开发阶段状态
 
-## 2026-09-01｜CODING-P1 P3 检查点、角色与联合旅程候选
+## 2026-09-01｜CODING-P1 P3 三角色生产接缝最终候选
+
+### 阶段状态
+
+- 状态：P3 规格闭环已完成；聚焦测试、类型检查、构建、差异检查和真实 Electron 三角色旅程通过，等待审查 Agent 与人工验收。
+- 当前起点：`06c410bf462562da7859116f787c2749c5bfd5e6`。
+- 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`。
+- 独立分支：`agent/coding-p1-pi-extension-pack-v1`。
+- 隔离边界：未触碰 WORK 工作树，未合并阶段线、未发布、未制作 Portable；保护暂存 `wip-p3-before-p2-gate-fix-20260831` 保留，`.omo/` 不纳入提交。
+
+### 本阶段目标
+
+1. 让研究、实现、审阅不只停留在角色配置，而是通过同一 Pi Extension → TaskHub → Runtime 生产接缝执行。
+2. 保持研究/审阅硬只读，并让无文件修改的只读成果进入真实验证、依赖和统一交付总账。
+3. 完成“研究 → 计划 → 实现 → 审阅 → 检查点预览/恢复 → 交付”的一条真实 Electron 旅程。
+
+### 实际修改文件
+
+- Runtime 契约与 Adapter：`packages/shared/xiaogui-agent-runtime.ts`、`src/main/xiaogui/agent-runtime/acp/types.ts`、`src/main/xiaogui/agent-runtime/kimi-adapter.ts`、`kimi-adapter.test.ts`。
+- 角色批准与 TaskHub 生产装配：`src/main/xiaogui/coding-extensions/attempt-ipc.ts`、`attempt-ipc.test.ts`、`src/main/xiaogui/task-hub/application.ts`、`runtime-composition.ts`、`pi-e2e-scripted-runtime.ts`。
+- 只读候选与验证：`src/main/xiaogui/task-hub/attempt-workspace.ts`、`attempt-workspace.test.ts`、`task-candidate-audit.ts`、`task-verification-coordinator.ts`、`task-verification-coordinator.test.ts`。
+- Renderer：`src/renderer/src/xiaogui/components/CodingAttemptPlanCard.tsx`、`CodingAttemptPlanCard.test.tsx`。
+- 联合验收和记录：`e2e/xiaogui-real-three-task-journey.spec.ts`、`doc/coding-p1/CODING-P1-P3-QA.md`、`doc/coding-p1/CODING-P1-P3-REVIEW.md`、`DEVELOPMENT_STATUS.md`。
+
+### 已完成内容
+
+1. Runtime 请求携带不可变 `codingRole` 投影；profile、角色、模型、Runtime 策略、有效工具白名单和摘要均绑定当前 Attempt。
+2. TaskHub 允许已绑定的研究、实现、审阅角色进入各自执行回合，不再错误地把“只有实现角色能执行”当成角色硬限制。
+3. 研究和审阅的有效工具严格固定为 `read`。Kimi ACP 对其关闭写能力、拒绝写权限与写调用；若工作树出现任何变化，权威验证失败关闭。
+4. 只读 Agent 从模型文本事件形成候选证据；没有可验证文本时明确失败，不把“无输出”伪装成成功。
+5. 只读 Attempt 可以显式捕获无变更补丁并经过真实 QA，形成不含文件变化的 Task ChangeSet，供后继依赖和统一交付使用。
+6. 修复多个只读 Attempt 的空补丁编号冲突：内容摘要保持相同，制品编号绑定 Attempt；普通非空补丁生成规则不变。
+7. Renderer 的角色提示改为“请先绑定执行角色”，与研究/实现/审阅三种合法执行角色一致。
+8. Electron 旅程实际执行 A=研究、B=实现、C=审阅；B 读取 A 的已验证基线，C 读取 B 的已验证基线。
+9. 实现任务完成检查点创建、影响预览、人工确认恢复，再继续修改和验证；最终三个 ChangeSet 按依赖顺序形成统一交付。
+10. 人工批准交付前用户项目保持不变；批准后只写入 B 的真实文件变更，研究/审阅不伪造 Diff，重复批准保持幂等。
+
+### 未完成内容
+
+- 未用真实 Kimi/Codex 登录会话重复整条桌面旅程；Scripted Runtime 证明的是接缝、角色权限和状态流，不是模型生成质量。
+- 未运行全量测试、制作 Portable、合并阶段线或发布；均不属于本 P3 门禁。
+
+### 与规格文档存在的偏差
+
+- 无产品或架构偏差。TaskHub 仍是 Attempt、工作树、验证、恢复和交付的唯一权威；没有引入第二套 Agent Loop、权限系统或状态机。
+- 为表达只读成果，研究/审阅任务使用“空文件变更 + 可验证文本证据”的 Task ChangeSet；最终交付只物化实际文件变化。
+- Claude Code 仅作为交互语义参照；没有复制源码、品牌或不稳定 insiders 依赖。
+- WORK、DESIGN、Univer Office Surface、DOCX HTML 和 PDF 降级路径未修改。
+
+### 测试命令和测试结果
+
+```powershell
+node_modules\.bin\vitest.cmd run packages/shared/xiaogui-agent-runtime.test.ts src/main/xiaogui/agent-runtime/kimi-adapter.test.ts src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/main/xiaogui/task-hub/task-verification-coordinator.test.ts src/renderer/src/xiaogui/components/CodingAttemptPlanCard.test.tsx --reporter=default
+npm run typecheck
+npm run build
+node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.ts --workers=1
+git diff --check
+```
+
+- 聚焦回归：`7 test files passed`，`74 tests passed`。
+- 类型检查、构建和差异检查：全部通过；构建仅有既有动态导入和 chunk 提示。
+- Electron：`1 passed`，约 `1.0m`。证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788237824316`。
+- TDD 证据：空补丁编号测试先稳定复现相同编号失败，修复后单测和整条 Electron 旅程均通过。
+
+### 已知风险
+
+1. 生产模型可能返回空文本或不符合角色目标；系统会明确失败，不会把它记作已验证成果。
+2. 每个 Attempt 的角色和 Runtime 在执行开始后固定；不同角色并发仍需要独立 Worker 会话，不能在同一执行尝试中静默切换。
+3. 检查点恢复跨 Pi 会话、TaskHub 和 Git 工作树；无法证明的中断仍保守进入 `OUTCOME_UNKNOWN` 并要求人工对账。
+4. Scripted Runtime 不是生产模型质量证据；上线前仍应单列真实 Runtime 冒烟，而不重复本阶段全部测试。
+
+### 下一阶段计划
+
+完成固定差异代码审查和规格门审查；无阻断项后提交并推送当前独立 CODING 分支，等待人工验收。未经确认不合入 WORK 主线、阶段线或发布。
+
+## 2026-09-01｜CODING-P1 P3 检查点、角色与联合旅程候选（历史记录，已由上节取代）
 
 ### 阶段状态
 

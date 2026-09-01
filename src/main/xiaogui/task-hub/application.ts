@@ -6,6 +6,7 @@ import {
   type AgentRuntimeRegistryV1,
   type RuntimeAdapterSelectionV1,
   type RuntimeCapabilityV1,
+  type RuntimeCodingRoleBindingV1,
   type RuntimeCreateOrResumeOutcomeV1,
   type RuntimeCreateOrResumeRequestV1,
   type RuntimeOutcomeV1,
@@ -66,6 +67,7 @@ export interface CollaborationHubApplicationOptionsV1 {
   baselineProvider?: ExecutionBaselineProviderV1
   workspaceBridge?: ExecutionWorkspaceBridgeV1
   runtimePromptVault?: RuntimePromptVaultV1
+  attemptRoleProvider?: RuntimeAttemptRoleProviderV1
   taskVerificationCoordinator?: TaskVerificationCoordinatorV1
   derivedBaselineProvider?: DerivedExecutionBaselineProviderV1
   afterAgentDispatchStart?: (requestId: string) => void
@@ -120,6 +122,10 @@ export interface ExecutionWorkspaceBridgeV1 {
 
 export interface RuntimePromptVaultV1 {
   promptRefForAttempt(attemptId: string): PromptEnvelopeRefV1
+}
+
+export interface RuntimeAttemptRoleProviderV1 {
+  readAttemptRoleBinding(attemptId: string): RuntimeCodingRoleBindingV1 | null
 }
 
 export interface CollaborationHubApplicationV1 {
@@ -1201,8 +1207,12 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     }
     const bridgedWorkspace = await this.options.workspaceBridge?.runtimeWorkspace(request.intent.attemptId)
     const bridgedPromptRef = this.options.runtimePromptVault?.promptRefForAttempt(request.intent.attemptId)
+    const codingRole = this.options.attemptRoleProvider?.readAttemptRoleBinding(request.intent.attemptId)
     if (!bridgedWorkspace || !bridgedPromptRef) {
       throw new Error('RUNTIME_PRIVATE_BINDING_MISSING')
+    }
+    if (this.options.attemptRoleProvider && !codingRole) {
+      throw new Error('RUNTIME_ROLE_BINDING_MISSING')
     }
     return {
       requestId: request.requestId,
@@ -1211,6 +1221,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       selection,
       productionPolicy: { allowedSelections: [selection], rejectDiagnosticOnly: true },
       promptEnvelopeRef: bridgedPromptRef,
+      ...(codingRole ? { codingRole } : {}),
     }
   }
 

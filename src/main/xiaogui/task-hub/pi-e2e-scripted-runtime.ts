@@ -19,6 +19,7 @@ interface PiE2eAttemptWorkspaceAccessPortV1 {
 
 interface PiE2eScenarioTaskV1 {
   readonly label: string
+  readonly role?: 'RESEARCH' | 'IMPLEMENT' | 'REVIEW'
   readonly allowedPath: string
   readonly releaseFile: string
   readonly barrier?: string
@@ -237,6 +238,17 @@ export class PiE2eWorkspaceScriptedRuntimeAdapterV1 extends ScriptedAgentRuntime
       this.record('runtime.dispatch.rejected', { reasonCode: 'PI_E2E_SCENARIO_TASK_NOT_FOUND' })
       return failedOutcome('runtime-unbound', 'PI_E2E_SCENARIO_TASK_NOT_FOUND')
     }
+    const expectedRole = task.role ?? 'IMPLEMENT'
+    if (
+      !request.codingRole ||
+      request.codingRole.role !== expectedRole ||
+      (expectedRole === 'IMPLEMENT'
+        ? request.codingRole.effectiveToolAllowlist.length === 0
+        : JSON.stringify(request.codingRole.effectiveToolAllowlist) !== JSON.stringify(['read']))
+    ) {
+      this.record('runtime.dispatch.rejected', { reasonCode: 'PI_E2E_ROLE_BINDING_REJECTED' })
+      return failedOutcome('runtime-unbound', 'PI_E2E_ROLE_BINDING_REJECTED')
+    }
     const runtimeSessionId = `pi-e2e-runtime-${hashHex(request.scope.attemptId).slice(0, 24)}`
     if (!this.sessions.has(runtimeSessionId)) {
       this.sessions.set(runtimeSessionId, { runtimeSessionId, task, access, entered: false })
@@ -287,7 +299,10 @@ export class PiE2eWorkspaceScriptedRuntimeAdapterV1 extends ScriptedAgentRuntime
         })
       }
 
-      writeFileSync(resolveWorktreePath(session.access.rootPath, session.task.allowedPath), session.task.content, 'utf8')
+      const role = session.task.role ?? 'IMPLEMENT'
+      if (role === 'IMPLEMENT') {
+        writeFileSync(resolveWorktreePath(session.access.rootPath, session.task.allowedPath), session.task.content, 'utf8')
+      }
       const receiptDigest = digest(`receipt:${session.task.label}:${session.task.content}`)
       session.outcome = {
         state: 'SUCCEEDED',
@@ -297,7 +312,8 @@ export class PiE2eWorkspaceScriptedRuntimeAdapterV1 extends ScriptedAgentRuntime
       }
       this.record('runtime.execution.succeeded', {
         label: session.task.label,
-        changedRelativePaths: [session.task.allowedPath],
+        role,
+        changedRelativePaths: role === 'IMPLEMENT' ? [session.task.allowedPath] : [],
         receiptDigest,
       })
       return session.outcome
@@ -365,6 +381,7 @@ function parseScenario(source: string): PiE2eScenarioV1 {
       !isSafeRelativePath(task.releaseFile) ||
       typeof task.content !== 'string' ||
       task.content.length === 0 ||
+      (task.role !== undefined && task.role !== 'RESEARCH' && task.role !== 'IMPLEMENT' && task.role !== 'REVIEW') ||
       (task.barrier !== undefined && !isSafeLabel(task.barrier)) ||
       !(task.requires ?? []).every((item: { relativePath: unknown; content: unknown }) =>
         isSafeRelativePath(item.relativePath) && typeof item.content === 'string') ||

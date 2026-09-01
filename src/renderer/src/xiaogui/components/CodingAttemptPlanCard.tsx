@@ -171,7 +171,7 @@ export function CodingAttemptPlanCard({ attemptId }: { readonly attemptId: strin
           )}
           {error?.code === 'ROLE_BINDING_REQUIRED' && (
             <div className="mt-2 rounded bg-amber-50 px-2 py-1 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-              请先在上方选择并绑定“实现”角色。
+              请先在上方选择并绑定执行角色。
             </div>
           )}
           {error && error.code !== 'EXECUTION_RESUME_FAILED' && error.code !== 'ROLE_BINDING_REQUIRED' && (

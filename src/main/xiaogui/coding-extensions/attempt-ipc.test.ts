@@ -200,7 +200,7 @@ describe('CODING Attempt IPC', () => {
     expect(read).toHaveBeenCalledWith({ address: ADDRESS, attemptId: PLAN.attemptId })
   })
 
-  it('未绑定实现角色时拒绝批准且不改变计划或启动运行时', async () => {
+  it('未绑定角色时拒绝批准且不改变计划或启动运行时', async () => {
     const plan = {
       observe: vi.fn(() => [PLAN]),
       revise: vi.fn(),
@@ -237,18 +237,25 @@ describe('CODING Attempt IPC', () => {
     expect(resumeAttempt).not.toHaveBeenCalled()
   })
 
-  it('研究或审阅角色不能通过实现执行门', async () => {
+  it('研究或审阅角色可批准各自计划，实际工具上限由运行时角色接缝执行', async () => {
+    const approvedProjection = {
+      ...PLAN,
+      state: 'APPROVED' as const,
+      plan: { ...PLAN.plan, revision: 2 },
+      planDigest: `sha256:${'2'.repeat(64)}`,
+    }
     const plan = {
       observe: vi.fn(() => [PLAN]),
       revise: vi.fn(),
-      approve: vi.fn(),
+      approve: vi.fn(() => ({ ok: true as const, projection: approvedProjection })),
       transitionTodo: vi.fn(),
-      getProjection: vi.fn(),
+      getProjection: vi.fn(() => approvedProjection),
     }
+    const resumeAttempt = vi.fn(async () => ({ ok: true as const }))
     registerCodingAttemptHandlersV1({
       plan,
       review: { read: vi.fn() },
-      taskExecution: { resumeAttempt: vi.fn() },
+      taskExecution: { resumeAttempt },
       roles: {
         readAttemptBinding: vi.fn(() => ({ snapshot: { role: 'RESEARCH' as const } })),
       },
@@ -263,7 +270,8 @@ describe('CODING Attempt IPC', () => {
         expectedRevision: PLAN.plan.revision,
         expectedPlanDigest: PLAN.planDigest,
       },
-    })).resolves.toMatchObject({ ok: false, error: { code: 'ROLE_BINDING_REQUIRED' } })
-    expect(plan.approve).not.toHaveBeenCalled()
+    })).resolves.toMatchObject({ ok: true, value: { executionResume: 'RESUMED' } })
+    expect(plan.approve).toHaveBeenCalledOnce()
+    expect(resumeAttempt).toHaveBeenCalledWith(ADDRESS, PLAN.attemptId)
   })
 })

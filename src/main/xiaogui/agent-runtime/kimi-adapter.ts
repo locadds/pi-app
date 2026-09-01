@@ -101,6 +101,7 @@ interface RuntimeSessionState {
   writeSequence: number
   pendingPermissions: Map<string, PendingPermission>
   vendorToolCalls: Map<string, VendorToolCallSnapshot>
+  readOnlyEvidenceDigests: string[]
   candidateDigest?: string
 }
 
@@ -248,11 +249,13 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   ): Promise<RuntimeCreateOrResumeOutcomeV1> {
     let state: RuntimeSessionState | null = null
     const requestHandlers = new Map<string, (params: unknown) => Promise<unknown> | unknown>()
+    const readOnlyRole = isReadOnlyCodingRole(request)
     requestHandlers.set('fs/read_text_file', (params) => {
       const result = policy.readTextFile(extractPath(params))
       return { content: result.content }
     })
     requestHandlers.set('fs/write_text_file', async (params) => {
+      if (readOnlyRole) throw new KimiAcpWorkspacePolicyError('CODING_ROLE_READ_ONLY')
       const write = extractWrite(params)
       if (!state || state.disconnected || state.outcome || state.cancellationRequested) throw new KimiAcpWorkspacePolicyError('ACP_FS_WRITE_NOT_RUNNING')
       const preflight = policy.preflightWriteTextFile(write.path, write.content)
@@ -275,7 +278,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
         cwd: workspace.rootPath,
         initialize: {
           protocolVersion: 1,
-          clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },
+          clientCapabilities: { fs: { readTextFile: true, writeTextFile: !readOnlyRole }, terminal: false },
           clientInfo: CLIENT_INFO,
         },
         requestHandlers,
@@ -328,6 +331,7 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
         writeSequence: 0,
         pendingPermissions: new Map(),
         vendorToolCalls: new Map(),
+        readOnlyEvidenceDigests: [],
       }
       this.sessions.set(publicRuntimeSessionId, state)
       pushEvent(state, { type: 'SESSION_READY', runtimeSessionId: publicRuntimeSessionId })
@@ -534,6 +538,9 @@ export class KimiAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunt
   }
 
   private handlePermissionRequest(state: RuntimeSessionState, params: AcpRequestPermissionParamsV1): Promise<AcpRequestPermissionResultV1> {
+    if (isReadOnlyCodingRole(state.request)) {
+      return Promise.resolve({ outcome: { outcome: 'cancelled' } })
+    }
     const options = Array.isArray(params.options) ? params.options : []
     const optionIds = options.map((option) => option.optionId)
     const optionsValid = optionIds.every((optionId) => typeof optionId === 'string' && optionId.length > 0 && optionId === optionId.trim()) && new Set(optionIds).size === optionIds.length
@@ -679,6 +686,19 @@ function isExactKimiProductionSelection(selection: RuntimeAdapterSelectionV1, ex
   )
 }
 
+function runtimeCodingRole(
+  request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1,
+): RuntimeCreateOrResumeRequestV1['codingRole'] {
+  return 'codingRole' in request ? request.codingRole : undefined
+}
+
+function isReadOnlyCodingRole(
+  request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1,
+): boolean {
+  const role = runtimeCodingRole(request)?.role
+  return role === 'RESEARCH' || role === 'REVIEW'
+}
+
 function handleSessionUpdate(state: RuntimeSessionState, params: AcpSessionUpdateParamsV1): void {
   const update = params.update
   if (!update) return
@@ -687,7 +707,9 @@ function handleSessionUpdate(state: RuntimeSessionState, params: AcpSessionUpdat
     !Array.isArray(update.content) &&
     update.content?.text
   ) {
-    pushEvent(state, { type: 'TEXT_DELTA', runtimeSessionId: state.publicRuntimeSessionId, textDigest: digestJson(digestSafeText(update.content.text, 8000)) })
+    const textDigest = digestJson(digestSafeText(update.content.text, 8000))
+    if (isReadOnlyCodingRole(state.request)) state.readOnlyEvidenceDigests.push(textDigest)
+    pushEvent(state, { type: 'TEXT_DELTA', runtimeSessionId: state.publicRuntimeSessionId, textDigest })
   } else if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
     cacheVendorToolCall(state, update)
     pushEvent(state, {
@@ -737,8 +759,21 @@ function settleFromPrompt(state: RuntimeSessionState, stopReason: string | undef
     return
   }
   if (!state.candidateDigest) {
-    markUnknown(state, 'CANDIDATE_NOT_PRODUCED')
-    return
+    const codingRole = runtimeCodingRole(state.request)
+    if (!codingRole || codingRole.role === 'IMPLEMENT') {
+      markUnknown(state, 'CANDIDATE_NOT_PRODUCED')
+      return
+    }
+    if (state.readOnlyEvidenceDigests.length === 0) {
+      markUnknown(state, 'READ_ONLY_EVIDENCE_NOT_PRODUCED')
+      return
+    }
+    state.candidateDigest = digestJson({
+      kind: 'CODING_ROLE_READ_ONLY_EVIDENCE_V1',
+      role: codingRole.role,
+      snapshotDigest: codingRole.snapshotDigest,
+      evidenceDigests: state.readOnlyEvidenceDigests,
+    })
   }
   markOutcome(state, {
     state: 'SUCCEEDED',

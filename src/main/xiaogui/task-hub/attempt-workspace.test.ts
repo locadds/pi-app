@@ -630,6 +630,27 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     await expect(noChanges.workspace.captureTaskPatch(unchanged.handle.attemptId)).rejects.toMatchObject({
       reasonCode: 'NO_APPROVED_CHANGES',
     })
+    await expect(noChanges.workspace.captureTaskPatch(unchanged.handle.attemptId, {
+      allowNoApprovedChanges: true,
+    })).resolves.toMatchObject({
+      changedFiles: [],
+    })
+    const secondUnchanged = await noChanges.workspace.prepare(
+      prepareRequest({
+        projectRoot,
+        managedRoot: await tempRoot('xiaogui-attempt-managed-'),
+        attemptId: 'xhba_attempt_second' as AttemptId,
+        grants: [{ operation: 'MODIFY', relativePath: 'src/existing.txt', baselineDigest: digestBytes('before') }],
+      }),
+    )
+    const firstEmptyPatch = await noChanges.workspace.captureTaskPatch(unchanged.handle.attemptId, {
+      allowNoApprovedChanges: true,
+    })
+    const secondEmptyPatch = await noChanges.workspace.captureTaskPatch(secondUnchanged.handle.attemptId, {
+      allowNoApprovedChanges: true,
+    })
+    expect(secondEmptyPatch.patchArtifactDigest).toBe(firstEmptyPatch.patchArtifactDigest)
+    expect(secondEmptyPatch.patchArtifactId).not.toBe(firstEmptyPatch.patchArtifactId)
     writeFileSync(join(unchanged.handle.rootPath, 'src', 'existing.txt'), 'after')
     await link(join(unchanged.handle.rootPath, 'src', 'existing.txt'), join(unchanged.handle.rootPath, 'src', 'alias.txt'))
     await expect(noChanges.workspace.captureTaskPatch(unchanged.handle.attemptId)).rejects.toMatchObject({
@@ -641,7 +662,7 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       reasonCode: 'TARGET_HARDLINK',
     })
     noChanges.registry.close()
-  })
+  }, 30_000)
 
   it('approves scoped CREATE expansion as a new manifest version and rejects DELETE expansion', async () => {
     const projectRoot = await gitRepo()

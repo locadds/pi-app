@@ -112,7 +112,7 @@ export function registerCodingAttemptHandlersV1(options: {
     if (request.action.type === 'APPROVE' || request.action.type === 'RESUME') {
       try {
         const binding = options.roles.readAttemptBinding(request.action.attemptId)
-        if (!binding || binding.snapshot.role !== 'IMPLEMENT') {
+        if (!binding) {
           return failure('ROLE_BINDING_REQUIRED')
         }
       } catch {

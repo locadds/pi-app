@@ -65,12 +65,13 @@ interface PiE2eEvent {
 const TEMP_ROOT = 'D:\\CodexTemp\\xiaogui-hub-m4g-real-journey-v1'
 const RUNS_ROOT = join(TEMP_ROOT, 'runs')
 const EVIDENCE_ROOT = join(TEMP_ROOT, 'evidence')
-const A_PATH = 'src/a.ts'
+const A_PATH = 'README.md'
 const B_PATH = 'src/b.ts'
-const C_PATH = 'src/c.ts'
-const A_CONTENT = 'export const alpha = "A-verified";\n'
+const C_PATH = 'tsconfig.web.json'
+const README_CONTENT = '# Disposable three-task project\n'
+const A_CONTENT = '研究角色已形成只读证据。\n'
 const B_CONTENT = 'export const beta = "B-verified";\n'
-const C_CONTENT = 'import { alpha } from "./a";\nexport const gamma = `${alpha}:C`;\n'
+const C_CONTENT = '审阅角色已形成只读证据。\n'
 const SESSION_ID = '77777777-7777-4777-8777-777777777777'
 
 const require = createRequire(import.meta.url)
@@ -215,15 +216,17 @@ async function git(cwd: string, args: readonly string[], allowFailure = false): 
 async function initProjectRepository(projectRoot: string): Promise<{ baseRevision: string; baselineTree: string }> {
   mkdirSync(join(projectRoot, 'src'), { recursive: true })
   symlinkSync(realpathSync(join(process.cwd(), 'node_modules')), join(projectRoot, 'node_modules'), 'junction')
-  await writeFile(join(projectRoot, 'README.md'), '# Disposable three-task project\n', 'utf8')
+  await writeFile(join(projectRoot, 'README.md'), README_CONTENT, 'utf8')
   await writeFile(join(projectRoot, 'src', '.gitkeep'), '', 'utf8')
+  await writeFile(join(projectRoot, 'src', 'baseline.ts'), 'export const baseline = true\n', 'utf8')
   await writeFile(join(projectRoot, '.gitignore'), 'node_modules/\n', 'utf8')
   await writeFile(join(projectRoot, 'tsconfig.web.json'), `${JSON.stringify(minimalTsconfig(), null, 2)}\n`, 'utf8')
   await writeFile(join(projectRoot, 'tsconfig.node.json'), `${JSON.stringify(minimalTsconfig(), null, 2)}\n`, 'utf8')
   await git(projectRoot, ['init'])
   await git(projectRoot, ['config', 'user.email', 'xiaogui-e2e@example.invalid'])
   await git(projectRoot, ['config', 'user.name', 'Xiaogui E2E'])
-  await git(projectRoot, ['add', 'README.md', 'src/.gitkeep', '.gitignore', 'tsconfig.web.json', 'tsconfig.node.json'])
+  await git(projectRoot, ['config', 'core.autocrlf', 'false'])
+  await git(projectRoot, ['add', 'README.md', 'src/.gitkeep', 'src/baseline.ts', '.gitignore', 'tsconfig.web.json', 'tsconfig.node.json'])
   await git(projectRoot, ['commit', '-m', 'disposable baseline'])
   return {
     baseRevision: await git(projectRoot, ['rev-parse', '--verify', 'HEAD']),
@@ -252,15 +255,22 @@ function writeRuntimeScenario(evidenceDir: string): { scenarioPath: string; even
     version: 1,
     eventLog: 'journey-events.jsonl',
     tasks: [
-      { label: 'A', allowedPath: A_PATH, releaseFile: 'control/release-ab', barrier: 'root-wave', content: A_CONTENT },
-      { label: 'B', allowedPath: B_PATH, releaseFile: 'control/release-ab', barrier: 'root-wave', content: B_CONTENT },
+      { label: 'A', role: 'RESEARCH', allowedPath: A_PATH, releaseFile: 'control/release-a', content: A_CONTENT },
+      {
+        label: 'B',
+        role: 'IMPLEMENT',
+        allowedPath: B_PATH,
+        releaseFile: 'control/release-b',
+        content: B_CONTENT,
+        requires: [{ relativePath: A_PATH, content: README_CONTENT }],
+      },
       {
         label: 'C',
+        role: 'REVIEW',
         allowedPath: C_PATH,
         releaseFile: 'control/release-c',
         content: C_CONTENT,
-        requires: [{ relativePath: A_PATH, content: A_CONTENT }],
-        forbids: [B_PATH],
+        requires: [{ relativePath: B_PATH, content: B_CONTENT }],
       },
     ],
   }
@@ -302,12 +312,17 @@ async function approveAwaitingAttemptPlans(page: Page, expectedCount: number): P
   }
 }
 
-async function bindImplementationRole(page: Page, taskKey: string): Promise<void> {
+async function bindRole(
+  page: Page,
+  taskKey: string,
+  profileId: 'xiaogui.role.research.default' | 'xiaogui.role.implement.default' | 'xiaogui.role.review.default',
+  roleText: '研究' | '实现' | '审阅',
+): Promise<void> {
   const taskCard = page.getByTestId(`hub-taskrun-status-${taskKey}`).locator('xpath=ancestor::li[1]')
   const roleCard = taskCard.getByLabel('执行角色')
-  await roleCard.getByLabel('选择角色').selectOption('xiaogui.role.implement.default')
+  await roleCard.getByLabel('选择角色').selectOption(profileId)
   await roleCard.getByRole('button', { name: '使用此角色', exact: true }).click()
-  await expect(roleCard.getByText('当前角色：实现', { exact: true })).toBeVisible()
+  await expect(roleCard.getByText(`当前角色：${roleText}`, { exact: true })).toBeVisible()
 }
 
 async function waitForTaskBadges(
@@ -348,12 +363,14 @@ async function configureExecutionTask(
   page: Page,
   taskRunId: string,
   title: string,
-  createPath: string,
+  relativePath: string,
+  operation: 'MODIFY' | 'CREATE',
 ): Promise<void> {
   const card = page.getByTestId(`hub-execution-task-${taskRunId}`)
   await card.locator('input[type="checkbox"]').check()
   await page.getByLabel(`任务说明：${title}`).fill(`受控 Scripted Runtime 完成 ${title}`)
-  await page.getByLabel(`允许新建的文件：${title}`).fill(createPath)
+  const label = operation === 'MODIFY' ? `允许修改的已有文件：${title}` : `允许新建的文件：${title}`
+  await page.getByLabel(label).fill(relativePath)
 }
 
 function readEvents(eventLogPath: string): PiE2eEvent[] {
@@ -458,7 +475,7 @@ function publicJourneyEvidence(
   return {
     baseline,
     application: {
-      initialFilesAbsent: [A_PATH, B_PATH, C_PATH],
+      initialFilesAbsent: [B_PATH],
       ...application,
     },
     projection: {
@@ -550,10 +567,10 @@ async function removeManagedWorktrees(projectRoot: string, runRoot: string): Pro
   return removed
 }
 
-test.describe('真实三任务 CODING Electron 旅程', () => {
+test.describe('真实三角色 CODING Electron 旅程', () => {
   test.skip(process.platform !== 'win32', '真实工作树与受控证据根仅在 Windows 桌面封版门运行')
 
-  test('A/B 并行，C 读取 A 派生基线，三项统一交付后一次性应用且幂等', async ({}, testInfo) => {
+  test('研究→实现→审阅三角色串行，含检查点恢复、真实 Diff 与受控交付', async ({}, testInfo) => {
     test.setTimeout(240_000)
     mkdirSync(RUNS_ROOT, { recursive: true })
     mkdirSync(EVIDENCE_ROOT, { recursive: true })
@@ -581,7 +598,8 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       roleBound: join(evidenceDir, '02a-role-bound.png'),
       checkpointRestorePreview: join(evidenceDir, '02b-checkpoint-restore-preview.png'),
       checkpointRestored: join(evidenceDir, '02c-checkpoint-restored.png'),
-      rootsRunning: join(evidenceDir, '03-ab-running-c-waiting.png'),
+      researchRunning: join(evidenceDir, '03-research-running.png'),
+      implementationRunning: join(evidenceDir, '04-implementation-running.png'),
       review: join(evidenceDir, '04-real-diff-and-verification.png'),
       deliveryPending: join(evidenceDir, '05-three-task-delivery-pending.png'),
       applied: join(evidenceDir, '06-apply-succeeded.png'),
@@ -642,11 +660,11 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
           intent: {
             type: 'flow.start.with_draft',
             draft: {
-              objective: '真实执行 A、B，并让 C 只依赖 A 后统一交付',
+              objective: '真实执行研究、实现、审阅三角色，然后统一交付',
               tasks: [
-                { taskKey: 'a', title: '任务 A' },
-                { taskKey: 'b', title: '任务 B' },
-                { taskKey: 'c', title: '任务 C', dependsOn: ['a'] },
+                { taskKey: 'a', title: '研究任务' },
+                { taskKey: 'b', title: '实现任务', dependsOn: ['a'] },
+                { taskKey: 'c', title: '审阅任务', dependsOn: ['b'] },
               ],
             },
           },
@@ -654,34 +672,38 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       })
       if (!seeded.ok) throw new Error(`draft seed failed: ${JSON.stringify(seeded.error)}`)
       await refreshHubUi(page)
-      await expect(page.getByTestId('hub-awaiting-approval')).toContainText('任务 C')
+      await expect(page.getByTestId('hub-awaiting-approval')).toContainText('审阅任务')
       await page.getByRole('button', { name: '批准计划', exact: true }).click()
 
       const approved = await waitForProjection(page, address, (projection) =>
-        projection.taskRuns.length === 3 && projection.executionReadiness?.readyTaskRunIds.length === 2)
+        projection.taskRuns.length === 3 && projection.executionReadiness?.readyTaskRunIds.length === 1)
       const runs = taskRunsByKey(approved)
       const runA = runs.get('a')
       const runB = runs.get('b')
       const runC = runs.get('c')
       if (!runA || !runB || !runC) throw new Error('missing task runs')
-      await configureExecutionTask(page, runA.taskRunId, '任务 A', A_PATH)
-      await configureExecutionTask(page, runB.taskRunId, '任务 B', B_PATH)
+      await configureExecutionTask(page, runA.taskRunId, '研究任务', A_PATH, 'MODIFY')
       await page.getByRole('button', { name: '核对本批执行范围', exact: true }).click()
-      await expect(page.getByTestId('hub-task-execution-review')).toContainText('本批 2 个任务')
+      await expect(page.getByTestId('hub-task-execution-review')).toContainText('本批 1 个任务')
       await page.getByTestId('hub-task-execution-review').screenshot({ path: screenshots.batchConfirm })
 
       expect(await projectFingerprint(workspace)).toBe(baselineFingerprint)
       await page.getByRole('button', { name: '确认并执行本批', exact: true }).click()
+      const firstAttemptProjection = await waitForProjection(page, address, (projection) => (
+        projection.attempts.length === 1 && projection.attempts[0]?.status !== 'WORKSPACE_PREPARING'
+      ))
+      if (firstAttemptProjection.attempts[0]?.status !== 'READY') {
+        throw new Error(`research Attempt did not reach READY: ${JSON.stringify(firstAttemptProjection.attempts)}`)
+      }
       await expect(page.getByTestId('hub-task-group-awaiting-plan')).toBeVisible({ timeout: 45_000 })
       await page.getByTestId('hub-task-group-awaiting-plan').screenshot({ path: screenshots.plansAwaitingApproval })
       expect(readEvents(eventLogPath).some((event) => event.event === 'runtime.execution.entered')).toBe(false)
 
       const awaitingPlans = await waitForProjection(page, address, (projection) => (
-        projection.attempts.filter((attempt) => attempt.status === 'READY').length === 2
+        projection.attempts.filter((attempt) => attempt.status === 'READY').length === 1
       ))
       const attemptA = awaitingPlans.attempts.find((attempt) => attempt.taskRunId === runA.taskRunId)
-      const attemptB = awaitingPlans.attempts.find((attempt) => attempt.taskRunId === runB.taskRunId)
-      if (!attemptA || !attemptB) throw new Error('missing READY root Attempts')
+      if (!attemptA) throw new Error('missing READY research Attempt')
       const taskACard = page.getByTestId('hub-taskrun-status-a').locator('xpath=ancestor::li[1]')
       const roleCard = taskACard.getByLabel('执行角色')
       const roleSelect = roleCard.getByLabel('选择角色')
@@ -691,16 +713,58 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
         '审阅（审阅）',
       ])
       await taskACard.getByRole('button', { name: '批准并开始执行', exact: true }).click()
-      await expect(taskACard.getByText('请先在上方选择并绑定“实现”角色。', { exact: true })).toBeVisible()
+      await expect(taskACard.getByText('请先在上方选择并绑定执行角色。', { exact: true })).toBeVisible()
       await taskACard.screenshot({ path: screenshots.roleRequired })
-      await bindImplementationRole(page, 'a')
-      await bindImplementationRole(page, 'b')
+      await bindRole(page, 'a', 'xiaogui.role.research.default', '研究')
       await roleCard.screenshot({ path: screenshots.roleBound })
 
-      const checkpointCard = taskACard.getByLabel('Git 检查点与恢复')
+      await approveAwaitingAttemptPlans(page, 1)
+      let events = await waitForEvents(eventLogPath, (items) =>
+        items.some((event) => event.event === 'runtime.execution.entered' && event.details.label === 'A'))
+      expect(events.some((event) => event.event === 'runtime.execution.succeeded')).toBe(false)
+      const researchRunning = await observe(page, address)
+      expect(researchRunning.executionReadiness?.dependencyStates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ taskRunId: runA.taskRunId, state: 'IN_FLIGHT' }),
+        expect.objectContaining({ taskRunId: runB.taskRunId, state: 'WAITING_FOR_DEPENDENCIES' }),
+        expect.objectContaining({ taskRunId: runC.taskRunId, state: 'WAITING_FOR_DEPENDENCIES' }),
+      ]))
+      await page.getByTestId('hub-active-plan').screenshot({ path: screenshots.researchRunning })
+      expect(await projectFingerprint(workspace)).toBe(baselineFingerprint)
+      expect(await readFile(join(workspace, A_PATH), 'utf8')).toBe(README_CONTENT)
+      expect(existsSync(join(workspace, ...B_PATH.split('/')))).toBe(false)
+
+      await writeFile(join(controlDir, 'release-a'), 'release\n', 'utf8')
+      const researchVerified = await waitForProjection(page, address, (projection) => {
+        const byKey = taskRunsByKey(projection)
+        return byKey.get('a')?.status === 'VERIFIED' &&
+          projection.executionReadiness?.readyTaskRunIds.includes(runB.taskRunId) === true
+      })
+      expect(researchVerified.executionReadiness?.dependencyStates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ taskRunId: runB.taskRunId, state: 'READY', dependencyTaskRunIds: [runA.taskRunId] }),
+      ]))
+      events = readEvents(eventLogPath)
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: 'runtime.execution.succeeded',
+          details: expect.objectContaining({ label: 'A', role: 'RESEARCH', changedRelativePaths: [] }),
+        }),
+      ]))
+
+      await configureExecutionTask(page, runB.taskRunId, '实现任务', B_PATH, 'CREATE')
+      await page.getByRole('button', { name: '核对本批执行范围', exact: true }).click()
+      await page.getByRole('button', { name: '确认并执行本批', exact: true }).click()
+      await expect(page.getByTestId('hub-task-group-awaiting-plan')).toBeVisible({ timeout: 45_000 })
+      const implementationReady = await waitForProjection(page, address, (projection) =>
+        projection.attempts.some((attempt) => attempt.taskRunId === runB.taskRunId && attempt.status === 'READY'))
+      const attemptB = implementationReady.attempts.find((attempt) => attempt.taskRunId === runB.taskRunId)
+      if (!attemptB) throw new Error('missing READY implementation Attempt')
+      await bindRole(page, 'b', 'xiaogui.role.implement.default', '实现')
+
+      const taskBCard = page.getByTestId('hub-taskrun-status-b').locator('xpath=ancestor::li[1]')
+      const checkpointCard = taskBCard.getByLabel('Git 检查点与恢复')
       await checkpointCard.getByRole('button', { name: '创建检查点', exact: true }).click()
       await expect(checkpointCard.getByText('检查点已创建。', { exact: true })).toBeVisible()
-      const scratchPath = join(attemptWorktreeRoot(userDataDir, attemptA.attemptId), 'p3-restore-scratch.txt')
+      const scratchPath = join(attemptWorktreeRoot(userDataDir, attemptB.attemptId), 'p3-restore-scratch.txt')
       await writeFile(scratchPath, 'temporary checkpoint change\n', 'utf8')
       await checkpointCard.getByRole('button', { name: '预览恢复影响', exact: true }).click()
       await expect(checkpointCard.getByText('p3-restore-scratch.txt', { exact: true })).toBeVisible()
@@ -710,68 +774,46 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       await checkpointCard.getByRole('button', { name: '确认恢复到此检查点', exact: true }).click()
       await expect(checkpointCard.getByText('已恢复到检查点。', { exact: true })).toBeVisible()
       expect(existsSync(scratchPath)).toBe(false)
-      expect((await observe(page, address)).attempts.find((attempt) => attempt.attemptId === attemptA.attemptId)?.status)
+      expect((await observe(page, address)).attempts.find((attempt) => attempt.attemptId === attemptB.attemptId)?.status)
         .toBe('READY')
       await checkpointCard.screenshot({ path: screenshots.checkpointRestored })
 
-      await approveAwaitingAttemptPlans(page, 2)
-      let events: PiE2eEvent[]
-      try {
-        events = await waitForEvents(eventLogPath, (items) => {
-          const entered = items.filter((item) => item.event === 'runtime.execution.entered').map((item) => item.details.label)
-          return entered.includes('A') && entered.includes('B')
-        }, 15_000)
-      } catch (error) {
-        const executionText = await page.getByTestId('hub-task-execution').textContent()
-        const projection = await observe(page, address)
-        throw new Error(`${String(error)}; execution UI=${executionText}; task statuses=${JSON.stringify(
-          projection.taskRuns.map((run) => ({ taskKey: run.taskKey, status: run.status })),
-        )}`)
-      }
-      const batchEvents = events.filter((event) => event.event === 'renderer.ipc.startBatch')
-      expect(batchEvents).toHaveLength(1)
-      expect(batchEvents[0]?.details).toMatchObject({ itemCount: 2, taskRunIds: [runA.taskRunId, runB.taskRunId] })
-      const enteredA = events.findIndex((event) => event.event === 'runtime.execution.entered' && event.details.label === 'A')
-      const enteredB = events.findIndex((event) => event.event === 'runtime.execution.entered' && event.details.label === 'B')
-      const firstSucceeded = events.findIndex((event) => event.event === 'runtime.execution.succeeded')
-      expect(enteredA).toBeGreaterThanOrEqual(0)
-      expect(enteredB).toBeGreaterThanOrEqual(0)
-      expect(firstSucceeded).toBe(-1)
-      const runningProjection = await observe(page, address)
-      expect(runningProjection.executionReadiness?.dependencyStates).toEqual(expect.arrayContaining([
-        expect.objectContaining({ taskRunId: runA.taskRunId, state: 'IN_FLIGHT' }),
+      await approveAwaitingAttemptPlans(page, 1)
+      events = await waitForEvents(eventLogPath, (items) =>
+        items.some((event) => event.event === 'runtime.execution.entered' && event.details.label === 'B'))
+      const implementationRunning = await observe(page, address)
+      expect(implementationRunning.executionReadiness?.dependencyStates).toEqual(expect.arrayContaining([
         expect.objectContaining({ taskRunId: runB.taskRunId, state: 'IN_FLIGHT' }),
         expect.objectContaining({ taskRunId: runC.taskRunId, state: 'WAITING_FOR_DEPENDENCIES' }),
       ]))
-      await waitForTaskBadges(page, { a: '执行中', b: '执行中', c: '等待依赖' })
-      await page.getByTestId('hub-active-plan').screenshot({ path: screenshots.rootsRunning })
-      expect(await projectFingerprint(workspace)).toBe(baselineFingerprint)
-      for (const path of [A_PATH, B_PATH, C_PATH]) expect(existsSync(join(workspace, ...path.split('/')))).toBe(false)
-
-      await writeFile(join(controlDir, 'release-ab'), 'release\n', 'utf8')
-      const rootsVerified = await waitForProjection(page, address, (projection) => {
+      await page.getByTestId('hub-active-plan').screenshot({ path: screenshots.implementationRunning })
+      await writeFile(join(controlDir, 'release-b'), 'release\n', 'utf8')
+      const implementationVerified = await waitForProjection(page, address, (projection) => {
         const byKey = taskRunsByKey(projection)
-        return byKey.get('a')?.status === 'VERIFIED' && byKey.get('b')?.status === 'VERIFIED' &&
+        return byKey.get('b')?.status === 'VERIFIED' &&
           projection.executionReadiness?.readyTaskRunIds.includes(runC.taskRunId) === true
       })
-      expect(rootsVerified.executionReadiness?.dependencyStates).toEqual(expect.arrayContaining([
-        expect.objectContaining({ taskRunId: runC.taskRunId, state: 'READY', dependencyTaskRunIds: [runA.taskRunId] }),
+      expect(implementationVerified.executionReadiness?.dependencyStates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ taskRunId: runC.taskRunId, state: 'READY', dependencyTaskRunIds: [runB.taskRunId] }),
       ]))
       const realReviewButtons = page.getByRole('button', { name: '查看真实修改', exact: true })
       await expect(realReviewButtons).toHaveCount(2, { timeout: 30_000 })
-      await realReviewButtons.first().click()
-      await expect(page.getByText(A_PATH, { exact: true }).or(page.getByText(B_PATH, { exact: true }))).toBeVisible()
+      await realReviewButtons.last().click()
+      await expect(page.getByText(B_PATH, { exact: true })).toBeVisible()
       await expect(page.getByText('通过', { exact: true }).first()).toBeVisible()
       await page.getByText('查看 Diff', { exact: true }).first().click()
-      await expect(page.locator('pre').filter({ hasText: 'A-verified' }).or(
-        page.locator('pre').filter({ hasText: 'B-verified' }),
-      ).first()).toBeVisible()
+      await expect(page.locator('pre').filter({ hasText: 'B-verified' })).toBeVisible()
       await page.getByLabel('修改与验证').filter({ hasText: '变更文件' }).first().screenshot({ path: screenshots.review })
-      await configureExecutionTask(page, runC.taskRunId, '任务 C', C_PATH)
+
+      await configureExecutionTask(page, runC.taskRunId, '审阅任务', C_PATH, 'MODIFY')
       await page.getByRole('button', { name: '核对本批执行范围', exact: true }).click()
       await page.getByRole('button', { name: '确认并执行本批', exact: true }).click()
       await expect(page.getByTestId('hub-task-group-awaiting-plan')).toBeVisible({ timeout: 45_000 })
-      await bindImplementationRole(page, 'c')
+      const reviewReady = await waitForProjection(page, address, (projection) =>
+        projection.attempts.some((attempt) => attempt.taskRunId === runC.taskRunId && attempt.status === 'READY'))
+      const attemptC = reviewReady.attempts.find((attempt) => attempt.taskRunId === runC.taskRunId)
+      if (!attemptC) throw new Error('missing READY review Attempt')
+      await bindRole(page, 'c', 'xiaogui.role.review.default', '审阅')
       await approveAwaitingAttemptPlans(page, 1)
       await waitForEvents(eventLogPath, (items) =>
         items.some((event) => event.event === 'runtime.execution.entered' && event.details.label === 'C'))
@@ -781,18 +823,35 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       expect(allVerified.taskRuns).toHaveLength(3)
 
       events = readEvents(eventLogPath)
-      const dependencyEvent = events.find((event) =>
+      expect(events.filter((event) => event.event === 'renderer.ipc.startBatch')).toHaveLength(3)
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: 'runtime.execution.succeeded',
+          details: expect.objectContaining({ label: 'B', role: 'IMPLEMENT', changedRelativePaths: [B_PATH] }),
+        }),
+        expect.objectContaining({
+          event: 'runtime.execution.succeeded',
+          details: expect.objectContaining({ label: 'C', role: 'REVIEW', changedRelativePaths: [] }),
+        }),
+      ]))
+      const bDependencyEvent = events.find((event) =>
+        event.event === 'runtime.dependency.baseline.checked' && event.details.label === 'B')
+      expect(bDependencyEvent?.details).toMatchObject({
+        required: [{ relativePath: A_PATH, contentDigest: sha256(README_CONTENT) }],
+      })
+      const cDependencyEvent = events.find((event) =>
         event.event === 'runtime.dependency.baseline.checked' && event.details.label === 'C')
-      expect(dependencyEvent?.details).toMatchObject({
-        required: [{ relativePath: A_PATH, contentDigest: sha256(A_CONTENT) }],
-        forbidden: [{ relativePath: B_PATH, absent: true }],
+      expect(cDependencyEvent?.details).toMatchObject({
+        required: [{ relativePath: B_PATH, contentDigest: sha256(B_CONTENT) }],
       })
       expect(await projectFingerprint(workspace)).toBe(baselineFingerprint)
-      for (const path of [A_PATH, B_PATH, C_PATH]) expect(existsSync(join(workspace, ...path.split('/')))).toBe(false)
+      expect(await readFile(join(workspace, A_PATH), 'utf8')).toBe(README_CONTENT)
+      expect(existsSync(join(workspace, ...B_PATH.split('/')))).toBe(false)
+      expect(await readFile(join(workspace, C_PATH), 'utf8')).toBe(`${JSON.stringify(minimalTsconfig(), null, 2)}\n`)
 
       const deliverySelection = page.getByTestId('hub-delivery-selection')
       await expect(deliverySelection).toBeVisible()
-      for (const title of ['任务 A', '任务 B', '任务 C']) {
+      for (const title of ['研究任务', '实现任务', '审阅任务']) {
         await deliverySelection.getByText(title, { exact: true }).locator('..').locator('input[type="checkbox"]').check()
       }
       await deliverySelection.getByRole('button', { name: '创建交付', exact: true }).click()
@@ -801,12 +860,14 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       const delivery = pendingDelivery.activeDelivery
       if (!delivery?.gate) throw new Error('missing delivery gate')
       expect(delivery.selectedTaskRunIds).toEqual([runA.taskRunId, runB.taskRunId, runC.taskRunId])
-      expect(delivery.fileChangeSummaries?.map((file) => file.relativePath).sort()).toEqual([A_PATH, B_PATH, C_PATH])
+      expect(delivery.fileChangeSummaries?.map((file) => file.relativePath).sort()).toEqual([B_PATH])
       const changeSetByRun = new Map(pendingDelivery.attempts.map((attempt) => [attempt.taskRunId, attempt.verificationSummary?.taskChangeSetId]))
       const aChangeSetIndex = delivery.taskChangeSetIds.indexOf(changeSetByRun.get(runA.taskRunId) ?? '')
+      const bChangeSetIndex = delivery.taskChangeSetIds.indexOf(changeSetByRun.get(runB.taskRunId) ?? '')
       const cChangeSetIndex = delivery.taskChangeSetIds.indexOf(changeSetByRun.get(runC.taskRunId) ?? '')
       expect(aChangeSetIndex).toBeGreaterThanOrEqual(0)
-      expect(cChangeSetIndex).toBeGreaterThan(aChangeSetIndex)
+      expect(bChangeSetIndex).toBeGreaterThan(aChangeSetIndex)
+      expect(cChangeSetIndex).toBeGreaterThan(bChangeSetIndex)
       await page.getByTestId('hub-delivery-review').screenshot({ path: screenshots.deliveryPending })
       expect(await projectFingerprint(workspace)).toBe(baselineFingerprint)
 
@@ -823,9 +884,9 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
         writeFileSync(diagnosticPath, `${JSON.stringify(diagnostic, null, 2)}\n`, 'utf8')
         throw new Error(`delivery apply did not converge: ${JSON.stringify(diagnostic)}`, { cause: error })
       }
-      expect(await readFile(join(workspace, ...A_PATH.split('/')), 'utf8')).toBe(A_CONTENT)
+      expect(await readFile(join(workspace, ...A_PATH.split('/')), 'utf8')).toBe(README_CONTENT)
       expect(await readFile(join(workspace, ...B_PATH.split('/')), 'utf8')).toBe(B_CONTENT)
-      expect(await readFile(join(workspace, ...C_PATH.split('/')), 'utf8')).toBe(C_CONTENT)
+      expect(await readFile(join(workspace, ...C_PATH.split('/')), 'utf8')).toBe(`${JSON.stringify(minimalTsconfig(), null, 2)}\n`)
       const appliedFingerprint = await projectFingerprint(workspace)
       expect(appliedFingerprint).not.toBe(baselineFingerprint)
 
@@ -850,16 +911,12 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       const attemptByRun = new Map(rows.attempts.map((attempt) => [attempt.task_run_id, attempt]))
       expect(rows.roleBindings).toHaveLength(3)
       expect(rows.roleBindings).toEqual(expect.arrayContaining([
-        expect.objectContaining({ attempt_id: attemptA.attemptId, profile_id: 'xiaogui.role.implement.default' }),
+        expect.objectContaining({ attempt_id: attemptA.attemptId, profile_id: 'xiaogui.role.research.default' }),
         expect.objectContaining({ attempt_id: attemptB.attemptId, profile_id: 'xiaogui.role.implement.default' }),
-        expect.objectContaining({
-          attempt_id: attemptByRun.get(runC.taskRunId)?.attempt_id,
-          profile_id: 'xiaogui.role.implement.default',
-        }),
+        expect.objectContaining({ attempt_id: attemptC.attemptId, profile_id: 'xiaogui.role.review.default' }),
       ]))
       expect(rows.roleBindings.every((binding) => (
-        (binding as { profile_id?: unknown }).profile_id === 'xiaogui.role.implement.default'
-        && typeof (binding as { bound_at?: unknown }).bound_at === 'string'
+        typeof (binding as { bound_at?: unknown }).bound_at === 'string'
         && typeof (binding as { snapshot_digest?: unknown }).snapshot_digest === 'string'
         && String((binding as { snapshot_digest: string }).snapshot_digest).startsWith('sha256:')
       ))).toBe(true)
@@ -871,23 +928,24 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       ])
       const manifestByAttempt = new Map(rows.manifests.map((manifest) => [manifest.attempt_id, JSON.parse(manifest.manifest_json)]))
       expect(manifestByAttempt.get(attemptByRun.get(runA.taskRunId)?.attempt_id)?.grants).toEqual([
-        expect.objectContaining({ operation: 'CREATE', relativePath: A_PATH }),
+        expect.objectContaining({ operation: 'MODIFY', relativePath: A_PATH }),
       ])
       expect(manifestByAttempt.get(attemptByRun.get(runB.taskRunId)?.attempt_id)?.grants).toEqual([
         expect.objectContaining({ operation: 'CREATE', relativePath: B_PATH }),
       ])
       expect(manifestByAttempt.get(attemptByRun.get(runC.taskRunId)?.attempt_id)?.grants).toEqual([
-        expect.objectContaining({ operation: 'CREATE', relativePath: C_PATH }),
+        expect.objectContaining({ operation: 'MODIFY', relativePath: C_PATH }),
       ])
       const leaseByAttempt = new Map(rows.leases.map((lease) => [lease.attempt_id, JSON.parse(lease.lease_json)]))
       const leaseA = leaseByAttempt.get(attemptByRun.get(runA.taskRunId)?.attempt_id)
       const leaseB = leaseByAttempt.get(attemptByRun.get(runB.taskRunId)?.attempt_id)
       const leaseC = leaseByAttempt.get(attemptByRun.get(runC.taskRunId)?.attempt_id)
       expect(leaseA?.baseRevision).toBe(baseline.baseRevision)
-      expect(leaseB?.baseRevision).toBe(baseline.baseRevision)
+      expect(leaseB?.baseRevision).not.toBe(baseline.baseRevision)
       expect(leaseC?.baseRevision).not.toBe(baseline.baseRevision)
-      expect(await git(workspace, ['show', `${leaseC.baseRevision}:${A_PATH}`])).toBe(A_CONTENT.trim())
-      expect(await git(workspace, ['show', `${leaseC.baseRevision}:${B_PATH}`], true)).toBe('')
+      expect(await git(workspace, ['show', `${leaseB.baseRevision}:${A_PATH}`])).toBe(README_CONTENT.trim())
+      expect(await git(workspace, ['show', `${leaseB.baseRevision}:${B_PATH}`], true)).toBe('')
+      expect(await git(workspace, ['show', `${leaseC.baseRevision}:${B_PATH}`])).toBe(B_CONTENT.trim())
 
       const publicSurface = `${await page.locator('body').innerText()}\n${readFileSyncUtf8(eventLogPath)}\n${consoleMessages.join('\n')}`
       expect(publicSurface).not.toContain(workspace)
