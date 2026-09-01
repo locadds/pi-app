@@ -2,7 +2,7 @@
 
 更新时间：2026-09-02
 阶段：`TASKHUB-H1-3` — 小规桌面 Worker、收件箱与本机计划草稿
-状态：已修复独立审查发现的桌面端保护缺口并完成聚焦复验，等待复审与人工验收；未进入 H1-4，未合并正式主线。
+状态：已完成独立复审建议的全部桌面端收口并完成聚焦复验，等待最终复核与人工验收；未进入 H1-4，未合并正式主线。
 
 ## 本阶段目标
 
@@ -16,6 +16,7 @@
 - 施工基点：`agent/taskhub-h1-desktop-spike-v1@adcdf3296443f53c2a486f69796dceb63cd2f022`
 - 功能提交：`8a5cef5`
 - 审查修复提交：`3390af65a2507bed9a5b87ad070612173d0c47de`（配对前安全存储预检、旧节点锁定和持久状态深校验）
+- 最终 UI 收口提交：`cd7f8517a1055c5b195b7c777c29adc1768fa721`（吊销后立即刷新主进程权威状态并清空 Renderer 缓存任务）
 - 对接 Hub 分支：`agent/taskhub-h1-worker-api-v1`；其 H1-3 API 仍待独立审查和本阶段统一推送。
 
 ## 实际修改文件
@@ -41,6 +42,7 @@
 - 配对会先用独立加密探针验证 `safeStorage` 能实际写回并解密一次性私钥，再请求 Hub 替换活动节点；加密存储不可用时不会触发替换。
 - 若 Hub 明确返回旧节点已吊销或认证失效，立即清除该节点的凭据、缓存任务包和未上传的 H1-3 本地回执草稿，停止轮询并锁定收件箱操作；普通离线不清除缓存，保留后续 H1-4 的离线打开语义。
 - 读取私有 Worker 持久化状态时逐层校验任务、草稿和回执结构；异常嵌套状态整体降级为空状态，不让桌面启动时崩溃。
+- 收件箱刷新收到节点吊销或认证失效后，Renderer 立即重新读取主进程权威状态；若节点已锁定，清除可见缓存任务并回到登录/配对入口，不短暂展示已失效的任务内容。
 
 ## 未完成内容
 
@@ -60,11 +62,11 @@
 
 | 命令 / 场景 | 结果 |
 | --- | --- |
-| `npm run test:unit -- src/main/xiaogui/hub-task/http-task-worker-port.test.ts src/main/xiaogui/hub-task/worker-credentials.test.ts src/main/xiaogui/hub-task/worker-persistence.test.ts src/main/xiaogui/hub-task/worker-composition.test.ts src/main/xiaogui/hub-task/worker-ipc.test.ts src/main/xiaogui/hub-task/worker-service.test.ts src/main/xiaogui/hub-task/worker-state.test.ts src/main/xiaogui/index.test.ts src/renderer/src/xiaogui/components/HubTaskInboxSection.test.tsx src/renderer/src/xiaogui/components/CollaborationHubPanel.test.tsx` | 通过：10 个测试文件、57 条用例。覆盖安全存储预检、首次配对临时离线、IPC 脱敏、节点替换后缓存锁定、嵌套持久化损坏降级、权威快照清理、接受后仅建草稿及 UI 状态。 |
+| `npm run test:unit -- src/main/xiaogui/hub-task/http-task-worker-port.test.ts src/main/xiaogui/hub-task/worker-credentials.test.ts src/main/xiaogui/hub-task/worker-persistence.test.ts src/main/xiaogui/hub-task/worker-composition.test.ts src/main/xiaogui/hub-task/worker-ipc.test.ts src/main/xiaogui/hub-task/worker-service.test.ts src/main/xiaogui/hub-task/worker-state.test.ts src/main/xiaogui/index.test.ts src/renderer/src/xiaogui/components/HubTaskInboxSection.test.tsx src/renderer/src/xiaogui/components/CollaborationHubPanel.test.tsx` | 通过：10 个测试文件、58 条用例。覆盖安全存储预检、首次配对临时离线、IPC 脱敏、节点替换后主进程与 Renderer 缓存锁定、嵌套持久化损坏降级、权威快照清理、接受后仅建草稿及 UI 状态。 |
 | `npm run typecheck` | 通过。 |
 | `npm run build` | 通过：Electron Vite 主进程、预加载和 Renderer 均构建完成；仅保留仓库既有动态导入优化警告。 |
 | Electron 可见冒烟 | 通过：以隔离用户数据目录启动桌面应用并连接 CDP，协作面板在无可协作会话时安全显示既有回退文案，无主进程或 Renderer 崩溃。证据：`D:\CodexScratch\xiaogui-h1-3-electron-smoke\h1-3-collaboration-fallback.png`。 |
-| 独立代码审查 | 初审发现 2 个高优先级和 1 个中优先级桌面保护缺口；均已由 `3390af6` 修复并经上述聚焦测试、类型检查和构建复验，等待复审结论。 |
+| 独立代码审查 | 初审发现 2 个高优先级和 1 个中优先级桌面保护缺口，均由 `3390af6` 修复；复审为通过，另列 3 个低优先级收口项，均已由 `cd7f851` 完成（其中 Renderer 吊销清屏新增了先失败、后通过的组件测试），等待对本最终小补丁的复核。 |
 
 ## 已知风险
 
@@ -76,7 +78,7 @@
 
 ## 下一阶段计划
 
-先完成本阶段两端复审、推送与人工验收。验收通过后才进入 `TASKHUB-H1-4`：实现签名回执上传/ACK、离线补传、结果摘要和双实例/两机 LAN 受控旅程；继续保持人工批准、工作树和最终应用门不变。
+先完成本阶段两端最终复核、推送与人工验收。验收通过后才进入 `TASKHUB-H1-4`：实现签名回执上传/ACK、离线补传、结果摘要和双实例/两机 LAN 受控旅程；继续保持人工批准、工作树和最终应用门不变。
 
 ## 验收门
 
