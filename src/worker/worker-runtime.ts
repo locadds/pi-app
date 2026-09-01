@@ -477,11 +477,13 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
     const promptContext = st.pendingPromptContext
     if (!promptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
     const initialContext = selectTurnContext(promptContext, '').context
+    // SDK 的 tools 选项同时充当注册表白名单（allowedToolNames）与初始激活集：
+    // 只传首轮默认工具会把后续轮次按 Host Tool Policy 选中的能力工具永久踢出
+    // 注册表，setActiveToolsByName 对未注册名字静默忽略。注册表必须覆盖本模式
+    // 全部候选工具；初始激活集在会话创建后再按首轮策略收窄。
+    const sessionToolUniverse = workerPromptContextToolNamesForModeV1(promptContext.mode)
     const initialToolNames = codingRoleRuntimeBindingV1.activeToolNames(
-      activeToolNamesForPromptContextV1(
-        initialContext,
-        workerPromptContextToolNamesForModeV1(promptContext.mode),
-      ),
+      activeToolNamesForPromptContextV1(initialContext, sessionToolUniverse),
     )
     const services = await sdk.createAgentSessionServices({
       cwd,
@@ -537,8 +539,10 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       services,
       sessionManager,
       sessionStartEvent,
-      tools: [...initialToolNames],
+      tools: [...sessionToolUniverse],
     })
+    // tools 传全集只是为了保住注册表；初始激活仍按首轮策略（空输入）收窄。
+    created.session.setActiveToolsByName([...initialToolNames])
     const initialState = buildXiaoguiPromptSessionStateV1(
       created.session,
       services,

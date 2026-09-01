@@ -1,5 +1,132 @@
 # 小规开发阶段状态
 
+## 2026-09-01｜WORK研究 P0 续：普通文档能力未加载双根因修复
+
+### 阶段状态
+
+- 状态：实现、回归、typecheck、全套件和真实窗口终验全部完成；提交并推送后等待人工验收。
+- 当前分支：`codex/coding-work-integration-v1`。
+- 起点：`1034d40f10ca5825e06c7c8d9f516427e7852808`（与上一阶段相同；上一阶段修改未提交，本轮一并提交）。
+- 本地工作树：`D:\CodexWorktrees\xiaogui-coding-work-integration-v1`。
+- 边界：只修复工具加载链路的两个断点；未修改模板状态机、Univer、DOCX 降级路径、CODING TaskHub、IPC 安全门；未做意图识别/模式推荐/自动切换。
+
+### 本阶段目标
+
+修复“WORK 普通文档模板整理能力未被模型加载”：上一轮真实窗口表现为模型全程不调 `xiaogui_work_docx_template_intake`。本轮定位出两个叠加根因并分别最小修复，最终在真实 Electron 窗口里完成真实 DOCX 的 intake 调用闭环。
+
+### 根因与修复
+
+1. 根因一（`role-runtime-binding.ts`）：`06c410b` 引入的 `CodingRoleRuntimeBindingV1.activeToolNames` 在无角色绑定时把工具集坍缩为 `['read']`。角色绑定只可能存在于 CODING 角色 Attempt 期间，WORK/DESIGN 会话永远走无绑定分支，导致每轮激活工具被清空。修复：无绑定时透传，安全仍由工具/权限/worktree/交付门强制。
+2. 根因二（`worker-runtime.ts`）：Pi SDK 的 `createAgentSessionFromServices({ tools })` 选项同时是注册表白名单（`allowedToolNames = options.tools ?? ...`）与初始激活集。原代码按空输入上下文算出首轮默认集（WORK 下仅 `read`、`xiaogui_read_pdf`、`xiaogui_work_read_materials` 3 个）传入 `tools`，把 intake/materialize 等能力工具永久踢出注册表；per-turn `setActiveToolsByName` 对未注册名静默忽略。修复：`tools` 传本模式候选全集保住注册表，会话创建后再按首轮策略收窄初始激活集（两处均有中文注释说明 SDK 语义）。
+
+### 实际修改文件
+
+- `src/worker/worker-runtime.ts`（根因二）
+- `src/worker/xiaogui-coding-extensions/role-runtime-binding.ts`（根因一）
+- `src/worker/handlers/worker-runtime-tool-registry.test.ts`（新增回归：钉住 tools=模式全集 + 创建后收窄到首轮默认集 + override 链注册含 intake/materialize）
+- `src/worker/xiaogui-coding-extensions/role-runtime-binding.test.ts`、`src/worker/handlers/worker-handlers-turn.test.ts`、`src/worker/xiaogui-prompt/behavior-fixtures.test.ts`、`src/worker/xiaogui-prompt/session-extension.test.ts`（同步断言）
+- 上一阶段未提交的 9 个文件（WORK 入口模式绑定、停用模式推荐、prompt 清单）随本轮一并提交
+
+### 证据链
+
+1. 真实会话 JSONL 复盘：上一阶段真实窗口的 Effective Prompt Manifest mode layer 已是 WORK，但注册表仅 3 个默认工具。
+2. headless 复现（`PI_WORKER_STDIO=1 node out/main/worker.mjs`，stdin JSONL init+prompt）：修复前 registered 仅 3 工具；修复后 registered 9 工具、active/actual 5 工具（含 intake/materialize）。修复后最终 headless 运行中模型直接调用 intake。
+3. 全套件 2307 passed / 0 failed；`npm run typecheck` 通过；`npx electron-vite build` 通过。
+4. 真实 Electron 终验（dev + CDP 9333，工作区 `3817f40b`）：
+   - 点击“整理普通文档”→ 原生选择器选真实 `personal-summary.docx` → 暂存并自动提交快捷文本；
+   - `ipc:runtime.getState` 的 `promptDiagnostics.manifest`：`capabilityIds` 含 `work.template-intake`，`toolNames` 为 5 工具（`read`、`xiaogui_read_pdf`、`xiaogui_work_docx_template_intake`、`xiaogui_work_docx_template_materialize`、`xiaogui_work_read_materials`）；
+   - 会话 JSONL 记录模型真实调用 `xiaogui_work_docx_template_intake {"action":"START"}`，host 返回真实解析结果（4 项候选：可变字段 3、固定内容 1；2 条警告），模型输出只读报告摘要；
+   - 全程无 `XIAOGUI_MODE_WORKER_REBUILD_FAILED: Worker not started`。
+
+### 未完成内容与剩余风险
+
+- 模板复核卡交互（打开/逐项确认/批量调整）未在本轮走完，留作人工单机试用验收。
+- 候选内容质量、警告措辞等业务正确性由人工验收判断；本轮只验证能力加载与调用链路。
+- 原生文件对话框的自动化驱动（Win32 `WM_SETTEXT` + `BM_CLICK`）只是本轮验证手段，不是产品代码。
+
+### 测试命令和测试结果
+
+```powershell
+npm run typecheck                      # 通过
+npx vitest run                         # 2307 passed / 0 failed（一次 flake 复跑不复现）
+npx electron-vite build                # 通过
+npm run dev -- --remoteDebuggingPort 9333   # 真实窗口终验：intake 真实调用闭环
+```
+
+## 2026-09-01｜WORK研究 P0：普通文档入口模式绑定修复
+
+### 阶段状态
+
+- 状态：实现、聚焦验证、构建和真实窗口冒烟完成；提交并推送后等待人工验收。
+- 当前分支：`codex/coding-work-integration-v1`。
+- 起点：`1034d40f10ca5825e06c7c8d9f516427e7852808`。
+- 本地工作树：`D:\CodexWorktrees\xiaogui-coding-work-integration-v1`。
+- 边界：只修复 WORK 快捷入口的权威模式绑定并停用模式推荐；未修改模板整理领域状态机、Univer、DOCX HTML/PDF 降级路径、CODING TaskHub、IPC 安全门或发布配置。
+
+### 本阶段目标
+
+修复“界面显示 WORK，但主进程仍保留 CODING，点击整理普通文档后新工作区/会话继承 CODING”的状态分裂；确保 WORK 三个快捷入口在执行前显式绑定 WORK。按 2026-09-01 人工产品决定，当前版本不再做意图识别或模式推荐。
+
+### 实际修改文件
+
+- `src/renderer/src/xiaogui/components/WorkHomeView.tsx`
+- `src/renderer/src/xiaogui/components/WorkHomeView.test.tsx`
+- `src/renderer/src/xiaogui/lib/mode-recommendation-feature.ts`
+- `electron.vite.config.ts`
+- `src/renderer/src/vite-env.d.ts`
+- `doc/architecture/xiaogui-prompt-inventory.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. WORK 首页任一快捷入口执行前都通过既有 `xiaogui.mode.switch` 权威通道显式绑定 `WORK`，不再只相信 Renderer 的乐观状态。
+2. 模式绑定失败时立即停止，不打开文件选择器、不创建可能带 CODING 标签的 sandbox，也不发送提示词；界面保留可重试错误提示。
+3. “整理普通文档”仍使用主进程私有 DOC/DOCX 交接，公开提示词只包含显示名；没有改变模板整理业务契约。
+4. 模式推荐生产开关固定为关闭，删除 Vite 环境变量注入和全局声明；现有推荐算法仅作为历史研究代码保留，界面不评估、不显示、不自动切换。
+5. 复用上一阶段已落地的 `EXECUTE` 新会话默认值，使明确的 WORK 结构化入口可获得其受控模板工具；本阶段没有再次修改 Phase 或能力门。
+
+### 未完成内容
+
+- 未用用户的真实 DOC/DOCX 完成模型分析与模板复核长旅程；本轮真实窗口只验证到原生选择器打开并取消，后续内容质量由人工单机试用验收。
+- 未删除模式推荐算法、Banner 和历史测试文件，以保留研究证据并避免扩大重构范围；运行入口已不可配置且固定关闭。
+- 未迁移或重写既有历史会话标签；修复作用于当前显式模式选择及之后的新快捷入口流程。
+- 未制作 Portable、安装包或合并正式主线。
+
+### 与规格文档存在的偏差
+
+- 《Prompt 架构、模式边界与轻量智能推荐规格》原本允许“仅提示、需用户点击”的轻量推荐；根据 2026-09-01 最新人工决定，当前产品停用整项模式意图识别与推荐。这是明确的产品决策覆盖，已同步到架构清单。
+- 没有引入 AUTO，也没有隐式切换：WORK 快捷入口的 `switchMode('WORK')` 是入口契约的显式自校准，用于消除 Main/Renderer 状态分裂。
+- 《模板资产化产品改造规格》和《Univer Office Surface 开发实施规格》的模板状态机、展示内核及降级路径均未改动。
+
+### 测试命令和测试结果
+
+```powershell
+node_modules\.bin\vitest.cmd run src/renderer/src/xiaogui/components/WorkHomeView.test.tsx --reporter=default
+node_modules\.bin\vitest.cmd run src/renderer/src/xiaogui/components/WorkHomeView.test.tsx src/renderer/src/xiaogui/stores/xiaogui-store.test.ts src/renderer/src/xiaogui/lib/mode-recommendation.test.ts src/renderer/src/xiaogui/lib/mode-recommendation-display.test.ts src/renderer/src/features/composer/mode-recommendation-draft.test.ts src/main/xiaogui/sidecar-bridge.test.ts packages/shared/xiaogui-prompt-contract.test.ts src/main/xiaogui/worker-env.test.ts --reporter=default
+npm run typecheck
+npm run build
+npm run dev -- --remoteDebuggingPort 9333
+agent-browser --session xiaogui-work-smoke --cdp 9333 snapshot -i
+git diff --check
+```
+
+- TDD 红灯：新增回归先稳定复现 `switchMode('WORK')` 未调用及绑定失败后仍打开选择器，`2 failed / 8 passed`。
+- 修复后聚焦回归：`8 test files passed`，`69 tests passed`。
+- 类型检查：Web 与 Node 两段均通过，退出码 `0`。
+- 构建：Main、Preload、Renderer、Office Viewer、Office Gateway 全部通过；仅有既有动态导入和大 chunk 提示。
+- 真实 Electron：确认运行进程 `app-path` 为本工作树；从 CODING 切到 WORK 后三张卡片可见；点击“整理普通文档”打开标题为“选择要整理的普通成品 Word”的原生选择器；取消后仍为 WORK、按钮恢复可用，浏览器控制台无错误。
+- 差异检查：通过；仅有 Windows LF → CRLF 提示，无空白错误。
+
+### 已知风险
+
+1. 真实文件被选中后的模型输出质量、长文档耗时和复核体验不属于本次模式绑定证明，仍需用户单机样本验收。
+2. 当前显式绑定复用既有模式切换动作，会同步刷新当前工作区会话列表；回归已覆盖成功、失败与调用顺序，但未进行高频连续点击压力测试。
+3. 历史 CODING 会话不会被自动改写为 WORK；用户应从 WORK 首页重新进入目标流程。
+
+### 下一阶段计划
+
+提交并推送当前分支后停止扩大实现，等待用户用真实 DOC/DOCX 验收“第二个按钮 → 选择文件 → 保持 WORK → 开始只读分析”。验收发现新问题时另立下一独立阶段。
+
 ## 2026-09-01｜CODING 单机试用修复：取消强制 ASK 起步
 
 ### 阶段状态

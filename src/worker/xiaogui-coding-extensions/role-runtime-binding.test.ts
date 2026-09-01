@@ -53,7 +53,9 @@ describe('CodingRoleRuntimeBindingV1', () => {
 
     binding.release()
     expect(binding.read()).toBeNull()
-    expect(binding.activeToolNames(['read', 'bash'])).toEqual(['read'])
+    // 释放后无绑定：透传 Worker 已注册工具（绑定只可能属于 CODING Attempt，
+    // WORK/DESIGN 不得被角色白名单误伤）。
+    expect(binding.activeToolNames(['read', 'bash'])).toEqual(['read', 'bash'])
   })
 
   it('只有持有当前 Attempt 的调用者才能释放角色绑定', () => {

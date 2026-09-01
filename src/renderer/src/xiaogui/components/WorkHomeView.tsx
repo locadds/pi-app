@@ -68,6 +68,13 @@ export function WorkHomeView() {
     setBusyAction(action)
     setError(null)
     try {
+      // Renderer 可能仍显示 WORK，但主进程持久模式来自上一次 CODING 会话。
+      // 快捷入口必须先走权威切换通道，避免随后创建的工作区/会话继承错误模式。
+      const workModeBound = await useXiaoguiStore.getState().switchMode('WORK')
+      if (!workModeBound) {
+        setError('未能进入 WORK 模式，请重试。')
+        return
+      }
       if (action === 'TEMPLATE') {
         setView('TEMPLATE_LIBRARY')
         return

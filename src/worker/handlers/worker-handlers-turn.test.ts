@@ -296,6 +296,88 @@ describe('Worker Prompt dispatch preflight', () => {
     expect(st.promptStickyCapabilities).toEqual([])
   })
 
+  it('P17 WORK quick-entry text activates template intake tools and the turn Manifest names the capability', async () => {
+    const registered = [
+      'read',
+      'xiaogui_read_pdf',
+      'xiaogui_work_read_materials',
+      'xiaogui_work_docx_template_intake',
+      'xiaogui_work_docx_template_materialize',
+    ]
+    let activeTools: string[] = []
+    const manifests: Array<{
+      mode: string
+      capabilityIds: readonly string[]
+      tools: readonly string[]
+    }> = []
+    const prompt = vi.fn(async (
+      _text: string,
+      options?: { preflightResult?: (passed: boolean) => void },
+    ) => {
+      options?.preflightResult?.(false)
+    })
+    st.session = {
+      prompt,
+      isStreaming: false,
+      sessionFile: 'C:\\sessions\\work-intake.jsonl',
+      getAllTools: () => registered.map((name) => ({ name })),
+      setActiveToolsByName: (names: string[]) => { activeTools = [...names] },
+      getActiveToolNames: () => [...activeTools],
+    } as unknown as AgentSession
+    st.promptContextCandidate = {
+      schemaVersion: 1,
+      mode: 'WORK',
+      phase: 'EXECUTE',
+      workspaceAvailable: true,
+      projectTrusted: true,
+      enabledCapabilities: [],
+      availableToolNames: [],
+    }
+    st.promptPreflight = () => {
+      const context = st.promptTurnContext!
+      const built = xiaoguiPromptBuilderV1.build({
+        context,
+        piSystemPrompt: 'PI Harness Base',
+        runtimeTools: activeTools.map((name) => ({ name })),
+        generatedAt: '2026-09-01T00:00:00.000Z',
+      })
+      manifests.push({
+        mode: built.diagnostics.manifest.mode,
+        capabilityIds: built.diagnostics.manifest.capabilityIds,
+        tools: built.diagnostics.manifest.toolNames,
+      })
+      return {
+        prompt: built.prompt,
+        productPrompt: built.productPrompt,
+        context: built.effectiveContext,
+        diagnostics: built.diagnostics,
+      }
+    }
+
+    await handlePrompt({
+      text: '请使用普通文档模板整理能力，把我刚选择的普通成品文档“个人小结.docx”整理成可复用模板。请立即开始只读分析并生成候选内容报告，不要再次让我选择文件；原文档不得修改。',
+    }, vi.fn())
+
+    await vi.waitFor(() => expect(st.promptTurnContext).toBeNull())
+    expect(activeTools).toHaveLength(5)
+    expect(activeTools).toEqual(expect.arrayContaining([
+      'read',
+      'xiaogui_read_pdf',
+      'xiaogui_work_read_materials',
+      'xiaogui_work_docx_template_intake',
+      'xiaogui_work_docx_template_materialize',
+    ]))
+    expect(manifests).toHaveLength(1)
+    expect(manifests[0]!.mode).toBe('WORK')
+    expect(manifests[0]!.capabilityIds).toEqual(
+      expect.arrayContaining(['work.file-organize', 'work.template-intake']),
+    )
+    expect(manifests[0]!.tools).toEqual(expect.arrayContaining([
+      'xiaogui_work_docx_template_intake',
+      'xiaogui_work_docx_template_materialize',
+    ]))
+  })
+
   it('P16 reuses a Worker while active tools and Prompt manifest follow each frozen turn', async () => {
     const registered = [
       'read',

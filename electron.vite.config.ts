@@ -58,11 +58,6 @@ export default defineConfig({
   },
   renderer: {
     root: 'src/renderer',
-    define: {
-      __XIAOGUI_MODE_RECOMMENDATION_ENABLED__: JSON.stringify(
-        process.env.XIAOGUI_MODE_RECOMMENDATION_ENABLED === '1',
-      ),
-    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src'),

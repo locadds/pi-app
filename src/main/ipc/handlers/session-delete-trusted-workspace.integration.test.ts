@@ -44,6 +44,7 @@ vi.mock('../../worker-manager', () => ({
     isRunning: false,
     getState: vi.fn(async () => ({})),
     deleteSessionFile: mocks.deleteSessionFile,
+    forgetSessionWorkspace: vi.fn(),
     getSessionTree: vi.fn(),
   },
 }))
@@ -86,6 +87,7 @@ vi.mock('../../session-branch-anchors', () => ({ listMessageAnchorsFromSessionFi
 vi.mock('../../rename-pi-session', () => ({ renamePiSessionOnDisk: vi.fn() }))
 vi.mock('../../sandbox-workspaces', () => ({
   bindSandboxSession: vi.fn(),
+  findSandboxWorkspaceForSessionFile: vi.fn(() => null),
   isSandboxWorkspacePath: vi.fn(() => false),
   renameSandboxWorkspace: vi.fn(),
 }))

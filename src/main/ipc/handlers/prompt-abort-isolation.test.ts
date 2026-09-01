@@ -22,6 +22,9 @@ vi.mock('../../worker-manager', () => ({
 vi.mock('../../session-bind-state', () => ({
   ensureWorkerSessionBound: vi.fn(),
 }))
+vi.mock('../../xiaogui/coding-extensions/context-composition', () => ({
+  resolveCodingContextForPromptV1: vi.fn(async () => null),
+}))
 vi.mock('../../clipboard-temp-images', () => ({
   writeClipboardTempImage: vi.fn(),
 }))

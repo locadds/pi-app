@@ -50,7 +50,9 @@ describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
       systemPromptOptions: {
         cwd: 'C:/project',
         customPrompt: 'USER SYSTEM',
-        selectedTools: ['read'],
+        // work.file-organize 的 requiredToolNames = read + 通用资料读取工具；
+        // 缺一会导致能力在能力解析阶段被丢弃。
+        selectedTools: ['read', 'xiaogui_work_read_materials'],
         toolSnippets: { read: '读取文件' },
         promptGuidelines: ['只读取完成任务所需的内容'],
       },
@@ -69,7 +71,7 @@ describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
           mode: 'WORK',
           phase: 'ASK',
           projectTrusted,
-          toolNames: ['read'],
+          toolNames: ['read', 'xiaogui_work_read_materials'],
         }),
       }),
     }))

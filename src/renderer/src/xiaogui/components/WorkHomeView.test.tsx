@@ -24,6 +24,7 @@ vi.mock('./TemplateLibraryView', () => ({
 const invoke = vi.mocked(ipcClient.invoke)
 const activate = vi.mocked(activateWorkspace)
 const submit = vi.mocked(submitComposerPrompt)
+const synchronizeWorkMode = vi.fn(async () => true)
 
 let xiaoguiSnapshot: ReturnType<typeof useXiaoguiStore.getState>
 let uiSnapshot: ReturnType<typeof useUIStore.getState>
@@ -31,11 +32,13 @@ let uiSnapshot: ReturnType<typeof useUIStore.getState>
 beforeEach(() => {
   xiaoguiSnapshot = useXiaoguiStore.getState()
   uiSnapshot = useUIStore.getState()
-  useXiaoguiStore.setState({ mode: 'WORK' })
+  useXiaoguiStore.setState({ mode: 'WORK', switchMode: synchronizeWorkMode })
   useUIStore.setState({ currentWorkspace: 'D:\\workspace', composerPrefill: null })
   invoke.mockClear()
   activate.mockReset()
   submit.mockReset()
+  synchronizeWorkMode.mockClear()
+  synchronizeWorkMode.mockResolvedValue(true)
 })
 
 afterEach(() => {
@@ -105,6 +108,48 @@ describe('WorkHomeView', () => {
     expect(submit).toHaveBeenCalledWith(expect.stringContaining('个人小结.docx'))
     expect(submit).toHaveBeenCalledWith(expect.stringContaining('整理成可复用模板'))
     expect(submit.mock.calls[0]![0]).not.toMatch(/[A-Za-z]:[\\/]/)
+  })
+
+  it('整理普通文档先把主进程显式绑定为 WORK，再打开文件选择器', async () => {
+    const user = userEvent.setup()
+    invoke.mockResolvedValue({ cancelled: true })
+    render(<WorkHomeView />)
+
+    await user.click(screen.getByRole('button', { name: '选择普通文档并开始分析' }))
+
+    expect(synchronizeWorkMode).toHaveBeenCalledOnce()
+    expect(synchronizeWorkMode).toHaveBeenCalledWith('WORK')
+    expect(synchronizeWorkMode.mock.invocationCallOrder[0]).toBeLessThan(
+      invoke.mock.invocationCallOrder[0]!,
+    )
+  })
+
+  it('WORK 模式绑定失败时不继续选择文件或创建错误模式的工作区', async () => {
+    const user = userEvent.setup()
+    synchronizeWorkMode.mockResolvedValueOnce(false)
+    render(<WorkHomeView />)
+
+    await user.click(screen.getByRole('button', { name: '选择普通文档并开始分析' }))
+
+    expect(invoke).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toHaveTextContent('未能进入 WORK 模式')
+  })
+
+  it('取消普通文档选择时不提交提示词也不切换工作区', async () => {
+    const user = userEvent.setup()
+    invoke.mockResolvedValue({ cancelled: true })
+    render(<WorkHomeView />)
+
+    await user.click(screen.getByRole('button', { name: '选择普通文档并开始分析' }))
+
+    expect(synchronizeWorkMode).toHaveBeenCalledWith('WORK')
+    expect(invoke).toHaveBeenCalledWith('xiaogui.work.template-intake.source.choose', {
+      workspaceRoot: 'D:\\workspace',
+    })
+    expect(submit).not.toHaveBeenCalled()
+    expect(activate).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('没有工作区时自动建立内部 WORK 工作区并打开普通文档选择器', async () => {
