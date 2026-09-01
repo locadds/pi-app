@@ -15,6 +15,7 @@ import {
   closeDefaultCollaborationHubRuntimeComposition,
   getDefaultCodingAttemptPlanModuleV1,
   getDefaultCodingAttemptReviewModuleV1,
+  getDefaultCodingRoleProfileModuleV1,
   getDefaultTaskExecutionOrchestrator,
   registerCollaborationHubHandlers,
 } from './task-hub/ipc'
@@ -87,6 +88,7 @@ export function initXiaogui(): void {
     plan: getDefaultCodingAttemptPlanModuleV1(),
     review: getDefaultCodingAttemptReviewModuleV1(),
     taskExecution: getDefaultTaskExecutionOrchestrator(),
+    roles: getDefaultCodingRoleProfileModuleV1(),
   })
   registerDefaultCodingRoleHandlersV1()
   registerDefaultCodingCheckpointHandlersV1()

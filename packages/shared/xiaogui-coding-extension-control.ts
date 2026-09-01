@@ -86,6 +86,7 @@ export type CodingExtensionSafeErrorCodeV1 =
   | 'INVALID_REQUEST'
   | 'SESSION_SCOPE_MISMATCH'
   | 'EXECUTION_RESUME_FAILED'
+  | 'ROLE_BINDING_REQUIRED'
   | 'REVIEW_UNAVAILABLE'
 
 export interface CodingExtensionSafeErrorV1 {

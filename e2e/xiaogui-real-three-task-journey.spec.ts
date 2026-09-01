@@ -16,7 +16,6 @@ import { join, relative, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import type { HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
-import { CheckpointSessionBindingRegistryV1 } from '../src/main/xiaogui/coding-extensions/checkpoint-session-binding-registry'
 
 type PiDesktopWindow = Window & {
   piDesktop: { invoke(channel: string, request?: unknown): Promise<unknown> }
@@ -182,23 +181,6 @@ function writeAgentModelFixture(agentDir: string): void {
   }, null, 2)}\n`, 'utf8')
 }
 
-function recordTrustedCheckpointSession(
-  userDataDir: string,
-  address: HubAddressV1,
-  sessionFile: string,
-): void {
-  const checkpointDir = join(userDataDir, 'xiaogui', 'coding-checkpoints')
-  mkdirSync(checkpointDir, { recursive: true })
-  const registry = new CheckpointSessionBindingRegistryV1({
-    dbPath: join(checkpointDir, 'checkpoint-private-v1.sqlite'),
-  })
-  try {
-    registry.recordAddress({ address, sourceSessionId: SESSION_ID, sessionFile })
-  } finally {
-    registry.close()
-  }
-}
-
 function attemptWorktreeRoot(userDataDir: string, attemptId: string): string {
   const db = new DatabaseSync(join(userDataDir, 'xiaogui', 'task-hub', 'attempt-workspaces.sqlite'), {
     readOnly: true,
@@ -320,6 +302,14 @@ async function approveAwaitingAttemptPlans(page: Page, expectedCount: number): P
   }
 }
 
+async function bindImplementationRole(page: Page, taskKey: string): Promise<void> {
+  const taskCard = page.getByTestId(`hub-taskrun-status-${taskKey}`).locator('xpath=ancestor::li[1]')
+  const roleCard = taskCard.getByLabel('执行角色')
+  await roleCard.getByLabel('选择角色').selectOption('xiaogui.role.implement.default')
+  await roleCard.getByRole('button', { name: '使用此角色', exact: true }).click()
+  await expect(roleCard.getByText('当前角色：实现', { exact: true })).toBeVisible()
+}
+
 async function waitForTaskBadges(
   page: Page,
   expected: Record<string, string>,
@@ -413,6 +403,7 @@ function taskRunsByKey(projection: HubProjectionView): Map<string, TaskRunView> 
 function readJourneyRows(userDataDir: string, projection: HubProjectionView) {
   const hubDb = new DatabaseSync(join(userDataDir, 'xiaogui-task-hub-m2a.sqlite'))
   const workspaceDb = new DatabaseSync(join(userDataDir, 'xiaogui', 'task-hub', 'attempt-workspaces.sqlite'))
+  const roleDb = new DatabaseSync(join(userDataDir, 'xiaogui', 'coding-roles', 'role-profiles-v1.sqlite'))
   try {
     const attempts = hubDb.prepare('select attempt_id, task_run_id, status from attempts order by rowid').all() as Array<{
       attempt_id: string; task_run_id: string; status: string
@@ -433,10 +424,24 @@ function readJourneyRows(userDataDir: string, projection: HubProjectionView) {
     const applyOutboxes = hubDb.prepare(
       'select apply_attempt_id, status from delivery_apply_outbox order by rowid',
     ).all()
-    return { projection, attempts, manifests, leases, deliveries, deliverySelections, applyAttempts, applyOutboxes }
+    const roleBindings = roleDb.prepare(
+      'select attempt_id, profile_id, snapshot_digest, bound_at from xiaogui_coding_attempt_role_bindings_v1 order by attempt_id',
+    ).all()
+    return {
+      projection,
+      attempts,
+      manifests,
+      leases,
+      deliveries,
+      deliverySelections,
+      applyAttempts,
+      applyOutboxes,
+      roleBindings,
+    }
   } finally {
     hubDb.close()
     workspaceDb.close()
+    roleDb.close()
   }
 }
 
@@ -488,6 +493,7 @@ function publicJourneyEvidence(
     deliverySelections: rows.deliverySelections,
     applyAttempts: rows.applyAttempts,
     applyOutboxes: rows.applyOutboxes,
+    roleBindings: rows.roleBindings,
   }
 }
 
@@ -571,6 +577,7 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
     const screenshots = {
       batchConfirm: join(evidenceDir, '01-batch-confirm.png'),
       plansAwaitingApproval: join(evidenceDir, '02-attempt-plans-awaiting-approval.png'),
+      roleRequired: join(evidenceDir, '02a-role-required.png'),
       roleBound: join(evidenceDir, '02a-role-bound.png'),
       checkpointRestorePreview: join(evidenceDir, '02b-checkpoint-restore-preview.png'),
       checkpointRestored: join(evidenceDir, '02c-checkpoint-restored.png'),
@@ -624,10 +631,6 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
         projectId: canonicalScope.projectId,
         sessionKey: canonicalScope.sessionKey,
       }
-      // The production path records this private association when the Pi plan
-      // host tool publishes a draft. This E2E seeds the same trusted fixture
-      // because the flow itself is intentionally created through test-only IPC.
-      recordTrustedCheckpointSession(userDataDir, address, session.file)
       await openSessionAndHub(page, '一次性Git项目', session.title)
 
       const seeded = await invoke<{ ok: boolean; error?: unknown }>(page, 'ipc:xiaogui.hub.perform', {
@@ -677,7 +680,8 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
         projection.attempts.filter((attempt) => attempt.status === 'READY').length === 2
       ))
       const attemptA = awaitingPlans.attempts.find((attempt) => attempt.taskRunId === runA.taskRunId)
-      if (!attemptA) throw new Error('missing READY Attempt A')
+      const attemptB = awaitingPlans.attempts.find((attempt) => attempt.taskRunId === runB.taskRunId)
+      if (!attemptA || !attemptB) throw new Error('missing READY root Attempts')
       const taskACard = page.getByTestId('hub-taskrun-status-a').locator('xpath=ancestor::li[1]')
       const roleCard = taskACard.getByLabel('执行角色')
       const roleSelect = roleCard.getByLabel('选择角色')
@@ -686,9 +690,11 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
         '实现（实现）',
         '审阅（审阅）',
       ])
-      await roleSelect.selectOption('xiaogui.role.implement.default')
-      await roleCard.getByRole('button', { name: '使用此角色', exact: true }).click()
-      await expect(roleCard.getByText('当前角色：实现', { exact: true })).toBeVisible()
+      await taskACard.getByRole('button', { name: '批准并开始执行', exact: true }).click()
+      await expect(taskACard.getByText('请先在上方选择并绑定“实现”角色。', { exact: true })).toBeVisible()
+      await taskACard.screenshot({ path: screenshots.roleRequired })
+      await bindImplementationRole(page, 'a')
+      await bindImplementationRole(page, 'b')
       await roleCard.screenshot({ path: screenshots.roleBound })
 
       const checkpointCard = taskACard.getByLabel('Git 检查点与恢复')
@@ -764,6 +770,8 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       await configureExecutionTask(page, runC.taskRunId, '任务 C', C_PATH)
       await page.getByRole('button', { name: '核对本批执行范围', exact: true }).click()
       await page.getByRole('button', { name: '确认并执行本批', exact: true }).click()
+      await expect(page.getByTestId('hub-task-group-awaiting-plan')).toBeVisible({ timeout: 45_000 })
+      await bindImplementationRole(page, 'c')
       await approveAwaitingAttemptPlans(page, 1)
       await waitForEvents(eventLogPath, (items) =>
         items.some((event) => event.event === 'runtime.execution.entered' && event.details.label === 'C'))
@@ -839,13 +847,28 @@ test.describe('真实三任务 CODING Electron 旅程', () => {
       await page.getByTestId('hub-active-plan').screenshot({ path: screenshots.applied })
 
       const rows = readJourneyRows(userDataDir, await observe(page, address))
+      const attemptByRun = new Map(rows.attempts.map((attempt) => [attempt.task_run_id, attempt]))
+      expect(rows.roleBindings).toHaveLength(3)
+      expect(rows.roleBindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ attempt_id: attemptA.attemptId, profile_id: 'xiaogui.role.implement.default' }),
+        expect.objectContaining({ attempt_id: attemptB.attemptId, profile_id: 'xiaogui.role.implement.default' }),
+        expect.objectContaining({
+          attempt_id: attemptByRun.get(runC.taskRunId)?.attempt_id,
+          profile_id: 'xiaogui.role.implement.default',
+        }),
+      ]))
+      expect(rows.roleBindings.every((binding) => (
+        (binding as { profile_id?: unknown }).profile_id === 'xiaogui.role.implement.default'
+        && typeof (binding as { bound_at?: unknown }).bound_at === 'string'
+        && typeof (binding as { snapshot_digest?: unknown }).snapshot_digest === 'string'
+        && String((binding as { snapshot_digest: string }).snapshot_digest).startsWith('sha256:')
+      ))).toBe(true)
       expect(rows.applyAttempts).toEqual([
         expect.objectContaining({ batch_id: delivery.batchId, state: 'SUCCEEDED' }),
       ])
       expect(rows.applyOutboxes).toEqual([
         expect.objectContaining({ status: 'DONE' }),
       ])
-      const attemptByRun = new Map(rows.attempts.map((attempt) => [attempt.task_run_id, attempt]))
       const manifestByAttempt = new Map(rows.manifests.map((manifest) => [manifest.attempt_id, JSON.parse(manifest.manifest_json)]))
       expect(manifestByAttempt.get(attemptByRun.get(runA.taskRunId)?.attempt_id)?.grants).toEqual([
         expect.objectContaining({ operation: 'CREATE', relativePath: A_PATH }),

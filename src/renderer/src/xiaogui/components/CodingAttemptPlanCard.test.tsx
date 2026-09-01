@@ -108,4 +108,18 @@ describe('CodingAttemptPlanCard', () => {
     await user.click(screen.getByRole('button', { name: '继续执行' }))
     expect(resumeExecution).toHaveBeenCalledWith('xhba_private_1')
   })
+
+  it('未绑定实现角色时给出明确提示且保留可重试按钮', () => {
+    useCodingAttemptStore.setState({
+      planErrorsByAttempt: {
+        xhba_private_1: {
+          code: 'ROLE_BINDING_REQUIRED',
+          messageKey: 'xiaogui.coding.extension.role_binding_required',
+        },
+      },
+    })
+    render(<CodingAttemptPlanCard attemptId="xhba_private_1" />)
+    expect(screen.getByText('请先在上方选择并绑定“实现”角色。')).toBeVisible()
+    expect(screen.getByRole('button', { name: '批准并开始执行' })).toBeEnabled()
+  })
 })

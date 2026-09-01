@@ -4,7 +4,7 @@
 
 ### 阶段状态
 
-- 状态：P3 生产接缝、聚焦回归、类型检查、构建和真实 Electron 联合旅程均已通过；等待代码/规格双审查与人工验收
+- 状态：P3 首轮阻断项已完成最小修复；聚焦回归、类型检查、构建和真实 Electron 联合旅程通过；固定差异代码审查 `PASS`、规格审查 `APPROVE`，本提交推送后等待人工验收
 - 固定起点：`85142791d70f2486241bd644baa7cae58dc88208`
 - 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`
 - 独立分支：`agent/coding-p1-pi-extension-pack-v1`
@@ -23,9 +23,10 @@
 - Main / Worker 路由：`src/main/worker-manager.ts`、`src/main/__tests__/worker-manager-session-isolation.test.ts`、`src/main/__tests__/worker-manager-coding-role.test.ts`、`src/worker/worker-port-handlers.ts`、`src/worker/worker-port-types.ts`、`src/worker/worker-runtime.ts`
 - 检查点生产模块：`src/main/xiaogui/coding-extensions/attempt-checkpointability-port.ts`、`attempt-checkpoint-workspace-authority.ts`、`attempt-checkpoint-workspace-port.ts`、`checkpoint-default-composition.ts`、`checkpoint-ipc.ts`、`checkpoint-module.ts`、`checkpoint-production-composition.ts`、`checkpoint-session-binding-registry.ts`、`checkpoint-state-store.ts`、`pi-session-checkpoint-port.ts` 及其同名聚焦测试
 - 角色生产模块：`src/main/xiaogui/coding-extensions/role-ipc.ts`、`role-production-composition.ts`、`role-production-ports.ts`、`role-profile-module.ts` 及其同名聚焦测试；`src/worker/handlers/worker-handlers-coding-role.ts`、`src/worker/xiaogui-coding-extensions/role-guard-extension.ts`、`role-runtime-binding.ts` 及其测试
-- TaskHub / 装配：`src/main/xiaogui/task-hub/application.ts`、`sqlite-store.ts` 及其测试；`src/main/xiaogui/coding-extensions/plan-worker-tool.ts` 及其测试；`src/main/xiaogui/index.ts`、`index.test.ts`
-- Renderer：`src/renderer/src/xiaogui/lib/coding-checkpoint-client.ts`、`coding-role-client.ts` 及其测试；`components/CodingCheckpointCard.tsx`、`CodingRoleCard.tsx`、`CollaborationHubPanel.tsx` 及其测试
-- 联合旅程与记录：`e2e/xiaogui-real-three-task-journey.spec.ts`、`DEVELOPMENT_STATUS.md`
+- TaskHub / 装配：`src/main/xiaogui/task-hub/application.ts`、`sqlite-store.ts`、`execution-orchestrator.ts`、`runtime-composition.ts`、`ipc.ts` 及其测试；`src/main/xiaogui/coding-extensions/plan-worker-tool.ts`、`attempt-ipc.ts` 及其测试；`src/main/xiaogui/index.ts`、`index.test.ts`
+- 可信 session 生产接缝：`src/main/ipc/handlers/session.ts`
+- Renderer：`src/renderer/src/xiaogui/lib/coding-checkpoint-client.ts`、`coding-role-client.ts`、`coding-attempt-client.ts` 及其测试；`components/CodingCheckpointCard.tsx`、`CodingRoleCard.tsx`、`CodingAttemptPlanCard.tsx`、`CollaborationHubPanel.tsx` 及其测试
+- 联合旅程与记录：`e2e/xiaogui-real-three-task-journey.spec.ts`、`doc/coding-p1/CODING-P1-P3-REVIEW.md`、`doc/coding-p1/CODING-P1-P3-QA.md`、`DEVELOPMENT_STATUS.md`
 
 ### 已完成内容
 
@@ -38,6 +39,10 @@
 7. 研究和审阅角色始终应用硬只读上限；未知工具、写入工具和越界工具不会因用户编辑白名单而放行。模型或运行时不可用时显示明确中文状态。
 8. 角色预检现在可通过主进程私有会话登记恢复正确的 CODING Worker，再按匿名会话地址绑定；私有会话路径不返回 Renderer。
 9. 协作面板在每个 READY Attempt 内显示角色卡和检查点卡；真实窗口已完成角色绑定、检查点预览/恢复，并继续 A/B 并行、C 依赖 A、真实 Diff/验证、统一交付和幂等应用。
+10. 角色要求已进入 TaskHub 权威派发门：只有冻结为 `IMPLEMENT` 的 Attempt 角色快照可以从 `WORKSPACE_READY` 进入 Runtime dispatch；缺失、读取失败或研究/审阅角色均保持 `READY`。
+11. 计划批准和继续执行 IPC 在修改计划或调用 Runtime 前执行同一角色校验；Renderer 明确提示“请先绑定实现角色”，不能只靠界面顺序保证安全。
+12. Pi Worker 未绑定角色时只公开 `read`；命令、写入和其他工具统一失败关闭。Worker 已绑定后只接受同一 Attempt+摘要；用户显式为另一 Attempt 绑定角色时，Main 必须先用原 Attempt 编号完成 `release`，再预检和绑定新快照。
+13. Renderer 手工计划和 TaskHub 兜底计划使用的可信 CODING session 现在由 Main 的真实 session 打开/列举路径登记；联合旅程已删除私有注册表手工 seed，并为 A/B/C 三个 Attempt 分别固定实现角色。
 
 ### 未完成内容
 
@@ -68,6 +73,16 @@ node_modules\.bin\vitest.cmd run $focusedTests --reporter=default
 
 结果：`28 test files passed`，`220 tests passed`，退出码 `0`。覆盖检查点恢复 Saga、私有会话登记、角色配置/只读上限、Worker 会话隔离、TaskHub 状态转换、Renderer 卡片和真实工作树恢复。
 
+首轮审查阻断修复只补跑直接相关组：
+
+```powershell
+node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/execution-orchestrator.test.ts src/worker/xiaogui-coding-extensions/role-runtime-binding.test.ts src/worker/xiaogui-coding-extensions/role-guard-extension.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/renderer/src/xiaogui/components/CodingAttemptPlanCard.test.tsx src/renderer/src/xiaogui/lib/coding-attempt-client.test.ts src/main/ipc/handlers/session-preview-authorization.test.ts src/main/ipc/handlers/session-preview-invalidation.test.ts
+```
+
+结果：`9 test files passed`，`80 tests passed`，退出码 `0`。覆盖 TaskHub 角色派发门、批准/续接角色门、Worker 未绑定只读、显式 Attempt 切换和安全错误展示。
+
+角色槽复审阻断修复后补跑最小角色组：`4 test files passed`、`13 tests passed`，退出码 `0`。覆盖“不释放不能覆盖”、带旧 Attempt 编号释放、Main release-before-inspect 顺序和 Worker RPC。
+
 ```powershell
 npm run typecheck
 npm run build
@@ -80,18 +95,19 @@ git diff --check
 node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.ts --workers=1
 ```
 
-结果：`1 passed`，耗时 `47.7s`。证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788230334909`。关键证据：`02a-role-bound.png`、`02b-checkpoint-restore-preview.png`、`02c-checkpoint-restored.png`、`04-real-diff-and-verification.png`、`06-apply-succeeded.png`、`journey-events.jsonl`、`journey-rows.json`。
+结果：角色槽严格释放修复后 `1 passed`，耗时 `56.0s`。证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788233094138`。关键证据：`02a-role-required.png`、`02a-role-bound.png`、`02b-checkpoint-restore-preview.png`、`02c-checkpoint-restored.png`、`04-real-diff-and-verification.png`、`06-apply-succeeded.png`、`journey-events.jsonl`、`journey-rows.json`。旅程已删除私有 session seed；结构化总账含 A/B/C 三条默认实现角色的绑定时间和 `sha256:` 摘要。
 
 ### 已知风险
 
-1. 检查点恢复跨 Pi 会话、TaskHub 和 Git 工作树三个持久化边界；任何不能证明的中断都会进入 `OUTCOME_UNKNOWN`，需要人工对账而不会自动重跑。
+1. 检查点恢复跨 Pi 会话、TaskHub 和 Git 工作树三个持久化边界；任何不能证明的中断都会进入 `OUTCOME_UNKNOWN`，需要人工对账而不会自动重跑。当前实现会保守停用该检查点 runtime，后续可研究按 Attempt 隔离恢复。
 2. 每个 Pi Worker 同一时刻只接受一个 Attempt 角色快照；不同 Attempt 的并行角色需要不同 Worker 会话，当前阶段未做生产多会话模型冒烟。
 3. 角色模型选择只验证当前 Pi Worker 已加载且批准的模型；这不是对生产 Runtime 登录、额度或生成质量的证明。
 4. 真实旅程使用一次性 Git 项目和 Scripted Runtime；正式用户项目仍必须经过现有交付审阅和人工应用门。
+5. 检查点工作树目前不额外验证符号链接 target 是否仍位于工作树内；代码审查将其登记为后续安全债，本阶段未扩大修改范围。
 
 ### 下一阶段计划
 
-本阶段先进行代码标准与规格双审查，修复任何阻断项后提交并推送当前独立 CODING 分支。随后等待人工验收；未经确认不合入阶段线、不发布，也不进入下一工作包。
+当前固定差异已通过代码标准与规格双复审。提交并推送当前独立 CODING 分支后等待人工验收；未经确认不合入阶段线、不发布，也不进入下一工作包。
 
 ## 2026-08-31｜CODING-P1 P2 审查修复候选
 

@@ -16,6 +16,10 @@ interface CodingRoleWorkerPortV1 {
     address: SessionAddressV1,
     binding: CodingRoleAgentSnapshotV1,
   ): Promise<unknown>
+  releaseCodingAttemptRole(
+    address: SessionAddressV1,
+    expectedAttemptId: string,
+  ): Promise<unknown>
 }
 
 export function createCodingRoleProductionPortsV1(options: {
@@ -28,6 +32,7 @@ export function createCodingRoleProductionPortsV1(options: {
   readonly scope: CodingRoleScopePortV1
   readonly runtime: CodingRoleRuntimePortV1
 } {
+  const activeAttemptByAddress = new Map<string, string>()
   return Object.freeze({
     scope: Object.freeze({
       async isCodingSession(address: SessionAddressV1): Promise<boolean> {
@@ -52,6 +57,12 @@ export function createCodingRoleProductionPortsV1(options: {
         binding: CodingRoleAgentSnapshotV1,
       ): Promise<void> {
         await options.ensureSession(address)
+        const key = addressKey(address)
+        const activeAttemptId = activeAttemptByAddress.get(key)
+        if (activeAttemptId && activeAttemptId !== binding.attemptId) {
+          await options.workers.releaseCodingAttemptRole(address, activeAttemptId)
+          activeAttemptByAddress.delete(key)
+        }
         await options.workers.inspectCodingRoleSupport(address, binding)
       },
       async bind(
@@ -59,7 +70,12 @@ export function createCodingRoleProductionPortsV1(options: {
         binding: CodingRoleAgentSnapshotV1,
       ): Promise<void> {
         await options.workers.bindCodingAttemptRole(address, binding)
+        activeAttemptByAddress.set(addressKey(address), binding.attemptId)
       },
     }),
   })
+}
+
+function addressKey(address: SessionAddressV1): string {
+  return `${address.projectId}:${address.sessionKey}`
 }

@@ -74,11 +74,17 @@ type ReviewPortV1 = Pick<CodingAttemptReviewModuleV1, 'read'>
 type TaskExecutionPortV1 = {
   resumeAttempt(address: HubAddressV1, attemptId: AttemptId): Promise<{ readonly ok: boolean }>
 }
+type RolePortV1 = {
+  readAttemptBinding(attemptId: string): {
+    readonly snapshot: { readonly role: 'RESEARCH' | 'IMPLEMENT' | 'REVIEW' }
+  } | null
+}
 
 export function registerCodingAttemptHandlersV1(options: {
   readonly plan: PlanPortV1
   readonly review: ReviewPortV1
   readonly taskExecution: TaskExecutionPortV1
+  readonly roles: RolePortV1
 }): void {
   registerHandler('ipc:xiaogui.coding.plan.observe', async (payload): Promise<CodingPlanObserveOutcomeV1> => {
     const parsed = ObserveSchema.safeParse(payload)
@@ -102,6 +108,17 @@ export function registerCodingAttemptHandlersV1(options: {
     const request = parsed.data as unknown as CodingPlanPerformRequestV1
     const scoped = scopedPlan(options.plan, request.address, request.action.attemptId)
     if (!scoped) return failure('SESSION_SCOPE_MISMATCH')
+
+    if (request.action.type === 'APPROVE' || request.action.type === 'RESUME') {
+      try {
+        const binding = options.roles.readAttemptBinding(request.action.attemptId)
+        if (!binding || binding.snapshot.role !== 'IMPLEMENT') {
+          return failure('ROLE_BINDING_REQUIRED')
+        }
+      } catch {
+        return failure('ROLE_BINDING_REQUIRED')
+      }
+    }
 
     if (request.action.type === 'RESUME') {
       if (

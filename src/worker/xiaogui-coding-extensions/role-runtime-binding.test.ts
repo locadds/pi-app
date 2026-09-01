@@ -38,6 +38,11 @@ describe('CodingRoleRuntimeBindingV1', () => {
     expect(() => binding.bind({ ...BASE, attemptId: 'attempt-2' }))
       .toThrow('XIAOGUI_CODING_ROLE_RUNTIME_ALREADY_BOUND')
     expect(binding.read()).toBe(first)
+
+    binding.release('attempt-1')
+    const second = binding.bind({ ...BASE, attemptId: 'attempt-2' })
+    expect(second.attemptId).toBe('attempt-2')
+    expect(binding.read()).toBe(second)
   })
 
   it('激活工具只取 Worker 已注册工具与角色有效白名单交集，释放后才可绑定下一 Attempt', () => {
@@ -48,7 +53,7 @@ describe('CodingRoleRuntimeBindingV1', () => {
 
     binding.release()
     expect(binding.read()).toBeNull()
-    expect(binding.activeToolNames(['read', 'bash'])).toEqual(['read', 'bash'])
+    expect(binding.activeToolNames(['read', 'bash'])).toEqual(['read'])
   })
 
   it('只有持有当前 Attempt 的调用者才能释放角色绑定', () => {

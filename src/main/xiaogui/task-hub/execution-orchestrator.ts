@@ -112,6 +112,15 @@ export interface TaskExecutionAttemptPlanGateV1 {
   markAttemptExecutionDispatchFailed(attemptId: AttemptId): Promise<void>
 }
 
+/**
+ * TaskHub-owned execution gate for the immutable Attempt role snapshot.
+ * A missing or non-executable role keeps the prepared Attempt in READY; it
+ * never reaches runtime dispatch through a recovery or alternate IPC path.
+ */
+export interface TaskExecutionAttemptRoleGateV1 {
+  isAttemptRoleExecutable(attemptId: AttemptId): Promise<boolean>
+}
+
 export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly dbPath: string
   readonly application: CollaborationHubApplicationV1
@@ -123,6 +132,7 @@ export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly permissionModule?: TaskExecutionPermissionPortV1
   readonly permissionScope?: TaskExecutionPermissionScopePortV1
   readonly attemptPlanGate?: TaskExecutionAttemptPlanGateV1
+  readonly attemptRoleGate?: TaskExecutionAttemptRoleGateV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
 }
@@ -472,6 +482,12 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
           ...(taskSpec.summary ? { taskSummary: taskSpec.summary } : {}),
         })
         if (!(await this.options.attemptPlanGate.isAttemptPlanApproved(attemptId))) {
+          return { ok: true, value: authority.result }
+        }
+        if (
+          this.options.attemptRoleGate &&
+          !(await this.options.attemptRoleGate.isAttemptRoleExecutable(attemptId))
+        ) {
           return { ok: true, value: authority.result }
         }
         await this.options.attemptPlanGate.markAttemptExecutionStarted(attemptId)

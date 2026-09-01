@@ -59,6 +59,7 @@ import {
   CodingAttemptReviewModuleV1,
   GitAttemptReviewDiffPortV1,
 } from '../coding-extensions/attempt-review-module'
+import { CodingRoleProfileModuleV1 } from '../coding-extensions/role-profile-module'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
@@ -84,6 +85,7 @@ export interface XiaoguiRuntimeCompositionV1 {
   readonly delivery: XiaoguiDeliveryWorkflowV1
   readonly codingPlan: CodingAttemptPlanModuleV1
   readonly codingReview: CodingAttemptReviewModuleV1
+  readonly codingRoles: CodingRoleProfileModuleV1
   stageAttemptInput(input: StageAttemptExecutionInputV1): ResolvedAttemptExecutionInputV1
   close(): Promise<void>
 }
@@ -123,6 +125,7 @@ export function createXiaoguiRuntimeCompositionV1(
   let codingPermissionModule: CodingPermissionModuleV1 | undefined
   let codingAttemptPlanModule: CodingAttemptPlanModuleV1 | undefined
   let codingReviewStore: CollaborationHubSqliteStoreV1 | undefined
+  let codingRoleProfiles: CodingRoleProfileModuleV1 | undefined
 
   try {
     const projectResolver = options.projectResolver ?? new MainProjectWorkspaceResolverV1()
@@ -234,6 +237,12 @@ export function createXiaoguiRuntimeCompositionV1(
       dbPath: hubDbPath,
       now: options.now,
     })
+    const codingRoleDir = join(xiaoguiDir, 'coding-roles')
+    mkdirSync(codingRoleDir, { recursive: true })
+    codingRoleProfiles = new CodingRoleProfileModuleV1({
+      dbPath: join(codingRoleDir, 'role-profiles-v1.sqlite'),
+      now: options.now,
+    })
     codingReviewStore = new CollaborationHubSqliteStoreV1(hubDbPath)
     const codingAttemptReviewModule = new CodingAttemptReviewModuleV1({
       app: application,
@@ -266,6 +275,15 @@ export function createXiaoguiRuntimeCompositionV1(
       permissionModule: codingPermissionModule,
       permissionScope: attemptWorkspaces,
       attemptPlanGate: codingAttemptPlanModule,
+      attemptRoleGate: {
+        async isAttemptRoleExecutable(attemptId) {
+          try {
+            return codingRoleProfiles!.readAttemptBinding(attemptId)?.snapshot.role === 'IMPLEMENT'
+          } catch {
+            return false
+          }
+        },
+      },
       now: options.now,
     })
     void taskExecution.recover().catch(() => undefined)
@@ -295,6 +313,7 @@ export function createXiaoguiRuntimeCompositionV1(
       codingPermissionModule,
       codingAttemptPlanModule,
       codingAttemptReviewModule,
+      codingRoleProfiles,
       codingReviewStore,
       options.piE2eScriptedRuntimeLaunch,
     )
@@ -311,6 +330,7 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(workspaceRegistry)
     closeQuietly(codingPermissionModule)
     closeQuietly(codingAttemptPlanModule)
+    closeQuietly(codingRoleProfiles)
     closeQuietly(codingReviewStore)
     if (options.piE2eScriptedRuntimeLaunch) {
       deactivatePiE2eScriptedRuntimeLaunchV1(options.piE2eScriptedRuntimeLaunch)
@@ -331,6 +351,7 @@ function createCompositionInterface(
   codingPermissionModule: CodingPermissionModuleV1,
   codingAttemptPlanModule: CodingAttemptPlanModuleV1,
   codingAttemptReviewModule: CodingAttemptReviewModuleV1,
+  codingRoleProfiles: CodingRoleProfileModuleV1,
   codingReviewStore: CollaborationHubSqliteStoreV1,
   piE2eLaunch: PiE2eScriptedRuntimeLaunchV1 | undefined,
 ): XiaoguiRuntimeCompositionV1 {
@@ -343,6 +364,7 @@ function createCompositionInterface(
     delivery,
     codingPlan: codingAttemptPlanModule,
     codingReview: codingAttemptReviewModule,
+    codingRoles: codingRoleProfiles,
     stageAttemptInput(input) {
       if (closed) throw new Error('XIAOGUI_RUNTIME_COMPOSITION_CLOSED')
       return inputStore.stage(input)
@@ -363,6 +385,7 @@ function createCompositionInterface(
             workspaceRegistry,
             codingPermissionModule,
             codingAttemptPlanModule,
+            codingRoleProfiles,
             codingReviewStore,
           ])
         } finally {

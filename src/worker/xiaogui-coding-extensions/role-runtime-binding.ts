@@ -10,8 +10,8 @@ export class CodingRoleRuntimeBindingV1 {
     const incoming = freezeCodingRoleAgentSnapshotV1(value)
     if (!this.current) return incoming
     if (
-      this.current.attemptId === incoming.attemptId &&
-      this.current.snapshotDigest === incoming.snapshotDigest
+      this.current.attemptId === incoming.attemptId
+      && this.current.snapshotDigest === incoming.snapshotDigest
     ) return this.current
     throw new Error('XIAOGUI_CODING_ROLE_RUNTIME_ALREADY_BOUND')
   }
@@ -28,7 +28,7 @@ export class CodingRoleRuntimeBindingV1 {
 
   activeToolNames(registered: readonly string[]): readonly string[] {
     const unique = [...new Set(registered)]
-    if (!this.current) return Object.freeze(unique)
+    if (!this.current) return Object.freeze(unique.filter((tool) => tool === 'read'))
     const allowed = new Set(this.current.snapshot.effectiveToolAllowlist)
     return Object.freeze(unique.filter((tool) => allowed.has(tool)))
   }

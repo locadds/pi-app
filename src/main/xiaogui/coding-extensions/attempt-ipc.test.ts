@@ -34,6 +34,14 @@ const PLAN = {
   planDigest: `sha256:${'1'.repeat(64)}`,
 }
 
+function executableRoles() {
+  return {
+    readAttemptBinding: vi.fn(() => ({
+      snapshot: { role: 'IMPLEMENT' as const },
+    })),
+  }
+}
+
 describe('CODING Attempt IPC', () => {
   beforeEach(() => handlers.clear())
 
@@ -58,6 +66,7 @@ describe('CODING Attempt IPC', () => {
       plan,
       review: { read: vi.fn() },
       taskExecution: { resumeAttempt },
+      roles: executableRoles(),
     })
 
     const observe = await handlers.get('ipc:xiaogui.coding.plan.observe')!({
@@ -99,6 +108,7 @@ describe('CODING Attempt IPC', () => {
       plan,
       review: { read: vi.fn() },
       taskExecution: { resumeAttempt: vi.fn(async () => ({ ok: false as const })) },
+      roles: executableRoles(),
     })
     const handler = handlers.get('ipc:xiaogui.coding.plan.perform')!
     const denied = await handler({
@@ -138,6 +148,7 @@ describe('CODING Attempt IPC', () => {
       plan,
       review: { read: vi.fn() },
       taskExecution: { resumeAttempt: vi.fn(async () => { throw new Error('D:\\private\\workspace') }) },
+      roles: executableRoles(),
     })
 
     const outcome = await handlers.get('ipc:xiaogui.coding.plan.perform')!({
@@ -178,6 +189,7 @@ describe('CODING Attempt IPC', () => {
       plan: { observe: vi.fn(() => [PLAN]), revise: vi.fn(), approve: vi.fn(), transitionTodo: vi.fn(), getProjection: vi.fn() },
       review: { read },
       taskExecution: { resumeAttempt: vi.fn() },
+      roles: executableRoles(),
     })
     const handler = handlers.get('ipc:xiaogui.coding.review.read')!
     expect(await handler({ contractVersion: 'bad', address: ADDRESS, attemptId: PLAN.attemptId }))
@@ -186,5 +198,72 @@ describe('CODING Attempt IPC', () => {
       contractVersion: 'xiaogui.coding-extension-control.v1', address: ADDRESS, attemptId: PLAN.attemptId,
     })).toMatchObject({ ok: true, value: { unifiedDiff: expect.stringContaining('src/a.ts') } })
     expect(read).toHaveBeenCalledWith({ address: ADDRESS, attemptId: PLAN.attemptId })
+  })
+
+  it('未绑定实现角色时拒绝批准且不改变计划或启动运行时', async () => {
+    const plan = {
+      observe: vi.fn(() => [PLAN]),
+      revise: vi.fn(),
+      approve: vi.fn(),
+      transitionTodo: vi.fn(),
+      getProjection: vi.fn(),
+    }
+    const resumeAttempt = vi.fn()
+    registerCodingAttemptHandlersV1({
+      plan,
+      review: { read: vi.fn() },
+      taskExecution: { resumeAttempt },
+      roles: { readAttemptBinding: vi.fn(() => null) },
+    })
+
+    const outcome = await handlers.get('ipc:xiaogui.coding.plan.perform')!({
+      contractVersion: 'xiaogui.coding-extension-control.v1',
+      address: ADDRESS,
+      action: {
+        type: 'APPROVE',
+        attemptId: PLAN.attemptId,
+        expectedRevision: PLAN.plan.revision,
+        expectedPlanDigest: PLAN.planDigest,
+      },
+    })
+    expect(outcome).toEqual({
+      ok: false,
+      error: {
+        code: 'ROLE_BINDING_REQUIRED',
+        messageKey: 'xiaogui.coding.extension.role_binding_required',
+      },
+    })
+    expect(plan.approve).not.toHaveBeenCalled()
+    expect(resumeAttempt).not.toHaveBeenCalled()
+  })
+
+  it('研究或审阅角色不能通过实现执行门', async () => {
+    const plan = {
+      observe: vi.fn(() => [PLAN]),
+      revise: vi.fn(),
+      approve: vi.fn(),
+      transitionTodo: vi.fn(),
+      getProjection: vi.fn(),
+    }
+    registerCodingAttemptHandlersV1({
+      plan,
+      review: { read: vi.fn() },
+      taskExecution: { resumeAttempt: vi.fn() },
+      roles: {
+        readAttemptBinding: vi.fn(() => ({ snapshot: { role: 'RESEARCH' as const } })),
+      },
+    })
+
+    await expect(handlers.get('ipc:xiaogui.coding.plan.perform')!({
+      contractVersion: 'xiaogui.coding-extension-control.v1',
+      address: ADDRESS,
+      action: {
+        type: 'APPROVE',
+        attemptId: PLAN.attemptId,
+        expectedRevision: PLAN.plan.revision,
+        expectedPlanDigest: PLAN.planDigest,
+      },
+    })).resolves.toMatchObject({ ok: false, error: { code: 'ROLE_BINDING_REQUIRED' } })
+    expect(plan.approve).not.toHaveBeenCalled()
   })
 })

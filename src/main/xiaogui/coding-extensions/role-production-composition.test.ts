@@ -47,6 +47,7 @@ describe('CODING role production composition', () => {
       workers: {
         inspectCodingRoleSupport: vi.fn(async () => ({})),
         bindCodingAttemptRole: vi.fn(async () => ({})),
+        releaseCodingAttemptRole: vi.fn(async () => ({})),
       },
     })
 
@@ -65,11 +66,12 @@ describe('CODING role production composition', () => {
   it('私有角色快照仅通过 Main-to-Worker 端口做预检与绑定', async () => {
     const inspectCodingRoleSupport = vi.fn(async () => ({ model: 'openai/gpt-5.6-sol' }))
     const bindCodingAttemptRole = vi.fn(async () => ({ model: 'openai/gpt-5.6-sol' }))
+    const releaseCodingAttemptRole = vi.fn(async () => ({ released: true }))
     const ensureSession = vi.fn(async () => undefined)
     const ports = createCodingRoleProductionPortsV1({
       lookup: { lookup: vi.fn(async () => ({ kind: 'NOT_FOUND' as const })) },
       plans: { observe: vi.fn(() => []) },
-      workers: { inspectCodingRoleSupport, bindCodingAttemptRole },
+      workers: { inspectCodingRoleSupport, bindCodingAttemptRole, releaseCodingAttemptRole },
       ensureSession,
     })
 
@@ -81,5 +83,14 @@ describe('CODING role production composition', () => {
       .toBeLessThan(inspectCodingRoleSupport.mock.invocationCallOrder[0]!)
     expect(inspectCodingRoleSupport).toHaveBeenCalledWith(ADDRESS, ROLE)
     expect(bindCodingAttemptRole).toHaveBeenCalledWith(ADDRESS, ROLE)
+
+    const nextRole = { ...ROLE, attemptId: 'attempt-2' }
+    await ports.runtime.ensureSupported(ADDRESS, nextRole)
+    await ports.runtime.bind(ADDRESS, nextRole)
+
+    expect(releaseCodingAttemptRole).toHaveBeenCalledWith(ADDRESS, 'attempt-1')
+    expect(releaseCodingAttemptRole.mock.invocationCallOrder[0])
+      .toBeLessThan(inspectCodingRoleSupport.mock.invocationCallOrder[1]!)
+    expect(bindCodingAttemptRole).toHaveBeenLastCalledWith(ADDRESS, nextRole)
   })
 })

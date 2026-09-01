@@ -24,6 +24,7 @@ import { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-mod
 import {
   XiaoguiTaskExecutionOrchestratorV1,
   type TaskExecutionAttemptPlanGateV1,
+  type TaskExecutionAttemptRoleGateV1,
   type TaskExecutionInputStageV1,
   type TaskExecutionPermissionPortV1,
   type TaskExecutionPermissionScopePortV1,
@@ -98,6 +99,43 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
       `plan-started:${ATTEMPT_ID}`,
       'dispatch',
     ])
+    await orchestrator.close()
+  })
+
+  it('keeps an approved prepared Attempt in READY until an executable role snapshot exists', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    let executableRole = false
+    const planGate: TaskExecutionAttemptPlanGateV1 = {
+      ensureAttemptPlan: vi.fn(async () => undefined),
+      isAttemptPlanApproved: vi.fn(async () => true),
+      markAttemptExecutionStarted: vi.fn(async () => {
+        events.push('plan-started')
+      }),
+      markAttemptExecutionDispatchFailed: vi.fn(async () => undefined),
+    }
+    const roleGate: TaskExecutionAttemptRoleGateV1 = {
+      isAttemptRoleExecutable: vi.fn(async () => executableRole),
+    }
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, undefined, {
+      attemptPlanGate: planGate,
+      attemptRoleGate: roleGate,
+    })
+
+    await expect(orchestrator.start(request())).resolves.toMatchObject({
+      ok: true,
+      value: { attempt: { status: 'READY' } },
+    })
+    expect(events).not.toContain('dispatch')
+    expect(events).not.toContain('plan-started')
+
+    executableRole = true
+    await expect(orchestrator.resumeAttempt(ADDRESS, ATTEMPT_ID)).resolves.toMatchObject({
+      ok: true,
+      value: { attempt: { status: 'RUNNING' } },
+    })
+    expect(events).toContain('plan-started')
+    expect(events).toContain('dispatch')
     await orchestrator.close()
   })
 
@@ -852,6 +890,7 @@ async function createOrchestrator(
     permissionModule?: TaskExecutionPermissionPortV1
     permissionScope?: TaskExecutionPermissionScopePortV1
     attemptPlanGate?: TaskExecutionAttemptPlanGateV1
+    attemptRoleGate?: TaskExecutionAttemptRoleGateV1
   },
   inputStageOverride?: TaskExecutionInputStageV1,
 ): Promise<XiaoguiTaskExecutionOrchestratorV1> {
