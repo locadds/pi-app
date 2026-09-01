@@ -45,6 +45,8 @@ export interface HubTaskWorkerCredentialBundleV1 {
 
 export interface HubTaskWorkerCredentialsV1 {
   read(): HubTaskWorkerCredentialBundleV1 | null
+  /** Verifies main-process encrypted persistence before a Hub node is replaced. */
+  canPersist(): boolean
   /** false means safeStorage was unavailable or rejected the encrypted write. */
   write(value: HubTaskWorkerCredentialBundleV1): boolean
   clear(): void
@@ -64,16 +66,20 @@ export interface HubTaskWorkerPublicStatusV1 {
   pendingReceiptCount: number
 }
 
+export type HubTaskWorkerServiceErrorCodeV1 =
+  | 'HUB_WORKER_UNCONFIGURED'
+  | 'HUB_WORKER_AUTHENTICATION_FAILED'
+  | 'HUB_WORKER_NODE_REVOKED'
+  | 'HUB_WORKER_CONNECTION_FAILED'
+  | 'HUB_WORKER_CREDENTIAL_STORAGE_UNAVAILABLE'
+  | 'HUB_ASSIGNMENT_NOT_READY'
+  | 'HUB_LOCAL_PLAN_DRAFT_FAILED'
+
 export type HubTaskWorkerServiceResultV1<T> =
   | { ok: true; value: T }
   | {
       ok: false
-      code:
-        | 'HUB_WORKER_UNCONFIGURED'
-        | 'HUB_WORKER_CONNECTION_FAILED'
-        | 'HUB_WORKER_CREDENTIAL_STORAGE_UNAVAILABLE'
-        | 'HUB_ASSIGNMENT_NOT_READY'
-        | 'HUB_LOCAL_PLAN_DRAFT_FAILED'
+      code: HubTaskWorkerServiceErrorCodeV1
     }
 
 export interface HubTaskWorkerServiceV1 {
@@ -104,13 +110,15 @@ export interface CreateHubTaskWorkerServiceOptionsV1 {
   ) => XiaoguiTaskDeliveryReceiptV1
 }
 
-export function createInMemoryHubTaskWorkerCredentialsV1(): HubTaskWorkerCredentialsV1 & {
+export function createInMemoryHubTaskWorkerCredentialsV1(options: { canPersist?: boolean } = {}): HubTaskWorkerCredentialsV1 & {
   snapshot(): HubTaskWorkerCredentialBundleV1 | null
 } {
   let value: HubTaskWorkerCredentialBundleV1 | null = null
   return {
     read: () => value ? cloneCredentials(value) : null,
+    canPersist: () => options.canPersist ?? true,
     write: (next) => {
+      if (options.canPersist === false) return false
       value = cloneCredentials(next)
       return true
     },
@@ -146,6 +154,12 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     if (!endpoint || !isSha256(input.installationIdDigest) || !isNonemptyText(input.accessToken, 20)) {
       return { ok: false, code: 'HUB_WORKER_CONNECTION_FAILED' }
     }
+    // Pairing revokes the previous active node. Verify that this machine can
+    // persist the one-time private response before making that irreversible
+    // Hub-side replacement request.
+    if (!this.options.credentials.canPersist()) {
+      return { ok: false, code: 'HUB_WORKER_CREDENTIAL_STORAGE_UNAVAILABLE' }
+    }
     try {
       const port = this.options.createPort({ endpoint, accessToken: input.accessToken.trim() })
       const paired = await port.pairOrReplaceNode({ installationIdDigest: input.installationIdDigest })
@@ -164,7 +178,9 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         },
       })
       if (!persisted) {
-        this.state = { ...this.state, configured: false, state: 'UNCONFIGURED' }
+        this.options.credentials.clear()
+        this.options.state.clear()
+        this.state = { ...this.state, configured: false, state: 'UNCONFIGURED', pendingReceiptCount: 0 }
         return { ok: false, code: 'HUB_WORKER_CREDENTIAL_STORAGE_UNAVAILABLE' }
       }
       this.state = {
@@ -180,8 +196,21 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       await this.refresh()
       return { ok: true, value: this.status() }
     } catch (error) {
-      this.state = { ...this.state, configured: false, state: unavailableStateFor(error) }
-      return { ok: false, code: 'HUB_WORKER_CONNECTION_FAILED' }
+      const nextState = unavailableStateFor(error)
+      if (nextState === 'NODE_REVOKED' || nextState === 'AUTHENTICATION_FAILED') {
+        this.recordPortFailure(error)
+      } else {
+        // A first pairing has not yielded any durable credentials yet. Keep the
+        // connection form available rather than pretending this machine is an
+        // already configured Worker after a transient network failure.
+        this.state = {
+          ...this.state,
+          configured: this.options.credentials.read() !== null,
+          state: nextState,
+          pendingReceiptCount: this.options.state.pendingReceipts().length,
+        }
+      }
+      return { ok: false, code: this.portFailureCode(error) }
     }
   }
 
@@ -192,6 +221,8 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   async refresh(): Promise<HubTaskWorkerServiceResultV1<HubTaskWorkerPublicStatusV1>> {
     const credentials = this.options.credentials.read()
     if (!credentials) {
+      const terminalCode = this.terminalActionCode()
+      if (terminalCode) return { ok: false, code: terminalCode }
       this.state = { ...this.state, configured: false, state: 'UNCONFIGURED' }
       return { ok: false, code: 'HUB_WORKER_UNCONFIGURED' }
     }
@@ -216,16 +247,19 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       }
       return { ok: true, value: this.status() }
     } catch (error) {
-      this.state = { ...this.state, configured: true, state: unavailableStateFor(error) }
-      return { ok: false, code: 'HUB_WORKER_CONNECTION_FAILED' }
+      this.recordPortFailure(error)
+      return { ok: false, code: this.portFailureCode(error) }
     }
   }
 
   listInbox(): readonly HubTaskWorkerInboxEntryV1[] {
+    if (this.terminalActionCode() || !this.options.credentials.read()) return []
     return this.options.state.listAssignments()
   }
 
   async openAssignment(assignmentId: string): Promise<HubTaskWorkerServiceResultV1<HubTaskWorkerInboxEntryV1>> {
+    const terminalCode = this.terminalActionCode()
+    if (terminalCode) return { ok: false, code: terminalCode }
     const credentials = this.options.credentials.read()
     if (!credentials) return { ok: false, code: 'HUB_WORKER_UNCONFIGURED' }
     let before: HubTaskWorkerInboxEntryV1
@@ -243,6 +277,8 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     assignmentId: string,
     decision: 'ACCEPT' | 'REJECT',
   ): Promise<HubTaskWorkerServiceResultV1<HubTaskWorkerInboxEntryV1>> {
+    const terminalCode = this.terminalActionCode()
+    if (terminalCode) return { ok: false, code: terminalCode }
     const credentials = this.options.credentials.read()
     if (!credentials) return { ok: false, code: 'HUB_WORKER_UNCONFIGURED' }
     try {
@@ -259,11 +295,13 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       return { ok: true, value: this.options.state.requireAssignment(assignmentId) }
     } catch (error) {
       this.recordPortFailure(error)
-      return { ok: false, code: 'HUB_WORKER_CONNECTION_FAILED' }
+      return { ok: false, code: this.portFailureCode(error) }
     }
   }
 
   async returnAssignment(assignmentId: string): Promise<HubTaskWorkerServiceResultV1<HubTaskWorkerInboxEntryV1>> {
+    const terminalCode = this.terminalActionCode()
+    if (terminalCode) return { ok: false, code: terminalCode }
     const credentials = this.options.credentials.read()
     if (!credentials) return { ok: false, code: 'HUB_WORKER_UNCONFIGURED' }
     try {
@@ -272,7 +310,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       return { ok: true, value: this.options.state.requireAssignment(assignmentId) }
     } catch (error) {
       this.recordPortFailure(error)
-      return { ok: false, code: 'HUB_WORKER_CONNECTION_FAILED' }
+      return { ok: false, code: this.portFailureCode(error) }
     }
   }
 
@@ -280,6 +318,8 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     assignmentId: string,
     address: HubAddressV1,
   ): Promise<HubTaskWorkerServiceResultV1<{ flowId: string; revisionId: string }>> {
+    const terminalCode = this.terminalActionCode()
+    if (terminalCode) return { ok: false, code: terminalCode }
     let entry: HubTaskWorkerInboxEntryV1
     try {
       entry = this.options.state.requireAssignment(assignmentId)
@@ -364,7 +404,35 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   }
 
   private recordPortFailure(error: unknown): void {
-    this.state = { ...this.state, configured: true, state: unavailableStateFor(error) }
+    const nextState = unavailableStateFor(error)
+    if (nextState === 'NODE_REVOKED' || nextState === 'AUTHENTICATION_FAILED') {
+      // A stale worker must not keep acting on cached task packages. Drop the
+      // old node's local state and require a fresh explicit login/pairing.
+      this.options.credentials.clear()
+      this.options.state.clear()
+      this.close()
+      this.state = {
+        configured: false,
+        state: nextState,
+        lastSyncedAt: this.state.lastSyncedAt,
+        pendingReceiptCount: 0,
+      }
+      return
+    }
+    this.state = { ...this.state, configured: true, state: nextState }
+  }
+
+  private terminalActionCode(): HubTaskWorkerServiceErrorCodeV1 | null {
+    if (this.state.state === 'NODE_REVOKED') return 'HUB_WORKER_NODE_REVOKED'
+    if (this.state.state === 'AUTHENTICATION_FAILED') return 'HUB_WORKER_AUTHENTICATION_FAILED'
+    return null
+  }
+
+  private portFailureCode(error: unknown): HubTaskWorkerServiceErrorCodeV1 {
+    const state = unavailableStateFor(error)
+    if (state === 'NODE_REVOKED') return 'HUB_WORKER_NODE_REVOKED'
+    if (state === 'AUTHENTICATION_FAILED') return 'HUB_WORKER_AUTHENTICATION_FAILED'
+    return 'HUB_WORKER_CONNECTION_FAILED'
   }
 }
 

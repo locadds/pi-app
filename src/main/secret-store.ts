@@ -14,9 +14,14 @@ export function bindSecretStoreBacking(store: {
 }
 
 export function isCodexTokenEncryptionAvailable(): boolean {
+  return isEncryptedSecretStorageAvailable()
+}
+
+/** Generic main-process availability check for safeStorage-backed secrets. */
+export function isEncryptedSecretStorageAvailable(): boolean {
   try {
     return safeStorage.isEncryptionAvailable()
-  } catch (e) {
+  } catch {
     return false
   }
 }

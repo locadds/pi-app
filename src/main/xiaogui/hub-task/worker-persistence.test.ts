@@ -51,4 +51,29 @@ describe('HubTaskWorkerStatePersistenceV1', () => {
 
     expect(createHubTaskWorkerStateStoreV1(persistence).listAssignments()).toEqual([])
   })
+
+  it('fails closed when a top-level-valid state contains malformed nested task or receipt data', () => {
+    const persistence = createHubTaskWorkerStatePersistenceV1({
+      get: () => ({
+        version: 1,
+        assignments: {
+          xgh_assignment_1: {
+            assignment: { assignmentId: 'xgh_assignment_1' },
+            offer: 'not-an-offer',
+          },
+        },
+        receipts: {
+          xgh_event_1: { receipt: 'not-a-receipt', queuedAt: 'not-a-timestamp' },
+        },
+        lastReceiptSequence: 1,
+        cursor: null,
+      }),
+      set: () => undefined,
+    })
+
+    const restored = createHubTaskWorkerStateStoreV1(persistence)
+    expect(restored.listAssignments()).toEqual([])
+    expect(restored.pendingReceipts()).toEqual([])
+    expect(restored.snapshot().lastReceiptSequence).toBe(0)
+  })
 })

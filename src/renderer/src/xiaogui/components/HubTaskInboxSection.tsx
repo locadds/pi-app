@@ -364,6 +364,10 @@ function errorText(code: string): string {
       return '用户名或密码错误。'
     case 'HUB_WORKER_CREDENTIAL_STORAGE_UNAVAILABLE':
       return '系统加密不可用，不能保存节点凭据。'
+    case 'HUB_WORKER_AUTHENTICATION_FAILED':
+      return 'Hub 登录已失效，请重新登录并配对此小规。'
+    case 'HUB_WORKER_NODE_REVOKED':
+      return '这台小规已被新设备替换，已锁定本地任务内容。'
     case 'HUB_WORKER_UNCONFIGURED':
       return '请先登录并配对此小规。'
     case 'HUB_ASSIGNMENT_NOT_READY':

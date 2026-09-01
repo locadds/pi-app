@@ -1,6 +1,7 @@
 import {
   clearEncryptedSecret,
   getEncryptedSecret,
+  isEncryptedSecretStorageAvailable,
   setEncryptedSecret,
 } from '../../secret-store'
 import type {
@@ -9,12 +10,14 @@ import type {
 } from './worker-service'
 
 const HUB_TASK_WORKER_SECRET_KEY = 'xiaoguiHubTaskWorkerCredentialsEnc'
+const HUB_TASK_WORKER_SECRET_PROBE_KEY = 'xiaoguiHubTaskWorkerCredentialsProbe'
 const SCHEMA_VERSION = 1
 
 export interface HubTaskWorkerEncryptedRecordStoreV1 {
   read(): string | null
   write(value: string): boolean
   clear(): void
+  canPersist(): boolean
 }
 
 /**
@@ -39,6 +42,9 @@ export function createHubTaskWorkerCredentialsV1(
       if (!normalized) return false
       return encryptedStore.write(JSON.stringify({ version: SCHEMA_VERSION, ...normalized }))
     },
+    canPersist(): boolean {
+      return encryptedStore.canPersist()
+    },
     clear(): void {
       encryptedStore.clear()
     },
@@ -50,6 +56,14 @@ function defaultEncryptedStore(): HubTaskWorkerEncryptedRecordStoreV1 {
     read: () => getEncryptedSecret(HUB_TASK_WORKER_SECRET_KEY),
     write: (value) => setEncryptedSecret(HUB_TASK_WORKER_SECRET_KEY, value),
     clear: () => clearEncryptedSecret(HUB_TASK_WORKER_SECRET_KEY),
+    canPersist: () => {
+      if (!isEncryptedSecretStorageAvailable()) return false
+      const probe = `xiaogui-hub-worker-probe:${Date.now()}`
+      if (!setEncryptedSecret(HUB_TASK_WORKER_SECRET_PROBE_KEY, probe)) return false
+      const confirmed = getEncryptedSecret(HUB_TASK_WORKER_SECRET_PROBE_KEY) === probe
+      clearEncryptedSecret(HUB_TASK_WORKER_SECRET_PROBE_KEY)
+      return confirmed
+    },
   }
 }
 

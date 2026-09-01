@@ -17,7 +17,7 @@ function bundle() {
 }
 
 describe('HubTaskWorkerCredentialsV1', () => {
-  it('writes one encrypted-record payload and returns no bundle when that record is malformed', () => {
+  it('hands one schema-versioned payload to the encrypted record store and rejects malformed records', () => {
     let raw: string | null = null
     const credentials = createHubTaskWorkerCredentialsV1({
       read: () => raw,
@@ -28,6 +28,7 @@ describe('HubTaskWorkerCredentialsV1', () => {
       clear: () => {
         raw = null
       },
+      canPersist: () => true,
     })
 
     expect(credentials.write(bundle())).toBe(true)
@@ -36,6 +37,7 @@ describe('HubTaskWorkerCredentialsV1', () => {
 
     raw = '{"version":1,"endpoint":"http://hub.intranet:3000"}'
     expect(credentials.read()).toBeNull()
+    expect(credentials.canPersist()).toBe(true)
   })
 
   it('fails closed when encrypted storage refuses the write', () => {
@@ -43,9 +45,11 @@ describe('HubTaskWorkerCredentialsV1', () => {
       read: () => null,
       write: () => false,
       clear: () => undefined,
+      canPersist: () => false,
     })
 
     expect(credentials.write(bundle())).toBe(false)
     expect(credentials.read()).toBeNull()
+    expect(credentials.canPersist()).toBe(false)
   })
 })

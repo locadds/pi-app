@@ -138,6 +138,51 @@ describe('HubTaskWorkerServiceV1', () => {
     service.close()
   })
 
+  it('checks safe local credential persistence before replacing the active Hub node', async () => {
+    const state = createInMemoryHubTaskWorkerStateStoreV1()
+    const credentials = createInMemoryHubTaskWorkerCredentialsV1({ canPersist: false })
+    const hubPort = port()
+    const service = createHubTaskWorkerServiceV1({
+      state,
+      credentials,
+      createPort: () => hubPort,
+      application: { perform: vi.fn() },
+    })
+
+    await expect(service.connect({
+      endpoint: 'http://hub.intranet:3000',
+      accessToken: 'hub-access-token-which-never-reaches-renderer',
+      installationIdDigest: `sha256:${'b'.repeat(64)}`,
+    })).resolves.toEqual({ ok: false, code: 'HUB_WORKER_CREDENTIAL_STORAGE_UNAVAILABLE' })
+
+    expect(hubPort.pairOrReplaceNode).not.toHaveBeenCalled()
+    expect(credentials.snapshot()).toBeNull()
+    service.close()
+  })
+
+  it('keeps a first-time connection unconfigured when pairing is only temporarily unavailable', async () => {
+    const state = createInMemoryHubTaskWorkerStateStoreV1()
+    const credentials = createInMemoryHubTaskWorkerCredentialsV1()
+    const hubPort = port()
+    ;(hubPort.pairOrReplaceNode as ReturnType<typeof vi.fn>).mockRejectedValue({ code: 'OFFLINE' })
+    const service = createHubTaskWorkerServiceV1({
+      state,
+      credentials,
+      createPort: () => hubPort,
+      application: { perform: vi.fn() },
+    })
+
+    await expect(service.connect({
+      endpoint: 'http://hub.intranet:3000',
+      accessToken: 'hub-access-token-which-never-reaches-renderer',
+      installationIdDigest: `sha256:${'b'.repeat(64)}`,
+    })).resolves.toEqual({ ok: false, code: 'HUB_WORKER_CONNECTION_FAILED' })
+
+    expect(service.status()).toEqual(expect.objectContaining({ configured: false, state: 'OFFLINE' }))
+    expect(credentials.snapshot()).toBeNull()
+    service.close()
+  })
+
   it('downloads assigned work into the local inbox, queues a local receipt, and creates only an awaiting-approval draft', async () => {
     const state = createInMemoryHubTaskWorkerStateStoreV1()
     const credentials = createInMemoryHubTaskWorkerCredentialsV1()
@@ -199,29 +244,52 @@ describe('HubTaskWorkerServiceV1', () => {
     service.close()
   })
 
-  it('makes a revoked node visible as a safe retryable status without discarding persisted credentials', async () => {
+  it.each(['NODE_REVOKED', 'AUTHENTICATION_FAILED'] as const)(
+    'locks cached task content when the Worker becomes %s',
+    async (failureCode) => {
     const state = createInMemoryHubTaskWorkerStateStoreV1()
     const credentials = createInMemoryHubTaskWorkerCredentialsV1()
     const hubPort = port()
-    ;(hubPort.pollAssignments as ReturnType<typeof vi.fn>).mockRejectedValue({ code: 'NODE_REVOKED' })
     const service = createHubTaskWorkerServiceV1({
       state,
       credentials,
       createPort: () => hubPort,
       application: { perform: vi.fn() },
+      now: () => '2026-09-01T00:01:00.000Z',
+      signReceipt: (unsigned) => ({
+        ...unsigned,
+        signature: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      }),
     })
 
-    const connected = await service.connect({
+    await service.connect({
       endpoint: 'http://hub.intranet:3000',
       accessToken: 'hub-access-token-which-never-reaches-renderer',
       installationIdDigest: `sha256:${'b'.repeat(64)}`,
     })
+    expect(state.listAssignments()).toHaveLength(1)
 
-    expect(connected).toEqual(expect.objectContaining({
-      ok: true,
-      value: expect.objectContaining({ configured: true, state: 'NODE_REVOKED' }),
+    ;(hubPort.pollAssignments as ReturnType<typeof vi.fn>).mockRejectedValue({ code: failureCode })
+    await expect(service.refresh()).resolves.toEqual({
+      ok: false,
+      code: failureCode === 'NODE_REVOKED' ? 'HUB_WORKER_NODE_REVOKED' : 'HUB_WORKER_AUTHENTICATION_FAILED',
+    })
+
+    expect(service.status()).toEqual(expect.objectContaining({
+      configured: false,
+      state: failureCode,
     }))
-    expect(credentials.snapshot()).not.toBeNull()
+    expect(credentials.snapshot()).toBeNull()
+    expect(service.listInbox()).toEqual([])
+    await expect(service.openAssignment('xgh_assignment_1')).resolves.toEqual({
+      ok: false,
+      code: failureCode === 'NODE_REVOKED' ? 'HUB_WORKER_NODE_REVOKED' : 'HUB_WORKER_AUTHENTICATION_FAILED',
+    })
+    await expect(service.createPlanDraft('xgh_assignment_1', ADDRESS)).resolves.toEqual({
+      ok: false,
+      code: failureCode === 'NODE_REVOKED' ? 'HUB_WORKER_NODE_REVOKED' : 'HUB_WORKER_AUTHENTICATION_FAILED',
+    })
     service.close()
-  })
+    },
+  )
 })
