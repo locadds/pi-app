@@ -6,6 +6,7 @@ import {
   type AgentRuntimeRegistryV1,
   type RuntimeAdapterSelectionV1,
   type RuntimeCapabilityV1,
+  type RuntimeCodingRoleBindingV1,
   type RuntimeCreateOrResumeOutcomeV1,
   type RuntimeCreateOrResumeRequestV1,
   type RuntimeOutcomeV1,
@@ -45,7 +46,10 @@ import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
 import { canonicalizePlanDraft, payloadDigest, type CanonicalPlanDraftV1 } from './digest'
 import { hubError } from './errors'
-import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import {
+  CollaborationHubSqliteStoreV1,
+  type CheckpointRestoreOutcomeUnknownRecordV1,
+} from './sqlite-store'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import type { AgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import {
@@ -63,6 +67,7 @@ export interface CollaborationHubApplicationOptionsV1 {
   baselineProvider?: ExecutionBaselineProviderV1
   workspaceBridge?: ExecutionWorkspaceBridgeV1
   runtimePromptVault?: RuntimePromptVaultV1
+  attemptRoleProvider?: RuntimeAttemptRoleProviderV1
   taskVerificationCoordinator?: TaskVerificationCoordinatorV1
   derivedBaselineProvider?: DerivedExecutionBaselineProviderV1
   afterAgentDispatchStart?: (requestId: string) => void
@@ -119,6 +124,10 @@ export interface RuntimePromptVaultV1 {
   promptRefForAttempt(attemptId: string): PromptEnvelopeRefV1
 }
 
+export interface RuntimeAttemptRoleProviderV1 {
+  readAttemptRoleBinding(attemptId: string): RuntimeCodingRoleBindingV1 | null
+}
+
 export interface CollaborationHubApplicationV1 {
   execute(request: HubCommandRequestV1): Promise<HubOutcomeV1<PerformReceiptV1>>
   executeSystem(request: HubSystemCommandRequestM2BV1): Promise<HubSystemOutcomeM2BV1<PerformReceiptV1>>
@@ -128,6 +137,14 @@ export interface CollaborationHubApplicationV1 {
   observe(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>>
   observeM2B(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionM2BV1>>
   perform(address: HubAddressV1, request: UserIntentRequestV1): Promise<HubOutcomeV1<PerformReceiptV1>>
+  markVerifiedCheckpointOutcomeUnknown(input: {
+    readonly address: HubAddressV1
+    readonly flowId: FlowId
+    readonly taskRunId: import('@shared/xiaogui-collaboration-hub').TaskRunId
+    readonly attemptId: AttemptId
+    readonly reasonCode: string
+    readonly receiptDigest: string
+  }): Promise<void>
   close(): void
 }
 
@@ -145,6 +162,29 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
 
   async observe(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionV1>> {
     return this.read(address, { type: 'session.current' })
+  }
+
+  async markVerifiedCheckpointOutcomeUnknown(input: {
+    readonly address: HubAddressV1
+    readonly flowId: FlowId
+    readonly taskRunId: import('@shared/xiaogui-collaboration-hub').TaskRunId
+    readonly attemptId: AttemptId
+    readonly reasonCode: string
+    readonly receiptDigest: string
+  }): Promise<void> {
+    const scope = await this.resolve(input.address)
+    if (!scope.ok || scope.value.mode !== 'CODING') {
+      throw new Error('CHECKPOINT_RESTORE_SCOPE_MISMATCH')
+    }
+    const record: CheckpointRestoreOutcomeUnknownRecordV1 = {
+      flowId: input.flowId,
+      taskRunId: input.taskRunId,
+      attemptId: input.attemptId,
+      reasonCode: input.reasonCode,
+      receiptDigest: input.receiptDigest,
+      now: this.now(),
+    }
+    this.getStore().markVerifiedCheckpointOutcomeUnknown(input.address, record)
   }
 
   async observeM2B(address: HubAddressV1): Promise<HubOutcomeV1<SessionCollaborationProjectionM2BV1>> {
@@ -1167,8 +1207,12 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     }
     const bridgedWorkspace = await this.options.workspaceBridge?.runtimeWorkspace(request.intent.attemptId)
     const bridgedPromptRef = this.options.runtimePromptVault?.promptRefForAttempt(request.intent.attemptId)
+    const codingRole = this.options.attemptRoleProvider?.readAttemptRoleBinding(request.intent.attemptId)
     if (!bridgedWorkspace || !bridgedPromptRef) {
       throw new Error('RUNTIME_PRIVATE_BINDING_MISSING')
+    }
+    if (this.options.attemptRoleProvider && !codingRole) {
+      throw new Error('RUNTIME_ROLE_BINDING_MISSING')
     }
     return {
       requestId: request.requestId,
@@ -1177,6 +1221,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       selection,
       productionPolicy: { allowedSelections: [selection], rejectDiagnosticOnly: true },
       promptEnvelopeRef: bridgedPromptRef,
+      ...(codingRole ? { codingRole } : {}),
     }
   }
 

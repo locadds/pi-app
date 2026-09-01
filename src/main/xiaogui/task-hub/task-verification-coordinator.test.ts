@@ -45,6 +45,41 @@ const RUNTIME_OUTCOME = {
 } satisfies Extract<RuntimeOutcomeV1, { state: 'SUCCEEDED' }>
 
 describe('SqliteTaskVerificationCoordinatorV1', () => {
+  it('allows an empty host candidate only for an immutable read-only role', async () => {
+    const candidate = candidateFixture([])
+    const audited = { ...auditFixture(candidate), changedFiles: [] }
+    const captureTaskCandidate = vi.fn(async () => audited)
+    const completed: CompleteTaskVerificationRecordV1[] = []
+    const coordinator = createTaskVerificationCoordinatorV1({
+      storeFactory: () => fakeStore(completed) as never,
+      candidateAudit: { captureTaskCandidate } as never,
+      verificationPort: {
+        verify: vi.fn(async (request, context) => (
+          passVerification(request, context.scopeEvidenceArtifactId, context.inspectionArtifactId)
+        )),
+      },
+      projectResolver: { resolveProjectRoot: vi.fn(async () => process.cwd()) },
+      attemptRoleProvider: {
+        readAttemptRole: vi.fn(() => 'RESEARCH' as const),
+      },
+      now: () => '2026-08-17T00:00:02.000Z',
+    })
+
+    await expect(coordinator.handleSucceeded({
+      address: ADDRESS,
+      flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID,
+      outcome: RUNTIME_OUTCOME,
+      createdAt: '2026-08-17T00:00:01.000Z',
+    })).resolves.toMatchObject({ ok: true, verdict: 'PASS' })
+
+    expect(captureTaskCandidate).toHaveBeenCalledWith(expect.objectContaining({
+      allowNoApprovedChanges: true,
+    }))
+    expect(completed[0]?.taskChangeSet).toBeDefined()
+  })
+
   it('captures the authoritative candidate, runs fixed verification, and seals PASS objects', async () => {
     const candidate = candidateFixture([])
     const audited = auditFixture(candidate)

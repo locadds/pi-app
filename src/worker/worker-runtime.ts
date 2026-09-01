@@ -12,6 +12,8 @@ import type {
   XiaoguiEffectivePromptDiagnosticsV1,
   XiaoguiPromptContextV1,
 } from '@shared/xiaogui-prompt-contract'
+import type { CodingContextAgentPayloadV1 } from '@shared/xiaogui-coding-extension-pack'
+import type { CodingRoleAgentSnapshotV1 } from '@shared/xiaogui-coding-role-control'
 import {
   activeToolNamesForPromptContextV1,
   selectXiaoguiTurnCapabilitiesV1,
@@ -40,6 +42,9 @@ import {
   type XiaoguiEffectivePromptSessionStateV1,
 } from './xiaogui-prompt/session-extension.js'
 import { freezeXiaoguiPromptContextV1 } from './xiaogui-prompt/session-binding.js'
+import { createXiaoguiCodingContextExtensionV1 } from './xiaogui-coding-extensions/context-extension.js'
+import { createXiaoguiCodingRoleGuardExtensionV1 } from './xiaogui-coding-extensions/role-guard-extension.js'
+import { CodingRoleRuntimeBindingV1 } from './xiaogui-coding-extensions/role-runtime-binding.js'
 
 export type WorkerModelRuntime = Pick<
   ModelRuntime,
@@ -92,6 +97,8 @@ export type WorkerMutableState = {
   promptPreflight: (() => XiaoguiEffectivePromptSessionStateV1) | null
   promptAssemblyStatus: 'IDLE' | 'PENDING' | 'CONFIRMED' | 'FAILED'
   promptAssemblyError: string | null
+  /** Main-validated, one-turn context consumed only by the inline Pi extension. */
+  promptCodingContext: CodingContextAgentPayloadV1 | null
 }
 
 export const st: WorkerMutableState = {
@@ -124,7 +131,10 @@ export const st: WorkerMutableState = {
   promptPreflight: null,
   promptAssemblyStatus: 'IDLE',
   promptAssemblyError: null,
+  promptCodingContext: null,
 }
+
+const codingRoleRuntimeBindingV1 = new CodingRoleRuntimeBindingV1()
 
 function nextSeq(): number {
   return ++st.seq
@@ -145,6 +155,62 @@ function now(): number {
 
 export function currentSessionModelKey(): string | undefined {
   return st.session ? formatSessionModelKey(st.session.model as SessionModelRef) : undefined
+}
+
+/** Main-to-Worker private role support check. No prompt body is projected back. */
+export function inspectCodingRoleRuntimeV1(value: unknown): CodingRoleAgentSnapshotV1 {
+  if (!st.session) throw new Error('XIAOGUI_CODING_ROLE_RUNTIME_UNAVAILABLE')
+  if (st.promptContextCandidate?.mode !== 'CODING') {
+    throw new Error('XIAOGUI_CODING_ROLE_CODING_SESSION_REQUIRED')
+  }
+  const snapshot = codingRoleRuntimeBindingV1.assertBindable(value)
+  if (snapshot.snapshot.runtimePolicyId !== 'approved.default') {
+    throw new Error('XIAOGUI_CODING_ROLE_RUNTIME_POLICY_UNSUPPORTED')
+  }
+  if (snapshot.snapshot.modelSelector === 'inherit') {
+    if (!currentSessionModelKey()) throw new Error('XIAOGUI_CODING_ROLE_MODEL_UNAVAILABLE')
+    return snapshot
+  }
+  const separator = snapshot.snapshot.modelSelector.indexOf('/')
+  if (separator <= 0 || separator === snapshot.snapshot.modelSelector.length - 1) {
+    throw new Error('XIAOGUI_CODING_ROLE_MODEL_UNAVAILABLE')
+  }
+  const provider = snapshot.snapshot.modelSelector.slice(0, separator)
+  const modelId = snapshot.snapshot.modelSelector.slice(separator + 1)
+  if (!st.modelRuntime?.getModel(provider, modelId)) {
+    throw new Error('XIAOGUI_CODING_ROLE_MODEL_UNAVAILABLE')
+  }
+  return snapshot
+}
+
+/** Bind once for the live Attempt; an explicit model selector is confirmed before commit. */
+export async function bindCodingRoleRuntimeV1(value: unknown): Promise<CodingRoleAgentSnapshotV1> {
+  const snapshot = inspectCodingRoleRuntimeV1(value)
+  const selector = snapshot.snapshot.modelSelector
+  if (selector !== 'inherit' && currentSessionModelKey() !== selector) {
+    const separator = selector.indexOf('/')
+    const provider = selector.slice(0, separator)
+    const modelId = selector.slice(separator + 1)
+    const model = st.modelRuntime?.getModel(provider, modelId)
+    if (!model) throw new Error('XIAOGUI_CODING_ROLE_MODEL_UNAVAILABLE')
+    try {
+      await st.session!.setModel(model as Parameters<NonNullable<typeof st.session>['setModel']>[0])
+    } catch {
+      throw new Error('XIAOGUI_CODING_ROLE_MODEL_UNAVAILABLE')
+    }
+    if (currentSessionModelKey() !== selector) {
+      throw new Error('XIAOGUI_CODING_ROLE_MODEL_UNAVAILABLE')
+    }
+  }
+  return codingRoleRuntimeBindingV1.bind(snapshot)
+}
+
+export function readCodingRoleRuntimeV1(): CodingRoleAgentSnapshotV1 | null {
+  return codingRoleRuntimeBindingV1.read()
+}
+
+export function releaseCodingRoleRuntimeV1(expectedAttemptId?: string): void {
+  codingRoleRuntimeBindingV1.release(expectedAttemptId)
 }
 
 export function baseEvent() {
@@ -205,7 +271,9 @@ export function prepareXiaoguiPromptTurnV1(userInput: string): XiaoguiPromptCont
   st.promptTurnStickyToolCalls.clear()
   const selected = selectedTurn.context
   const registered = session.getAllTools().map((tool) => tool.name)
-  const active = activeToolNamesForPromptContextV1(selected, registered)
+  const active = codingRoleRuntimeBindingV1.activeToolNames(
+    activeToolNamesForPromptContextV1(selected, registered),
+  )
   session.setActiveToolsByName([...active])
   const actual = session.getActiveToolNames()
   const turnContext = freezeXiaoguiPromptContextV1({
@@ -409,9 +477,11 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
     const promptContext = st.pendingPromptContext
     if (!promptContext) throw new Error('XIAOGUI_PROMPT_CONTEXT_REQUIRED')
     const initialContext = selectTurnContext(promptContext, '').context
-    const initialToolNames = activeToolNamesForPromptContextV1(
-      initialContext,
-      workerPromptContextToolNamesForModeV1(promptContext.mode),
+    const initialToolNames = codingRoleRuntimeBindingV1.activeToolNames(
+      activeToolNamesForPromptContextV1(
+        initialContext,
+        workerPromptContextToolNamesForModeV1(promptContext.mode),
+      ),
     )
     const services = await sdk.createAgentSessionServices({
       cwd,
@@ -419,6 +489,11 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       resourceLoaderOptions: {
         eventBus: st.sharedEventBus!,
         extensionFactories: [
+          ...(promptContext.mode === 'CODING'
+            ? [createXiaoguiCodingRoleGuardExtensionV1(
+                () => codingRoleRuntimeBindingV1.read(),
+              ).factory]
+            : []),
           createXiaoguiPromptSessionExtensionV1(
             () => st.promptTurnContext ?? initialContext,
             (state) => {
@@ -435,6 +510,9 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
               }
             },
           ),
+          ...(promptContext.mode === 'CODING'
+            ? [createXiaoguiCodingContextExtensionV1(() => st.promptCodingContext).factory]
+            : []),
         ],
         extensionsOverride: (result) => {
           const collaborationToolOptions = {
@@ -523,6 +601,7 @@ async function withPendingPromptContext<T>(
 
 function wireRuntimeCallbacks(runtime: AgentSessionRuntime): void {
   runtime.setBeforeSessionInvalidate(() => {
+    codingRoleRuntimeBindingV1.release()
     detachSessionSubscription()
     st.session = null
     st.modelRuntime = null
@@ -541,6 +620,7 @@ function wireRuntimeCallbacks(runtime: AgentSessionRuntime): void {
 }
 
 async function disposeRuntimeOrSession(): Promise<void> {
+  codingRoleRuntimeBindingV1.release()
   detachSessionSubscription()
   st.agentTurnActive = false
   st.promptPreflightActive = false

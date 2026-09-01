@@ -19,7 +19,7 @@ const pending = { id: 'dialog-1', method: 'confirm' as const, title: 'Confirm', 
 describe('extension UI cancellation', () => {
   beforeEach(() => {
     invoke.mockClear()
-    useExtensionUIStore.setState({ activePending: null, suspended: null })
+    useExtensionUIStore.setState({ activePending: null, queuedPending: [], suspended: null })
   })
 
   it('should_cancel_suspended_dialog_when_session_context_resets', () => {
@@ -56,5 +56,23 @@ describe('extension UI cancellation', () => {
     useExtensionUIStore.getState().pruneStaleSuspension()
 
     expect(useExtensionUIStore.getState().suspended?.requestId).toBe('direct-review-1')
+  })
+
+  it('queues concurrent dialogs in FIFO order instead of replacing the active request', () => {
+    const second = { id: 'dialog-2', method: 'confirm' as const, title: 'Second', message: 'Continue?' }
+    const third = { id: 'dialog-3', method: 'confirm' as const, title: 'Third', message: 'Continue?' }
+    const store = useExtensionUIStore.getState()
+    store.setActivePending(pending)
+    store.setActivePending(second)
+    store.setActivePending(third)
+
+    expect(useExtensionUIStore.getState().activePending?.id).toBe('dialog-1')
+    expect(useExtensionUIStore.getState().queuedPending.map((entry) => entry.id))
+      .toEqual(['dialog-2', 'dialog-3'])
+
+    useExtensionUIStore.getState().clearAfterRespond()
+    expect(useExtensionUIStore.getState().activePending?.id).toBe('dialog-2')
+    useExtensionUIStore.getState().clearAfterRespond()
+    expect(useExtensionUIStore.getState().activePending?.id).toBe('dialog-3')
   })
 })

@@ -32,6 +32,8 @@ export type XiaoguiToolSourceV1 = 'PI_CORE' | 'WORKER_BUILTIN' | 'PROJECT_EXTENS
 export interface XiaoguiCapabilityToolV1 {
   readonly name: string
   readonly source: XiaoguiToolSourceV1
+  /** Omitted means the tool is a candidate in every execution phase. */
+  readonly phases?: readonly XiaoguiExecutionPhase[]
 }
 
 export interface XiaoguiCapabilityMatrixRowV1 {
@@ -151,6 +153,11 @@ export const XIAOGUI_CAPABILITY_MATRIX_V1 = {
       { name: 'bash', source: 'PI_CORE' },
       { name: 'edit', source: 'PI_CORE' },
       { name: 'write', source: 'PI_CORE' },
+      {
+        name: 'xiaogui_publish_coding_plan',
+        source: 'WORKER_BUILTIN',
+        phases: ['PLAN'],
+      },
     ],
   },
 } as const satisfies Readonly<Record<XiaoguiCapabilityId, XiaoguiCapabilityMatrixRowV1>>

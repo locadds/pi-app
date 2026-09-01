@@ -8,6 +8,13 @@ const mocks = vi.hoisted(() => ({
   registerTemplateLibraryHandlers: vi.fn(),
   registerDocumentReviewHandlers: vi.fn(),
   registerOfficeSurfaceHandlers: vi.fn(),
+  registerCodingContextHandlers: vi.fn(),
+  registerCodingAttemptHandlers: vi.fn(),
+  registerCodingRoleHandlers: vi.fn(),
+  closeCodingRoleProfiles: vi.fn(),
+  registerCodingCheckpointHandlers: vi.fn(),
+  closeCodingCheckpointComposition: vi.fn(),
+  recordCodingCheckpointSessionAddress: vi.fn(),
   registerXiaoguiHandlers: vi.fn(),
   shutdownSidecar: vi.fn(),
   collaborationApplication: { kind: 'collaboration-application' },
@@ -15,17 +22,23 @@ const mocks = vi.hoisted(() => ({
   workReportDocxService: { kind: 'work-report-docx-service' },
   workDocumentSnapshotService: { kind: 'work-document-snapshot-service' },
   workMaterialsService: { kind: 'work-materials-service' },
+  codingPlanModule: { kind: 'coding-plan-module', publishPendingDraft: vi.fn() },
+  codingReviewModule: { kind: 'coding-review-module' },
+  codingRoleProfileModule: { kind: 'coding-role-profile-module' },
+  taskExecutionOrchestrator: { kind: 'task-execution-orchestrator' },
   collaborationHandler: vi.fn(),
   workDocxHandler: vi.fn(),
   workReportDocxHandler: vi.fn(),
   workDocumentSnapshotHandler: vi.fn(),
   workMaterialsHandler: vi.fn(),
+  codingPlanHandler: vi.fn(),
   routedHandler: vi.fn(),
   createCollaborationHandler: vi.fn(),
   createWorkDocxHandler: vi.fn(),
   createWorkReportDocxHandler: vi.fn(),
   createWorkDocumentSnapshotHandler: vi.fn(),
   createWorkMaterialsHandler: vi.fn(),
+  createCodingPlanHandler: vi.fn(),
   createRouter: vi.fn(),
   getCollaborationApplication: vi.fn(),
   getWorkDocxService: vi.fn(),
@@ -47,7 +60,34 @@ vi.mock('./sidecar-bridge', () => ({
 vi.mock('./task-hub/ipc', () => ({
   closeDefaultCollaborationHubRuntimeComposition: mocks.closeRuntimeComposition,
   getDefaultCollaborationHubApplication: mocks.getCollaborationApplication,
+  getDefaultCodingAttemptPlanModuleV1: () => mocks.codingPlanModule,
+  getDefaultCodingAttemptReviewModuleV1: () => mocks.codingReviewModule,
+  getDefaultCodingRoleProfileModuleV1: () => mocks.codingRoleProfileModule,
+  getDefaultTaskExecutionOrchestrator: () => mocks.taskExecutionOrchestrator,
   registerCollaborationHubHandlers: mocks.registerCollaborationHubHandlers,
+}))
+
+vi.mock('./coding-extensions/context-ipc', () => ({
+  registerCodingContextHandlersV1: mocks.registerCodingContextHandlers,
+}))
+
+vi.mock('./coding-extensions/attempt-ipc', () => ({
+  registerCodingAttemptHandlersV1: mocks.registerCodingAttemptHandlers,
+}))
+
+vi.mock('./coding-extensions/role-production-composition', () => ({
+  registerDefaultCodingRoleHandlersV1: mocks.registerCodingRoleHandlers,
+  closeDefaultCodingRoleProfileModuleV1: mocks.closeCodingRoleProfiles,
+}))
+
+vi.mock('./coding-extensions/checkpoint-default-composition', () => ({
+  registerDefaultCodingCheckpointHandlersV1: mocks.registerCodingCheckpointHandlers,
+  closeDefaultCodingCheckpointProductionCompositionV1: mocks.closeCodingCheckpointComposition,
+  recordDefaultCodingCheckpointSessionAddressV1: mocks.recordCodingCheckpointSessionAddress,
+}))
+
+vi.mock('./coding-extensions/plan-worker-tool', () => ({
+  createXiaoguiCodingPlanWorkerToolHandlerV1: mocks.createCodingPlanHandler,
 }))
 
 vi.mock('./work-docx-ipc', () => ({
@@ -134,6 +174,8 @@ describe('xiaogui shutdown lifecycle', () => {
     await Promise.resolve()
     expect(mocks.shutdownSidecar).toHaveBeenCalledOnce()
     expect(mocks.closeRuntimeComposition).toHaveBeenCalledOnce()
+    expect(mocks.closeCodingRoleProfiles).toHaveBeenCalledOnce()
+    expect(mocks.closeCodingCheckpointComposition).toHaveBeenCalledOnce()
 
     sidecar.resolve()
     await Promise.resolve()
@@ -157,9 +199,24 @@ describe('xiaogui Worker host-tool wiring', () => {
     mocks.createWorkReportDocxHandler.mockReturnValue(mocks.workReportDocxHandler)
     mocks.createWorkDocumentSnapshotHandler.mockReturnValue(mocks.workDocumentSnapshotHandler)
     mocks.createWorkMaterialsHandler.mockReturnValue(mocks.workMaterialsHandler)
+    mocks.createCodingPlanHandler.mockReturnValue(mocks.codingPlanHandler)
     mocks.createRouter.mockReturnValue(mocks.routedHandler)
 
     initXiaogui()
+
+    expect(mocks.registerCodingAttemptHandlers).toHaveBeenCalledWith({
+      plan: mocks.codingPlanModule,
+      review: mocks.codingReviewModule,
+      roles: mocks.codingRoleProfileModule,
+      taskExecution: mocks.taskExecutionOrchestrator,
+    })
+    expect(mocks.registerCodingRoleHandlers).toHaveBeenCalledOnce()
+    expect(mocks.registerCodingCheckpointHandlers).toHaveBeenCalledOnce()
+    expect(mocks.createCodingPlanHandler).toHaveBeenCalledWith({
+      scopeResolver: mocks.scopeResolver,
+      recordTrustedSessionAddress: mocks.recordCodingCheckpointSessionAddress,
+      publishPendingDraft: expect.any(Function),
+    })
 
     expect(mocks.createCollaborationHandler).toHaveBeenCalledWith({
       application: mocks.collaborationApplication,
@@ -183,6 +240,7 @@ describe('xiaogui Worker host-tool wiring', () => {
       hasPendingTemplateIntakeSource: expect.any(Function),
     })
     expect(mocks.createRouter).toHaveBeenCalledWith(expect.objectContaining({
+      codingPlan: mocks.codingPlanHandler,
       collaboration: mocks.collaborationHandler,
       workDocx: mocks.workDocxHandler,
       workReportDocx: mocks.workReportDocxHandler,

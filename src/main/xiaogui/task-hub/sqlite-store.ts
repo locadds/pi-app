@@ -442,6 +442,16 @@ export interface AgentOutcomeRecordM2BV1 {
   now: string
 }
 
+/** Internal TaskHub authority record for an unprovable verified checkpoint restore. */
+export interface CheckpointRestoreOutcomeUnknownRecordV1 {
+  readonly flowId: FlowId
+  readonly taskRunId: TaskRunId
+  readonly attemptId: AttemptId
+  readonly reasonCode: string
+  readonly receiptDigest: string
+  readonly now: string
+}
+
 export interface AgentReconcileRecordM2BV1 {
   attemptId: AttemptId
   runtimeSessionId: string
@@ -2967,6 +2977,74 @@ export class CollaborationHubSqliteStoreV1 {
       }, record.now)
       this.bumpProjectionVersion(address, version)
       this.writeIdempotency(address, idempotency, receipt)
+    })
+  }
+
+  /**
+   * Invalidates a previously verified Attempt only when both authoritative
+   * rows still match the exact SUCCEEDED/VERIFIED source state. Sealed evidence
+   * remains immutable, while delivery is blocked by the Task transition.
+   */
+  markVerifiedCheckpointOutcomeUnknown(
+    address: HubAddressV1,
+    record: CheckpointRestoreOutcomeUnknownRecordV1,
+  ): 'UPDATED' | 'REPLAYED' {
+    return this.transaction(() => {
+      const row = this.db.prepare(`
+        select a.status as attempt_status, a.flow_id, a.task_run_id,
+               tr.status as task_status, f.project_id, f.session_key
+          from attempts a
+          join task_runs tr on tr.task_run_id = a.task_run_id
+          join flows f on f.flow_id = a.flow_id
+         where a.attempt_id = ?
+         limit 1
+      `).get(record.attemptId) as {
+        attempt_status: string
+        flow_id: string
+        task_run_id: string
+        task_status: string
+        project_id: string
+        session_key: string
+      } | undefined
+      if (
+        !row
+        || row.project_id !== address.projectId
+        || row.session_key !== address.sessionKey
+        || row.flow_id !== record.flowId
+        || row.task_run_id !== record.taskRunId
+      ) throw new Error('CHECKPOINT_RESTORE_SCOPE_MISMATCH')
+      if (row.attempt_status === 'OUTCOME_UNKNOWN' && row.task_status === 'OUTCOME_UNKNOWN') {
+        return 'REPLAYED'
+      }
+      if (row.attempt_status !== 'SUCCEEDED' || row.task_status !== 'VERIFIED') {
+        throw new Error('CHECKPOINT_RESTORE_OUTCOME_TRANSITION_REJECTED')
+      }
+
+      const attemptUpdated = this.db.prepare(`
+        update attempts
+           set status = 'OUTCOME_UNKNOWN', outcome_receipt_digest = ?, updated_at = ?
+         where attempt_id = ? and status = 'SUCCEEDED'
+      `).run(record.receiptDigest, record.now, record.attemptId)
+      const taskUpdated = this.db.prepare(`
+        update task_runs
+           set status = 'OUTCOME_UNKNOWN'
+         where task_run_id = ? and status = 'VERIFIED'
+      `).run(record.taskRunId)
+      if (attemptUpdated.changes !== 1 || taskUpdated.changes !== 1) {
+        throw new Error('CHECKPOINT_RESTORE_OUTCOME_TRANSITION_CONFLICT')
+      }
+
+      const version = this.currentVersion(address) + 1
+      this.writeEvent(address, version, 'system.agent.outcome.record', {
+        phase: 'checkpoint.restore.outcome_unknown',
+        flowId: record.flowId,
+        taskRunId: record.taskRunId,
+        attemptId: record.attemptId,
+        reasonCode: record.reasonCode,
+        receiptDigest: record.receiptDigest,
+      }, record.now)
+      this.bumpProjectionVersion(address, version)
+      return 'UPDATED'
     })
   }
 

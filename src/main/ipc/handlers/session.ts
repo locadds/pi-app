@@ -36,6 +36,7 @@ import type { CanonicalSessionAddressScopeV1, SessionMode } from '@shared/xiaogu
 import type { PiSessionRefV1, PiSessionScopeV1 } from '../../xiaogui/scope-derive'
 import { sessionScopeResolverV1 } from '../../xiaogui/scope-service'
 import { xiaogui } from '../../xiaogui/sidecar-bridge'
+import { recordDefaultCodingCheckpointSessionAddressV1 } from '../../xiaogui/coding-extensions/checkpoint-default-composition'
 
 function publicSessionScope(scope: PiSessionScopeV1): CanonicalSessionAddressScopeV1 {
   return {
@@ -73,7 +74,18 @@ async function resolveTrustedSessionScope(
   sessionFile: string,
 ): Promise<{ ref: PiSessionRefV1; scope: PiSessionScopeV1 }> {
   const ref = trustedSessionRef(workspaceId, sessionFile)
-  return { ref, scope: await sessionScopeResolverV1.resolve(ref) }
+  const scope = await sessionScopeResolverV1.resolve(ref)
+  if (scope.sessionMode === 'CODING') {
+    const sourceSessionId = readSessionIdFromFile(ref.sessionFile)
+    if (sourceSessionId) {
+      recordDefaultCodingCheckpointSessionAddressV1({
+        address: { projectId: scope.projectId, sessionKey: scope.sessionKey },
+        sourceSessionId,
+        sessionFile: ref.sessionFile,
+      })
+    }
+  }
+  return { ref, scope }
 }
 
 export function registerSessionHandlers(): void {

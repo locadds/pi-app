@@ -61,6 +61,17 @@ export function useComposerSend(opts: {
           workerLiveSnapshot: store.workerLiveSnapshot,
           sessionRuntimeRunning: store.sessionRuntimeRunning,
         })
+        const codingContextSnapshotIds: string[] = []
+        let pendingCodingContextPaths = atts
+          .filter((attachment) => (
+            attachment.codingContextStatus != null &&
+            attachment.codingContextStatus !== 'SNAPSHOT_FAILED'
+          ))
+          .map((attachment) => attachment.path)
+        if (running && pendingCodingContextPaths.length > 0) {
+          toast.error('带代码上下文的消息需等待当前任务结束后发送')
+          return
+        }
         if (displayText.trim()) inputHistory.recordSent(displayText.trim())
         const { hideAllDelayedTooltips } = await import('./delayed-tooltip')
         hideAllDelayedTooltips()
@@ -73,12 +84,33 @@ export function useComposerSend(opts: {
         const { appendOptimisticOutgoingMessage, bindOptimisticOutgoingToSession } =
           await import('@renderer/lib/optimistic-send')
         let optimisticToken: ReturnType<typeof appendOptimisticOutgoingMessage> = null
+        const resolvePendingCodingContext = async () => {
+          if (pendingCodingContextPaths.length === 0) return
+          const liveStore = useUIStore.getState()
+          const scope = liveStore.sessions.find(
+            (session) => session.sessionId === liveStore.currentSessionId,
+          )?.canonicalScope
+          if (!scope || scope.sessionMode !== 'CODING') {
+            throw new Error('CODING_CONTEXT_SESSION_REQUIRED')
+          }
+          const outcome = await ipcClient.invoke('xiaogui.coding.context.snapshot', {
+            address: { projectId: scope.projectId, sessionKey: scope.sessionKey },
+            relativePaths: [...new Set(pendingCodingContextPaths)],
+          })
+          if (!outcome?.ok) throw new Error('CODING_CONTEXT_SNAPSHOT_FAILED')
+          codingContextSnapshotIds.push(outcome.snapshot.snapshotId)
+          pendingCodingContextPaths = []
+        }
         const promptPayload = () => ({
           sessionId: '',
           sessionFile: useUIStore.getState().historySessionFile ?? undefined,
           text: payload,
+          ...(codingContextSnapshotIds.length > 0 ? { codingContextSnapshotIds } : {}),
         })
-        const sendPrompt = () => ipcClient.invoke('prompt.send', promptPayload())
+        const sendPrompt = async () => {
+          await resolvePendingCodingContext()
+          return ipcClient.invoke('prompt.send', promptPayload())
+        }
         const pendMsg = displayText.trim()
         if (pendMsg.startsWith('/')) {
           const routed = await routeDesktopSlashBeforeSend(pendMsg)

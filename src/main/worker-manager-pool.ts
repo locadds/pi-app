@@ -363,7 +363,12 @@ export function attachWorkerHandlers(
       if (!allow) return
       if (!isForeground && req.notifyType !== 'error') return
       if (req.id && method !== 'notify') extensionUiDialogSource.set(req.id, slot)
-      win.webContents.send('ipc:extension-ui-request', data.request)
+      // Worker requests always cross the Renderer boundary with a Main-owned
+      // provenance marker. A Worker-supplied origin must never survive.
+      win.webContents.send('ipc:extension-ui-request', {
+        ...(data.request as Record<string, unknown>),
+        origin: 'worker',
+      })
     }
 
     if (data.type === 'init-done' && slot.initResolver) {

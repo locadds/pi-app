@@ -135,13 +135,30 @@ function request(rootPath: string, prompt = 'edit safely', overrides: Partial<Ru
   }
 }
 
-function productionRequest(rootPath: string): RuntimeCreateOrResumeRequestV1 {
+function productionRequest(
+  rootPath: string,
+  overrides: Partial<RuntimeCreateOrResumeRequestV1> = {},
+): RuntimeCreateOrResumeRequestV1 {
   const base = request(rootPath)
   const { executionMode: _executionMode, contractTestPolicy: _contractTestPolicy, selection: _selection, ...productionBase } = base
   return {
     ...productionBase,
     selection: productionSelection,
     productionPolicy,
+    ...overrides,
+  }
+}
+
+function codingRole(role: 'RESEARCH' | 'IMPLEMENT' | 'REVIEW') {
+  return {
+    schemaVersion: 1 as const,
+    profileId: `xiaogui.role.${role.toLowerCase()}.default`,
+    role,
+    modelSelector: 'inherit',
+    runtimePolicyId: 'xiaogui.runtime.default',
+    effectiveToolAllowlist: role === 'IMPLEMENT' ? ['read', 'bash', 'edit', 'write'] : ['read'],
+    profileDigest: `sha256:${role.toLowerCase()}-profile`,
+    snapshotDigest: `sha256:${role.toLowerCase()}-snapshot`,
   }
 }
 
@@ -686,6 +703,10 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
       let events = await collect(adapter.stream(created.runtimeSessionId, 0))
       const permission = events.find((event): event is Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> => event.type === 'PERMISSION_REQUESTED')
       if (!permission) throw new Error('write permission missing')
+      expect(permission).toMatchObject({
+        permissionPurpose: 'FILE_WRITE',
+        requestedRelativePaths: ['a.txt'],
+      })
       await expect(adapter.permission({
         type: 'ALLOW_ONCE',
         permissionRequestId: permission.permissionRequestId,
@@ -929,6 +950,45 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     expect(factory.transports[0].maxConcurrentPromptCalls).toBe(1)
     expect(factory.transports[0].disposeCalls).toBe(1)
     await expect(adapter.inspect(created.runtimeSessionId)).resolves.toMatchObject({ state: 'OUTCOME_UNKNOWN', reasonCode: 'CANDIDATE_NOT_PRODUCED' })
+  })
+
+  it('runs a research role as evidence-only and rejects every write before permission', async () => {
+    const root = workspace({ 'a.txt': 'before' })
+    let writeRejected = false
+    const factory = new FakeTransportFactory(async (transport, sessionId) => {
+      try {
+        await transport.reverse('fs/write_text_file', { path: 'a.txt', content: 'after' })
+      } catch {
+        writeRejected = true
+      }
+      transport.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: '只读研究结论' },
+        },
+      })
+    })
+    const adapter = new KimiAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver(),
+      workspaceResolver: resolver(root),
+      probe: new FakeProbe(),
+      transportFactory: factory,
+      productionGate: { enabled: true, selection: productionSelection },
+    })
+
+    const created = await adapter.createOrResume(productionRequest(root, {
+      codingRole: codingRole('RESEARCH'),
+    }))
+    expect(created).toMatchObject({ state: 'READY' })
+    await tick()
+
+    expect(writeRejected).toBe(true)
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('before')
+    expect(factory.transports[0].startOptions?.initialize.clientCapabilities.fs.writeTextFile).toBe(false)
+    await expect(adapter.inspect(created.runtimeSessionId)).resolves.toMatchObject({ state: 'SUCCEEDED' })
+    const events = await collect(adapter.stream(created.runtimeSessionId, 0))
+    expect(events.some((event) => event.type === 'PERMISSION_REQUESTED')).toBe(false)
   })
 
   it('sends resolver-backed guidance text and treats BEST_EFFORT cancel as unconfirmed until Kimi reports cancelled', async () => {
@@ -1241,6 +1301,7 @@ describe('Kimi ACP runtime adapter M4B1 candidate', () => {
     expect(permissionEvent).toMatchObject({
       decisionRequired: 'ALLOW_ONCE_OR_DENY',
       permissionPurpose: 'APPROVED_FILE_TOOL',
+      requestedRelativePaths: ['a.txt'],
     })
     const decision = {
       type: 'ALLOW_ONCE',

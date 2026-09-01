@@ -169,6 +169,18 @@ export interface PromptEnvelopeRefV1 {
   mediaType: 'application/vnd.xiaogui.runtime-prompt+json'
 }
 
+/** Safe immutable role projection that a runtime must enforce for one Attempt. */
+export interface RuntimeCodingRoleBindingV1 {
+  schemaVersion: 1
+  profileId: string
+  role: 'RESEARCH' | 'IMPLEMENT' | 'REVIEW'
+  modelSelector: string
+  runtimePolicyId: string
+  effectiveToolAllowlist: readonly string[]
+  profileDigest: RuntimeDigestV1 | string
+  snapshotDigest: RuntimeDigestV1 | string
+}
+
 export interface RuntimeMessageEnvelopeRefV1 {
   refId: RuntimeRefIdV1 | string
   digest: RuntimeDigestV1 | string
@@ -226,6 +238,7 @@ export interface RuntimeCreateOrResumeRequestV1 {
   selection: RuntimeAdapterSelectionV1
   productionPolicy: RuntimeProductionPolicyV1
   promptEnvelopeRef: PromptEnvelopeRefV1
+  codingRole?: RuntimeCodingRoleBindingV1
   resumeTokenDigest?: RuntimeDigestV1 | string
 }
 
@@ -268,7 +281,13 @@ export interface RuntimePermissionRequestV1 {
   sequence: number
   challengeDigest: RuntimeDigestV1 | string
   decisionRequired: 'ALLOW_ONCE_OR_DENY'
-  permissionPurpose?: 'APPROVED_FILE_TOOL' | 'FILE_WRITE'
+  permissionPurpose?: 'APPROVED_FILE_TOOL' | 'FILE_WRITE' | 'COMMAND' | 'DATA_EGRESS'
+  /** Exact requested targets; TaskHub verifies these against the Attempt manifest. */
+  requestedRelativePaths?: readonly string[]
+  /** Safe display metadata only. Raw commands and credentials remain private. */
+  actionDigest?: string
+  commandSummary?: string
+  egressDestination?: string
 }
 
 export interface RuntimeSendRequestV1 {
@@ -338,6 +357,7 @@ export function validateRuntimeProductionCreateRequestShapeV1(value: unknown): R
       !isRuntimeProductionSelectionShape(value.selection) ||
       !isRuntimeProductionPolicyShape(value.productionPolicy) ||
       !isPromptEnvelopeRefShape(value.promptEnvelopeRef) ||
+      !isOptionalRuntimeCodingRoleBindingShape(value.codingRole) ||
       !isOptionalDigest(value.resumeTokenDigest)
     ) {
       return invalidCreateRequest()
@@ -543,6 +563,28 @@ function isPromptEnvelopeRefShape(value: unknown): value is PromptEnvelopeRefV1 
     isDigest(value.digest) &&
     value.mediaType === 'application/vnd.xiaogui.runtime-prompt+json'
   )
+}
+
+function isOptionalRuntimeCodingRoleBindingShape(value: unknown): value is RuntimeCodingRoleBindingV1 | undefined {
+  if (value === undefined) return true
+  if (!isPlainRecord(value)) return false
+  const role = value.role
+  const tools = value.effectiveToolAllowlist
+  if (
+    value.schemaVersion !== 1 ||
+    !isNonEmptyString(value.profileId) ||
+    (role !== 'RESEARCH' && role !== 'IMPLEMENT' && role !== 'REVIEW') ||
+    !isNonEmptyString(value.modelSelector) ||
+    !isNonEmptyString(value.runtimePolicyId) ||
+    !Array.isArray(tools) ||
+    tools.some((tool) => !isNonEmptyString(tool)) ||
+    new Set(tools).size !== tools.length ||
+    !isDigest(value.profileDigest) ||
+    !isDigest(value.snapshotDigest)
+  ) return false
+  return role === 'IMPLEMENT'
+    ? tools.length > 0
+    : tools.length === 1 && tools[0] === 'read'
 }
 
 function isOptionalDigest(value: unknown): boolean {

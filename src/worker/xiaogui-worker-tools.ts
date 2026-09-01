@@ -11,6 +11,7 @@ import {
   type XiaoguiCollaborationToolOptions,
 } from './xiaogui-collaboration-tool'
 import { addXiaoguiWorkDocxAdvancedGenerationTool } from './xiaogui-work-docx-advanced-generation-tool'
+import { addXiaoguiCodingPlanToolV1 } from './xiaogui-coding-plan-tool'
 import { addXiaoguiWorkDocumentSnapshotTool } from './xiaogui-work-document-snapshot-tool'
 import { addXiaoguiWorkMaterialsToolV1 } from './xiaogui-work-materials-tool'
 import { addXiaoguiWorkReportDocxTool } from './xiaogui-work-report-docx-tool'
@@ -52,6 +53,9 @@ export function addXiaoguiWorkerToolsV1(
   let loaded = removeKnownContextDisallowedTools(result, context)
   if (allowed.has('xiaogui_create_collaboration_plan')) {
     loaded = addXiaoguiCollaborationTool(loaded, options.collaboration)
+  }
+  if (allowed.has('xiaogui_publish_coding_plan')) {
+    loaded = addXiaoguiCodingPlanToolV1(loaded, options.collaboration)
   }
   if (allowed.has('xiaogui_work_docx')) {
     loaded = addXiaoguiWorkDocxTemplateDataTool(loaded, options.session)

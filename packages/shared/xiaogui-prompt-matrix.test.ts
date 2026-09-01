@@ -61,6 +61,7 @@ describe('Xiaogui Prompt Mode / Phase / Capability / Tool Matrix V1', () => {
     expect(tools.every((tool) => /^[A-Za-z][A-Za-z0-9._:-]*$/.test(tool.name))).toBe(true)
     expect(workerBuiltinToolNamesFromPromptMatrixV1()).toEqual([
       'xiaogui_create_collaboration_plan',
+      'xiaogui_publish_coding_plan',
       'xiaogui_read_pdf',
       'xiaogui_work_docx',
       'xiaogui_work_docx_advanced_generation',

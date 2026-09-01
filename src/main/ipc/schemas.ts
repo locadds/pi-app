@@ -99,6 +99,7 @@ export const workspaceSandboxDeleteSchema = z.object({
 export const promptTextSchema = z.object({
   text: z.string(),
   sessionFile: z.string().optional(),
+  codingContextSnapshotIds: z.array(z.string().regex(/^xgctx_[0-9a-f-]{36}$/i)).max(20).optional(),
 })
 
 const CLIPBOARD_IMAGE_MAX_BYTES = 8 * 1024 * 1024

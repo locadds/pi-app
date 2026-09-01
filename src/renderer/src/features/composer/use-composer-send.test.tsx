@@ -57,9 +57,13 @@ vi.mock('@renderer/stores/extension-ui-store', () => ({
   extensionUiBlocksComposer: () => false,
 }))
 
-vi.mock('./delayed-tooltip', () => ({ hideAllDelayedTooltips: vi.fn() }))
+vi.mock('./delayed-tooltip', () => ({
+  hideAllDelayedTooltips: vi.fn(),
+  wireDelayedTooltip: vi.fn(),
+}))
 
 import { useComposerSend } from './use-composer-send'
+import { createAttachmentChip } from './attachments'
 
 function createEditor(text: string): HTMLDivElement {
   const editor = document.createElement('div')
@@ -70,6 +74,7 @@ function createEditor(text: string): HTMLDivElement {
 describe('useComposerSend submission arbitration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.invoke.mockImplementation(async () => ({}))
     useUIStore.setState({
       currentWorkspace: 'D:/workspace',
       currentSessionId: 'session-1',
@@ -83,6 +88,18 @@ describe('useComposerSend submission arbitration', () => {
         status: 'idle',
       },
       sessionRuntimeRunning: {},
+      sessions: [{
+        sessionId: 'session-1',
+        sessionFile: 'C:/sessions/current.jsonl',
+        title: 'Coding',
+        updatedAt: 1,
+        modelId: 'test',
+        canonicalScope: {
+          projectId: `xgp1_${'a'.repeat(64)}`,
+          sessionKey: `xgs1_${'b'.repeat(64)}`,
+          sessionMode: 'CODING',
+        } as never,
+      }],
     })
   })
 
@@ -122,5 +139,110 @@ describe('useComposerSend submission arbitration', () => {
       mocks.invoke.mock.calls.filter((call) => call[0] === 'prompt.send'),
     ).toHaveLength(1)
     expect(inputHistory.recordSent).toHaveBeenCalledTimes(1)
+  })
+
+  it('creates a fresh snapshot immediately before send and sends only its opaque id', async () => {
+    mocks.invoke.mockImplementation(async (method) => (
+      method === 'xiaogui.coding.context.snapshot'
+        ? {
+            ok: true,
+            snapshot: { snapshotId: 'xgctx_fresh-1234-1234-1234-123456789abc' },
+          }
+        : {}
+    ))
+    const editor = createEditor('分析 ')
+    editor.appendChild(createAttachmentChip({
+      path: 'src/a.ts',
+      name: 'a.ts',
+      kind: 'code',
+      codingContextStatus: 'PENDING_SESSION',
+    }))
+    const inputHistory = {
+      recordSent: vi.fn(),
+      tryArrowUp: vi.fn(),
+      tryArrowDown: vi.fn(),
+      onUserEdit: vi.fn(),
+      onComposerBlur: vi.fn(),
+      resetNav: vi.fn(),
+    }
+    const { result } = renderHook(() => useComposerSend({
+      editorRef: { current: editor },
+      text: '分析',
+      attachments: [{ path: 'src/a.ts' }],
+      updateFromEditor: vi.fn(),
+      clearEditor: vi.fn(),
+      setContent: vi.fn(),
+      inputHistory,
+      refreshCommands: vi.fn(async () => {}),
+      showComposerStop: false,
+      isRunning: false,
+    }))
+
+    await act(async () => { await result.current.sendCurrent() })
+
+    const send = mocks.invoke.mock.calls.find((call) => call[0] === 'prompt.send')
+    expect(mocks.invoke).toHaveBeenCalledWith('xiaogui.coding.context.snapshot', {
+      address: {
+        projectId: `xgp1_${'a'.repeat(64)}`,
+        sessionKey: `xgs1_${'b'.repeat(64)}`,
+      },
+      relativePaths: ['src/a.ts'],
+    })
+    expect(send?.[1]).toMatchObject({
+      text: expect.stringContaining('@src/a.ts'),
+      codingContextSnapshotIds: ['xgctx_fresh-1234-1234-1234-123456789abc'],
+    })
+    expect(JSON.stringify(send?.[1])).not.toContain('D:/workspace')
+  })
+
+  it('resolves a pre-session @ chip after the Coding session has materialized', async () => {
+    mocks.invoke.mockImplementation(async (method) => (
+      method === 'xiaogui.coding.context.snapshot'
+        ? {
+            ok: true,
+            snapshot: { snapshotId: 'xgctx_aaaaaaaa-1234-1234-1234-123456789abc' },
+          }
+        : {}
+    ))
+    const editor = createEditor('分析 ')
+    editor.appendChild(createAttachmentChip({
+      path: 'src/pending.ts',
+      name: 'pending.ts',
+      kind: 'code',
+      codingContextStatus: 'PENDING_SESSION',
+    }))
+    const inputHistory = {
+      recordSent: vi.fn(),
+      tryArrowUp: vi.fn(),
+      tryArrowDown: vi.fn(),
+      onUserEdit: vi.fn(),
+      onComposerBlur: vi.fn(),
+      resetNav: vi.fn(),
+    }
+    const { result } = renderHook(() => useComposerSend({
+      editorRef: { current: editor },
+      text: '分析',
+      attachments: [{ path: 'src/pending.ts' }],
+      updateFromEditor: vi.fn(),
+      clearEditor: vi.fn(),
+      setContent: vi.fn(),
+      inputHistory,
+      refreshCommands: vi.fn(async () => {}),
+      showComposerStop: false,
+      isRunning: false,
+    }))
+
+    await act(async () => { await result.current.sendCurrent() })
+
+    expect(mocks.invoke).toHaveBeenCalledWith('xiaogui.coding.context.snapshot', {
+      address: {
+        projectId: `xgp1_${'a'.repeat(64)}`,
+        sessionKey: `xgs1_${'b'.repeat(64)}`,
+      },
+      relativePaths: ['src/pending.ts'],
+    })
+    expect(mocks.invoke).toHaveBeenCalledWith('prompt.send', expect.objectContaining({
+      codingContextSnapshotIds: ['xgctx_aaaaaaaa-1234-1234-1234-123456789abc'],
+    }))
   })
 })

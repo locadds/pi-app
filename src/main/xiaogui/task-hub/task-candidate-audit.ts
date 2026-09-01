@@ -34,6 +34,7 @@ export interface CaptureTaskCandidateInputV1 {
   readonly createdAt: IsoDateTime | string
   readonly runtimeSignal: RuntimeTaskCandidateSignalV1
   readonly ancestorTaskChangeSetIds?: readonly TaskChangeSetId[]
+  readonly allowNoApprovedChanges?: boolean
 }
 
 export interface PrivateTaskPatchArtifactV1 extends TaskArtifactRefV1 {
@@ -73,7 +74,9 @@ export class TaskCandidateAuditServiceV1 {
   async captureTaskCandidate(input: CaptureTaskCandidateInputV1): Promise<TaskCandidateAuditResultV1> {
     assertIdentity(input)
     const createdAt = canonicalTimestamp(input.createdAt)
-    const capture = await this.workspace.captureTaskPatch(input.attemptId)
+    const capture = input.allowNoApprovedChanges === true
+      ? await this.workspace.captureTaskPatch(input.attemptId, { allowNoApprovedChanges: true })
+      : await this.workspace.captureTaskPatch(input.attemptId)
     assertVerificationControlsUnchanged(capture.changedFiles)
     const ancestorTaskChangeSetIds = validatedAncestorIds(input.ancestorTaskChangeSetIds ?? [])
     const inputTreeHash = capture.inputTreeHash as Sha256Digest

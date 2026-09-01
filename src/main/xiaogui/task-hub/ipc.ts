@@ -23,6 +23,9 @@ import { registerHandler } from '../../ipc/registry'
 import { KimiLoginCoordinatorV1 } from '../agent-runtime/kimi-login'
 import { sessionScopeResolverV1 } from '../scope-service'
 import type { CollaborationHubApplicationV1 } from './application'
+import type { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-module'
+import type { CodingAttemptReviewModuleV1 } from '../coding-extensions/attempt-review-module'
+import type { CodingRoleProfileModuleV1 } from '../coding-extensions/role-profile-module'
 import { hubError } from './errors'
 import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
 import {
@@ -184,6 +187,18 @@ export function getDefaultKimiLoginCoordinator(): KimiLoginCoordinatorV1 {
 
 export function getDefaultTaskExecutionOrchestrator(): XiaoguiTaskExecutionOrchestratorV1 {
   return getDefaultRuntimeLifecycle().composition.taskExecution
+}
+
+export function getDefaultCodingAttemptPlanModuleV1(): CodingAttemptPlanModuleV1 {
+  return getDefaultRuntimeLifecycle().composition.codingPlan
+}
+
+export function getDefaultCodingAttemptReviewModuleV1(): CodingAttemptReviewModuleV1 {
+  return getDefaultRuntimeLifecycle().composition.codingReview
+}
+
+export function getDefaultCodingRoleProfileModuleV1(): CodingRoleProfileModuleV1 {
+  return getDefaultRuntimeLifecycle().composition.codingRoles
 }
 
 export function getDefaultDeliveryCoordinator(): XiaoguiDeliveryCoordinatorPortV1 {

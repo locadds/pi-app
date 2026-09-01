@@ -5,6 +5,7 @@ import type {
   AgentRuntimeAdapterV1,
   AgentRuntimeRegistryV1,
   RuntimeAdapterSelectionV1,
+  RuntimeCodingRoleBindingV1,
   RuntimeRoutingPolicyV1,
 } from '@shared/xiaogui-agent-runtime'
 import type { SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
@@ -52,6 +53,14 @@ import {
   PiE2eWorkspaceScriptedRuntimeAdapterV1,
   type PiE2eScriptedRuntimeLaunchV1,
 } from './pi-e2e-scripted-runtime'
+import { CodingPermissionModuleV1 } from '../coding-extensions/permission-module'
+import { MainProcessCodingPermissionUIAdapterV1 } from '../coding-extensions/permission-ui-adapter'
+import { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-module'
+import {
+  CodingAttemptReviewModuleV1,
+  GitAttemptReviewDiffPortV1,
+} from '../coding-extensions/attempt-review-module'
+import { CodingRoleProfileModuleV1 } from '../coding-extensions/role-profile-module'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
@@ -75,6 +84,9 @@ export interface XiaoguiRuntimeCompositionV1 {
   readonly application: CollaborationHubApplicationV1
   readonly taskExecution: XiaoguiTaskExecutionOrchestratorV1
   readonly delivery: XiaoguiDeliveryWorkflowV1
+  readonly codingPlan: CodingAttemptPlanModuleV1
+  readonly codingReview: CodingAttemptReviewModuleV1
+  readonly codingRoles: CodingRoleProfileModuleV1
   stageAttemptInput(input: StageAttemptExecutionInputV1): ResolvedAttemptExecutionInputV1
   close(): Promise<void>
 }
@@ -90,6 +102,21 @@ const KIMI_PRODUCTION_SELECTION_V1 = {
   interrupt: 'BEST_EFFORT',
   inspect: 'RECONCILE',
 } satisfies RuntimeAdapterSelectionV1
+
+function runtimeCodingRoleBinding(
+  binding: NonNullable<ReturnType<CodingRoleProfileModuleV1['readAttemptBinding']>>,
+): RuntimeCodingRoleBindingV1 {
+  return Object.freeze({
+    schemaVersion: 1,
+    profileId: binding.snapshot.profileId,
+    role: binding.snapshot.role,
+    modelSelector: binding.snapshot.modelSelector,
+    runtimePolicyId: binding.snapshot.runtimePolicyId,
+    effectiveToolAllowlist: Object.freeze([...binding.snapshot.effectiveToolAllowlist]),
+    profileDigest: binding.snapshot.profileDigest,
+    snapshotDigest: binding.snapshotDigest,
+  })
+}
 
 export function createXiaoguiRuntimeCompositionV1(
   options: XiaoguiRuntimeCompositionOptionsV1,
@@ -111,6 +138,10 @@ export function createXiaoguiRuntimeCompositionV1(
   let taskVerificationCoordinator: TaskVerificationCoordinatorV1 | undefined
   let deliveryWorkflow: XiaoguiDeliveryWorkflowV1 | undefined
   let deliveryApplyRegistry: SqliteDeliveryApplyAttemptRegistryV1 | undefined
+  let codingPermissionModule: CodingPermissionModuleV1 | undefined
+  let codingAttemptPlanModule: CodingAttemptPlanModuleV1 | undefined
+  let codingReviewStore: CollaborationHubSqliteStoreV1 | undefined
+  let codingRoleProfiles: CodingRoleProfileModuleV1 | undefined
 
   try {
     const projectResolver = options.projectResolver ?? new MainProjectWorkspaceResolverV1()
@@ -173,12 +204,24 @@ export function createXiaoguiRuntimeCompositionV1(
       resolve: runtimeRegistry.resolve.bind(runtimeRegistry),
     })
 
+    const codingRoleDir = join(xiaoguiDir, 'coding-roles')
+    mkdirSync(codingRoleDir, { recursive: true })
+    codingRoleProfiles = new CodingRoleProfileModuleV1({
+      dbPath: join(codingRoleDir, 'role-profiles-v1.sqlite'),
+      now: options.now,
+    })
+
     const fixedVerificationPort = new FixedTypecheckVerificationPortV1()
     taskVerificationCoordinator = createTaskVerificationCoordinatorV1({
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
       candidateAudit: new TaskCandidateAuditServiceV1(attemptWorkspaces),
       verificationPort: fixedVerificationPort,
       projectResolver,
+      attemptRoleProvider: {
+        readAttemptRole(attemptId) {
+          return codingRoleProfiles!.readAttemptBinding(attemptId)?.snapshot.role ?? null
+        },
+      },
       now: options.now,
     })
     runtimeMonitor = createRuntimeOutcomeMonitorV1({ runtime: runtimeHost })
@@ -206,10 +249,35 @@ export function createXiaoguiRuntimeCompositionV1(
       derivedBaselineProvider,
       workspaceBridge: inputStore.bridge,
       runtimePromptVault: inputStore,
+      attemptRoleProvider: {
+        readAttemptRoleBinding(attemptId) {
+          const binding = codingRoleProfiles!.readAttemptBinding(attemptId)
+          return binding ? runtimeCodingRoleBinding(binding) : null
+        },
+      },
       taskVerificationCoordinator,
       now: options.now,
     })
 
+    codingPermissionModule = new CodingPermissionModuleV1({
+      dbPath: hubDbPath,
+      // The UI Adapter dismisses first; the Module's longer timeout remains a
+      // fail-closed backstop for any future Adapter implementation.
+      ui: new MainProcessCodingPermissionUIAdapterV1({ timeoutMs: 55_000 }),
+      timeoutMs: 60_000,
+      now: options.now,
+    })
+    codingAttemptPlanModule = new CodingAttemptPlanModuleV1({
+      dbPath: hubDbPath,
+      now: options.now,
+    })
+    codingReviewStore = new CollaborationHubSqliteStoreV1(hubDbPath)
+    const codingAttemptReviewModule = new CodingAttemptReviewModuleV1({
+      app: application,
+      store: codingReviewStore,
+      workspace: attemptWorkspaces,
+      diffPort: new GitAttemptReviewDiffPortV1(),
+    })
     taskExecution = new XiaoguiTaskExecutionOrchestratorV1({
       dbPath: hubDbPath,
       application,
@@ -232,6 +300,18 @@ export function createXiaoguiRuntimeCompositionV1(
         }
       },
       verificationCoordinator: taskVerificationCoordinator,
+      permissionModule: codingPermissionModule,
+      permissionScope: attemptWorkspaces,
+      attemptPlanGate: codingAttemptPlanModule,
+      attemptRoleGate: {
+        async isAttemptRoleExecutable(attemptId) {
+          try {
+            return codingRoleProfiles!.readAttemptBinding(attemptId) !== null
+          } catch {
+            return false
+          }
+        },
+      },
       now: options.now,
     })
     void taskExecution.recover().catch(() => undefined)
@@ -258,6 +338,11 @@ export function createXiaoguiRuntimeCompositionV1(
       inputStore,
       payloadVault,
       workspaceRegistry,
+      codingPermissionModule,
+      codingAttemptPlanModule,
+      codingAttemptReviewModule,
+      codingRoleProfiles,
+      codingReviewStore,
       options.piE2eScriptedRuntimeLaunch,
     )
   } catch (error) {
@@ -271,6 +356,10 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(inputStore)
     closeQuietly(payloadVault)
     closeQuietly(workspaceRegistry)
+    closeQuietly(codingPermissionModule)
+    closeQuietly(codingAttemptPlanModule)
+    closeQuietly(codingRoleProfiles)
+    closeQuietly(codingReviewStore)
     if (options.piE2eScriptedRuntimeLaunch) {
       deactivatePiE2eScriptedRuntimeLaunchV1(options.piE2eScriptedRuntimeLaunch)
     }
@@ -287,6 +376,11 @@ function createCompositionInterface(
   inputStore: AttemptExecutionInputStoreV1,
   payloadVault: PrivateRuntimePayloadVaultV1,
   workspaceRegistry: SqliteAttemptWorkspaceRegistryV1,
+  codingPermissionModule: CodingPermissionModuleV1,
+  codingAttemptPlanModule: CodingAttemptPlanModuleV1,
+  codingAttemptReviewModule: CodingAttemptReviewModuleV1,
+  codingRoleProfiles: CodingRoleProfileModuleV1,
+  codingReviewStore: CollaborationHubSqliteStoreV1,
   piE2eLaunch: PiE2eScriptedRuntimeLaunchV1 | undefined,
 ): XiaoguiRuntimeCompositionV1 {
   let closed = false
@@ -296,6 +390,9 @@ function createCompositionInterface(
     application,
     taskExecution,
     delivery,
+    codingPlan: codingAttemptPlanModule,
+    codingReview: codingAttemptReviewModule,
+    codingRoles: codingRoleProfiles,
     stageAttemptInput(input) {
       if (closed) throw new Error('XIAOGUI_RUNTIME_COMPOSITION_CLOSED')
       return inputStore.stage(input)
@@ -314,6 +411,10 @@ function createCompositionInterface(
             inputStore,
             payloadVault,
             workspaceRegistry,
+            codingPermissionModule,
+            codingAttemptPlanModule,
+            codingRoleProfiles,
+            codingReviewStore,
           ])
         } finally {
           if (piE2eLaunch) deactivatePiE2eScriptedRuntimeLaunchV1(piE2eLaunch)

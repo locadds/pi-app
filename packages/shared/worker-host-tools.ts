@@ -43,6 +43,7 @@ import type { TemplateLibraryDetailV1 } from './xiaogui-template-library'
 import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from './xiaogui-work-template-review'
 import type { TemplateDraftReviewRequestV2 } from './xiaogui-template-draft-review'
 import type { WorkMaterialsSnapshotV1 } from './xiaogui-work-materials'
+import type { CodingPlanBodyV1 } from './xiaogui-coding-extension-pack'
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
@@ -63,6 +64,7 @@ export const XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1 =
   'xiaogui.work.docx-advanced-generation.v1' as const
 export const XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 = 'xiaogui.work.document-snapshot.v1' as const
 export const XIAOGUI_WORK_MATERIALS_METHOD_V1 = 'xiaogui.work.materials.v1' as const
+export const XIAOGUI_CODING_PLAN_DRAFT_METHOD_V1 = 'xiaogui.coding.plan-draft.v1' as const
 
 export interface XiaoguiCreateCollaborationPlanPayloadV1 {
   draft: InitialPlanDraftInputV1
@@ -70,6 +72,17 @@ export interface XiaoguiCreateCollaborationPlanPayloadV1 {
   sourceSessionId: string
   sourceTurnId?: string
   toolCallId: string
+}
+
+/**
+ * CODING PLAN 的模型侧窄接口。模型只能提交计划正文；会话地址、路径、
+ * Attempt 和存储摘要均由可信主进程派生或保管。
+ */
+export interface XiaoguiCodingPlanDraftPayloadV1 {
+  sourceSessionId: string
+  sourceTurnId?: string
+  toolCallId: string
+  body: CodingPlanBodyV1
 }
 
 export type XiaoguiWorkDocxActionV1 = 'PREPARE' | 'CONFIRM' | 'CANCEL' | 'OPEN' | 'REVEAL'
@@ -316,6 +329,12 @@ export type WorkerHostToolRequestV1 =
       method: typeof XIAOGUI_WORK_MATERIALS_METHOD_V1
       payload: XiaoguiWorkMaterialsPayloadV1
     }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: typeof XIAOGUI_CODING_PLAN_DRAFT_METHOD_V1
+      payload: XiaoguiCodingPlanDraftPayloadV1
+    }
 
 /**
  * WORK 文档快照的模型侧接口同样不携带地址、路径、文件句柄或密码。
@@ -538,6 +557,10 @@ export type XiaoguiWorkMaterialsResultV1 = {
   snapshot: WorkMaterialsSnapshotV1
 }
 
+export type XiaoguiCodingPlanDraftResultV1 = {
+  kind: 'XIAOGUI_CODING_PLAN_DRAFT_SAVED'
+}
+
 export type WorkerHostToolErrorCodeV1 =
   | 'HOST_TOOL_UNAVAILABLE'
   | 'HOST_TOOL_REQUEST_INVALID'
@@ -555,6 +578,8 @@ export type WorkerHostToolErrorCodeV1 =
   | 'WORK_DOCX_NO_PENDING_OPERATION'
   | 'WORK_DOCX_NO_PUBLISHED_OUTPUT'
   | 'WORK_DOCUMENT_SNAPSHOT_ACTIVE'
+  | 'CODING_PLAN_DRAFT_INVALID'
+  | 'CODING_PLAN_MODE_REQUIRED'
   | WorkDocxErrorCodeV1
   | TemplateIntakeErrorCodeV1
   | TemplateMaterializeErrorCodeV1
@@ -575,6 +600,7 @@ export type WorkerHostToolOutcomeV1 =
         | XiaoguiWorkDocxAdvancedGenerationResultV1
         | XiaoguiWorkDocumentSnapshotResultV1
         | XiaoguiWorkMaterialsResultV1
+        | XiaoguiCodingPlanDraftResultV1
     }
   | {
       ok: false

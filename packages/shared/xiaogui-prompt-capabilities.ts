@@ -70,6 +70,19 @@ const COLLABORATION_PLAN_TOOL = toolDefinition({
   ],
 })
 
+const CODING_PLAN_TOOL = toolDefinition({
+  name: 'xiaogui_publish_coding_plan',
+  label: '提交编程计划草稿',
+  description:
+    '在编程计划阶段，把目标、可验收步骤和约束保存为当前会话的待批准计划草稿。该工具只保存草稿，不会开始执行或写入项目。',
+  promptSnippet: '提交当前编程计划草稿，等待用户批准后再进入执行阶段',
+  promptGuidelines: [
+    '仅在 CODING 的 PLAN 阶段使用 xiaogui_publish_coding_plan。',
+    '步骤必须可验收，每一步都填写稳定 stepId、清晰标题和真实验证方法。',
+    '提交后必须等待用户批准；工具成功只表示草稿已保存，不代表已经开始执行。',
+  ],
+})
+
 const READ_PDF_TOOL = toolDefinition({
   name: 'xiaogui_read_pdf',
   label: '读取 PDF',
@@ -323,15 +336,18 @@ export const CODING_WORKSPACE_CAPABILITY_V1 = {
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['coding.workspace'].tools,
   requiresWorkspace: true,
   minimumEffect: 'READ_ONLY',
-  requiredToolNames: XIAOGUI_CAPABILITY_MATRIX_V1['coding.workspace'].tools.map((tool) => tool.name),
+  requiredToolNames: ['read', 'bash', 'edit', 'write'],
   requiredToolNamesByPhase: {
     ASK: ['read'],
-    PLAN: ['read'],
+    PLAN: ['read', CODING_PLAN_TOOL.name],
+    EXECUTE: ['read', 'bash', 'edit', 'write'],
   },
   promptLayer: promptLayer('coding.workspace', `# 编程工作区协议
 
 先检查仓库约定、相关实现、测试和未提交改动；只修改任务所需范围。根据当前阶段执行只读检查或受控写入，保留已有改动并运行直接相关验证；验证失败时不得宣称完成。`),
-  toolDefinitions: {},
+  toolDefinitions: {
+    [CODING_PLAN_TOOL.name]: CODING_PLAN_TOOL,
+  },
 } as const satisfies XiaoguiCapabilityRegistrationV1
 
 export const XIAOGUI_CAPABILITY_REGISTRY_V1 = {
@@ -353,7 +369,15 @@ export const XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 = {
   [TEMPLATE_INTAKE_TOOL.name]: TEMPLATE_INTAKE_TOOL,
   [TEMPLATE_MATERIALIZE_TOOL.name]: TEMPLATE_MATERIALIZE_TOOL,
   [ADVANCED_GENERATION_TOOL.name]: ADVANCED_GENERATION_TOOL,
+  [CODING_PLAN_TOOL.name]: CODING_PLAN_TOOL,
 } as const
+
+function toolAllowsPhase(
+  tool: XiaoguiCapabilityToolV1,
+  phase: XiaoguiExecutionPhase,
+): boolean {
+  return !tool.phases || tool.phases.includes(phase)
+}
 
 function modeAllowsToolPolicy(policy: XiaoguiModeCapabilityPolicyV1): boolean {
   return policy !== 'HIDDEN' && policy !== 'RECOMMEND_SWITCH'
@@ -704,6 +728,7 @@ export function workerBuiltinToolNamesForPromptContextV1(
     if (capability.requiresWorkspace && !context.workspaceAvailable) continue
     if (!phaseAllowsCapability(context.phase, capability)) continue
     for (const tool of capability.tools) {
+      if (!toolAllowsPhase(tool, context.phase)) continue
       if (tool.source === 'WORKER_BUILTIN') names.add(tool.name)
     }
   }
@@ -743,6 +768,7 @@ export function activeToolNamesForPromptContextV1(
     if (!phaseAllowsCapability(context.phase, capability)) continue
 
     for (const tool of capability.tools) {
+      if (!toolAllowsPhase(tool, context.phase)) continue
       if (!registered.has(tool.name)) continue
       if (context.phase !== 'EXECUTE') {
         const explicitlyReadOnly =

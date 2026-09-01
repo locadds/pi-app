@@ -67,7 +67,10 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
   })
 
   it('references the exact Tool Definition constants owned by the Capability Registry', () => {
-    const tools = loadCurrentWorkerBuiltinTools()
+    const tools = new Map([
+      ...loadCurrentWorkerBuiltinTools('WORK'),
+      ...loadCurrentWorkerBuiltinTools('CODING'),
+    ])
     for (const [name, expected] of Object.entries(XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1)) {
       const actual = tools.get(name)?.definition
       expect(actual?.description).toBe(expected.description)

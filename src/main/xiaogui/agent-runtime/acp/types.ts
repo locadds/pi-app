@@ -1,7 +1,7 @@
 export interface AcpInitializeParamsV1 {
   protocolVersion: number
   clientCapabilities: {
-    fs: { readTextFile: true; writeTextFile: true }
+    fs: { readTextFile: true; writeTextFile: boolean }
     terminal: boolean
   }
   clientInfo: { name: string; version: string }

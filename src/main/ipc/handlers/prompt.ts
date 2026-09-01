@@ -4,6 +4,7 @@ import { normalizeSessionKey } from '../../worker-session-key'
 import { registerHandler, registerHandlerWithSchema } from '../registry'
 import { writeClipboardTempImage } from '../../clipboard-temp-images'
 import { clipboardWriteTempImageSchema, promptTextSchema } from '../schemas'
+import { resolveCodingContextForPromptV1 } from '../../xiaogui/coding-extensions/context-composition'
 
 export function registerPromptHandlers(): void {
   const bindBeforePrompt = async (sessionFile?: string) => {
@@ -33,7 +34,11 @@ export function registerPromptHandlers(): void {
 
   registerHandlerWithSchema('ipc:prompt.send', promptTextSchema, async (req) => {
     const bind = await bindBeforePrompt(req.sessionFile)
-    await workerManager.sendPrompt(req.text, req.sessionFile)
+    const codingContext = await resolveCodingContextForPromptV1(
+      req.sessionFile,
+      req.codingContextSnapshotIds,
+    )
+    await workerManager.sendPrompt(req.text, req.sessionFile, codingContext)
     // Keep clipboard images on disk for the agent turn (tools like `read` use the path).
     // Cleanup is TTL/startup prune + optional quit, not immediate delete-on-send.
     return {

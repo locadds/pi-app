@@ -3,6 +3,11 @@ import type { WorkerSlot } from '../worker-manager-types'
 import { WorkerManager } from '../worker-manager'
 import { attachWorkerHandlers } from '../worker-manager-pool'
 import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
+import {
+  clearSessionLeafOverride,
+  getSessionLeafOverride,
+  setSessionLeafOverride,
+} from '../session-leaf-override'
 
 vi.mock('electron', () => ({
   app: { getPath: vi.fn(() => process.cwd()) },
@@ -116,6 +121,7 @@ describe('WorkerManager session isolation', () => {
   beforeEach(() => {
     forkWorkerForCwd.mockReset()
     readMaxSessionWorkers.mockReturnValue(4)
+    clearSessionLeafOverride()
   })
 
   it('queries context only from the worker bound to the requested session', async () => {
@@ -131,6 +137,62 @@ describe('WorkerManager session isolation', () => {
     expect(preview).toEqual(expect.objectContaining({ sessionFile: target.poolKey, estimatedChars: 22 }))
     expect(foreground.worker.postMessage).not.toHaveBeenCalled()
     expect(await manager.getSessionContextPreview('/sessions/missing.jsonl')).toBeNull()
+  })
+
+  it('routes a private checkpoint capture to the bound session without returning path or leaf', async () => {
+    const foreground = fakeSlot(normalizeSessionKey('/sessions/a.jsonl'))
+    const target = fakeSlot(normalizeSessionKey('/sessions/b.jsonl'))
+    target.sessionId = 'pi_session_1'
+    const { manager, internals } = managerWithForeground(foreground)
+    internals.pool.set(target.poolKey, target)
+    replyFrom(target, {
+      type: 'codingSessionCheckpoint-done',
+      action: 'CAPTURE',
+      sessionId: 'pi_session_1',
+      snapshotRef: `xgscp_${'1'.repeat(64)}`,
+      snapshotDigest: `sha256:${'a'.repeat(64)}`,
+      // Even if a compromised Worker adds private fields, Manager projects them out.
+      sessionFile: target.poolKey,
+      leafId: 'private_leaf',
+    })
+
+    const result = await manager.capturePiSessionCheckpoint({
+      sessionFile: target.poolKey,
+      expectedSessionId: 'pi_session_1',
+      snapshotRef: `xgscp_${'1'.repeat(64)}`,
+    })
+
+    expect(result).toEqual({
+      sessionId: 'pi_session_1',
+      snapshotRef: `xgscp_${'1'.repeat(64)}`,
+      snapshotDigest: `sha256:${'a'.repeat(64)}`,
+    })
+    expect(result).not.toHaveProperty('sessionFile')
+    expect(result).not.toHaveProperty('leafId')
+    expect(foreground.worker.postMessage).not.toHaveBeenCalled()
+    expect(internals.foregroundPoolKey).toBe(foreground.poolKey)
+  })
+
+  it('clears a stale manual leaf override after a persisted checkpoint restore', async () => {
+    const target = fakeSlot(normalizeSessionKey('/sessions/b.jsonl'))
+    const { manager } = managerWithForeground(target)
+    const snapshotDigest = `sha256:${'a'.repeat(64)}`
+    replyFrom(target, {
+      type: 'codingSessionCheckpoint-done',
+      action: 'RESTORE',
+      sessionId: 'pi_session_1',
+      restoredSnapshotDigest: snapshotDigest,
+    })
+    setSessionLeafOverride(target.poolKey, 'stale_manual_leaf')
+
+    await manager.restorePiSessionCheckpoint({
+      sessionFile: target.poolKey,
+      expectedSessionId: 'pi_session_1',
+      snapshotRef: `xgscp_${'2'.repeat(64)}`,
+      expectedDigest: snapshotDigest,
+    })
+
+    expect(getSessionLeafOverride(target.poolKey)).toBeUndefined()
   })
 
   it('creates a separate worker when the foreground session is running', async () => {

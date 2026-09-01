@@ -44,6 +44,43 @@ import type {
   XiaoguiTaskExecutionStartOutcomeV1,
   XiaoguiTaskExecutionStartRequestV1,
 } from './xiaogui-task-execution'
+import type {
+  CodingContextSnapshotOutcomeV1,
+  CodingContextSnapshotRequestV1,
+} from './xiaogui-coding-extension-pack'
+import type {
+  CodingPlanObserveOutcomeV1,
+  CodingPlanObserveRequestV1,
+  CodingPlanPerformOutcomeV1,
+  CodingPlanPerformRequestV1,
+  CodingReviewReadOutcomeV1,
+  CodingReviewReadRequestV1,
+} from './xiaogui-coding-extension-control'
+import type {
+  CodingCheckpointCaptureOutcomeV1,
+  CodingCheckpointCaptureRequestV1,
+  CodingCheckpointListOutcomeV1,
+  CodingCheckpointListRequestV1,
+  CodingCheckpointConfirmOutcomeV1,
+  CodingCheckpointConfirmRequestV1,
+  CodingCheckpointPreviewOutcomeV1,
+  CodingCheckpointPreviewRequestV1,
+} from './xiaogui-coding-checkpoint-control'
+import type {
+  CodingRoleAttemptBindRequestV1,
+  CodingRoleAttemptOutcomeV1,
+  CodingRoleAttemptReadRequestV1,
+  CodingRoleCopyOutcomeV1,
+  CodingRoleCopyRequestV1,
+  CodingRoleListOutcomeV1,
+  CodingRoleListRequestV1,
+  CodingRoleReadForEditOutcomeV1,
+  CodingRoleReadForEditRequestV1,
+  CodingRoleResetDefaultOutcomeV1,
+  CodingRoleResetDefaultRequestV1,
+  CodingRoleUpsertOutcomeV1,
+  CodingRoleUpsertRequestV1,
+} from './xiaogui-coding-role-control'
 
 // ── Workspace ──
 export interface WorkspaceOpenRequest { path?: string; awaitWorker?: boolean }
@@ -141,7 +178,12 @@ export interface ContextPreviewRequest { sessionFile: string; workspaceId: strin
 export interface ContextPreviewResponse { preview: SessionContextPreview | null }
 
 // ── Prompt ──
-export interface PromptSendRequest { sessionId: string; text: string }
+export interface PromptSendRequest {
+  sessionId: string
+  text: string
+  sessionFile?: string
+  codingContextSnapshotIds?: readonly string[]
+}
 export interface PromptSendResponse { messageId: string }
 export interface PromptSteerRequest { sessionId: string; text: string }
 export interface PromptSteerResponse { steered: boolean }
@@ -341,6 +383,66 @@ export interface IpcMethodMap {
   'workspace.ensureWorker': { request: WorkspaceEnsureWorkerRequest; response: WorkspaceEnsureWorkerResponse }
   'workspace.switch': { request: WorkspaceSwitchRequest; response: WorkspaceSwitchResponse }
   'workspace.fs.search': { request: WorkspaceFsSearchRequest; response: WorkspaceFsSearchResponse }
+  'xiaogui.coding.context.snapshot': {
+    request: CodingContextSnapshotRequestV1
+    response: CodingContextSnapshotOutcomeV1
+  }
+  'xiaogui.coding.checkpoint.capture': {
+    request: CodingCheckpointCaptureRequestV1
+    response: CodingCheckpointCaptureOutcomeV1
+  }
+  'xiaogui.coding.checkpoint.list': {
+    request: CodingCheckpointListRequestV1
+    response: CodingCheckpointListOutcomeV1
+  }
+  'xiaogui.coding.checkpoint.restore.preview': {
+    request: CodingCheckpointPreviewRequestV1
+    response: CodingCheckpointPreviewOutcomeV1
+  }
+  'xiaogui.coding.checkpoint.restore.confirm': {
+    request: CodingCheckpointConfirmRequestV1
+    response: CodingCheckpointConfirmOutcomeV1
+  }
+  'xiaogui.coding.roles.list': {
+    request: CodingRoleListRequestV1
+    response: CodingRoleListOutcomeV1
+  }
+  'xiaogui.coding.roles.readForEdit': {
+    request: CodingRoleReadForEditRequestV1
+    response: CodingRoleReadForEditOutcomeV1
+  }
+  'xiaogui.coding.roles.upsert': {
+    request: CodingRoleUpsertRequestV1
+    response: CodingRoleUpsertOutcomeV1
+  }
+  'xiaogui.coding.roles.copy': {
+    request: CodingRoleCopyRequestV1
+    response: CodingRoleCopyOutcomeV1
+  }
+  'xiaogui.coding.roles.resetDefault': {
+    request: CodingRoleResetDefaultRequestV1
+    response: CodingRoleResetDefaultOutcomeV1
+  }
+  'xiaogui.coding.roles.attempt.bind': {
+    request: CodingRoleAttemptBindRequestV1
+    response: CodingRoleAttemptOutcomeV1
+  }
+  'xiaogui.coding.roles.attempt.read': {
+    request: CodingRoleAttemptReadRequestV1
+    response: CodingRoleAttemptOutcomeV1
+  }
+  'xiaogui.coding.plan.observe': {
+    request: CodingPlanObserveRequestV1
+    response: CodingPlanObserveOutcomeV1
+  }
+  'xiaogui.coding.plan.perform': {
+    request: CodingPlanPerformRequestV1
+    response: CodingPlanPerformOutcomeV1
+  }
+  'xiaogui.coding.review.read': {
+    request: CodingReviewReadRequestV1
+    response: CodingReviewReadOutcomeV1
+  }
   'session.list': { request: SessionListRequest; response: SessionListResponse }
   'session.open': { request: SessionOpenRequest; response: SessionOpenResponse }
   'session.new': { request: SessionNewRequest; response: SessionNewResponse }

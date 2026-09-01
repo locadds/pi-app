@@ -87,6 +87,9 @@ export interface TaskVerificationCoordinatorOptionsV1 {
   readonly candidateAudit: TaskCandidateAuditServiceV1
   readonly verificationPort: TaskVerificationExecutionPortV1
   readonly projectResolver: ProjectWorkspaceResolverV1
+  readonly attemptRoleProvider?: {
+    readAttemptRole(attemptId: AttemptId): 'RESEARCH' | 'IMPLEMENT' | 'REVIEW' | null
+  }
   readonly now?: () => string
 }
 
@@ -160,6 +163,17 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
       return { ok: false, reasonCode: 'TASK_VERIFICATION_STORE_REJECTED' }
     }
 
+    let attemptRole: 'RESEARCH' | 'IMPLEMENT' | 'REVIEW' | null = null
+    try {
+      attemptRole = this.options.attemptRoleProvider?.readAttemptRole(input.attemptId) ?? null
+    } catch {
+      return { ok: false, reasonCode: 'TASK_VERIFICATION_BINDING_MISMATCH' }
+    }
+    if (this.options.attemptRoleProvider && !attemptRole) {
+      return { ok: false, reasonCode: 'TASK_VERIFICATION_BINDING_MISMATCH' }
+    }
+    const allowNoApprovedChanges = attemptRole === 'RESEARCH' || attemptRole === 'REVIEW'
+
     let audited: TaskCandidateAuditResultV1
     try {
       audited = await this.options.candidateAudit.captureTaskCandidate({
@@ -169,8 +183,12 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
         createdAt: this.timestamp(input.createdAt),
         runtimeSignal: runtimeSignal(input.outcome),
         ancestorTaskChangeSetIds,
+        allowNoApprovedChanges,
       })
     } catch {
+      return { ok: false, reasonCode: 'TASK_VERIFICATION_CAPTURE_FAILED' }
+    }
+    if (allowNoApprovedChanges && audited.changedFiles.length !== 0) {
       return { ok: false, reasonCode: 'TASK_VERIFICATION_CAPTURE_FAILED' }
     }
 

@@ -1809,6 +1809,43 @@ describe('M4C task verification persistence', () => {
     fixture.store.close()
   })
 
+  it('atomically blocks delivery when a verified checkpoint restore becomes unprovable', async () => {
+    const dbPath = await tempDb('checkpoint-outcome-unknown.sqlite')
+    const fixture = await startedTaskVerification(dbPath, 'checkpoint')
+    fixture.store.beginTaskVerification(ADDRESS, fixture.beginRecord)
+    fixture.store.claimVerificationOutbox({
+      verificationAttemptId: fixture.verificationRequest.verificationAttemptId,
+      ownerId: 'verification-worker-checkpoint',
+      claimDigest: 'sha256:verification-claim-checkpoint',
+      now: '2026-08-17T00:00:02.500Z',
+    })
+    fixture.store.completeTaskVerification(ADDRESS, passedCompletion(fixture))
+    const beforeVersion = fixture.store.currentVersion(ADDRESS)
+
+    expect(fixture.store.markVerifiedCheckpointOutcomeUnknown(ADDRESS, {
+      flowId: fixture.flowId,
+      taskRunId: fixture.taskRunId,
+      attemptId: fixture.attemptId,
+      reasonCode: 'CHECKPOINT_ROLLBACK_INCOMPLETE',
+      receiptDigest: asDigest(`sha256:${'9'.repeat(64)}`),
+      now: '2026-08-17T00:00:05.000Z',
+    })).toBe('UPDATED')
+    expect(fixture.store.attempt(fixture.attemptId)?.status).toBe('OUTCOME_UNKNOWN')
+    expect(fixture.store.taskRun(fixture.taskRunId)?.status).toBe('OUTCOME_UNKNOWN')
+    expect(fixture.store.currentVersion(ADDRESS)).toBe(beforeVersion + 1)
+
+    expect(fixture.store.markVerifiedCheckpointOutcomeUnknown(ADDRESS, {
+      flowId: fixture.flowId,
+      taskRunId: fixture.taskRunId,
+      attemptId: fixture.attemptId,
+      reasonCode: 'CHECKPOINT_ROLLBACK_INCOMPLETE',
+      receiptDigest: asDigest(`sha256:${'9'.repeat(64)}`),
+      now: '2026-08-17T00:00:06.000Z',
+    })).toBe('REPLAYED')
+    expect(fixture.store.currentVersion(ADDRESS)).toBe(beforeVersion + 1)
+    fixture.store.close()
+  })
+
   it('atomically starts verification from a reconciled SUCCEEDED runtime outcome', async () => {
     const dbPath = await tempDb('verification-reconcile.sqlite')
     const fixture = await startedTaskVerification(dbPath, 'reconcile')

@@ -1,5 +1,582 @@
 # 小规开发阶段状态
 
+## 2026-09-01｜CODING-P1 P3 三角色生产接缝最终候选
+
+### 阶段状态
+
+- 状态：P3 规格闭环已完成；聚焦测试、类型检查、构建、差异检查和真实 Electron 三角色旅程通过，等待审查 Agent 与人工验收。
+- 当前起点：`06c410bf462562da7859116f787c2749c5bfd5e6`。
+- 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`。
+- 独立分支：`agent/coding-p1-pi-extension-pack-v1`。
+- 隔离边界：未触碰 WORK 工作树，未合并阶段线、未发布、未制作 Portable；保护暂存 `wip-p3-before-p2-gate-fix-20260831` 保留，`.omo/` 不纳入提交。
+
+### 本阶段目标
+
+1. 让研究、实现、审阅不只停留在角色配置，而是通过同一 Pi Extension → TaskHub → Runtime 生产接缝执行。
+2. 保持研究/审阅硬只读，并让无文件修改的只读成果进入真实验证、依赖和统一交付总账。
+3. 完成“研究 → 计划 → 实现 → 审阅 → 检查点预览/恢复 → 交付”的一条真实 Electron 旅程。
+
+### 实际修改文件
+
+- Runtime 契约与 Adapter：`packages/shared/xiaogui-agent-runtime.ts`、`src/main/xiaogui/agent-runtime/acp/types.ts`、`src/main/xiaogui/agent-runtime/kimi-adapter.ts`、`kimi-adapter.test.ts`。
+- 角色批准与 TaskHub 生产装配：`src/main/xiaogui/coding-extensions/attempt-ipc.ts`、`attempt-ipc.test.ts`、`src/main/xiaogui/task-hub/application.ts`、`runtime-composition.ts`、`pi-e2e-scripted-runtime.ts`。
+- 只读候选与验证：`src/main/xiaogui/task-hub/attempt-workspace.ts`、`attempt-workspace.test.ts`、`task-candidate-audit.ts`、`task-verification-coordinator.ts`、`task-verification-coordinator.test.ts`。
+- Renderer：`src/renderer/src/xiaogui/components/CodingAttemptPlanCard.tsx`、`CodingAttemptPlanCard.test.tsx`。
+- 联合验收和记录：`e2e/xiaogui-real-three-task-journey.spec.ts`、`doc/coding-p1/CODING-P1-P3-QA.md`、`doc/coding-p1/CODING-P1-P3-REVIEW.md`、`DEVELOPMENT_STATUS.md`。
+
+### 已完成内容
+
+1. Runtime 请求携带不可变 `codingRole` 投影；profile、角色、模型、Runtime 策略、有效工具白名单和摘要均绑定当前 Attempt。
+2. TaskHub 允许已绑定的研究、实现、审阅角色进入各自执行回合，不再错误地把“只有实现角色能执行”当成角色硬限制。
+3. 研究和审阅的有效工具严格固定为 `read`。Kimi ACP 对其关闭写能力、拒绝写权限与写调用；若工作树出现任何变化，权威验证失败关闭。
+4. 只读 Agent 从模型文本事件形成候选证据；没有可验证文本时明确失败，不把“无输出”伪装成成功。
+5. 只读 Attempt 可以显式捕获无变更补丁并经过真实 QA，形成不含文件变化的 Task ChangeSet，供后继依赖和统一交付使用。
+6. 修复多个只读 Attempt 的空补丁编号冲突：内容摘要保持相同，制品编号绑定 Attempt；普通非空补丁生成规则不变。
+7. Renderer 的角色提示改为“请先绑定执行角色”，与研究/实现/审阅三种合法执行角色一致。
+8. Electron 旅程实际执行 A=研究、B=实现、C=审阅；B 读取 A 的已验证基线，C 读取 B 的已验证基线。
+9. 实现任务完成检查点创建、影响预览、人工确认恢复，再继续修改和验证；最终三个 ChangeSet 按依赖顺序形成统一交付。
+10. 人工批准交付前用户项目保持不变；批准后只写入 B 的真实文件变更，研究/审阅不伪造 Diff，重复批准保持幂等。
+
+### 未完成内容
+
+- 未用真实 Kimi/Codex 登录会话重复整条桌面旅程；Scripted Runtime 证明的是接缝、角色权限和状态流，不是模型生成质量。
+- 未运行全量测试、制作 Portable、合并阶段线或发布；均不属于本 P3 门禁。
+
+### 与规格文档存在的偏差
+
+- 无产品或架构偏差。TaskHub 仍是 Attempt、工作树、验证、恢复和交付的唯一权威；没有引入第二套 Agent Loop、权限系统或状态机。
+- 为表达只读成果，研究/审阅任务使用“空文件变更 + 可验证文本证据”的 Task ChangeSet；最终交付只物化实际文件变化。
+- Claude Code 仅作为交互语义参照；没有复制源码、品牌或不稳定 insiders 依赖。
+- WORK、DESIGN、Univer Office Surface、DOCX HTML 和 PDF 降级路径未修改。
+
+### 测试命令和测试结果
+
+```powershell
+node_modules\.bin\vitest.cmd run packages/shared/xiaogui-agent-runtime.test.ts src/main/xiaogui/agent-runtime/kimi-adapter.test.ts src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/main/xiaogui/task-hub/task-verification-coordinator.test.ts src/renderer/src/xiaogui/components/CodingAttemptPlanCard.test.tsx --reporter=default
+npm run typecheck
+npm run build
+node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.ts --workers=1
+git diff --check
+```
+
+- 聚焦回归：`7 test files passed`，`74 tests passed`。
+- 类型检查、构建和差异检查：全部通过；构建仅有既有动态导入和 chunk 提示。
+- Electron：`1 passed`，约 `1.0m`。证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788237824316`。
+- TDD 证据：空补丁编号测试先稳定复现相同编号失败，修复后单测和整条 Electron 旅程均通过。
+
+### 已知风险
+
+1. 生产模型可能返回空文本或不符合角色目标；系统会明确失败，不会把它记作已验证成果。
+2. 每个 Attempt 的角色和 Runtime 在执行开始后固定；不同角色并发仍需要独立 Worker 会话，不能在同一执行尝试中静默切换。
+3. 检查点恢复跨 Pi 会话、TaskHub 和 Git 工作树；无法证明的中断仍保守进入 `OUTCOME_UNKNOWN` 并要求人工对账。
+4. Scripted Runtime 不是生产模型质量证据；上线前仍应单列真实 Runtime 冒烟，而不重复本阶段全部测试。
+
+### 下一阶段计划
+
+完成固定差异代码审查和规格门审查；无阻断项后提交并推送当前独立 CODING 分支，等待人工验收。未经确认不合入 WORK 主线、阶段线或发布。
+
+## 2026-09-01｜CODING-P1 P3 检查点、角色与联合旅程候选（历史记录，已由上节取代）
+
+### 阶段状态
+
+- 状态：P3 首轮阻断项已完成最小修复；聚焦回归、类型检查、构建和真实 Electron 联合旅程通过；固定差异代码审查 `PASS`、规格审查 `APPROVE`，本提交推送后等待人工验收
+- 固定起点：`85142791d70f2486241bd644baa7cae58dc88208`
+- 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`
+- 独立分支：`agent/coding-p1-pi-extension-pack-v1`
+- 隔离边界：未触碰 WORK 工作树，未合并阶段线、未发布、未制作 Portable；保护暂存 `wip-p3-before-p2-gate-fix-20260831` 保留
+
+### 本阶段目标
+
+1. 将 Pi 会话检查点和 Attempt 独立工作树快照组成一次可预览、需人工确认、失败关闭的联合恢复。
+2. 建立研究、实现、审阅三类本机角色配置，并把不可变角色快照绑定到权威 Attempt。
+3. 保证研究和审阅角色的只读上限不能通过用户编辑解除，角色提示正文只走 Main-to-Worker 私有通道。
+4. 完成“角色绑定 → 检查点创建 → 影响预览 → 人工确认恢复 → 多任务真实 Diff/验证 → 统一交付”的 Electron 联合旅程。
+
+### 实际修改文件
+
+- 共享契约：`packages/shared/ipc-channels.ts`、`packages/shared/ipc-contract.ts`、`packages/shared/xiaogui-coding-checkpoint-control.ts`、`packages/shared/xiaogui-coding-role-control.ts`
+- Main / Worker 路由：`src/main/worker-manager.ts`、`src/main/__tests__/worker-manager-session-isolation.test.ts`、`src/main/__tests__/worker-manager-coding-role.test.ts`、`src/worker/worker-port-handlers.ts`、`src/worker/worker-port-types.ts`、`src/worker/worker-runtime.ts`
+- 检查点生产模块：`src/main/xiaogui/coding-extensions/attempt-checkpointability-port.ts`、`attempt-checkpoint-workspace-authority.ts`、`attempt-checkpoint-workspace-port.ts`、`checkpoint-default-composition.ts`、`checkpoint-ipc.ts`、`checkpoint-module.ts`、`checkpoint-production-composition.ts`、`checkpoint-session-binding-registry.ts`、`checkpoint-state-store.ts`、`pi-session-checkpoint-port.ts` 及其同名聚焦测试
+- 角色生产模块：`src/main/xiaogui/coding-extensions/role-ipc.ts`、`role-production-composition.ts`、`role-production-ports.ts`、`role-profile-module.ts` 及其同名聚焦测试；`src/worker/handlers/worker-handlers-coding-role.ts`、`src/worker/xiaogui-coding-extensions/role-guard-extension.ts`、`role-runtime-binding.ts` 及其测试
+- TaskHub / 装配：`src/main/xiaogui/task-hub/application.ts`、`sqlite-store.ts`、`execution-orchestrator.ts`、`runtime-composition.ts`、`ipc.ts` 及其测试；`src/main/xiaogui/coding-extensions/plan-worker-tool.ts`、`attempt-ipc.ts` 及其测试；`src/main/xiaogui/index.ts`、`index.test.ts`
+- 可信 session 生产接缝：`src/main/ipc/handlers/session.ts`
+- Renderer：`src/renderer/src/xiaogui/lib/coding-checkpoint-client.ts`、`coding-role-client.ts`、`coding-attempt-client.ts` 及其测试；`components/CodingCheckpointCard.tsx`、`CodingRoleCard.tsx`、`CodingAttemptPlanCard.tsx`、`CollaborationHubPanel.tsx` 及其测试
+- 联合旅程与记录：`e2e/xiaogui-real-three-task-journey.spec.ts`、`doc/coding-p1/CODING-P1-P3-REVIEW.md`、`doc/coding-p1/CODING-P1-P3-QA.md`、`DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 检查点同时捕获 Pi 会话快照与 Attempt 工作树状态；工作树快照覆盖已跟踪、暂存、未跟踪、二进制、删除和 Git mode，硬链接越界内容失败关闭。
+2. 恢复前生成一次性预览令牌，只公开相对路径、影响数量和“对话将回到此检查点”；Renderer 必须显示影响并由用户勾选后确认。
+3. 恢复使用持久化 Saga。进程中断后先对账再续接；预览过期、摘要漂移、工作树忙碌或权威绑定不一致均拒绝恢复，不猜测成功。
+4. 恢复导致既有验证成果失效或恢复结果无法确认时，TaskHub 以原子状态转换进入 `OUTCOME_UNKNOWN`，不会重复派发、静默换 Agent 或继续形成交付。
+5. 会话绝对路径和快照引用只保存在主进程私有 SQLite；公开 IPC、Renderer 投影、会话和事件只使用不透明地址、相对路径与固定错误码。
+6. 研究、实现、审阅默认角色可编辑、复制和重置；Attempt 绑定后保存不可变快照、配置摘要、模型选择、运行时策略和有效工具白名单，不能静默换角色。
+7. 研究和审阅角色始终应用硬只读上限；未知工具、写入工具和越界工具不会因用户编辑白名单而放行。模型或运行时不可用时显示明确中文状态。
+8. 角色预检现在可通过主进程私有会话登记恢复正确的 CODING Worker，再按匿名会话地址绑定；私有会话路径不返回 Renderer。
+9. 协作面板在每个 READY Attempt 内显示角色卡和检查点卡；真实窗口已完成角色绑定、检查点预览/恢复，并继续 A/B 并行、C 依赖 A、真实 Diff/验证、统一交付和幂等应用。
+10. 角色要求已进入 TaskHub 权威派发门：只有冻结为 `IMPLEMENT` 的 Attempt 角色快照可以从 `WORKSPACE_READY` 进入 Runtime dispatch；缺失、读取失败或研究/审阅角色均保持 `READY`。
+11. 计划批准和继续执行 IPC 在修改计划或调用 Runtime 前执行同一角色校验；Renderer 明确提示“请先绑定实现角色”，不能只靠界面顺序保证安全。
+12. Pi Worker 未绑定角色时只公开 `read`；命令、写入和其他工具统一失败关闭。Worker 已绑定后只接受同一 Attempt+摘要；用户显式为另一 Attempt 绑定角色时，Main 必须先用原 Attempt 编号完成 `release`，再预检和绑定新快照。
+13. Renderer 手工计划和 TaskHub 兜底计划使用的可信 CODING session 现在由 Main 的真实 session 打开/列举路径登记；联合旅程已删除私有注册表手工 seed，并为 A/B/C 三个 Attempt 分别固定实现角色。
+
+### 未完成内容
+
+- 角色与检查点联合旅程使用受控 Scripted Runtime，证明 TaskHub、Pi Worker、工作树、Renderer 和恢复接缝，不代表 Kimi、Codex 或其他生产模型的生成质量。
+- 本阶段没有证明同一 Pi 会话同时激活两个不同 Attempt 的角色；当前实现对同一活跃 Worker 的冲突角色失败关闭，真实并发需要由独立 Worker 会话承载。
+- Electron 联合旅程实际绑定并展示“实现”角色；研究/审阅的硬只读上限、模型门和工具过滤由聚焦 Worker 测试证明，未额外重复一条长桌面旅程。
+- 未运行全量测试，未制作安装包或 Portable；这些不属于本阶段门禁。
+
+### 与规格文档存在的偏差
+
+- 没有引入第二套 Agent Loop、权限系统或恢复状态机；TaskHub 仍是 Attempt、工作树、验证、交付和结果未知状态的唯一权威。
+- Claude Code 仅作为交互语义参照；实现使用 Pi Extension、现有 Renderer 和 TaskHub 窄接缝，没有复制其源码、品牌或不稳定 insiders 依赖。
+- 联合旅程没有为了展示而连续切换研究/实现/审阅三个角色；角色在 Attempt 启动后固定，执行中禁止静默更换。三个角色的编辑与安全上限分别由聚焦测试覆盖。
+- WORK、DESIGN、Univer Office Surface、DOCX HTML 和 PDF 降级路径未修改。
+
+### 测试命令和测试结果
+
+```powershell
+$focusedTests = @(
+  (rg --files src packages | rg '(checkpoint|coding-role|role-|CodingRole|CodingCheckpoint|plan-worker-tool|worker-manager-session-isolation|CollaborationHubPanel).*\.test\.(ts|tsx)$'),
+  'src/main/xiaogui/index.test.ts',
+  'src/main/xiaogui/task-hub/application.test.ts',
+  'src/main/xiaogui/task-hub/application-derived-baseline-concurrency.test.ts',
+  'src/main/xiaogui/task-hub/sqlite-store.test.ts'
+) | Sort-Object -Unique
+node_modules\.bin\vitest.cmd run $focusedTests --reporter=default
+```
+
+结果：`28 test files passed`，`220 tests passed`，退出码 `0`。覆盖检查点恢复 Saga、私有会话登记、角色配置/只读上限、Worker 会话隔离、TaskHub 状态转换、Renderer 卡片和真实工作树恢复。
+
+首轮审查阻断修复只补跑直接相关组：
+
+```powershell
+node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/execution-orchestrator.test.ts src/worker/xiaogui-coding-extensions/role-runtime-binding.test.ts src/worker/xiaogui-coding-extensions/role-guard-extension.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/renderer/src/xiaogui/components/CodingAttemptPlanCard.test.tsx src/renderer/src/xiaogui/lib/coding-attempt-client.test.ts src/main/ipc/handlers/session-preview-authorization.test.ts src/main/ipc/handlers/session-preview-invalidation.test.ts
+```
+
+结果：`9 test files passed`，`80 tests passed`，退出码 `0`。覆盖 TaskHub 角色派发门、批准/续接角色门、Worker 未绑定只读、显式 Attempt 切换和安全错误展示。
+
+角色槽复审阻断修复后补跑最小角色组：`4 test files passed`、`13 tests passed`，退出码 `0`。覆盖“不释放不能覆盖”、带旧 Attempt 编号释放、Main release-before-inspect 顺序和 Worker RPC。
+
+```powershell
+npm run typecheck
+npm run build
+git diff --check
+```
+
+结果：三项均通过；类型检查和构建退出码 `0`，`git diff --check` 无错误。构建只出现既有动态导入、大 chunk 和 Office Viewer 插件耗时提示。
+
+```powershell
+node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.ts --workers=1
+```
+
+结果：角色槽严格释放修复后 `1 passed`，耗时 `56.0s`。证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788233094138`。关键证据：`02a-role-required.png`、`02a-role-bound.png`、`02b-checkpoint-restore-preview.png`、`02c-checkpoint-restored.png`、`04-real-diff-and-verification.png`、`06-apply-succeeded.png`、`journey-events.jsonl`、`journey-rows.json`。旅程已删除私有 session seed；结构化总账含 A/B/C 三条默认实现角色的绑定时间和 `sha256:` 摘要。
+
+### 已知风险
+
+1. 检查点恢复跨 Pi 会话、TaskHub 和 Git 工作树三个持久化边界；任何不能证明的中断都会进入 `OUTCOME_UNKNOWN`，需要人工对账而不会自动重跑。当前实现会保守停用该检查点 runtime，后续可研究按 Attempt 隔离恢复。
+2. 每个 Pi Worker 同一时刻只接受一个 Attempt 角色快照；不同 Attempt 的并行角色需要不同 Worker 会话，当前阶段未做生产多会话模型冒烟。
+3. 角色模型选择只验证当前 Pi Worker 已加载且批准的模型；这不是对生产 Runtime 登录、额度或生成质量的证明。
+4. 真实旅程使用一次性 Git 项目和 Scripted Runtime；正式用户项目仍必须经过现有交付审阅和人工应用门。
+5. 检查点工作树目前不额外验证符号链接 target 是否仍位于工作树内；代码审查将其登记为后续安全债，本阶段未扩大修改范围。
+
+### 下一阶段计划
+
+当前固定差异已通过代码标准与规格双复审。提交并推送当前独立 CODING 分支后等待人工验收；未经确认不合入阶段线、不发布，也不进入下一工作包。
+
+## 2026-08-31｜CODING-P1 P2 审查修复候选
+
+### 阶段状态
+
+- 状态：针对 P2 首轮审查的 dispatch 恢复、批准幂等、安全错误和真实 Diff 证据完成修复；聚焦回归、类型检查、构建和 Electron 旅程均通过，等待清洁工作树复核
+- 固定起点：`e992483975ade4bd10aaf1c6fc399a63f42caf93`
+- 独立分支：`agent/coding-p1-pi-extension-pack-v1`
+- 隔离边界：P3 在接线前以独立可恢复暂存保存；未修改 WORK 工作树，未合并阶段线、未发布、未制作 Portable
+
+### 本阶段目标
+
+1. 修复 Runtime dispatch 失败后计划停在 `EXECUTING`、界面无法“继续执行”的恢复缺陷。
+2. 让已落库的同一批准请求在响应丢失后可以安全重放，不产生虚假的正文版本冲突。
+3. 确保 TaskHub/Runtime 抛错只经版本化安全错误返回 Renderer，不把绝对路径或内部状态交给公共 IPC 日志。
+4. 让真实 Electron 旅程展开并断言工作树 Diff 内容，而不是只看“通过”标签。
+
+### 实际修改文件
+
+- `src/main/xiaogui/coding-extensions/attempt-plan-module.ts`
+- `src/main/xiaogui/coding-extensions/attempt-plan-module.test.ts`
+- `src/main/xiaogui/coding-extensions/attempt-ipc.ts`
+- `src/main/xiaogui/coding-extensions/attempt-ipc.test.ts`
+- `src/main/xiaogui/task-hub/execution-orchestrator.ts`
+- `src/main/xiaogui/task-hub/execution-orchestrator.test.ts`
+- `e2e/xiaogui-real-three-task-journey.spec.ts`
+- `doc/coding-p1/CODING-P1-P2-REVIEW.md`
+- `doc/coding-p1/CODING-P1-P2-QA.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 计划 revision 与 digest 现在只标识用户审阅的计划正文；`AWAITING_APPROVAL → APPROVED → EXECUTING` 生命周期变化不再伪造正文新版本。
+2. 同一 `APPROVE` 请求可以在响应丢失后重放并返回同一权威投影；修改正文或 Todo 仍会生成新 revision/digest。
+3. Runtime 在真正进入 `STARTING/RUNNING` 前 dispatch 失败时，TaskHub 将计划从 `EXECUTING` 原子退回原来的 `APPROVED`，Saga 回到 `WORKSPACE_READY`，重启后仍由用户“继续执行”。
+4. 若 Agent 已进入 `STARTING/RUNNING`，继续保持 `OUTCOME_UNKNOWN` 且不重复派发；若计划回滚本身失败，也进入 `OUTCOME_UNKNOWN` 并失败关闭。
+5. `resumeAttempt` 返回失败或抛错时，IPC 返回最新权威计划投影和固定安全错误，不返回异常正文。
+6. 新增真实 `CodingAttemptPlanModuleV1 + Orchestrator + fail-once dispatch` 回归：首次失败后计划为 `APPROVED`，关闭重启后仍保持，第二次人工续接只成功 dispatch 一次并进入 `EXECUTING`。
+7. Electron 旅程会真正展开 Diff，并断言工作树中的 `A-verified`/`B-verified` 变更文本可见。
+8. dispatch 失败后只有权威 Attempt 明确为 `READY` 才允许回滚并重试；authority 不可读、状态非 `READY` 或计划回滚失败均进入 `OUTCOME_UNKNOWN`，防止重复运行。
+9. 已对生产差异和测试逐项完成过拟合、恒真断言、实现镜像、无效测试、不必要抽象、维护负担、虚假信心与范围漂移复核，记录见 `doc/coding-p1/CODING-P1-P2-REVIEW.md`。
+
+### 未完成内容
+
+- P3 检查点、Pi 会话恢复、角色配置及联合旅程尚未接入生产装配，不计入本阶段完成。
+- P2 仍使用 Scripted Runtime 验证 TaskHub、工作树和界面接缝；这不是生产模型生成质量证据。
+- 未运行全量测试；按用户要求只运行直接相关回归、一次类型检查、一次构建和一条 Electron 旅程。
+
+### 与规格文档存在的偏差
+
+- 无新增产品或架构偏差。TaskHub 仍是 Attempt、计划、权限、工作树、验证和恢复的唯一权威；Pi 与 Renderer 只通过窄契约提交草稿和人工决定。
+- 未复制 Claude Code 源码、品牌或第二套状态机；只保持其“计划先审、批准后执行、失败可继续、查看真实 Diff”的交互语义。
+- WORK、DESIGN、Univer Office Surface 以及 DOCX/PDF 降级路径未修改。
+
+### 测试命令和测试结果
+
+```powershell
+node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/attempt-plan-module.test.ts src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/execution-orchestrator.test.ts
+```
+
+结果：`3 test files passed`，`38 tests passed`，退出码 `0`。新增覆盖批准重放、dispatch 失败回滚、SQLite 重启续接、authority 不可读、rollback 失败和异常脱敏。
+
+```powershell
+npm run typecheck
+npm run build
+```
+
+结果：两项退出码均为 `0`。构建只有既有动态导入和大 chunk 提示。
+
+```powershell
+node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.ts --workers=1
+```
+
+结果：`1 passed`，耗时约 1.5 分钟。最新证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788181671956`；`04-real-diff-and-verification.png` 显示已展开的真实统一 Diff 和两条退出码 `0`。
+
+### 已知风险
+
+1. 计划回滚与 Runtime 权威状态之间采用先查询再回滚；若该窗口内状态无法确认，系统选择 `OUTCOME_UNKNOWN`，需要人工对账而不是自动重试。
+2. P2 尚未证明生产 Kimi/Codex 的代码质量，只证明更换 Runtime 时保持相同的 TaskHub 计划与审阅契约。
+3. P3 当前仍是未接线模块，必须在 P2 清洁复核通过后再进入生产装配。
+
+### 下一阶段计划
+
+在固定提交上建立清洁工作树重跑同一最小门禁并完成审查；通过后恢复 P3 工作，接通检查点预览/确认、Pi Session 与工作树联合恢复、三类角色配置与硬权限上限，最后完成真实 Electron 联合旅程。
+
+## 2026-08-31｜CODING-P1 P2 计划、Todo 与真实 Diff 审阅候选
+
+### 阶段状态
+
+- 状态：P2 实现、聚焦测试、类型检查、完整构建和一条真实 Electron 旅程均已通过；本节随独立 P2 提交推送，等待人工/审查 Agent 验收
+- 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`
+- 当前分支：`agent/coding-p1-pi-extension-pack-v1`
+- P1 固定起点：`c2c779d9b6943c8b21db27c40170163998615297`
+- 隔离边界：未修改或合并正在施工的 WORK 分支；未合并阶段线、未发布、未制作 Portable
+
+### 本阶段目标
+
+1. 在每个 TaskHub Attempt 真正执行前建立只读计划门，计划未经人工批准时不得调用 Agent Runtime。
+2. 让 Pi 在 `CODING + PLAN` 中通过隐藏工具提交结构化计划草稿；ASK、EXECUTE、WORK 不开放该工具。
+3. 在现有协作面板显示可修改的计划卡、Attempt 内 Todo 和“批准并开始执行/继续执行”。
+4. 只从真实 Attempt 工作树和真实验证制品生成 Diff、相对路径、退出码和未解决问题，不采信模型自述。
+
+### 实际修改文件
+
+- 共享契约与能力矩阵：`packages/shared/ipc-channels.ts`、`ipc-contract.ts`、`worker-host-tools.ts`、`xiaogui-coding-extension-control.ts`、`xiaogui-coding-extension-pack.ts`、`xiaogui-coding-extension-pack.test.ts`、`xiaogui-coding-plan-prompt.test.ts`、`xiaogui-prompt-capabilities.ts`、`xiaogui-prompt-matrix.ts`、`xiaogui-prompt-matrix.test.ts`
+- Pi / Worker：`src/worker/xiaogui-coding-plan-tool.ts`、`xiaogui-coding-plan-tool.test.ts`、`xiaogui-worker-tools.ts`、`xiaogui-tool-guidelines-baseline.test.ts`
+- Main / TaskHub：`src/main/xiaogui/coding-extensions/attempt-plan-module.ts`、`attempt-plan-module.test.ts`、`attempt-review-module.ts`、`attempt-review-module.test.ts`、`attempt-ipc.ts`、`attempt-ipc.test.ts`、`plan-worker-tool.ts`、`plan-worker-tool.test.ts`、`src/main/xiaogui/task-hub/execution-orchestrator.ts`、`execution-orchestrator.test.ts`、`runtime-composition.ts`、`ipc.ts`、`src/main/xiaogui/worker-host-tool-router.ts`、`worker-host-tool-router.test.ts`、`src/main/xiaogui/index.ts`、`index.test.ts`
+- Renderer：`src/renderer/src/xiaogui/lib/coding-attempt-client.ts`、`coding-attempt-client.test.ts`、`stores/coding-attempt-store.ts`、`coding-attempt-store.test.ts`、`components/CodingAttemptPlanCard.tsx`、`CodingAttemptPlanCard.test.tsx`、`CodingAttemptReviewCard.tsx`、`CodingAttemptReviewCard.test.tsx`、`CollaborationHubPanel.tsx`、`CollaborationHubPanel.test.tsx`
+- 真实旅程：`e2e/xiaogui-real-three-task-journey.spec.ts`
+- 阶段记录：`DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. TaskHub 为每个 Attempt 创建并持久化独立计划；有 Pi 草稿时使用草稿，否则根据已批准任务目标生成明确标识的保守计划。计划 revision、digest、批准状态和 Todo 状态在 SQLite 重启后可恢复。
+2. `WORKSPACE_READY` 状态现在必须先通过计划门。未批准时保持 `READY` 且运行时 dispatch 次数为零；批准精确 revision/digest 后才把状态切为执行中并且只 dispatch 一次。
+3. Pi 新增隐藏工具 `xiaogui_publish_coding_plan`，只在 `CODING + PLAN` 可见。模型只能提交目标、步骤、验证方法和约束，不能提交路径、SessionAddress、Attempt ID 或内部摘要；Main 从可信会话解析地址。
+4. 现有协作面板新增“等待批准计划”分组和计划卡；用户可改目标、步骤标题和验证方法，任何修改都会产生新 revision 并撤销旧版本的批准资格。
+5. “批准并开始执行”同时完成 TaskHub 批准和同一 Attempt 续接；若批准已落库但启动失败，界面保留“继续执行”，不会要求重新批准或静默换 Agent。
+6. Todo 只属于当前 Attempt 的执行步骤，不创建、不重排 TaskHub DAG；执行开始后只允许合法的状态迁移。
+7. 审阅模块从真实 Attempt 工作树生成统一 Diff，并校验 TaskChangeSet、补丁制品和验证制品的绑定。失败、未知或缺少退出状态会明确进入未解决问题，不能形成伪通过。
+8. Renderer 只展示相对路径、验证标签、状态、退出码、未解决问题和 Diff；不展示 Attempt ID、绝对路径、私有会话编号或底层命令。既有验证摘要卡继续展示公开证据/变更集编号及截断 digest，不能据此访问私有工作树或会话。
+
+### 未完成内容
+
+- P3 的 Git/会话联合检查点、恢复预览、角色配置和角色硬权限上限尚未计入本阶段完成范围。
+- 当前生产 TaskHub 默认外部 Runtime 不会自动产出 Pi 计划草稿；没有草稿时使用 TaskHub 任务目标兜底。嵌入式 Pi 的 `CODING + PLAN` 草稿工具链已接通。
+- 尚未提供计划步骤的新增、删除或拖拽重排；P2 只支持冻结规格要求的目标、步骤标题和验证方法修改。
+- 未运行全量测试，未发布，未制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 无架构偏差：计划、批准、Todo、真实工作树和验证继续由 TaskHub 作为唯一权威；Pi 只提交草稿，Renderer 只提交版本化意图。
+- Claude Code 仅作为交互行为基准；界面使用中文和小规品牌，没有复制其源码、像素样式、Agent Loop、权限系统或状态机。
+- P2 真实旅程使用受控 Scripted Runtime，证明计划门、独立工作树、真实 Diff 和验证退出码；不把 Scripted Runtime 宣称为生产模型质量证据。
+- WORK、DESIGN、Univer Office Surface、DOCX HTML 和 PDF 降级路径未修改。
+
+### 测试命令和测试结果
+
+#### 聚焦测试
+
+```powershell
+node_modules\.bin\vitest.cmd run packages/shared/xiaogui-coding-extension-pack.test.ts packages/shared/xiaogui-coding-plan-prompt.test.ts packages/shared/xiaogui-prompt-matrix.test.ts src/worker/xiaogui-coding-plan-tool.test.ts src/worker/xiaogui-tool-guidelines-baseline.test.ts src/main/xiaogui/coding-extensions/attempt-plan-module.test.ts src/main/xiaogui/coding-extensions/attempt-review-module.test.ts src/main/xiaogui/coding-extensions/plan-worker-tool.test.ts src/main/xiaogui/coding-extensions/attempt-ipc.test.ts src/main/xiaogui/task-hub/execution-orchestrator.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/main/xiaogui/task-hub/ipc.test.ts src/main/xiaogui/worker-host-tool-router.test.ts src/main/xiaogui/index.test.ts src/renderer/src/xiaogui/lib/coding-attempt-client.test.ts src/renderer/src/xiaogui/stores/coding-attempt-store.test.ts src/renderer/src/xiaogui/components/CodingAttemptPlanCard.test.tsx src/renderer/src/xiaogui/components/CodingAttemptReviewCard.test.tsx src/renderer/src/xiaogui/components/CollaborationHubPanel.test.tsx
+```
+
+结果：首次联合运行 `127/128` 通过，唯一失败是入口装配测试未模拟新增 IPC 注册；补齐测试替身后相关入口组 `3/3` 通过。所有业务模块和 Renderer 用例均通过，没有修改生产逻辑来迎合失败断言。
+
+#### 类型检查与构建
+
+```powershell
+npm run typecheck
+npm run build
+```
+
+结果：两项退出码均为 `0`。Main、Preload、Renderer、Office Viewer 和 Office Gateway 构建成功；只保留既有动态导入和大 chunk 提示。
+
+#### 真实 Electron 旅程
+
+```powershell
+node_modules\.bin\playwright.cmd test e2e/xiaogui-real-three-task-journey.spec.ts --workers=1
+```
+
+结果：`1 passed`，耗时约 50 秒。真实窗口证实：A/B 的 Attempt 计划出现前 Runtime 启动事件为零；分别人工批准后 A/B 并行，C 等待 A；A/B 验证通过后可读取真实工作树 Diff、相对路径和两条退出码 `0` 的验证记录；C 再经计划批准后完成统一交付，未经最终人工批准前用户项目保持不变。
+
+证据目录：`D:\CodexTemp\xiaogui-hub-m4g-real-journey-v1\evidence\run-1788176415769`。关键截图为 `02-attempt-plans-awaiting-approval.png` 和 `04-real-diff-and-verification.png`；结构化证据为 `journey-events.jsonl`、`journey-rows.json`。
+
+### 已知风险
+
+1. 计划内容由当前模型或任务目标生成，计划门保证人工批准和执行顺序，不保证模型计划本身正确。
+2. 批准成功但进程在 Runtime dispatch 前中断时，计划保持 `APPROVED` 并由“继续执行”恢复；不会自动换 Runtime，也不会重复派发。
+3. 真实 Diff 依赖 Attempt 工作树和持久化 ChangeSet/验证制品一致；任何摘要漂移都会失败关闭并显示未解决问题。
+4. P3 角色与联合检查点仍在独立施工，不能从本阶段推断它们已可用。
+
+### 下一阶段计划
+
+P2 提交推送后等待人工或审查 Agent 验收。通过后进入 P3：接通 Pi 会话与 Attempt 工作树的联合检查点、恢复预览和人工确认；接入研究/实现/审阅角色配置及不可解除的只读上限；完成一条“研究 → 计划 → 实现 → 审阅 → 恢复 → 交付”真实 Electron 旅程。
+
+## 2026-08-31｜CODING-P1 P1 代码上下文与权限候选
+
+### 阶段状态
+
+- 状态：P1 实现、必要边界复核、聚焦测试、类型检查、完整构建、唯一一条真实 Electron 冒烟和最终双轴审查均已完成；本阶段提交推送后停止并等待人工验收
+- 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`
+- 当前分支：`agent/coding-p1-pi-extension-pack-v1`
+- P0 固定起点：`ad7564c9d53d48479bf1a384c276290285080fa2`
+- 隔离边界：未修改或合并正在施工 WORK 的工作树/分支；未合并阶段线、未发布、未制作 Portable
+
+### 本阶段目标
+
+1. 让 CODING 模式的 `@` 文件上下文从项目内相对路径形成受控快照，并由 Pi Extension 真正加入当前 Agent turn。
+2. Main 依据当前 canonical session scope 解析权威项目根，不信任 Renderer 提供的绝对根目录。
+3. 把文件写入、命令和数据外传请求转换为 TaskHub 权威的精确权限意图，提供“允许一次 / 允许本次任务中的相同规则 / 拒绝”。
+4. 验证越界、缺少精确目标、UI 超时、拒绝和重启规则恢复均 fail-closed。
+
+### 实际修改文件
+
+- 共享契约：`packages/shared/ipc-channels.ts`、`packages/shared/ipc-contract.ts`、`packages/shared/xiaogui-agent-runtime.ts`、`packages/shared/xiaogui-coding-extension-pack.ts`
+- Main 上下文链：`src/main/xiaogui/coding-extensions/context-composition.ts`、`context-ipc.ts`、`context-module.ts`、`context-module.test.ts`、`src/main/ipc/handlers/prompt.ts`、`src/main/ipc/schemas.ts`、`src/main/worker-manager.ts`、`src/main/xiaogui/index.ts`
+- Worker / Pi Extension：`src/worker/xiaogui-coding-extensions/context-extension.ts`、`context-extension.test.ts`、`src/worker/handlers/worker-handlers-turn.ts`、`src/worker/worker-port-types.ts`、`src/worker/worker-runtime.ts`
+- TaskHub 权限链：`src/main/xiaogui/coding-extensions/permission-module.ts`、`permission-module.test.ts`、`permission-ui-adapter.ts`、`safe-display-metadata.ts`、`safe-display-metadata.test.ts`、`src/main/xiaogui/task-hub/execution-orchestrator.ts`、`execution-orchestrator.test.ts`、`runtime-composition.ts`
+- Kimi ACP 精确目标：`src/main/xiaogui/agent-runtime/acp/workspace-policy.ts`、`src/main/xiaogui/agent-runtime/kimi-adapter.ts`、`kimi-adapter.test.ts`
+- Renderer 上下文：`src/renderer/src/features/composer/attachments.tsx`、`coding-context-status.ts`、`coding-context-status.test.ts`、`composer.tsx`、`use-composer-file-search.ts`、`use-composer-file-search.test.tsx`、`use-composer-send.ts`、`use-composer-send.test.tsx`
+- Renderer 权限：`src/renderer/src/features/extension-ui/coding-permission-dialog.tsx`、`coding-permission-dialog.test.tsx`、`extension-ui-host.tsx`、`src/renderer/src/lib/extension-ui-channel.ts`、`extension-ui-channel.test.ts`、`src/renderer/src/stores/extension-ui-store.ts`、`src/renderer/src/stores/__tests__/extension-ui-store.test.ts`
+- Direct Extension UI 与来源封套：`src/main/direct-extension-ui.ts`、`src/main/direct-extension-ui.test.ts`、`src/main/worker-manager-pool.ts`、`src/main/__tests__/worker-manager-extension-ui.test.ts`
+- 阶段记录：`DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. `@` 文件搜索仍只产生项目内相对路径；Renderer 只持有 canonical session address、公开摘要和一次性 `xgctx_*` 令牌，不持有 Main 的项目根或源文件全文。
+2. Main 通过 session scope 与 project resolver 解析权威根，拒绝伪造会话、绝对路径、越界路径、目录、二进制和超限内容；公开快照只有相对路径、SHA-256、字节/行数和截断摘要。
+3. Renderer 选择 `@` 文件时只记录相对来源；正式发送前才读取最新正文并生成快照。Main 对快照设置 10 分钟主动到期、最多 64 条和总计 8 MiB 的硬上限，绑定同一 canonical CODING 会话并在发送时一次性消费。
+4. Worker 的隐藏 Pi Extension 使用稳定 `context` hook，把受控 JSON 作为当前模型调用的临时 custom/user context 返回；不修改 `systemPrompt`，也不把正文追加到 Pi 会话历史。文件内容明确标记为不可信用户资料；符号服务不可用时明确使用受控文本降级，不伪装 LSP 结果。
+5. TaskHub 权限意图使用 Runtime 事件中的精确相对路径；所有操作均须至少绑定一个 Attempt manifest 已批准的路径。`COMMAND` 和 `DATA_EGRESS` 还必须携带只在 Main/TaskHub 内部流转的 `sha256:` 动作摘要，展示摘要不能替代权威动作身份。
+6. Kimi ACP 的厂商 edit 权限和主机写入权限均携带精确相对目标；工作区策略继续在实际读写时独立校验文件身份、摘要和 Attempt 工作树边界。
+7. Main 统一的展示元数据边界会在原始值归一化前拒绝控制字符，并拒绝字符串任意位置的 Windows/UNC/POSIX 绝对路径、`file:` URL、Authorization/Bearer/token 等凭据形态及 URL userinfo；原始命令、凭据、绝对路径和动作摘要均不进入 Renderer 公开契约。
+8. Task 级规则按 Attempt + 操作 + 精确路径 + 私有动作摘要持久化；重启后只复用完全相同的规则。UI 不可用或 55/60 秒超时均自动拒绝并清理悬挂对话框。
+9. Renderer 权限请求改为 FIFO 队列，并发 Attempt 不再互相覆盖；Direct Extension UI 在超时或窗口发送异常时先清理 pending/listener，再安全失败。
+10. Main 给 Worker 转发请求强制覆盖为 `origin: worker`；Renderer 只接受 Main 直发、编号格式与完整 Prompt 契约均通过校验的 `xiaogui-direct` Coding 权限弹窗，Worker 无法冒充权威权限界面。
+
+### 未完成内容
+
+- 尚未接入真实 LSP 服务；当前按冻结规格明确降级为受控文本搜索/上下文，界面显示“符号服务不可用”，不会伪装符号级结果。
+- 当前生产 Kimi Adapter 继续禁用终端，因此 `COMMAND` 由版本化契约、TaskHub 和 Scripted 事件测试证明，尚无生产 Kimi 命令执行入口；本阶段没有为验收而放宽终端白名单。
+- 当前 Kimi 本机运行时不会主动发起 `DATA_EGRESS` 工具事件；外传目标链已在 TaskHub/Renderer 聚焦测试中验证，但真实云端 Adapter 仍须在后续运行时工作包中接入。
+- P2 计划卡、Todo、真实 Diff/验证审阅和 P3 检查点/角色配置未施工。
+- 未运行全量测试、未合并、未发布、未制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 没有产品或架构偏差：继续复用 Pi Extension、Renderer Extension UI、TaskHub 和既有 Agent Runtime；未复制 Claude Code 源码，未引入第二套 Agent Loop、权限系统或状态机。
+- 规格允许 LSP 不可用时明确降级；本阶段选择 `CONTROLLED_TEXT_FALLBACK`，而不是引入新的 LSP 依赖或伪造符号结果。
+- 命令与外传的生产 Adapter 触发尚未开放，这是既有 Kimi 终端禁用和云端运行时未接入的真实边界，已明确记录而非宣称生产可用。
+- WORK、DESIGN、Univer Office Surface、DOCX HTML 和 PDF 降级路径均未修改。
+
+### 测试命令和测试结果
+
+#### 聚焦测试
+
+```bat
+set TEMP=D:\CodexTemp\xiaogui-coding-p1-evidence\final-tmp
+set TMP=D:\CodexTemp\xiaogui-coding-p1-evidence\final-tmp
+set NODE_OPTIONS=--max-old-space-size=4096
+node_modules\.bin\vitest.cmd run packages/shared/xiaogui-coding-extension-pack.test.ts packages/shared/xiaogui-agent-runtime.test.ts src/worker/xiaogui-coding-extensions/extension-pack.test.ts src/worker/xiaogui-coding-extensions/context-extension.test.ts src/main/xiaogui/task-hub/coding-extension-seam-bridge.test.ts src/main/xiaogui/coding-extensions/context-module.test.ts src/renderer/src/features/composer/coding-context-status.test.ts src/renderer/src/features/composer/use-composer-file-search.test.tsx src/renderer/src/features/composer/use-composer-send.test.tsx src/main/xiaogui/coding-extensions/permission-module.test.ts src/renderer/src/features/extension-ui/coding-permission-dialog.test.tsx src/main/xiaogui/task-hub/execution-orchestrator.test.ts src/main/xiaogui/agent-runtime/kimi-adapter.test.ts src/main/xiaogui/agent-runtime/runtime-host.test.ts src/main/direct-extension-ui.test.ts src/renderer/src/stores/__tests__/extension-ui-store.test.ts src/renderer/src/lib/extension-ui-channel.test.ts --maxWorkers=1 --reporter=dot
+```
+
+结果：`17 test files passed`，`101 tests passed`，退出码 `0`。覆盖权威项目根、发送前读取、全文私有注入、快照容量/主动到期、一次性会话绑定、越界拒绝、精确文件目标、私有动作摘要、安全展示元数据、权限 FIFO、超时清理、规则重启恢复和 Kimi ACP 精确路径。原始日志：`D:\CodexTemp\xiaogui-coding-p1-evidence\focused-tests.log`。
+
+最终工程复核只补跑 5 个直接相关文件，没有重复上述 101 项或全量测试：
+
+```bat
+node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/safe-display-metadata.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts src/main/__tests__/worker-manager-extension-ui.test.ts src/renderer/src/lib/extension-ui-channel.test.ts src/worker/xiaogui-coding-extensions/context-extension.test.ts
+```
+
+结果：`5 test files passed`，`29 tests passed`，退出码 `0`。新增覆盖敏感摘要绕过、Worker 来源冒充、Renderer 完整契约校验，以及正文只进入临时 user-context、不进入 systemPrompt。原始日志：`D:\CodexTemp\xiaogui-coding-p1-evidence\boundary-tests.log`。
+
+最终审查只针对新增的 POSIX 绝对路径边界补跑两个直接相关文件：
+
+```bat
+node_modules\.bin\vitest.cmd run src/main/xiaogui/coding-extensions/safe-display-metadata.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts
+```
+
+结果：`2 test files passed`，`21 tests passed`，退出码 `0`；覆盖单段路径以及 `> ; | &` 等 shell 分隔符后的绝对路径。原始日志：`D:\CodexTemp\xiaogui-coding-p1-evidence\sanitizer-final.log`。最终 Standards/Spec 复核结果均为 `APPROVE`，且确认未扩展至 P2、P3 或 WORK。
+
+#### 类型检查、构建与差异检查
+
+```powershell
+npm run typecheck
+npm run build
+git diff --check
+```
+
+结果：最终边界修复后的类型检查和完整构建退出码均为 `0`；主进程、Preload、Renderer、Office Viewer、Office Gateway 均构建成功。构建仅保留既有动态导入/大 chunk 提示。最终构建日志：`D:\CodexTemp\xiaogui-coding-p1-evidence\build-final.log`。差异检查在最终暂存前执行。
+
+#### 真实 Electron 冒烟
+
+- 只执行一条桌面冒烟：`node D:\CodexTemp\xiaogui-coding-p1-evidence\p1-electron-turn-smoke.mjs`，退出码 `0`；没有另增 E2E 测试文件。
+- 本机临时 OpenAI-compatible 模型桩收到且只收到一次真实 Electron Main → Worker → Pi Extension 发出的 Agent 请求；请求中包含 `src/answer.ts` 的当前正文和受控上下文标记，并确认正文位于 user-role context、systemPrompt 不含正文。
+- Main IPC 公开快照不含源文本和项目绝对根；结构化证据只保存布尔检查、相对路径、SHA-256 和字节数，不保存请求正文。
+- 真实 Renderer 先拒绝一份 `origin: worker` 的伪造 Coding 权限请求，再显示 Main 直发的权限对话框；界面精确展示 `src/answer.ts` 和三个冻结决定，并实际点击完成“允许一次”。
+- 结构化证据：`D:\CodexTemp\xiaogui-coding-p1-evidence\p1-electron-smoke.json`。
+- 可见证据：`D:\CodexTemp\xiaogui-coding-p1-evidence\p1-permission-dialog.png`。
+
+### 已知风险
+
+1. 快照在正式发送前才生成并立即消费；若进程在两步之间异常中断，未消费快照仍会在 10 分钟后主动删除，并受 64 条/8 MiB 总量硬上限保护。
+2. 单次上下文总量上限 1 MiB、最多 20 个来源；大文件会明确标记截断，不能视为已读取全文。
+3. 当前快照正文使用 UTF-8 文本回退；包含 NUL 的二进制会拒绝，但其他非 UTF-8 文本可能出现替换字符，后续 LSP/编码探测接入前不得声称语义完整。
+4. Permission Task Rule 持久化在本机 TaskHub SQLite，仅绑定 Attempt、精确路径和私有动作摘要；没有新增账号或多人身份语义。
+5. 当前生产 Kimi 仍未开放终端，云端 Adapter 也未接入外传事件，因此 `COMMAND` / `DATA_EGRESS` 的真实生产触发仍是后续运行时工作包边界。
+6. 唯一 Electron 冒烟使用本机模型桩验证传输与 UI 接缝，不代表任一真实云模型的生成质量或语义能力。
+
+### 下一阶段计划
+
+本阶段双审和提交推送完成后停止，等待人工验收。人工验收通过后才进入 P2：只读计划阶段、计划卡修改/批准、Attempt 内 Todo、真实工作树 Diff 与验证证据；不提前施工 P3。
+
+## 2026-08-31｜CODING-P1 P0 六个受控扩展契约与三接缝 Spike
+
+### 阶段状态
+
+- 状态：P0 契约、接缝 Spike、聚焦验证和双轴只读审查完成，等待人工验收
+- 独立工作树：`D:\CodexWorktrees\xiaogui-coding-extension-pack-v1`
+- 当前分支：`agent/coding-p1-pi-extension-pack-v1`
+- 冻结基线：`planning-agent/agent/next-phase-prompt-office-v1@0f7d74bbe1e8e41aa3294f0d7f0cc9a919f2c937`
+- 隔离边界：未修改正在施工 WORK 的工作树或分支；未合并阶段线、未发布、未制作 Portable
+
+### 本阶段目标
+
+1. 冻结 `XiaoguiCodingExtensionPackV1` 的六个受控 Coding Module manifest。
+2. 冻结 Pi Extension、TaskHub、Renderer Extension UI 三条接缝使用的版本化窄契约。
+3. 用进程内 Scripted Adapter 证明 `Pi Extension → TaskHub → Renderer` 的注册事件可以确定性往返。
+4. 保证 P0 不注册生产工具、不启用生产模块、不改变现有 CODING、WORK 或 TaskHub 状态机。
+
+### 实际修改文件
+
+- `packages/shared/index.ts`
+- `packages/shared/xiaogui-coding-extension-pack.ts`
+- `packages/shared/xiaogui-coding-extension-pack.test.ts`
+- `src/worker/xiaogui-coding-extensions/extension-pack.ts`
+- `src/worker/xiaogui-coding-extensions/extension-pack.test.ts`
+- `src/main/xiaogui/task-hub/coding-extension-seam-bridge.ts`
+- `src/main/xiaogui/task-hub/coding-extension-seam-bridge.test.ts`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 新增 `CodingExtensionManifestV1`，冻结代码上下文与符号、权限、计划、Diff 审阅、Git 检查点、角色配置六个 Module 的编号、中文名称、能力与三条必需接缝。
+2. 六个 Module 均固定为仅允许 `CODING`、`defaultEnabled: false`；P0 Pi Factory 只发出 `MODULE_REGISTERED`，不注册 hook 或工具。
+3. 新增上下文、权限意图、计划草稿、审阅证据、检查点与角色配置六组共享 V1 契约，以及注册事件、TaskHub 回执、Renderer 投影和往返回执。
+4. 注册事件运行时校验采用冻结 manifest 和精确字段集合；伪造能力、未知字段及夹带绝对路径会在进入 TaskHub 前失败关闭。
+5. 新增单一 `dispatch` 接缝桥：TaskHub 必须先接受事件，Renderer 才能收到只含扩展编号、中文名称、序号和就绪状态的窄投影。
+6. 用六个隐藏 Pi Module、Scripted TaskHub Port 和 Scripted Renderer Port 完成一次进程内往返，证明事件顺序、投影和回执一致。
+7. 完成 Standards 与规格符合性两路只读审查；代码实现无 blocker，阶段收口要求已落实到本记录、独立提交和独立分支推送。
+
+### 未完成内容
+
+- P1 的 `@` 文件/符号上下文、LSP 降级、命令/写入/路径/外传权限对话框尚未施工。
+- 六个 Module 尚未装配进生产 `worker-runtime`，也没有任何生产工具、Renderer 控件或 TaskHub 持久化行为。
+- P2 的计划卡、Todo、真实工作树 Diff 和验证审阅尚未施工。
+- P3 的检查点恢复、角色编辑及真实 Electron 联合旅程尚未施工。
+- P0 没有可见生产 UI，因而本阶段以进程内三接缝 Scripted 往返作为冒烟证据；没有伪装成生产 Electron 功能已接通。
+- 未运行全量测试、未合并阶段线、未覆盖 WORK 主线、未发布或制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 无产品或架构决策偏差：实现继续复用 Pi Extension、Renderer Extension UI 和 TaskHub 三条冻结接缝，没有复制 Claude Code 源码，也没有引入第二套 Agent Loop、权限系统或任务状态机。
+- P0 只证明契约和进程内 Scripted 往返，没有提前装配生产 runtime 或呈现 Renderer UI；这符合“先契约和 Spike，再替换生产功能”的阶段边界。
+- 本阶段未修改 WORK、DESIGN、Univer Office Surface、DOCX HTML 或 PDF 降级路径。
+
+### 测试命令和测试结果
+
+#### TDD 与聚焦测试
+
+新增契约、Pi 注册器、三接缝往返和绝对路径夹带防护均先观察到目标失败，再补最小实现至通过。
+
+```powershell
+.\node_modules\.bin\vitest.cmd run packages/shared/xiaogui-coding-extension-pack.test.ts src/worker/xiaogui-coding-extensions/extension-pack.test.ts src/main/xiaogui/task-hub/coding-extension-seam-bridge.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/main/direct-extension-ui.test.ts --reporter=dot
+```
+
+结果：`5 test files passed`，`15 tests passed`，退出码 `0`。其中包含现有 Scripted Runtime composition 和 Direct Extension UI 接缝回归。
+
+#### 类型检查、构建和差异检查
+
+```powershell
+npm run typecheck
+npm run build
+git diff --cached --check
+```
+
+结果：三项退出码均为 `0`。主进程、Preload、Renderer、Office Viewer 和 Office Gateway 构建成功；仅有既有 chunk 体积提示，没有新增构建失败。
+
+#### 基线债务复核
+
+```powershell
+.\node_modules\.bin\vitest.cmd run src/worker/xiaogui-prompt/session-extension.test.ts
+```
+
+结果：该既有 WORK 测试在本独立分支和未改动的基线 WORK 工作树均为 `2 failed / 4 passed`，失败原因是旧断言仍期望 `enabledCapabilities: ['work.file-organize']`，而当前基线返回空数组。P0 未修改 Prompt/WORK 文件，不在本包放宽或改写该测试。
+
+### 已知风险
+
+1. 当前三接缝桥是契约 Spike，没有持久化、重启恢复或生产 Renderer 生命周期，不能视为 P1-P3 已完成。
+2. `CodingRoleProfileV1.systemPrompt` 已被冻结为契约字段；未来落地时必须作为本机私有配置处理，不得进入公开 TaskHub/Renderer 事件。
+3. 六个 Module 后续接入生产时必须继续保持 TaskHub 为 Attempt、权限、工作树、验证和恢复的唯一权威。
+4. 基线存在一项与本包无关的 WORK Prompt 测试债务，后续应由 WORK 主线单独修正，不能在 Coding 分支混改。
+5. 构建复用 D 盘既有 `node_modules` Junction，未执行 `npm install` 或 `npm ci`；依赖内容由当前冻结基线提供。
+
+### 下一阶段计划
+
+本阶段结束后停止施工并等待人工或审查 Agent 验收。只有 P0 验收通过后，才在同一独立 Coding 分支进入 P1：
+
+1. 实现项目范围内的 `@` 文件/符号上下文和明确 LSP 降级；
+2. 接入命令、写入、路径与数据外传权限意图；
+3. 复用现有 Extension UI 做“允许一次 / 允许本次任务中的相同规则 / 拒绝”；
+4. 验证拒绝、超时、越界及重启恢复后，再提交独立 P1 验收点。
+
 ## 2026-08-31｜WORK 普通文档直达选择器与模板库右栏迁移
 
 ### 阶段状态
