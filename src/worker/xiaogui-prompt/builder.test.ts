@@ -53,6 +53,7 @@ describe('Xiaogui effective Prompt Builder V1', () => {
     ])
     expect(work.productPrompt).toContain('# 运行事实')
     expect(work.productPrompt).toContain('本轮可用产品能力：work.file-organize')
+    expect(work.productPrompt).not.toContain('template-intake-analysis@1.2.0')
   })
 
   it('hashes the complete normalized Effective Prompt and excludes generatedAt', () => {

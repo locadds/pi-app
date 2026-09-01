@@ -4,8 +4,12 @@ import type {
   ExtensionContext,
   LoadExtensionsResult,
 } from '@earendil-works/pi-coding-agent'
-import type { TemplateIntakeReportV1 } from '@shared/xiaogui-work-docx-template-intake'
 import { TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1 } from '@shared/xiaogui-prompt-capabilities'
+import {
+  TEMPLATE_INTAKE_RISK_FLAG_LABELS_V1,
+  TEMPLATE_INTAKE_RISK_FLAGS_V1,
+  type TemplateIntakeReportV1,
+} from '@shared/xiaogui-work-docx-template-intake'
 
 import {
   __test,
@@ -119,13 +123,41 @@ beforeEach(() => {
 
 describe('xiaogui WORK finished-DOCX intake tool', () => {
   it('uses a separately versioned analysis Prompt and rejects invalid structured output explicitly', () => {
+    expect(TEMPLATE_INTAKE_RISK_FLAGS_V1).toEqual([
+      'SIGNATURE',
+      'SEAL',
+      'CONTACT_INFORMATION',
+      'OLD_PROJECT_DRAWING',
+      'SCANNED_ATTACHMENT',
+      'FLOATING_OBJECT',
+      'TEXT_BOX',
+      'OTHER',
+    ])
+    expect(TEMPLATE_INTAKE_RISK_FLAG_LABELS_V1).toEqual({
+      SIGNATURE: '签字',
+      SEAL: '印章',
+      CONTACT_INFORMATION: '联系方式',
+      OLD_PROJECT_DRAWING: '旧项目图件',
+      SCANNED_ATTACHMENT: '扫描附件',
+      FLOATING_OBJECT: '浮动对象',
+      TEXT_BOX: '文本框',
+      OTHER: '其他',
+    })
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.id)
       .toBe('template-intake-analysis')
-    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.version).toBe('1.1.0')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.version).toBe('1.2.0')
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
-      .toContain('template-intake-analysis@1.1.0')
+      .toContain('template-intake-analysis@1.2.0')
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
       .toContain('未提到的原文默认保留')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
+      .toContain('签字 SIGNATURE、印章 SEAL、联系方式 CONTACT_INFORMATION、旧项目图件 OLD_PROJECT_DRAWING、扫描附件 SCANNED_ATTACHMENT、浮动对象 FLOATING_OBJECT、文本框 TEXT_BOX、其他 OTHER')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
+      .toContain('没有对应风险时 riskFlags 必须为空数组')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
+      .toContain('"riskFlags":["SIGNATURE"]')
+    expect(JSON.stringify(loadTool()?.parameters))
+      .toContain('风险代码：签字 SIGNATURE、印章 SEAL、联系方式 CONTACT_INFORMATION、旧项目图件 OLD_PROJECT_DRAWING、扫描附件 SCANNED_ATTACHMENT、浮动对象 FLOATING_OBJECT、文本框 TEXT_BOX、其他 OTHER')
 
     const fragments = [{
       fragmentId: 'F001',
@@ -157,16 +189,30 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
         reason: '项目名称每次使用时变化',
         confidence: 0.97,
         suggestedName: '项目名称',
+        riskFlags: ['OTHER'],
       }],
     }), fragments)).toEqual([expect.objectContaining({
       fragmentIds: ['F001'],
       scope: 'SELECTION',
+      riskFlags: ['OTHER'],
       selection: {
         originalText: '下盐公路工程',
         startUtf16: 5,
         endUtf16Exclusive: 11,
       },
     })])
+    expect(() => __test.validateSuggestions(JSON.stringify({
+      suggestions: [{
+        fragmentIds: ['F001'],
+        scope: 'SELECTION',
+        selectedText: '下盐公路工程',
+        kind: 'VARIABLE',
+        reason: '项目名称每次使用时变化',
+        confidence: 0.97,
+        suggestedName: '项目名称',
+        riskFlags: ['STAMP'],
+      }],
+    }), fragments)).toThrow('MODEL_SCHEMA_INVALID')
 
     // 模型不必穷举固定段落；没有建议即表示原文保留。
     expect(__test.validateSuggestions('{"suggestions":[]}', fragments)).toEqual([])
@@ -237,7 +283,18 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
       })
     const complete = vi
       .fn()
-      .mockResolvedValueOnce(modelResponse('{not-json'))
+      .mockResolvedValueOnce(modelResponse(JSON.stringify({
+        suggestions: [{
+          fragmentIds: ['F001'],
+          scope: 'SELECTION',
+          selectedText: '旧项目',
+          kind: 'VARIABLE',
+          reason: '不同项目需要替换',
+          confidence: 0.9,
+          suggestedName: '项目名称',
+          riskFlags: ['STAMP'],
+        }],
+      })))
       .mockResolvedValueOnce(
         modelResponse(
           JSON.stringify({
@@ -271,6 +328,10 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
       expect(call[2]).toMatchObject({ cacheRetention: 'none' })
       expect(call[2].sessionId).toEqual(expect.any(String))
     }
+    expect(complete.mock.calls[1]?.[1].messages[0]?.content[0]?.text)
+      .toContain('riskFlags 只能使用以下合法值')
+    expect(complete.mock.calls[1]?.[1].messages[0]?.content[0]?.text)
+      .toContain('其他 OTHER')
     const secondHostPayload = requestWorkerHostToolMock.mock.calls[1]?.[0]?.payload
     expect(secondHostPayload.analysis).toMatchObject({ status: 'COMPLETE' })
     const published = JSON.stringify(result)

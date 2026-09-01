@@ -96,7 +96,9 @@ describe('Pi Prompt catalog Effective Prompt entry', () => {
 
     const subtask = entries.find((entry) => entry.id === 'builtin:subtask:template-intake-analysis')
     expect(readCodeOwnedPromptCatalogResourceV1(subtask?.path || '')?.content)
-      .toContain('template-intake-analysis@1.1.0')
+      .toContain('template-intake-analysis@1.2.0')
+    expect(readCodeOwnedPromptCatalogResourceV1(subtask?.path || '')?.content)
+      .toContain('其他 OTHER')
   })
 
 })

@@ -12,12 +12,15 @@ import { z } from 'zod'
 
 import {
   TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1,
+  TEMPLATE_INTAKE_RISK_FLAG_GUIDANCE_V1,
   XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
 } from '@shared/xiaogui-prompt-capabilities'
 import {
   type TemplateIntakeDraftDecisionItemV1,
   type TemplateIntakeReportV1,
   type TemplateIntakeUpdateOperationV1,
+  TEMPLATE_INTAKE_RISK_FLAG_LABELS_V1,
+  TEMPLATE_INTAKE_RISK_FLAGS_V1,
 } from '@shared/xiaogui-work-docx-template-intake'
 import { summarizeTemplateReviewActionsV2 } from '@shared/xiaogui-template-review-decisions'
 import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
@@ -55,16 +58,12 @@ const DecisionKindSchema = Type.Union([
   Type.Literal('UNRESOLVED'),
 ])
 
-const RiskFlagSchema = Type.Union([
-  Type.Literal('SIGNATURE'),
-  Type.Literal('SEAL'),
-  Type.Literal('CONTACT_INFORMATION'),
-  Type.Literal('OLD_PROJECT_DRAWING'),
-  Type.Literal('SCANNED_ATTACHMENT'),
-  Type.Literal('FLOATING_OBJECT'),
-  Type.Literal('TEXT_BOX'),
-  Type.Literal('OTHER'),
-])
+const RiskFlagSchema = Type.Union(
+  TEMPLATE_INTAKE_RISK_FLAGS_V1.map((flag) => Type.Literal(flag)),
+)
+const RiskFlagDescription = `风险代码：${TEMPLATE_INTAKE_RISK_FLAGS_V1
+  .map((flag) => `${TEMPLATE_INTAKE_RISK_FLAG_LABELS_V1[flag]} ${flag}`)
+  .join('、')}`
 
 const UpdateFieldsSchema = {
   decision: DecisionKindSchema,
@@ -95,8 +94,7 @@ const UpdateOperationSchema = Type.Object(
             Type.Array(RiskFlagSchema, {
               minItems: 1,
               maxItems: 8,
-              description:
-                '风险代码：签字 SIGNATURE、印章 SEAL、联系方式 CONTACT_INFORMATION、旧项目图件 OLD_PROJECT_DRAWING、扫描附件 SCANNED_ATTACHMENT、浮动对象 FLOATING_OBJECT、文本框 TEXT_BOX、其他 OTHER',
+              description: RiskFlagDescription,
             }),
           ),
           keywords: Type.Optional(
@@ -162,16 +160,7 @@ const ModelSuggestionSchema = z
     reason: z.string().min(1).max(1_000),
     confidence: z.number().min(0).max(1).nullable(),
     suggestedName: z.string().min(1).max(120).optional(),
-    riskFlags: z.array(z.enum([
-      'SIGNATURE',
-      'SEAL',
-      'CONTACT_INFORMATION',
-      'OLD_PROJECT_DRAWING',
-      'SCANNED_ATTACHMENT',
-      'FLOATING_OBJECT',
-      'TEXT_BOX',
-      'OTHER',
-    ])).max(8).optional(),
+    riskFlags: z.array(z.enum(TEMPLATE_INTAKE_RISK_FLAGS_V1)).max(8).optional(),
   })
   .strict()
 
@@ -434,7 +423,7 @@ async function completeBatch(
 ): Promise<string> {
   if (!context.model) throw new Error('MODEL_UNAVAILABLE')
   const userText = repairInput
-    ? `上一份输出不符合结构或引用了不存在的片段编号。只修复格式和引用，不增加事实。\n允许的片段编号：${batch.fragments.map((fragment) => fragment.fragmentId).join('、')}\n上一份输出：\n${repairInput.slice(0, 12_000)}`
+    ? `上一份输出不符合结构、包含非法 riskFlags 或引用了不存在的片段编号。只修复格式和引用，不增加事实。\n${TEMPLATE_INTAKE_RISK_FLAG_GUIDANCE_V1}\n允许的片段编号：${batch.fragments.map((fragment) => fragment.fragmentId).join('、')}\n上一份输出：\n${repairInput.slice(0, 12_000)}`
     : batchPrompt(batch)
   const response = await context.modelRegistry.complete(
     context.model,

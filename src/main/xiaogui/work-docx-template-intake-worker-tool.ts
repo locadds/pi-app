@@ -5,7 +5,10 @@ import {
   type WorkerHostToolErrorCodeV1,
   type WorkerHostToolOutcomeV1,
 } from '@shared/worker-host-tools'
-import type { TemplateIntakeErrorCodeV1 } from '@shared/xiaogui-work-docx-template-intake'
+import {
+  TEMPLATE_INTAKE_RISK_FLAGS_V1,
+  type TemplateIntakeErrorCodeV1,
+} from '@shared/xiaogui-work-docx-template-intake'
 import type { SessionAddressV1 } from '@shared/xiaogui-session-scope'
 
 import type { WorkerHostToolRequestHandler } from '../worker-manager-types'
@@ -26,16 +29,7 @@ const CandidateKindSchema = z.enum([
   'EXCLUDE',
   'UNRESOLVED',
 ])
-const RiskFlagSchema = z.enum([
-  'SIGNATURE',
-  'SEAL',
-  'CONTACT_INFORMATION',
-  'OLD_PROJECT_DRAWING',
-  'SCANNED_ATTACHMENT',
-  'FLOATING_OBJECT',
-  'TEXT_BOX',
-  'OTHER',
-])
+const RiskFlagSchema = z.enum(TEMPLATE_INTAKE_RISK_FLAGS_V1)
 const FinalDecisionSchema = CandidateKindSchema.exclude(['UNRESOLVED'])
 const WarningCodeSchema = z.enum([
   'PAGE_COUNT_UNKNOWN',

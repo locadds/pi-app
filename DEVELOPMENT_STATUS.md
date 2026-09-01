@@ -1,5 +1,42 @@
 # 小规开发阶段状态
 
+## 2026-09-01｜Prompt 分层优化 A1：intake `riskFlags` 契约
+
+### 阶段状态
+
+- 状态：实现、TDD、全套件、typecheck、生产构建和 Prompt 预算/SHA 回归均已完成；本分支阶段候选，提交并推送后停在人工验收门。
+- 当前分支：`codex/coding-work-integration-v1`。
+- 起点：`671290c784cf8192211e76e1a7d5a73433f844ed`。
+- 本地工作树：`D:\CodexWorktrees\xiaogui-coding-work-integration-v1`。
+- 验收边界：仅完成 A1；A2、A3、B1/B2/B3/B5、B4 均未开始。本阶段未进入主线，也未取得正式发布验收。
+
+### 已完成内容
+
+1. 新增运行时唯一事实源 `TEMPLATE_INTAKE_RISK_FLAGS_V1`，固定八个合法值，并增加同源中文标签映射；`TemplateIntakeRiskFlagV1` 由常量派生。
+2. Worker Tool 的 TypeBox、模型输出 Zod 与 Main host-tool Zod 全部由共享常量派生，不再维护三份枚举副本。
+3. `template-intake-analysis` 升级至 `1.2.0`：系统 Prompt 明列中英文合法值和“无风险时为空数组”，严格 JSON 示例只使用合法值。
+4. 一次性 repair 明确把非法 `riskFlags` 视为结构错误，并复用与系统 Prompt 完全相同的枚举说明；第二次仍非法时继续走既有安全降级。
+5. Prompt Catalog 展示 `template-intake-analysis@1.2.0`；Builder 回归确认该临时子模型 Prompt 不进入产品 System Prompt，因此未改主 Builder 固定哈希。
+6. `doc/architecture/xiaogui-prompt-inventory.md` 已同步独立子模型边界、版本和单一事实源要求。
+
+### 红绿证据与验证结果
+
+- 红灯一：先把版本/枚举说明契约改为 `1.2.0`，聚焦测试稳定得到 `1 failed / 7 passed`（实际仍为 `1.1.0`）。最小实现后 `8/8` 转绿。
+- 红灯二：先要求 repair 复用同一枚举说明，聚焦测试稳定得到 `1 failed / 7 passed`。补齐 repair 后 `8/8` 转绿。
+- 最终聚焦回归：4 个测试文件、36 项测试全部通过，覆盖八值/中文映射、TypeBox 描述派生、合法与非法值、一次 repair、安全降级、Catalog 版本和产品 Prompt 隔离。
+- 默认并发全套件首次运行：399 个文件通过，4 个文件中的 5 项 Git/SQLite 集成测试因 5 秒超时并伴随 Windows `EBUSY` 失败；相关 4 文件单 worker 隔离复跑 `40/40` 通过。
+- 完整单 worker 复验：403 个测试文件、2307 项测试全部通过；2 个真实环境 smoke 按设计跳过。该结果排除了默认并发临时资源争用。
+- `npm run typecheck`：通过。
+- `npx electron-vite build`：通过；只有既有动态导入提示，无构建错误。
+- Builder 预算/隐私测试：产品 Prompt 不超过 7000 字、Runtime Facts 不超过 600 字，Manifest SHA 由真实正文生成且子模型 Prompt 不混入产品层。
+- `git diff --check`：提交前执行；仅允许 Windows LF → CRLF 提示，不允许空白错误。
+
+### 未完成与人工验收门
+
+- A1 不改变 Renderer、真实窗口交互或 Tool 调用时序，因此本阶段没有新增真实窗口旅程；人工验收重点为 Prompt Catalog 文案、模型合法 `riskFlags` 输出及非法输出降级行为。
+- A2 长 `.doc` 快捷入口、A3 sticky 确认语法、B 包 Prompt 归组/去噪以及 B4 默认角色迁移必须在本阶段提交、推送、远端 SHA 和干净工作树确认后另阶段启动。
+- 未修改 Prompt 六层组装顺序、Office/模板状态机、Univer、DOCX 降级、TaskHub、IPC 安全门、数据库表结构或主线分支。
+
 ## 2026-09-01｜WORK研究 P0 续：普通文档能力未加载双根因修复
 
 ### 阶段状态

@@ -4,7 +4,8 @@
 
 - 契约：`xiaogui.prompt-contract.v1` / `1.0.0`
 - 矩阵：`xiaogui.prompt-matrix.v1` / `1.0.0`
-- 日期：2026-08-30
+- 模板整理子任务 Prompt：`template-intake-analysis` / `1.2.0`
+- 日期：2026-09-01
 - 状态：PR1—PR5 功能候选；阶段线与正式发布仍需独立批准
 
 ## 一、唯一组装链
@@ -48,6 +49,15 @@ Pi 最终 System Context
 | 专用 Subtask Prompts | 如 `template-intake-analysis` | 只进入对应临时模型调用 | 产品代码只读 |
 
 代码内置只读项使用 `xiaogui://` 虚拟资源，不伪装为本地文件，也不能保存。
+
+### 专用模板整理子任务
+
+`template-intake-analysis@1.2.0` 只进入普通成品文档模板整理的临时模型调用，不进入
+`xiaoguiPromptBuilderV1` 产品 System Prompt 或 Effective Prompt Manifest。它只允许输出
+`SIGNATURE`、`SEAL`、`CONTACT_INFORMATION`、`OLD_PROJECT_DRAWING`、
+`SCANNED_ATTACHMENT`、`FLOATING_OBJECT`、`TEXT_BOX`、`OTHER` 八种
+`riskFlags`；无对应风险时必须输出空数组。运行时类型、Worker/Main 严格校验、系统 Prompt
+和一次性 repair 提示均复用 `TEMPLATE_INTAKE_RISK_FLAGS_V1`，不得各自维护枚举副本。
 
 ## 三、Mode、Phase、Capability 与 Tool
 

@@ -97,15 +97,29 @@ export type TemplateIntakeFinalDecisionKindV1 = Exclude<
   'UNRESOLVED'
 >
 
-export type TemplateIntakeRiskFlagV1 =
-  | 'SIGNATURE'
-  | 'SEAL'
-  | 'CONTACT_INFORMATION'
-  | 'OLD_PROJECT_DRAWING'
-  | 'SCANNED_ATTACHMENT'
-  | 'FLOATING_OBJECT'
-  | 'TEXT_BOX'
-  | 'OTHER'
+export const TEMPLATE_INTAKE_RISK_FLAGS_V1 = [
+  'SIGNATURE',
+  'SEAL',
+  'CONTACT_INFORMATION',
+  'OLD_PROJECT_DRAWING',
+  'SCANNED_ATTACHMENT',
+  'FLOATING_OBJECT',
+  'TEXT_BOX',
+  'OTHER',
+] as const
+
+export type TemplateIntakeRiskFlagV1 = typeof TEMPLATE_INTAKE_RISK_FLAGS_V1[number]
+
+export const TEMPLATE_INTAKE_RISK_FLAG_LABELS_V1 = {
+  SIGNATURE: '签字',
+  SEAL: '印章',
+  CONTACT_INFORMATION: '联系方式',
+  OLD_PROJECT_DRAWING: '旧项目图件',
+  SCANNED_ATTACHMENT: '扫描附件',
+  FLOATING_OBJECT: '浮动对象',
+  TEXT_BOX: '文本框',
+  OTHER: '其他',
+} as const satisfies Readonly<Record<TemplateIntakeRiskFlagV1, string>>
 
 export interface TemplateIntakeCandidateV1 {
   candidateId: string
