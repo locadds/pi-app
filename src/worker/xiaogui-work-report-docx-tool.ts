@@ -86,7 +86,7 @@ function previewText(
 function publicText(details: SafeDetails): string {
   switch (details.kind) {
     case 'XIAOGUI_WORK_REPORT_DOCX_PREPARED':
-      return `已生成并打开标准 Word 预览：${details.plan.sectionCount} 个章节、${details.plan.paragraphCount} 段正文、${details.plan.bulletCount} 条项目符号。\n\n${previewText(details.plan)}\n\n最终文件尚未写入。请检查后在下一条消息中明确确认是否生成。`
+      return `已生成并打开标准 Word 预览：${details.plan.sectionCount} 个章节、${details.plan.paragraphCount} 段正文、${details.plan.bulletCount} 条项目符号。\n\n${previewText(details.plan)}\n\n最终文件尚未写入。如确认继续，请单独回复“确认”。`
     case 'XIAOGUI_WORK_REPORT_DOCX_TARGET_SELECTION_CANCELLED':
       return '已取消选择保存位置，没有保留预览或写入最终文件。'
     case 'XIAOGUI_WORK_REPORT_DOCX_PUBLISHED':

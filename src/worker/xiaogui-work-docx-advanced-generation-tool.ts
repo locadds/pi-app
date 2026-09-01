@@ -30,7 +30,7 @@ function publicText(details: SafeDetails): string {
   switch (details.kind) {
     case 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_SELECTION_CANCELLED': return '已取消选择正式模板。'
     case 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_SCHEMA_READY': return `已只读识别模板：普通字段 ${details.schema.variables.length} 项、重复块 ${details.schema.repeatBlocks.length} 项、条件块 ${details.schema.conditionalBlocks.length} 项。请根据当前对话补齐全部字段和槽位；无法确定的项目必须明确标为未解决。`
-    case 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_PREPARED': return `已生成并打开只读成品预览：重复记录 ${details.plan.repeatRecordCount} 条、保留条件块 ${details.plan.retainedConditionalCount} 项。原模板未修改。请检查后在下一条消息中明确确认是否另存成品。`
+    case 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_PREPARED': return `已生成并打开只读成品预览：重复记录 ${details.plan.repeatRecordCount} 条、保留条件块 ${details.plan.retainedConditionalCount} 项。原模板未修改。如确认继续，请单独回复“确认”。`
     case 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_RESUMED': return details.receipt ? '已恢复已发布的 Word 成品记录。' : details.plan ? '已重新核对模板并打开成品预览。原模板未修改。' : '已恢复模板结构摘要，可以继续补齐成品数据。'
     case 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_TARGET_SELECTION_CANCELLED': return '已取消选择成品保存位置；预览仍保留，可稍后再次确认。'
     case 'XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_PUBLISHED': return `Word 成品已另存完成：重复记录 ${details.receipt.repeatRecordCount} 条、保留条件块 ${details.receipt.retainedConditionalCount} 项。原模板未修改。`

@@ -161,6 +161,7 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
         promptSnippet: '自然语言提交报告草稿、预览、跨轮确认另存、取消或打开',
         promptGuidelines: expect.arrayContaining([
           expect.stringContaining('下一条消息明确确认'),
+          expect.stringContaining('请单独回复“确认”'),
           expect.stringContaining('不得声称覆盖或修改了已有文件'),
         ]),
       },
@@ -169,12 +170,14 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
         promptGuidelines: expect.arrayContaining([
           expect.stringContaining('不能猜测'),
           expect.stringContaining('不得同一轮调用 CONFIRM'),
+          expect.stringContaining('请单独回复“确认”'),
         ]),
       },
       xiaogui_work_docx_template_intake: {
         promptSnippet: '用自然语言开始、调整、复核、继续、删除或取消普通文档的只读模板整理',
         promptGuidelines: expect.arrayContaining([
           expect.stringContaining('必须先询问是否整理'),
+          expect.stringContaining('请单独回复“复核”或“打开复核卡”'),
           expect.stringContaining('不得声称已经写入原文档'),
         ]),
       },
@@ -189,6 +192,7 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
         promptSnippet: '自然语言选择正式模板、补齐普通字段和结构槽位、预览、确认另存、恢复或取消',
         promptGuidelines: expect.arrayContaining([
           expect.stringContaining('标为 UNRESOLVED'),
+          expect.stringContaining('请单独回复“确认”'),
           expect.stringContaining('成品只能另存为不存在的新 DOCX'),
         ]),
       },

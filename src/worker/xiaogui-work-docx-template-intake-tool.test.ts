@@ -340,6 +340,8 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     expect(published).not.toContain('signed-fragment-1')
     expect(published).not.toMatch(/[A-Z]:[\\/]/)
     expect(result.content[0]?.text).toContain('没有修改文档')
+    expect(result.content[0]?.text)
+      .toContain('如需开始人工复核，请单独回复“复核”或“打开复核卡”。')
   })
 
   it('repairs only once then safely degrades invalid model output', async () => {

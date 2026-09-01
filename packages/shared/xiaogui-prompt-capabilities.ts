@@ -126,7 +126,7 @@ const WORK_REPORT_DOCX_TOOL = toolDefinition({
   promptGuidelines: [
     '只有用户没有指定模板、且明确要求把当前已整理草稿做成 Word 时才调用 PREPARE。',
     'PREPARE 的 draft 只填写当前对话中已经形成的标题、章节、段落和项目符号；不要补写未经用户确认的事实。',
-    'PREPARE 打开标准 Word 预览后必须结束本轮；只有用户下一条消息明确确认才调用 CONFIRM。',
+    'PREPARE 打开标准 Word 预览后必须结束本轮；只有用户下一条消息明确确认才调用 CONFIRM。如确认继续，请单独回复“确认”。',
     'CONFIRM、CANCEL、OPEN、REVEAL 不得携带 draft 或任何路径。',
     '只有最新一条用户消息明确要求取消、打开文档或在文件夹中显示时，才调用 CANCEL、OPEN 或 REVEAL。',
     '用户明确说使用自己的模板时，改用模板 Word 工具，不要调用标准报告工具。',
@@ -146,7 +146,7 @@ const WORK_DOCX_TOOL = toolDefinition({
     '用户明确说出或从模板库点选了模板名称/版本时，把名称写入 libraryTemplateName、版本号写入 libraryVersionNumber；不要编造名称或版本。',
     'SELECT_TEMPLATE 返回字段清单后，必须原样使用每项 fieldId；优先从当前对话提取字段，不能确定的必填字段用 UNRESOLVED，不能猜测。',
     '调用 PREPARE 时按 fieldId 提交已知字段。READY 只允许字符串、数字或布尔值；选填字段可省略，系统不得因此追问用户。',
-    'PREPARE 返回待确认摘要后必须停止调用工具，等待用户下一条消息明确确认。不得同一轮调用 CONFIRM。',
+    'PREPARE 返回待确认摘要后必须停止调用工具，等待用户下一条消息明确确认。不得同一轮调用 CONFIRM。如确认继续，请单独回复“确认”。',
     '只有最新一条用户消息明确要求取消、打开文档或在文件夹中显示时，才调用 CANCEL、OPEN 或 REVEAL。',
     '不要向用户展示文件路径、会话地址、选择编号、操作编号、内部错误代码或摘要编号。',
   ],
@@ -164,7 +164,7 @@ export const XIAOGUI_LEGACY_WORK_DOCX_TOOL_PROMPT_DEFINITION_V1 = toolDefinition
   promptSnippet: '用自然语言准备、确认、取消或打开 WORK DOCX；生成前必须等待用户下一条确认消息',
   promptGuidelines: [
     '只有用户明确要求使用模板和数据生成 DOCX 时才调用 PREPARE；不要让用户输入路径。',
-    'PREPARE 返回已准备后必须停止调用工具，向用户复述安全摘要，并等待用户下一条消息。',
+    'PREPARE 返回已准备后必须停止调用工具，向用户复述安全摘要，并等待用户下一条消息。如确认继续，请单独回复“确认”。',
     '只有最新一条用户消息明确表示确认生成时才调用 CONFIRM；不得在 PREPARE 的同一轮调用。',
     '只有最新一条用户消息明确要求取消、打开文档或在文件夹中显示时，才调用 CANCEL、OPEN 或 REVEAL。',
     '不要向用户展示会话地址、文件路径、操作编号、内部错误代码或摘要编号。',
@@ -179,7 +179,7 @@ const TEMPLATE_INTAKE_TOOL = toolDefinition({
   promptSnippet: '用自然语言开始、调整、复核、继续、删除或取消普通文档的只读模板整理',
   promptGuidelines: [
     '只有用户明确提出“整理成模板”或明确同意进入整理流程时才能调用 START；仅要求生成文档但选中普通成品文档时，必须先询问是否整理。',
-    'START 返回报告后必须结束本轮工具调用；只有用户下一条消息明确要求复核或确认时才调用 REVIEW。',
+    'START 返回报告后必须结束本轮工具调用；只有用户下一条消息明确要求复核或确认时才调用 REVIEW。如需开始人工复核，应明确告诉用户：请单独回复“复核”或“打开复核卡”。',
     '用户用自然语言批量调整时只调用 UPDATE；优先用 match.kinds、match.riskFlags 或 match.keywords，由主进程展开为逐项决定，用户不需要知道候选编号。',
     '用户在报告已经确认后提出修改时必须调用 REOPEN，并把本次修改放入 operations；主进程会复制出新草稿并保留旧确认记录，不得对已确认报告直接调用 UPDATE。',
     '同一 match 数组内任一匹配即可，不同维度必须同时满足；不要猜测候选编号，不要用关键词匹配文件路径或全文。',
@@ -200,7 +200,7 @@ const TEMPLATE_MATERIALIZE_TOOL = toolDefinition({
     '只有用户已经完成普通文档整理报告的人工确认，并明确要求生成正式模板时，才调用 PREPARE。',
     'PREPARE 会打开小规内置整份预览；只有用户点击“生成正式模板”后，Worker 才携带私有确认令牌继续保存，模型不得自行构造该令牌。',
     '用户在内置预览填写“需要修改”时，收到修改要求后应调用模板整理工具 REOPEN/UPDATE，不得继续发布旧预览。',
-    '如果用户在后续新消息明确表示已经看过预览并确认生成，仍可调用 CONFIRM，并可同时带模板名称、用途和标签。',
+    '聊天确认只保留为后备路径；如果用户在后续新消息明确表示已经看过预览并确认生成，仍可调用 CONFIRM，并可同时带模板名称、用途和标签。如确认继续，请单独回复“确认”。',
     '用户明确要求另存一份本机模板时才调用 EXPORT；模板会先存在本机模板库。',
     '用户取消保存位置后不要自动重试；等待用户下一条消息。',
     '不要展示或索要源文件、预览文件、正式模板、数据库或临时目录的绝对路径。',
@@ -218,7 +218,7 @@ const ADVANCED_GENERATION_TOOL = toolDefinition({
     '用户明确要求按正式模板生成含重复块或条件块的 Word 成品时调用 START；不要要求用户手写工具参数。',
     'START 返回结构摘要后，从当前对话整理 PREPARE 数据；每个名称和槽位必须与摘要完全一致。',
     '无法确定的字段、重复块或条件决定必须标为 UNRESOLVED，并向用户追问；不要猜测旧项目内容。',
-    'PREPARE 打开预览后必须结束本轮；只有用户下一条消息明确确认才调用 CONFIRM。',
+    'PREPARE 打开预览后必须结束本轮；只有用户下一条消息明确确认才调用 CONFIRM。如确认继续，请单独回复“确认”。',
     '不要展示或索要源模板、预览、成品、数据库或临时目录的绝对路径。',
     '不得声称覆盖或修改了原模板；成品只能另存为不存在的新 DOCX。',
   ],
@@ -544,8 +544,13 @@ const ONE_TURN_STICKY_CAPABILITY_IDS_V1 = new Set<XiaoguiCapabilityId>([
 ])
 
 function isShortContinuationInput(userInput: string): boolean {
-  const input = userInput.normalize('NFKC').trim().replace(/[。！!？?]+$/g, '')
-  return /^(?:看起来可以|可以|确认|确认生成|生成吧|继续|没问题|就这样|保存|开始复核|复核|打开复核卡)$/.test(input)
+  const input = userInput
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[。.!！?？]+$/g, '')
+  if ([...input].length > 24) return false
+  return /^(?:(?:好的|好)(?:[,，]\s*|\s+))?(?:看起来可以|可以|可以生成|可以生成了|确认|确认生成|生成吧|继续|没问题|就这样|保存|开始复核|复核|打开复核卡)$/.test(input)
 }
 
 function localIntentCandidates(userInput: string): {

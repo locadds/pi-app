@@ -175,7 +175,7 @@ describe('Worker Prompt dispatch preflight', () => {
     await vi.waitFor(() => {
       expect(st.promptStickyCapabilities).toEqual(['work.template-generation'])
     })
-    await handlePrompt({ text: '看起来可以' }, vi.fn())
+    await handlePrompt({ text: '好的，可以生成了' }, vi.fn())
     await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2))
     await vi.waitFor(() => expect(st.promptTurnContext).toBeNull())
 

@@ -675,7 +675,7 @@ function publicText(result: SafeToolDetails): string {
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_SELECTION_CANCELLED':
       return '已取消选择文档，没有创建整理报告，也没有修改文档。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY':
-      return reportText(result.report, '已生成只读模板整理报告：')
+      return `${reportText(result.report, '已生成只读模板整理报告：')} 如需开始人工复核，请单独回复“复核”或“打开复核卡”。`
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_UPDATED':
       return `${reportText(result.report, '已按你的要求逐项更新整理草稿：')} ${draftDecisionText(result.draftDecisions)}`
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_REQUIRED':

@@ -38,6 +38,8 @@ describe('小规 WORK 正式模板物化隐藏工具', () => {
     const tool = loadTool()
     expect(tool?.label).toBe('生成正式文档模板')
     expect(tool?.promptGuidelines?.join('\n')).toContain('小规内置整份预览')
+    expect(tool?.promptGuidelines?.join('\n')).toContain('聊天确认只保留为后备路径')
+    expect(tool?.promptGuidelines?.join('\n')).toContain('请单独回复“确认”')
     expect(tool?.promptGuidelines?.join('\n')).toContain('当前简单字段生成器不会展开')
     expect(tool?.label).not.toMatch(/\bpi\b/i)
   })

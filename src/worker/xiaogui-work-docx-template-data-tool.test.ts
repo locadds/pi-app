@@ -84,6 +84,41 @@ describe('xiaogui WORK DOCX template-data Pi tool', () => {
     expect(outcome.content[0]?.text).not.toMatch(/[A-Z]:[\\/]/)
   })
 
+  it('tells the user to send the closed confirmation reply after PREPARE', async () => {
+    requestWorkerHostToolMock.mockResolvedValue({
+      ok: true,
+      value: {
+        kind: 'XIAOGUI_WORK_DOCX_PREPARED',
+        templateDisplayName: '项目周报模板.docx',
+        fields: [{ fieldId: 'xgfield2_project_name', name: '项目名称', value: '测试项目' }],
+      },
+    })
+    const execute = loadTool()?.execute as unknown as (
+      toolCallId: string,
+      params: {
+        action: 'PREPARE'
+        fields: Array<{ fieldId: string; name: string; status: 'READY'; value: string }>
+      },
+      signal: AbortSignal,
+    ) => Promise<{ content: Array<{ type: string; text: string }>; details: { kind: string } }>
+
+    const outcome = await execute(
+      'call-prepare',
+      {
+        action: 'PREPARE',
+        fields: [{
+          fieldId: 'xgfield2_project_name',
+          name: '项目名称',
+          status: 'READY',
+          value: '测试项目',
+        }],
+      },
+      new AbortController().signal,
+    )
+
+    expect(outcome.content[0]?.text).toContain('如确认继续，请单独回复“确认”。')
+  })
+
   it('uses the exact historical library version named by the user without exposing its identifier', async () => {
     const versionId = 'xgtlv1_history-version'
     requestWorkerHostToolMock

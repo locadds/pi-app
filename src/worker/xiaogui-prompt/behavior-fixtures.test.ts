@@ -104,7 +104,7 @@ describe('P01-P16 offline Prompt behavior fixtures', () => {
       isError: false,
     })
     expect(toolConfirmedCapability).toBe('work.template-generation')
-    const fixture = turn('WORK', 'EXECUTE', '看起来可以', {
+    const fixture = turn('WORK', 'EXECUTE', '好的，可以生成了', {
       oneTurnStickyCapabilityIds: toolConfirmedCapability ? [toolConfirmedCapability] : [],
     })
     expect(fixture.selection.reasonCodes).toContain('ONE_TURN_CONTINUATION')

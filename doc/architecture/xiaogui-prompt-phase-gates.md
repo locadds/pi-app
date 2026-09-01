@@ -1,7 +1,7 @@
 # 小规 Prompt 阶段门禁覆盖与技术债
 
 版本：v1
-日期：2026-08-30
+日期：2026-09-02
 
 ## 当前已由代码强制的范围
 
@@ -29,9 +29,11 @@ Worker 将“候选工具注册”和“本轮工具激活”分开。ResourceLo
 4. 运行中的 Turn 使用冻结 Context；新消息不能在同一 Turn 中更换 active tools。
 5. 离线测试验证 ASK/PLAN 最终 Schema、P01—P16 原始输入、跨模式 Worker 复用时 active tools 与 Manifest 同步更新。
 6. Word 确认流只有在对应 `PREPARE` / `START` 工具返回精确的成功结果后，才保留一个下一轮可消费的 sticky Capability；只有意图、未调用工具、工具失败、用户取消或挂起均不会保留。新明确意图优先，消费、模式变化、切换 Session 或重建 Runtime 后清除。
+7. sticky 只接受规范化后最多 24 字的完整短句；核心确认词表封闭，礼貌前缀必须通过逗号或空格分隔。否定、暂缓、附加修改以及取消、打开文件等新意图不能借助包含匹配越过本轮 Tool Schema 门。
 
 ## 真实遗留
 
 - 本地选择器刻意保守；新增业务表达必须先扩充离线 Fixture，不使用在线模型兜底。
 - `PREPARE → CONFIRM` 等业务级动作仍由工具状态机和人工确认门控制；Host Phase Gate 只决定工具是否进入本轮 Schema，不替代工具内部状态校验。一次性续接能力仅依据 Pi 真实工具生命周期和精确成功结果提交，不依据模型回复或意图推断提交。
+- B 类 Prompt 一致性工作包需同时拆分旧版 DOC 的 intake 公开错误码：不得继续把运行时未装配和转换器真实失败都只呈现为 `TEMPLATE_INTAKE_CONVERSION_FAILED`。该项不属于 A3 sticky 语法修改。
 - `design_*` 在 EXECUTE 阶段的 action 级读写边界仍由各扩展负责；若未来需要在同一工具内按 action 动态裁剪，应拆分工具或增加参数级 Host Gate。

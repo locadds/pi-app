@@ -41,6 +41,7 @@ describe('xiaogui WORK DOCX Pi tool', () => {
       .toBe(XIAOGUI_LEGACY_WORK_DOCX_TOOL_PROMPT_DEFINITION_V1.promptGuidelines)
     expect(tool?.parameters).toMatchObject({ type: 'object', required: ['action'] })
     expect(tool?.promptGuidelines?.join('\n')).toContain('不得在 PREPARE 的同一轮调用')
+    expect(tool?.promptGuidelines?.join('\n')).toContain('请单独回复“确认”')
     expect(tool?.promptGuidelines?.join('\n')).toContain('不要让用户输入路径')
   })
 
@@ -74,6 +75,7 @@ describe('xiaogui WORK DOCX Pi tool', () => {
     )
     expect(outcome.isError).not.toBe(true)
     expect(outcome.content[0]?.text).toContain('尚未生成文件')
+    expect(outcome.content[0]?.text).toContain('如确认继续，请单独回复“确认”。')
     expect(outcome.content[0]?.text).toContain('周报模板.docx')
     expect(outcome.content[0]?.text).not.toContain('aaaaaaaa')
     expect(outcome.content[0]?.text).not.toMatch(/[A-Z]:[\\/]/)

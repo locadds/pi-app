@@ -123,7 +123,7 @@ function successText(result: XiaoguiWorkDocxTemplateDataResultV1): string {
     case 'XIAOGUI_WORK_DOCX_TARGET_SELECTION_CANCELLED':
       return '已取消选择保存位置，模板字段仍保留；需要时可以再次准备。'
     case 'XIAOGUI_WORK_DOCX_PREPARED':
-      return `已准备按模板“${result.templateDisplayName}”生成文档，共 ${result.fields.length} 个字段。尚未生成文件，请向用户复述后等待下一条消息明确确认或取消。`
+      return `已准备按模板“${result.templateDisplayName}”生成文档，共 ${result.fields.length} 个字段。尚未生成文件。如确认继续，请单独回复“确认”。`
     case 'XIAOGUI_WORK_DOCX_CANCELLED':
       return '已取消本次模板文档生成，没有写入目标文件。'
     case 'XIAOGUI_WORK_DOCX_PUBLISHED':

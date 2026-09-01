@@ -89,6 +89,7 @@ describe('小规 WORK 标准报告 DOCX 隐藏工具', () => {
     expect(publicResult).toContain(DRAFT.title)
     expect(publicResult).toContain('正文不应出现在工具结果')
     expect(publicResult).toContain('- 第一项')
+    expect(outcome.content[0]?.text).toContain('如确认继续，请单独回复“确认”。')
     expect(publicResult).not.toMatch(/[A-Z]:[\\/]/)
     expect(publicResult).not.toContain('operationId')
   })

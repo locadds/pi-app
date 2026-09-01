@@ -56,7 +56,7 @@ function successText(result: XiaoguiWorkDocxResultV1): string {
     case 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED':
       return '已取消文件选择，没有生成或写入文档。'
     case 'XIAOGUI_WORK_DOCX_PREPARED':
-      return `已准备好生成文档：模板“${result.templateDisplayName}”，数据“${result.payloadDisplayName}”，共匹配 ${result.placeholders.length} 个字段。尚未生成文件，请确认是否生成，或告诉我取消。`
+      return `已准备好生成文档：模板“${result.templateDisplayName}”，数据“${result.payloadDisplayName}”，共匹配 ${result.placeholders.length} 个字段。尚未生成文件。如确认继续，请单独回复“确认”。`
     case 'XIAOGUI_WORK_DOCX_CANCELLED':
       return '已取消本次文档生成，没有写入目标文件。'
     case 'XIAOGUI_WORK_DOCX_PUBLISHED':

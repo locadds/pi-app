@@ -224,6 +224,108 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
     })
   })
 
+  it('continues a prepared capability when the complete reply is 可以生成', () => {
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, '可以生成', {
+      oneTurnStickyCapabilityIds: ['work.template-generation'],
+    })).toMatchObject({
+      continuedCapabilityIds: ['work.template-generation'],
+    })
+  })
+
+  it('continues a prepared capability when the complete reply is 可以生成了', () => {
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, '可以生成了', {
+      oneTurnStickyCapabilityIds: ['work.template-generation'],
+    })).toMatchObject({
+      continuedCapabilityIds: ['work.template-generation'],
+    })
+  })
+
+  it('accepts 好的 as a separated politeness prefix for a complete confirmation reply', () => {
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, '好的，可以生成了', {
+      oneTurnStickyCapabilityIds: ['work.template-generation'],
+    })).toMatchObject({
+      continuedCapabilityIds: ['work.template-generation'],
+    })
+  })
+
+  it('normalizes a full-width trailing period before matching the complete reply', () => {
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, '确认．', {
+      oneTurnStickyCapabilityIds: ['work.template-generation'],
+    })).toMatchObject({
+      continuedCapabilityIds: ['work.template-generation'],
+    })
+  })
+
+  it.each([
+    '看起来可以',
+    '可以',
+    '可以生成',
+    '可以生成了',
+    '确认',
+    '确认生成',
+    '生成吧',
+    '继续',
+    '没问题',
+    '就这样',
+    '保存',
+    '开始复核',
+    '复核',
+    '打开复核卡',
+  ])('accepts the closed confirmation core phrase %s', (input) => {
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, input, {
+      oneTurnStickyCapabilityIds: ['work.template-generation'],
+    }).continuedCapabilityIds).toEqual(['work.template-generation'])
+  })
+
+  it.each([
+    '好，确认',
+    '好 确认',
+    '好的,确认',
+    '好的   确认！',
+  ])('accepts the separated politeness form %s', (input) => {
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, input, {
+      oneTurnStickyCapabilityIds: ['work.template-generation'],
+    }).continuedCapabilityIds).toEqual(['work.template-generation'])
+  })
+
+  it.each([
+    '不要确认',
+    '暂时不可以生成',
+    '可以先别生成',
+    '继续解释，不要保存',
+    '好的，可以生成了，但先改标题',
+    '好可以生成',
+    '好的可以生成了',
+    '取消',
+    '打开文件',
+    '修改后再生成',
+  ])('rejects the non-confirmation or mixed-intent reply %s', (input) => {
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, input, {
+      oneTurnStickyCapabilityIds: ['work.template-generation'],
+    }).continuedCapabilityIds).toEqual([])
+  })
+
   it('commits continuation only for an exact successful preparation tool result', () => {
     expect(xiaoguiPromptStickyCandidateForToolActionV1(
       'xiaogui_work_docx',
