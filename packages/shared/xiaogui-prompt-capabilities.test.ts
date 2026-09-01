@@ -15,6 +15,7 @@ import {
   XIAOGUI_CAPABILITY_REGISTRY_ID_V1,
   XIAOGUI_CAPABILITY_REGISTRY_VERSION_V1,
   XIAOGUI_CAPABILITY_REGISTRY_V1,
+  XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1,
   XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
 } from './xiaogui-prompt-capabilities'
 
@@ -168,6 +169,20 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       decision: 'SELECTED',
       inferredCapabilityIds: ['work.template-intake'],
       reasonCodes: expect.arrayContaining(['LOCAL_TEMPLATE_INTAKE']),
+    })
+  })
+
+  it('publishes selector 1.1.0 and preserves long .docx quick-action routing', () => {
+    const fileDisplayName = '上海市浦东新区综合交通专项规划阶段成果汇编最终送审版说明文件.docx'
+    const input = `请使用普通文档模板整理能力，把普通成品文档整理成可复用模板。我刚选择的文件是“${fileDisplayName}”。请立即开始只读分析并生成模板整理报告，不要再次让我选择文件；原文档不得修改。`
+    expect(XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1).toBe('1.1.0')
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, input)).toMatchObject({
+      selectorVersion: '1.1.0',
+      decision: 'SELECTED',
+      inferredCapabilityIds: ['work.template-intake'],
     })
   })
 

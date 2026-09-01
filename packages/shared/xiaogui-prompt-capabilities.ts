@@ -418,7 +418,7 @@ function requestedOrAutoActivatedCapabilityIds(
 
 export const XIAOGUI_TURN_CAPABILITY_SELECTOR_ID_V1 =
   'xiaogui.turn-capability-selector.v1' as const
-export const XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1 = '1.0.0' as const
+export const XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1 = '1.1.0' as const
 
 export type XiaoguiTurnCapabilitySelectionDecisionV1 =
   | 'SELECTED'

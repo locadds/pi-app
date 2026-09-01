@@ -8,6 +8,7 @@ import { ipcClient } from '@renderer/lib/ipc-client'
 import { activateWorkspace } from '@renderer/lib/activate-workspace'
 import { submitComposerPrompt } from '@renderer/lib/composer-quick-submit'
 import { useUIStore } from '@renderer/stores/ui-store'
+import { selectXiaoguiTurnCapabilitiesV1 } from '@shared/xiaogui-prompt-capabilities'
 import { useXiaoguiStore } from '../stores/xiaogui-store'
 
 import { WorkHomeView } from './WorkHomeView'
@@ -95,9 +96,10 @@ describe('WorkHomeView', () => {
     expect(useUIStore.getState().composerPrefill).toBeNull()
   })
 
-  it('整理普通文档通过主进程私有交接后自动开始分析', async () => {
+  it('长中文 .doc 快捷消息通过公开能力选择器稳定命中模板整理', async () => {
     const user = userEvent.setup()
-    invoke.mockResolvedValue({ cancelled: false, fileDisplayName: '个人小结.docx' })
+    const fileDisplayName = '上海市浦东新区综合交通专项规划阶段成果汇编最终送审版说明文件.doc'
+    invoke.mockResolvedValue({ cancelled: false, fileDisplayName })
     render(<WorkHomeView />)
 
     await user.click(screen.getByRole('button', { name: '选择普通文档并开始分析' }))
@@ -105,9 +107,20 @@ describe('WorkHomeView', () => {
     expect(invoke).toHaveBeenCalledWith('xiaogui.work.template-intake.source.choose', {
       workspaceRoot: 'D:\\workspace',
     })
-    expect(submit).toHaveBeenCalledWith(expect.stringContaining('个人小结.docx'))
-    expect(submit).toHaveBeenCalledWith(expect.stringContaining('整理成可复用模板'))
-    expect(submit.mock.calls[0]![0]).not.toMatch(/[A-Za-z]:[\\/]/)
+    const prompt = submit.mock.calls[0]![0]
+    expect(prompt).toBe(
+      `请使用普通文档模板整理能力，把普通成品文档整理成可复用模板。我刚选择的文件是“${fileDisplayName}”。请立即开始只读分析并生成模板整理报告，不要再次让我选择文件；原文档不得修改。`,
+    )
+    expect(prompt).not.toMatch(/[A-Za-z]:[\\/]/)
+    expect(selectXiaoguiTurnCapabilitiesV1({
+      mode: 'WORK',
+      enabledCapabilities: [],
+    }, prompt)).toMatchObject({
+      decision: 'SELECTED',
+      capabilityIds: ['work.file-organize', 'work.template-intake'],
+      inferredCapabilityIds: ['work.template-intake'],
+      reasonCodes: expect.arrayContaining(['LOCAL_TEMPLATE_INTAKE']),
+    })
   })
 
   it('整理普通文档先把主进程显式绑定为 WORK，再打开文件选择器', async () => {

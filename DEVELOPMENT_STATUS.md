@@ -1,5 +1,50 @@
 # 小规开发阶段状态
 
+## 2026-09-01｜Prompt 分层优化 A2：快捷入口与能力选择解耦
+
+### 阶段状态
+
+- 状态：实现、TDD、全套件复验、typecheck、生产构建、Prompt 预算/SHA 回归和真实 Electron 窗口验证均已完成；本分支阶段候选，随本阶段提交推送后停在人工验收门。
+- 当前分支：`codex/coding-work-integration-v1`。
+- 起点：`c36ec0a2a0cbdf54678dea85d0dacf1f31a5019a`（A1 已推送候选）。
+- 本地工作树：`D:\CodexWorktrees\xiaogui-coding-work-integration-v1`。
+- 验收边界：仅完成 A2；A3、B1/B2/B3/B5、B4 均未开始。本阶段未进入主线，也未取得正式发布验收。
+
+### 已完成内容
+
+1. WORK 首页“整理普通文档”快捷消息固定为：`请使用普通文档模板整理能力，把普通成品文档整理成可复用模板。我刚选择的文件是“${fileDisplayName}”。请立即开始只读分析并生成模板整理报告，不要再次让我选择文件；原文档不得修改。`
+2. 完整能力触发句现在位于显示文件名之前，长文件名不再占用本地选择器的触发跨度；公开消息只含显示名，不含绝对路径。
+3. `xiaogui.turn-capability-selector.v1` 升级至 `1.1.0`。既有最多 24 字正则跨度和用户同义词保持不变，没有通过扩大到 64 字换取命中。
+4. Renderer 回归使用超过 22 个中文字符的 `.doc` 显示名，捕获真实快捷消息后直接送入公开 `selectXiaoguiTurnCapabilitiesV1`，断言选择 `work.file-organize` 与 `work.template-intake`。
+5. 长 `.docx` 只作为扩展名命中路径的非回归用例；Worker 首轮回归确认 Manifest 同时包含 `work.template-intake` 和模板 intake Tool。
+6. `doc/architecture/xiaogui-prompt-inventory.md` 已同步选择器版本、固定快捷消息、24 字跨度边界和 Main 私有路径约束。
+
+### 红绿证据与自动验证
+
+- 红灯一：长中文 `.doc` Renderer 用例先得到 `1 failed / 10 passed`；旧消息经公开选择器返回 `DEFAULT_ONLY`，只保留 `work.file-organize`。仅调整消息顺序后 `11/11` 转绿。
+- 红灯二：先要求选择器发布 `1.1.0`，聚焦测试得到 `1 failed / 18 passed`（实际仍为 `1.0.0`）；只更新版本常量后 `19/19` 转绿。
+- 最终聚焦回归：5 个测试文件、61 项测试全部通过，覆盖 Renderer 长 `.doc`、公开选择器、长 `.docx` 非回归、Worker Manifest、行为夹具和 Builder。
+- 默认并发全套件：399 个文件通过，4 个文件中的 5 项 TaskHub Git/SQLite 集成测试因 5 秒超时并伴随 Windows `EBUSY` 失败；相关 4 文件单 worker 隔离复跑 `40/40` 通过。
+- 完整单 worker 复验：403 个测试文件、2308 项测试全部通过；2 个真实环境 smoke 按设计跳过。
+- `npm run typecheck`：通过。
+- `npx electron-vite build`：通过；只有既有动态导入提示，无构建错误。
+- Builder 预算/SHA 专项：2 个文件、13 项测试通过，继续保证产品 Prompt 不超过 7000 字、Runtime Facts 不超过 600 字、Manifest SHA 与真实正文一致。
+
+### 真实 Electron 窗口证据
+
+1. 使用无敏感内容的公开政策类旧版 DOC，并在外部审计目录复制为超过 22 个中文字符的 `.doc` 显示名；证据文件和截图未进入 Git。
+2. 经 Windows 原生文件选择器选中后，真实页面自动发送固定快捷消息；页面与会话用户消息均只出现显示文件名，没有绝对路径。
+3. `ipc:runtime.getState` 的真实 Effective Prompt Manifest 中，`capabilityIds` 包含 `work.template-intake`，`toolNames` 包含 `xiaogui_work_docx_template_intake`。
+4. 真实会话 JSONL 记录模型调用 `xiaogui_work_docx_template_intake {"action":"START"}`，证明长 `.doc` 从 Renderer 入口到公开选择器、Manifest 和首个 Tool 调用的链路成立。
+5. 本机缺少可用的旧版 DOC 转换组件，Host 随后返回 `TEMPLATE_INTAKE_CONVERSION_FAILED`；界面明确报告未生成整理报告、原文档未修改。该安全失败不冒充模板分析成功，也不影响 A2 的选能与 START 验证结论。
+
+### 未完成与人工验收门
+
+- A2 候选等待人工验收；尚未进入主线或正式发布。
+- 旧版 DOC 成功转换、报告内容质量和复核卡旅程不在 A2 的接口修复范围内，本轮没有伪造成功证据。
+- A3 sticky 确认语法、B 包 Prompt 一致性/Builder 去噪及 B4 默认角色迁移必须另阶段启动。
+- 未修改 Prompt 六层组装顺序、模板领域状态机、Office/Univer、DOCX 降级、TaskHub、IPC 安全门、数据库结构、主线分支或 Agent 可见 Tool 集合。
+
 ## 2026-09-01｜Prompt 分层优化 A1：intake `riskFlags` 契约
 
 ### 阶段状态

@@ -355,7 +355,7 @@ describe('Worker Prompt dispatch preflight', () => {
     }
 
     await handlePrompt({
-      text: '请使用普通文档模板整理能力，把我刚选择的普通成品文档“个人小结.docx”整理成可复用模板。请立即开始只读分析并生成候选内容报告，不要再次让我选择文件；原文档不得修改。',
+      text: '请使用普通文档模板整理能力，把普通成品文档整理成可复用模板。我刚选择的文件是“上海市浦东新区综合交通专项规划阶段成果汇编最终送审版说明文件.doc”。请立即开始只读分析并生成模板整理报告，不要再次让我选择文件；原文档不得修改。',
     }, vi.fn())
 
     await vi.waitFor(() => expect(st.promptTurnContext).toBeNull())
