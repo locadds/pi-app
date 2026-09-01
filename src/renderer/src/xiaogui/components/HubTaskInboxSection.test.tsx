@@ -116,4 +116,37 @@ describe('HubTaskInboxSection', () => {
     })
     expect(screen.queryByDisplayValue('correct-horse-battery-staple')).toBeNull()
   })
+
+  it('clears cached task content when a refresh reports that this node was replaced', async () => {
+    let revoked = false
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'ipc:xiaogui.hubTask.status') {
+        return {
+          ok: true,
+          value: {
+            configured: !revoked,
+            state: revoked ? 'NODE_REVOKED' : 'READY',
+            lastSyncedAt: null,
+            pendingReceiptCount: 0,
+          },
+        }
+      }
+      if (channel === 'ipc:xiaogui.hubTask.inbox.list') return { ok: true, value: [item()] }
+      if (channel === 'ipc:xiaogui.hubTask.refresh') {
+        revoked = true
+        return { ok: false, code: 'HUB_WORKER_NODE_REVOKED' }
+      }
+      throw new Error(`unexpected IPC: ${channel}`)
+    })
+    window.piDesktop = { invoke } as unknown as Window['piDesktop']
+    const user = userEvent.setup()
+    render(<HubTaskInboxSection address={ADDRESS} onPlanDraftCreated={vi.fn()} />)
+
+    expect(await screen.findByText('整理院内资料')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '同步' }))
+
+    await waitFor(() => expect(screen.queryByText('整理院内资料')).toBeNull())
+    expect(screen.getByText('这台小规已被新设备替换，已锁定本地任务内容。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '登录并配对此小规' })).toBeInTheDocument()
+  })
 })
