@@ -33,6 +33,42 @@ function draft(overrides: Partial<CodingRoleProfileDraftV1> = {}): CodingRolePro
   }
 }
 
+const LEGACY_DEFAULT_DRAFTS: readonly CodingRoleProfileDraftV1[] = [
+  {
+    schemaVersion: 1,
+    profileId: 'xiaogui.role.research.default',
+    role: 'RESEARCH',
+    name: '研究',
+    description: '只读理解项目、定位来源并明确不确定性。',
+    systemPrompt: '你是小规的研究角色。保持只读，只分析项目范围内的信息；说明来源、证据和限制，不修改文件。',
+    modelSelector: 'inherit',
+    runtimePolicyId: 'approved.default',
+    toolAllowlist: ['read'],
+  },
+  {
+    schemaVersion: 1,
+    profileId: 'xiaogui.role.implement.default',
+    role: 'IMPLEMENT',
+    name: '实现',
+    description: '在已批准的独立工作树内实现并验证计划。',
+    systemPrompt: '你是小规的实现角色。只在批准的任务、文件范围和独立工作树内修改；遵守权限门，并用真实命令验证。',
+    modelSelector: 'inherit',
+    runtimePolicyId: 'approved.default',
+    toolAllowlist: ['read', 'bash', 'edit', 'write'],
+  },
+  {
+    schemaVersion: 1,
+    profileId: 'xiaogui.role.review.default',
+    role: 'REVIEW',
+    name: '审阅',
+    description: '只读检查真实差异、验证证据和未解决问题。',
+    systemPrompt: '你是小规的审阅角色。保持只读，只依据真实差异和验证证据指出问题；不得修改文件或替代人工批准。',
+    modelSelector: 'inherit',
+    runtimePolicyId: 'approved.default',
+    toolAllowlist: ['read'],
+  },
+]
+
 describe('CodingRoleProfileModuleV1', () => {
   it('建立研究、实现、审阅三个默认角色，列表不泄漏系统提示正文', () => {
     const module = new CodingRoleProfileModuleV1({ dbPath: databasePath() })
@@ -47,7 +83,25 @@ describe('CodingRoleProfileModuleV1', () => {
     expect(JSON.stringify(summaries)).not.toContain('systemPrompt')
 
     const research = module.readForEdit('xiaogui.role.research.default')
+    const implementation = module.readForEdit('xiaogui.role.implement.default')
+    const review = module.readForEdit('xiaogui.role.review.default')
     expect(research?.systemPrompt).toContain('只读')
+    for (const profile of [research, implementation, review]) {
+      expect(profile?.systemPrompt.match(/^## .+$/gm)).toEqual([
+        '## 目标',
+        '## 允许',
+        '## 禁止',
+        '## 输出契约',
+        '## 验证与批准',
+      ])
+    }
+    expect(research?.systemPrompt).toContain('事实、推断和未知')
+    expect(research?.systemPrompt).toContain('不得修改')
+    expect(implementation?.systemPrompt).toContain('批准的任务、文件范围和独立工作树')
+    expect(implementation?.systemPrompt).toContain('残余风险')
+    expect(review?.systemPrompt).toContain('严重度')
+    expect(review?.systemPrompt).toContain('未覆盖风险')
+    expect(review?.systemPrompt).toContain('不得修改')
     expect(research?.profileDigest).toMatch(/^sha256:[a-f0-9]{64}$/)
     module.close()
   })
@@ -135,6 +189,77 @@ describe('CodingRoleProfileModuleV1', () => {
     restored.close()
   })
 
+  it('仅把 digest 精确等于旧内置默认的存量行迁移到新默认，并保持迁移幂等与 Attempt 快照隔离', () => {
+    const dbPath = databasePath()
+    const legacy = new CodingRoleProfileModuleV1({
+      dbPath,
+      now: () => '2026-09-01T08:00:00.000Z',
+    })
+    const oldProfiles = LEGACY_DEFAULT_DRAFTS.map((profile) => legacy.upsert(profile))
+    const oldBinding = legacy.bindAttempt(
+      'attempt.before-default-migration',
+      'xiaogui.role.research.default',
+    )
+    legacy.close()
+
+    const migrated = new CodingRoleProfileModuleV1({
+      dbPath,
+      now: () => '2026-09-02T08:00:00.000Z',
+    })
+    for (const oldProfile of oldProfiles) {
+      const current = migrated.readForEdit(oldProfile.profileId)!
+      expect(current.systemPrompt).toContain('## 目标')
+      expect(current.profileDigest).not.toBe(oldProfile.profileDigest)
+      expect(current.updatedAt).toBe('2026-09-02T08:00:00.000Z')
+    }
+    expect(migrated.readAttemptBinding('attempt.before-default-migration')).toEqual(oldBinding)
+    expect(oldBinding.snapshot.profileDigest).toBe(oldProfiles[0].profileDigest)
+    const newBinding = migrated.bindAttempt(
+      'attempt.after-default-migration',
+      'xiaogui.role.research.default',
+    )
+    expect(newBinding.snapshot.profileDigest).not.toBe(oldBinding.snapshot.profileDigest)
+    const migratedResearch = migrated.readForEdit('xiaogui.role.research.default')!
+    migrated.close()
+
+    const reopened = new CodingRoleProfileModuleV1({
+      dbPath,
+      now: () => '2026-09-02T09:00:00.000Z',
+    })
+    expect(reopened.readForEdit('xiaogui.role.research.default')?.updatedAt)
+      .toBe(migratedResearch.updatedAt)
+    expect(reopened.readAttemptBinding('attempt.before-default-migration')).toEqual(oldBinding)
+    expect(reopened.readAttemptBinding('attempt.after-default-migration')).toEqual(newBinding)
+    reopened.close()
+  })
+
+  it('初始化迁移保留用户修改过的默认角色和自定义角色', () => {
+    const dbPath = databasePath()
+    const first = new CodingRoleProfileModuleV1({
+      dbPath,
+      now: () => '2026-09-02T10:00:00.000Z',
+    })
+    const base = first.readForEdit('xiaogui.role.review.default')!
+    const editedDefault = first.upsert({
+      ...base,
+      description: '用户自定义的审阅摘要。',
+      systemPrompt: '用户自定义的审阅提示，不应被初始化迁移覆盖。',
+    })
+    const custom = first.upsert(draft({
+      profileId: 'role.user.migration-preserved',
+      systemPrompt: '用户自定义角色提示，不应被初始化迁移覆盖。',
+    }))
+    first.close()
+
+    const reopened = new CodingRoleProfileModuleV1({
+      dbPath,
+      now: () => '2026-09-02T11:00:00.000Z',
+    })
+    expect(reopened.readForEdit(editedDefault.profileId)).toEqual(editedDefault)
+    expect(reopened.readForEdit(custom.profileId)).toEqual(custom)
+    reopened.close()
+  })
+
   it('对相同未变角色的重复绑定保持幂等，并拒绝非法或不存在的配置', () => {
     const module = new CodingRoleProfileModuleV1({ dbPath: databasePath() })
     const first = module.bindAttempt('attempt.same', 'xiaogui.role.implement.default')
@@ -198,6 +323,13 @@ describe('CodingRoleProfileModuleV1', () => {
 
     const reset = module.resetDefault(defaultId)
     expect(reset.systemPrompt).toBe(frozenDefault.systemPrompt)
+    expect(reset.systemPrompt.match(/^## .+$/gm)).toEqual([
+      '## 目标',
+      '## 允许',
+      '## 禁止',
+      '## 输出契约',
+      '## 验证与批准',
+    ])
     expect(reset.toolAllowlist).toEqual(['read'])
     expect(reset.profileDigest).toBe(frozenDefault.profileDigest)
     expect(module.readForEdit(custom.profileId)).toEqual(custom)

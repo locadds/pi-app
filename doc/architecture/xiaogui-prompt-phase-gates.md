@@ -32,6 +32,7 @@ Worker 将“候选工具注册”和“本轮工具激活”分开。ResourceLo
 7. sticky 只接受规范化后最多 24 字的完整短句；核心确认词表封闭，礼貌前缀必须通过逗号或空格分隔。否定、暂缓、附加修改以及取消、打开文件等新意图不能借助包含匹配越过本轮 Tool Schema 门。
 8. Tool Prompt 的共享规则按稳定 ID 登记并只渲染一次；每个工具分别保留“何时调用/不调用”和“调用协议”，同时为 Pi 0.84.1 派生原有扁平 `promptGuidelines`。
 9. 旧版 DOC 的转换运行时未装配与真实转换失败分别保留为 `TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE` 和 `TEMPLATE_INTAKE_CONVERSION_FAILED`，不会再用同一文案误导用户。
+10. CODING 三个默认角色均明确目标、允许、禁止、输出契约和验证与批准；研究/审阅的只读限制仍由有效工具白名单强制，实现角色也不能借 Prompt 绕过工作树、权限、交付或人工批准门。旧默认仅在 digest 精确匹配时事务迁移，用户修改与既有 Attempt 冻结快照不受影响。
 
 ## 真实遗留
 

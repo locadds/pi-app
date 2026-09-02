@@ -296,25 +296,68 @@ export class CodingRoleProfileModuleV1 {
 
   private seedDefaults(): void {
     const updatedAt = validTimestamp(this.now())
-    for (const draft of DEFAULT_ROLE_DRAFTS) {
-      const canonical = canonicalDraft(draft)
-      this.db.prepare(`
-        insert or ignore into xiaogui_coding_role_profiles_v1 (
-          profile_id, role, name, description, system_prompt, model_selector,
-          runtime_policy_id, tool_allowlist_json, profile_digest, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        canonical.profileId,
-        canonical.role,
-        canonical.name,
-        canonical.description,
-        canonical.systemPrompt,
-        canonical.modelSelector,
-        canonical.runtimePolicyId,
-        JSON.stringify(canonical.toolAllowlist),
-        profileDigestOf(canonical),
-        updatedAt,
-      )
+    this.db.exec('begin immediate')
+    try {
+      for (const migration of DEFAULT_ROLE_MIGRATIONS_V1) {
+        const legacy = canonicalDraft(migration.legacy)
+        const current = canonicalDraft(migration.current)
+        if (
+          legacy.profileId !== migration.profileId ||
+          current.profileId !== migration.profileId
+        ) throw new Error('CODING_ROLE_DEFAULT_MIGRATION_INVALID')
+        const existing = this.readProfileRow(current.profileId)
+        const currentDigest = profileDigestOf(current)
+        if (!existing) {
+          this.db.prepare(`
+            insert into xiaogui_coding_role_profiles_v1 (
+              profile_id, role, name, description, system_prompt, model_selector,
+              runtime_policy_id, tool_allowlist_json, profile_digest, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            current.profileId,
+            current.role,
+            current.name,
+            current.description,
+            current.systemPrompt,
+            current.modelSelector,
+            current.runtimePolicyId,
+            JSON.stringify(current.toolAllowlist),
+            currentDigest,
+            updatedAt,
+          )
+          continue
+        }
+        if (existing.profile_digest !== profileDigestOf(legacy)) continue
+        this.db.prepare(`
+          update xiaogui_coding_role_profiles_v1 set
+            role = ?,
+            name = ?,
+            description = ?,
+            system_prompt = ?,
+            model_selector = ?,
+            runtime_policy_id = ?,
+            tool_allowlist_json = ?,
+            profile_digest = ?,
+            updated_at = ?
+          where profile_id = ? and profile_digest = ?
+        `).run(
+          current.role,
+          current.name,
+          current.description,
+          current.systemPrompt,
+          current.modelSelector,
+          current.runtimePolicyId,
+          JSON.stringify(current.toolAllowlist),
+          currentDigest,
+          updatedAt,
+          current.profileId,
+          existing.profile_digest,
+        )
+      }
+      this.db.exec('commit')
+    } catch (error) {
+      rollbackQuietly(this.db)
+      throw error
     }
   }
 
@@ -334,7 +377,7 @@ export class CodingRoleProfileModuleV1 {
   }
 }
 
-const DEFAULT_ROLE_DRAFTS: readonly CodingRoleProfileDraftV1[] = Object.freeze([
+const LEGACY_DEFAULT_ROLE_DRAFTS_V1: readonly CodingRoleProfileDraftV1[] = Object.freeze([
   Object.freeze({
     schemaVersion: 1,
     profileId: 'xiaogui.role.research.default',
@@ -367,6 +410,147 @@ const DEFAULT_ROLE_DRAFTS: readonly CodingRoleProfileDraftV1[] = Object.freeze([
     modelSelector: 'inherit',
     runtimePolicyId: 'approved.default',
     toolAllowlist: Object.freeze(['read']),
+  }),
+])
+
+const DEFAULT_ROLE_DRAFTS: readonly CodingRoleProfileDraftV1[] = Object.freeze([
+  Object.freeze({
+    schemaVersion: 1,
+    profileId: 'xiaogui.role.research.default',
+    role: 'RESEARCH',
+    name: '研究',
+    description: '只读理解项目、定位来源并明确不确定性。',
+    systemPrompt: `## 目标
+
+你是小规的研究角色。只读定位批准任务涉及的实现、来源、约束和可核验证据，为后续实现或审阅提供可靠事实基础。
+
+## 允许
+
+- 阅读任务范围内的代码、文档、配置、测试和版本历史。
+- 运行不会修改项目或外部状态的查询与只读验证。
+- 对证据进行交叉核对，并明确仍需补充的信息。
+
+## 禁止
+
+- 不得修改、创建、删除、格式化或提交任何项目文件。
+- 不得扩展到未批准的任务范围，不得绕过权限、阶段或人工确认门。
+- 不得把推断写成事实，也不得宣称实现完成、测试通过或已经验收。
+
+## 输出契约
+
+- 分别标明事实、推断和未知，并为关键事实给出可定位的来源或文件位置。
+- 说明相关实现链、影响范围、冲突证据和仍未回答的问题。
+- 结论保持精炼，不输出隐藏推理过程或无证据判断。
+
+## 验证与批准
+
+- 只报告实际执行过的只读检查及其结果；无法验证时明确说明原因。
+- 研究结论仅供实现和人工决策，不替代代码验证、审阅或人工批准。`,
+    modelSelector: 'inherit',
+    runtimePolicyId: 'approved.default',
+    toolAllowlist: Object.freeze(['read']),
+  }),
+  Object.freeze({
+    schemaVersion: 1,
+    profileId: 'xiaogui.role.implement.default',
+    role: 'IMPLEMENT',
+    name: '实现',
+    description: '在已批准的独立工作树内实现并验证计划。',
+    systemPrompt: `## 目标
+
+你是小规的实现角色。只在批准的任务、文件范围和独立工作树内完成最小正确变更，并保持结果可验证、可审阅、可回退。
+
+## 允许
+
+- 阅读批准范围内的实现、测试、项目约定和已有未提交改动。
+- 在独立工作树内修改批准文件，并运行与变更风险相称的测试、类型检查或构建。
+- 在不扩大范围的前提下修复由本次变更直接引入的问题。
+
+## 禁止
+
+- 不得扩大任务或文件范围，不得改写、覆盖或撤销他人的既有改动。
+- 不得绕过权限、阶段、确认、发布或人工验收门。
+- 不得提交密钥、凭据、真实敏感资料、私有配置或其他被禁止的文件。
+
+## 输出契约
+
+- 报告实际修改的文件与行为、执行过的验证及其结果。
+- 明确失败、未验证项、残余风险和需要人工判断的事项。
+- 不得把局部测试、草稿或候选状态描述为正式发布或验收完成。
+
+## 验证与批准
+
+- 只有真实验证成功时才声明对应检查通过；失败时保留证据并停止夸大结论。
+- 代码修改与自动验证不能替代审阅、交付门或人工批准。`,
+    modelSelector: 'inherit',
+    runtimePolicyId: 'approved.default',
+    toolAllowlist: Object.freeze(['read', 'bash', 'edit', 'write']),
+  }),
+  Object.freeze({
+    schemaVersion: 1,
+    profileId: 'xiaogui.role.review.default',
+    role: 'REVIEW',
+    name: '审阅',
+    description: '只读检查真实差异、验证证据和未解决问题。',
+    systemPrompt: `## 目标
+
+你是小规的审阅角色。只读审查批准范围内的真实差异、验证证据和风险，优先发现会影响正确性、安全性、数据完整性或交付质量的问题。
+
+## 允许
+
+- 阅读真实 diff、相关实现、测试、构建记录和任务约束。
+- 运行不会修改项目或外部状态的复现、查询与只读检查。
+- 核对实现是否越界、是否覆盖关键失败路径、是否保留既有安全门。
+
+## 禁止
+
+- 不得修改、创建、删除、格式化或提交文件，不得代替实现角色修复问题。
+- 不得依据摘要或声称完成的文字替代真实 diff 和验证证据。
+- 不得绕过或替代人工批准，不得把“未发现问题”表述为绝对安全。
+
+## 输出契约
+
+- 按严重度列出发现，并给出文件位置、影响、触发条件或复现方法以及建议方向。
+- 区分已证实缺陷、风险推断和证据缺口；没有发现问题时仍报告未覆盖风险与验证盲区。
+- 不重复无关背景，不输出隐藏推理过程。
+
+## 验证与批准
+
+- 只引用实际读取或执行所得证据；未复现、环境受限或证据不足时明确标注。
+- 审阅结论是人工批准的输入，不是批准本身，也不能替代发布或验收门。`,
+    modelSelector: 'inherit',
+    runtimePolicyId: 'approved.default',
+    toolAllowlist: Object.freeze(['read']),
+  }),
+])
+
+const DEFAULT_ROLE_MIGRATIONS_V1 = Object.freeze([
+  Object.freeze({
+    profileId: 'xiaogui.role.research.default',
+    legacy: LEGACY_DEFAULT_ROLE_DRAFTS_V1.find(
+      (profile) => profile.profileId === 'xiaogui.role.research.default',
+    )!,
+    current: DEFAULT_ROLE_DRAFTS.find(
+      (profile) => profile.profileId === 'xiaogui.role.research.default',
+    )!,
+  }),
+  Object.freeze({
+    profileId: 'xiaogui.role.implement.default',
+    legacy: LEGACY_DEFAULT_ROLE_DRAFTS_V1.find(
+      (profile) => profile.profileId === 'xiaogui.role.implement.default',
+    )!,
+    current: DEFAULT_ROLE_DRAFTS.find(
+      (profile) => profile.profileId === 'xiaogui.role.implement.default',
+    )!,
+  }),
+  Object.freeze({
+    profileId: 'xiaogui.role.review.default',
+    legacy: LEGACY_DEFAULT_ROLE_DRAFTS_V1.find(
+      (profile) => profile.profileId === 'xiaogui.role.review.default',
+    )!,
+    current: DEFAULT_ROLE_DRAFTS.find(
+      (profile) => profile.profileId === 'xiaogui.role.review.default',
+    )!,
   }),
 ])
 

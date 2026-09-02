@@ -10,7 +10,7 @@
 - Runtime Tool 兼容层：`0.84.1-compat.2`
 - Runtime Facts Layer：`1.1.0`
 - 日期：2026-09-02
-- 状态：A1/A2/A3 已关闭；B1/B2/B3/B5 与 DOC 错误码拆分已实现为分支候选，B4 另行提交；未进入主线或正式发布
+- 状态：A1/A2/A3 已关闭；B1/B2/B3/B4/B5 与 DOC 错误码拆分已实现为分支候选；未进入主线或正式发布
 
 ## 一、唯一组装链
 
@@ -179,7 +179,22 @@ SHA-256。
 - P16：复用 Worker 从 WORK 切到 CODING 后，Prompt 与 Tool Facts 同时更新。
 - Golden、预算、Manifest 哈希和产品层泄漏边界均有聚焦测试。
 
-## 十、旧版 DOC 转换错误边界
+## 十、CODING 默认角色 Prompt 与兼容迁移
+
+研究、实现、审阅三个内置默认角色均使用五个固定段落：`目标`、`允许`、`禁止`、
+`输出契约`、`验证与批准`。研究角色只读定位实现、来源和证据，并区分事实、推断与未知；
+实现角色只在批准任务、文件范围和独立工作树内修改，报告真实修改、验证与残余风险；审阅
+角色只读审查真实 diff 和验证证据，按严重度给出位置、影响和复现方式，没有发现问题时仍
+报告未覆盖风险。三个角色都不得绕过或替代人工批准。
+
+既有 `profileId`、用户可见名称与摘要、工具白名单、数据库表结构和 Attempt 快照结构保持
+不变。初始化在事务内执行显式的旧默认到新默认迁移：缺失行插入新默认；只有
+`profile_digest` 精确等于上一版内置默认 digest 的存量行才更新；用户修改过的默认角色和
+自定义角色一律保留。迁移幂等，第二次启动不改 `updated_at`；既有 Attempt 继续使用冻结的
+旧快照，新 Attempt 使用新 digest；`resetDefault` 恢复新默认。Prompt 正文仍只通过显式的
+私有编辑/快照接缝读取，不进入列表摘要或普通 IPC 响应。
+
+## 十一、旧版 DOC 转换错误边界
 
 Renderer 的 `LEGACY_DOC_CONVERSION_UNAVAILABLE` 与 `LEGACY_DOC_CONVERSION_FAILED` 现在分别
 映射为 intake 公开错误码 `TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE` 与
@@ -187,7 +202,7 @@ Renderer 的 `LEGACY_DOC_CONVERSION_UNAVAILABLE` 与 `LEGACY_DOC_CONVERSION_FAIL
 已可用、但当前文档转换失败。两类用户文案和 Service/Host 公共接缝均有聚焦回归。转换器、
 模板状态机和 DOCX 降级路径未修改。
 
-## 十一、禁止项
+## 十二、禁止项
 
 - 不把 Prompt 当作安全边界替代 Host Gate。
 - 不把完整 Prompt、用户 System、项目正文、绝对路径、凭据或令牌发送到 Main/Renderer 诊断界面。
