@@ -1,5 +1,83 @@
 # 小规开发阶段状态
 
+## 2026-09-02｜RUNTIME-R4 OMP ACP Runtime P1A 权限契约与接缝 Spike
+
+### 本阶段目标与状态
+
+- P0 人工验收：用户已于 2026-09-02 明确放行 `agent/runtime-r4-omp-acp-adapter-v1@607618f952b102b889bc12f5ab101f802ab6b401`。
+- P1A 目标：把三档权限定义为 TaskHub 拥有的确定性策略，冻结六项生产门的施工与验收映射，并确认 OMP 固定版本的 ACP 模型配置接缝；不提前开放生产 Runtime 或设置 UI。
+- 状态：契约、策略接缝、聚焦测试、Node/Web 类型检查和差异检查完成；当前为 P1A 阶段候选，提交并推送后等待人工验收。
+- 工作树：`D:\CodexWorktrees\xiaogui-omp-acp-p1-v1`；分支：`agent/runtime-r4-omp-acp-p1-v1`；基线：已验收 P0 `607618f952b102b889bc12f5ab101f802ab6b401`。
+- 隔离边界：未触碰 WORK 工作树、产品主线、默认 Runtime、安装包、`package.json` 或 OMP D 盘缓存。
+
+### 实际修改文件
+
+- `packages/shared/xiaogui-coding-extension-pack.ts`
+- `src/main/xiaogui/coding-extensions/permission-policy.ts`
+- `src/main/xiaogui/coding-extensions/permission-policy.test.ts`
+- `src/main/xiaogui/coding-extensions/permission-module.ts`
+- `src/main/xiaogui/coding-extensions/permission-module.test.ts`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+- `doc/README.md`
+- `doc/README.zh-CN.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 新增版本化的 `CodingPermissionModeV1`、`CodingPermissionModeBindingV1` 和 `CodingPermissionPolicyEvaluationV1`，三档中文名称、说明与操作效果由一个共享常量提供，避免 Main 与 Renderer 重复硬编码。
+2. 三档语义固定为：逐条确认；已核验读写自动通过而命令/外传询问；所有已核验操作完全自主。任何 `UNVERIFIED` 或 `DENIED` TaskHub 硬边界在三档下都返回拒绝。
+3. 现有 `CodingPermissionModuleV1` 增加可选的 TaskHub 策略端口。策略可以自动一次性允许、继续使用原权限对话框或拒绝；策略缺失时完全保留旧行为。
+4. 策略结果必须匹配原请求摘要、版本、档位、效果和原因组合；异常、过期或自相矛盾的结果默认拒绝。自动许可仍写入现有权限审计表，没有新增第二套权限数据库。
+5. 固定 OMP 继续用 `--approval-mode always-ask`。三档控制位于 TaskHub，不能通过 OMP 的 `write`/`yolo` 绕开 Attempt 工作树、文件清单、命令与外传边界。
+6. 实查固定上游 `oh-my-pi@86bf72f`：ACP `session/new/load/resume` 提供 `configOptions`，稳定编号为 `mode`、`model`、`thinking`，并支持 `session/set_config_option`。P1B 将复用此接缝与小规现有模型设置，不另造模型注册表。
+7. 把 P0 留下的六项生产门映射为 P1A/P1B/P1C 三批，明确每批验收证据并压缩测试范围。
+
+### 未完成内容
+
+- 本阶段没有实现三档选择 UI，也没有把用户选择冻结到真实 Attempt；这是 P1B 范围。
+- OMP 私有 `models.json`、凭据配置、ACP 模型切换、受信安装 receipt 和完整性校验尚未实现；这是 P1B 范围。
+- TaskHub 当前尚不能把 OMP 命令和外传认定为已通过完整硬边界；在该接缝完成前，“完全自主”不得自动放行这些操作。
+- 真实模型修改、验证、`candidateDigest`、Diff/Delivery 对账和断线恢复仍未完成；这是 P1C 范围。
+- OMP 仍为 `APPROVED_FOR_TEST`，生产创建继续返回 `OMP_PRODUCTION_DISABLED`，未改变默认运行时，未制作 Portable。
+
+### 与规格和冻结决策的偏差
+
+- 无架构偏差：继续复用 Pi/OMP ACP、Renderer Extension UI 和 TaskHub；没有第二套 Agent Loop、权限系统、模型注册表或任务状态机。
+- 有意保留的阶段差距：P1A 只冻结契约与接缝，不展示尚不能工作的三档 UI；P1B/P1C 未通过前不宣称生产可用。
+- 与 OMP 原生三档的差异是安全边界所需：小规不会把 OMP 直接启动为 `write` 或 `yolo`，而是在 OMP `always-ask` 之上由 TaskHub 决定是否自动批准。
+
+### 测试命令和结果
+
+聚焦测试：
+
+```powershell
+node node_modules\vitest\vitest.mjs run packages/shared/xiaogui-coding-extension-pack.test.ts src/main/xiaogui/coding-extensions/permission-policy.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts --reporter=verbose --pool=threads
+```
+
+结果：`3 test files passed`，`12 tests passed`。覆盖三档共享来源、12 种已核验策略组合、三档对未核验/拒绝边界的统一拒绝、现有权限交互与规则恢复，以及策略异常 fail-closed。
+
+类型检查：
+
+```powershell
+node_modules\.bin\tsc.cmd -p tsconfig.node.json --noEmit
+node_modules\.bin\tsc.cmd -p tsconfig.web.json --noEmit
+```
+
+结果：两项退出码均为 `0`。
+
+差异检查：`git diff --check` 退出码 `0`，只有 Windows LF/CRLF 提示。P1A 没有产品 UI 或打包变更，因此按最小测试原则未运行构建、Electron、OMP 上游测试或 P0 真实 ACP smoke。
+
+### 已知风险
+
+1. `CodingPermissionModeBindingV1` 当前只有契约，尚未持久绑定 Attempt；P1B 必须以摘要冲突拒绝和重启恢复证明不可静默切换。
+2. “完全自主”能否自动放行命令与外传取决于 TaskHub 是否给出可信 `VERIFIED`；不能用模型分类或 Renderer 状态替代。
+3. OMP ACP 模型列表来自其私有运行时状态；P1B 必须复用现有模型配置校验并防止凭据、绝对路径或 vendor session 进入公开 DTO。
+
+### 下一阶段计划
+
+等待人工验收 P1A。通过后进入 P1B：受信安装清单、OMP 私有模型设置、三档 UI、Attempt 冻结绑定和对应重启恢复；只做相关聚焦测试与一次设置页可见冒烟。
+
 ## 2026-09-02｜RUNTIME-R4 Oh My Pi ACP Runtime P0 阶段候选
 
 ### 本阶段目标与状态

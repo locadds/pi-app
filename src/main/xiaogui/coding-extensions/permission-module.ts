@@ -4,6 +4,7 @@ import { isAbsolute, posix } from 'node:path'
 
 import type {
   CodingPermissionIntentV1,
+  CodingPermissionPolicyEvaluationV1,
   CodingPermissionPromptV1,
   CodingPermissionUserChoiceV1,
 } from '@shared/xiaogui-coding-extension-pack'
@@ -20,9 +21,15 @@ export interface CodingPermissionUIPortV1 {
   request(prompt: CodingPermissionPromptV1): Promise<CodingPermissionUserChoiceV1>
 }
 
+export interface CodingPermissionPolicyPortV1 {
+  /** TaskHub-owned policy; Renderer and Runtime must not implement this port. */
+  evaluate(intent: CodingPermissionIntentV1): Promise<CodingPermissionPolicyEvaluationV1>
+}
+
 export interface CodingPermissionModuleOptionsV1 {
   readonly dbPath: string
   readonly ui: CodingPermissionUIPortV1
+  readonly policy?: CodingPermissionPolicyPortV1
   readonly timeoutMs?: number
   readonly now?: () => string
 }
@@ -58,6 +65,15 @@ export class CodingPermissionModuleV1 {
     const intent = canonicalIntent(rawIntent)
     if (!intent) return 'DENY'
     const ruleDigest = permissionRuleDigest(intent)
+    const policyEffect = await this.evaluatePolicy(intent)
+    if (policyEffect === 'DENY') {
+      this.audit(intent, ruleDigest, 'MODE_POLICY_DENIED')
+      return 'DENY'
+    }
+    if (policyEffect === 'ALLOW_ONCE') {
+      this.audit(intent, ruleDigest, 'MODE_POLICY_AUTO_ALLOWED')
+      return 'ALLOW_ONCE'
+    }
     if (this.hasTaskRule(intent.attemptId, ruleDigest)) {
       this.audit(intent, ruleDigest, 'ALLOW_TASK_RULE_REUSED')
       return 'ALLOW_ONCE'
@@ -105,7 +121,11 @@ export class CodingPermissionModuleV1 {
   private audit(
     intent: CodingPermissionIntentV1,
     ruleDigest: string,
-    decision: CodingPermissionUserChoiceV1 | 'ALLOW_TASK_RULE_REUSED',
+    decision:
+      | CodingPermissionUserChoiceV1
+      | 'ALLOW_TASK_RULE_REUSED'
+      | 'MODE_POLICY_AUTO_ALLOWED'
+      | 'MODE_POLICY_DENIED',
   ): void {
     this.db.prepare(`
       insert or replace into xiaogui_coding_permission_audit_v1
@@ -113,6 +133,34 @@ export class CodingPermissionModuleV1 {
       values (?, ?, ?, ?, ?)
     `).run(intent.requestDigest, intent.attemptId, ruleDigest, decision, this.now())
   }
+
+  private async evaluatePolicy(
+    intent: CodingPermissionIntentV1,
+  ): Promise<'ASK_USER' | 'ALLOW_ONCE' | 'DENY'> {
+    if (!this.options.policy) return 'ASK_USER'
+    let evaluation: CodingPermissionPolicyEvaluationV1
+    try {
+      evaluation = await withTimeout(this.options.policy.evaluate(intent), this.timeoutMs)
+    } catch {
+      return 'DENY'
+    }
+    if (
+      evaluation.schemaVersion !== 1 ||
+      evaluation.requestDigest !== intent.requestDigest ||
+      !['CONFIRM_EACH', 'AUTO_APPROVE', 'FULL_AUTONOMY'].includes(evaluation.mode) ||
+      !validPolicyEffectReason(evaluation)
+    ) return 'DENY'
+    return evaluation.effect
+  }
+}
+
+function validPolicyEffectReason(evaluation: CodingPermissionPolicyEvaluationV1): boolean {
+  if (evaluation.effect === 'ASK_USER') return evaluation.reasonCode === 'MODE_REQUIRES_USER_CONFIRMATION'
+  if (evaluation.effect === 'ALLOW_ONCE') return evaluation.reasonCode === 'MODE_AUTO_APPROVED_VERIFIED_OPERATION'
+  return evaluation.effect === 'DENY' && (
+    evaluation.reasonCode === 'TASKHUB_BOUNDARY_UNVERIFIED' ||
+    evaluation.reasonCode === 'TASKHUB_BOUNDARY_DENIED'
+  )
 }
 
 function canonicalIntent(intent: CodingPermissionIntentV1): CodingPermissionIntentV1 | null {

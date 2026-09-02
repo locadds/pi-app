@@ -167,6 +167,87 @@ export interface CodingPermissionPromptV1 {
   readonly choices: readonly ['ALLOW_ONCE', 'ALLOW_TASK_RULE', 'DENY']
 }
 
+export const CODING_PERMISSION_MODES_V1 = Object.freeze([
+  'CONFIRM_EACH',
+  'AUTO_APPROVE',
+  'FULL_AUTONOMY',
+] as const)
+
+export type CodingPermissionModeV1 = typeof CODING_PERMISSION_MODES_V1[number]
+export type CodingPermissionPolicyEffectV1 = 'ASK_USER' | 'ALLOW_ONCE' | 'DENY'
+
+export interface CodingPermissionModeOptionV1 {
+  readonly schemaVersion: 1
+  readonly mode: CodingPermissionModeV1
+  readonly label: string
+  readonly description: string
+  /**
+   * These effects apply only after TaskHub has verified the Attempt boundary.
+   * A mode never turns an unverified or denied operation into an allowed one.
+   */
+  readonly verifiedEffects: Readonly<Record<CodingPermissionIntentV1['operation'], Exclude<CodingPermissionPolicyEffectV1, 'DENY'>>>
+}
+
+function permissionModeOption(
+  mode: CodingPermissionModeV1,
+  label: string,
+  description: string,
+  verifiedEffects: CodingPermissionModeOptionV1['verifiedEffects'],
+): CodingPermissionModeOptionV1 {
+  return Object.freeze({
+    schemaVersion: 1,
+    mode,
+    label,
+    description,
+    verifiedEffects: Object.freeze({ ...verifiedEffects }),
+  })
+}
+
+/** Single source for the Renderer labels and TaskHub's deterministic policy. */
+export const XIAOGUI_CODING_PERMISSION_MODE_OPTIONS_V1 = Object.freeze([
+  permissionModeOption(
+    'CONFIRM_EACH',
+    '逐条确认',
+    '写入、命令和外传操作会暂停，等待你确认。',
+    { READ: 'ASK_USER', WRITE: 'ASK_USER', COMMAND: 'ASK_USER', DATA_EGRESS: 'ASK_USER' },
+  ),
+  permissionModeOption(
+    'AUTO_APPROVE',
+    '自动通过',
+    '自动执行已核验范围内的读写；命令和外传仍会询问。',
+    { READ: 'ALLOW_ONCE', WRITE: 'ALLOW_ONCE', COMMAND: 'ASK_USER', DATA_EGRESS: 'ASK_USER' },
+  ),
+  permissionModeOption(
+    'FULL_AUTONOMY',
+    '完全自主',
+    '仅自动执行已经通过 TaskHub 硬边界核验的操作；越界或未核验操作不会执行。',
+    { READ: 'ALLOW_ONCE', WRITE: 'ALLOW_ONCE', COMMAND: 'ALLOW_ONCE', DATA_EGRESS: 'ALLOW_ONCE' },
+  ),
+] as const satisfies readonly CodingPermissionModeOptionV1[])
+
+export type CodingPermissionBoundaryStateV1 = 'VERIFIED' | 'UNVERIFIED' | 'DENIED'
+
+export interface CodingPermissionModeBindingV1 {
+  readonly schemaVersion: 1
+  readonly attemptId: string
+  readonly mode: CodingPermissionModeV1
+  readonly source: 'USER_SELECTED'
+  readonly policyDigest: string
+  readonly boundAt: string
+}
+
+export interface CodingPermissionPolicyEvaluationV1 {
+  readonly schemaVersion: 1
+  readonly requestDigest: string
+  readonly mode: CodingPermissionModeV1
+  readonly effect: CodingPermissionPolicyEffectV1
+  readonly reasonCode:
+    | 'TASKHUB_BOUNDARY_UNVERIFIED'
+    | 'TASKHUB_BOUNDARY_DENIED'
+    | 'MODE_REQUIRES_USER_CONFIRMATION'
+    | 'MODE_AUTO_APPROVED_VERIFIED_OPERATION'
+}
+
 export type CodingPlanTodoStatusV1 = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'BLOCKED'
 
 export interface CodingPlanBodyV1 {

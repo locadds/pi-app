@@ -10,7 +10,7 @@ Before developing any feature, inspect Pi native capabilities, available Skills,
 
 The first installer-bundled Skill set and its native Pi loading boundary are documented in [architecture/xiaogui-bundled-pi-skills.md](./architecture/xiaogui-bundled-pi-skills.md).
 
-The test-only Oh My Pi ACP Coding Runtime boundary is documented in [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md).
+The Oh My Pi ACP Coding Runtime boundary is documented in [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md); its P1 production gates are mapped in [runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md](./runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md).
 
 ## User guide (install, shortcuts, adapter list)
 

@@ -4,7 +4,9 @@
 
 `can1357/oh-my-pi` 通过标准 ACP stdio 接缝接入小规现有 `AgentRuntimeRegistryV1`，不替换 Pi Worker、TaskHub、Attempt、工作树、权限、验证或交付状态机。
 
-当前阶段编号为 `RUNTIME-R4-OMP-ACP-ADAPTER-01 / P0`。它已经是可发现、可建立 ACP 测试会话的 Runtime Adapter，但只有 `APPROVED_FOR_TEST`，不会被生产路由选中。默认生产运行时保持不变。
+`RUNTIME-R4-OMP-ACP-ADAPTER-01 / P0` 已于 2026-09-02 通过人工验收，固定提交为 `607618f952b102b889bc12f5ab101f802ab6b401`。当前进入隔离的 P1 生产门施工，但 Runtime 仍只有 `APPROVED_FOR_TEST`，不会被生产路由选中；默认生产运行时保持不变。
+
+P1 的三批任务与六项生产门映射见 `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`。P1 不把 OMP 改为 `write` 或 `yolo`；OMP 继续以 `always-ask` 作为内层审批基础，由 TaskHub 在硬边界核验后应用用户选择的三档权限策略。
 
 ## 固定来源
 

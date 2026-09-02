@@ -10,8 +10,10 @@ import type {
 } from '@shared/xiaogui-coding-extension-pack'
 import {
   CodingPermissionModuleV1,
+  type CodingPermissionPolicyPortV1,
   type CodingPermissionUIPortV1,
 } from './permission-module'
+import { evaluateCodingPermissionPolicyV1 } from './permission-policy'
 
 const roots: string[] = []
 
@@ -187,5 +189,52 @@ describe('CodingPermissionModuleV1', () => {
     }
     expect(secondUI.prompts).toHaveLength(1)
     restored.close()
+  })
+
+  it('只接受 TaskHub 策略接缝对已核验请求的自动决定，并保持询问与拒绝路径', async () => {
+    const ui = new ScriptedPermissionUI(['ALLOW_ONCE'])
+    let boundaryState: 'VERIFIED' | 'DENIED' = 'VERIFIED'
+    let mode: 'AUTO_APPROVE' | 'FULL_AUTONOMY' = 'AUTO_APPROVE'
+    const policy: CodingPermissionPolicyPortV1 = {
+      async evaluate(candidate) {
+        return evaluateCodingPermissionPolicyV1({ mode, intent: candidate, boundaryState })
+      },
+    }
+    const module = new CodingPermissionModuleV1({ dbPath: databasePath(), ui, policy })
+
+    await expect(module.decide(intent())).resolves.toBe('ALLOW_ONCE')
+    expect(ui.prompts).toHaveLength(0)
+
+    await expect(module.decide(intent({
+      requestDigest: `sha256:${'2'.repeat(64)}`,
+      operation: 'COMMAND',
+      actionDigest: `sha256:${'a'.repeat(64)}`,
+      commandSummary: 'npm run typecheck',
+    }))).resolves.toBe('ALLOW_ONCE')
+    expect(ui.prompts).toHaveLength(1)
+
+    mode = 'FULL_AUTONOMY'
+    boundaryState = 'DENIED'
+    await expect(module.decide(intent({ requestDigest: `sha256:${'3'.repeat(64)}` }))).resolves.toBe('DENY')
+    expect(ui.prompts).toHaveLength(1)
+    module.close()
+
+    const malformed = new CodingPermissionModuleV1({
+      dbPath: databasePath(),
+      ui: new ScriptedPermissionUI(['ALLOW_ONCE']),
+      policy: {
+        async evaluate(candidate) {
+          return {
+            schemaVersion: 1,
+            requestDigest: candidate.requestDigest,
+            mode: 'FULL_AUTONOMY',
+            effect: 'ALLOW_ONCE',
+            reasonCode: 'TASKHUB_BOUNDARY_DENIED',
+          }
+        },
+      },
+    })
+    await expect(malformed.decide(intent())).resolves.toBe('DENY')
+    malformed.close()
   })
 })
