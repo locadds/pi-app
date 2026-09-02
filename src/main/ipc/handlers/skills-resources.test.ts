@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (request: Record<string, unknown>) => Promise<unknown>>(),
   getSystemPrompt: vi.fn(),
   getContextPrompts: vi.fn(),
+  getEffectivePromptManifest: vi.fn(),
+  getEffectivePromptPreview: vi.fn(),
   getPromptTemplatesList: vi.fn(),
   reloadResources: vi.fn(),
   getSkillsList: vi.fn(),
@@ -11,10 +13,11 @@ const mocks = vi.hoisted(() => ({
   writeSkillDescription: vi.fn(),
   transferSkill: vi.fn(),
   start: vi.fn(),
-  listAgentsContextFiles: vi.fn(() => []),
-  listPiBuiltinPromptFiles: vi.fn(() => []),
-  listPluginInjectedPromptFiles: vi.fn(() => []),
-  listPromptsOnDisk: vi.fn(() => []),
+  listAgentsContextFiles: vi.fn<(...args: unknown[]) => Array<Record<string, unknown>>>(() => []),
+  listPiBuiltinPromptFiles: vi.fn<(...args: unknown[]) => Array<Record<string, unknown>>>(() => []),
+  listPluginInjectedPromptFiles: vi.fn<(...args: unknown[]) => Array<Record<string, unknown>>>(() => []),
+  listCodeOwnedPromptCatalogFiles: vi.fn<(...args: unknown[]) => Array<Record<string, unknown>>>(() => []),
+  listPromptsOnDisk: vi.fn<(...args: unknown[]) => Array<Record<string, unknown>>>(() => []),
   workerManager: {
     isRunning: false,
     cwd: '',
@@ -29,6 +32,8 @@ vi.mock('../registry', () => ({
 vi.mock('../../worker-manager', () => ({
   workerManager: Object.assign(mocks.workerManager, {
     getContextPrompts: mocks.getContextPrompts,
+    getEffectivePromptManifest: mocks.getEffectivePromptManifest,
+    getEffectivePromptPreview: mocks.getEffectivePromptPreview,
     getPromptTemplatesList: mocks.getPromptTemplatesList,
     reloadResources: mocks.reloadResources,
     getSkillsList: mocks.getSkillsList,
@@ -74,6 +79,7 @@ vi.mock('../../pi-prompt-catalog', () => ({
   listAgentsContextFiles: mocks.listAgentsContextFiles,
   listPiBuiltinPromptFiles: mocks.listPiBuiltinPromptFiles,
   listPluginInjectedPromptFiles: mocks.listPluginInjectedPromptFiles,
+  listCodeOwnedPromptCatalogFiles: mocks.listCodeOwnedPromptCatalogFiles,
   groupPromptCatalog: vi.fn(() => ({})),
   getGlobalSystemMd: vi.fn(() => 'C:/agent/SYSTEM.md'),
 }))
@@ -91,6 +97,30 @@ describe('system prompt resource preview', () => {
     mocks.handlers.clear()
     mocks.getSystemPrompt.mockReset().mockResolvedValue('assembled prompt')
     mocks.getContextPrompts.mockReset()
+    mocks.getEffectivePromptManifest.mockReset().mockResolvedValue({
+      manifest: {
+        schemaVersion: 1,
+        mode: 'WORK',
+        phase: 'EXECUTE',
+        workspaceAvailable: true,
+        projectTrusted: true,
+        capabilityIds: ['work.file-organize'],
+        toolNames: ['read'],
+        layers: [],
+        completePromptCharacterCount: 25,
+        completePromptSha256: 'a'.repeat(64),
+        generatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      migrationNotices: [],
+    })
+    mocks.getEffectivePromptPreview.mockReset().mockResolvedValue({
+      manifest: {
+        completePromptCharacterCount: 25,
+        completePromptSha256: 'a'.repeat(64),
+      },
+      migrationNotices: [],
+      prompt: 'product layers only',
+    })
     mocks.getPromptTemplatesList.mockReset().mockResolvedValue([])
     mocks.reloadResources.mockReset().mockResolvedValue(undefined)
     mocks.getSkillsList.mockReset()
@@ -101,45 +131,75 @@ describe('system prompt resource preview', () => {
     mocks.listAgentsContextFiles.mockClear()
     mocks.listPiBuiltinPromptFiles.mockClear()
     mocks.listPluginInjectedPromptFiles.mockClear()
+    mocks.listCodeOwnedPromptCatalogFiles.mockClear()
     mocks.listPromptsOnDisk.mockClear()
     mocks.workerManager.isRunning = false
     mocks.workerManager.cwd = ''
     registerSkillsResourceHandlers()
   })
 
-  it('uses the isolated preview process while the session worker is idle', async () => {
+  it('starts the current project Worker and reads Prompt text only for an explicit advanced preview', async () => {
     const handler = mocks.handlers.get('ipc:resource.read')
-    await expect(handler?.({ path: 'pi-desktop://system-prompt-preview' })).resolves.toEqual({
-      content: 'assembled prompt',
-      path: 'pi-desktop://system-prompt-preview',
+    await expect(handler?.({ path: 'xiaogui://prompt-catalog/product-system-layers-preview' })).resolves.toEqual({
+      content: 'product layers only',
+      path: 'xiaogui://prompt-catalog/product-system-layers-preview',
       revisions: [],
     })
 
-    expect(mocks.getSystemPrompt).toHaveBeenCalledWith({
-      cwd: 'C:/repo',
-      globalSettings: { defaultProvider: 'openai' },
-      projectSettings: { skills: ['.pi/skills/project-skill'] },
-    })
-    expect(mocks.start).not.toHaveBeenCalled()
-    expect(mocks.getContextPrompts).not.toHaveBeenCalled()
+    expect(mocks.start).toHaveBeenCalledWith('C:/repo')
+    expect(mocks.getEffectivePromptPreview).toHaveBeenCalledOnce()
+    expect(mocks.getSystemPrompt).not.toHaveBeenCalled()
   })
 
-  it('does not reuse a live worker from another project', async () => {
+  it('returns the complete real-Session Manifest from prompts.list without requesting Prompt text', async () => {
+    const handler = mocks.handlers.get('ipc:prompts.list')
+
+    const result = await handler?.({}) as Record<string, unknown>
+
+    expect(mocks.start).toHaveBeenCalledWith('C:/repo')
+    expect(mocks.getEffectivePromptManifest).toHaveBeenCalledOnce()
+    expect(mocks.getEffectivePromptPreview).not.toHaveBeenCalled()
+    expect(result.effectivePromptDiagnostics).toEqual(
+      await mocks.getEffectivePromptManifest.mock.results[0]?.value,
+    )
+    expect(JSON.stringify(result)).not.toContain('complete effective prompt')
+  })
+
+  it('rejects an advanced Prompt body when the displayed Manifest has become stale', async () => {
+    const handler = mocks.handlers.get('ipc:resource.read')
+
+    await expect(handler?.({
+      path: 'xiaogui://prompt-catalog/product-system-layers-preview',
+      expectedPromptSha256: 'b'.repeat(64),
+    })).resolves.toEqual({ error: 'XIAOGUI_PROMPT_DIAGNOSTICS_STALE' })
+  })
+
+  it('keeps code-owned Prompt catalog resources read-only', async () => {
+    const handler = mocks.handlers.get('ipc:resource.write')
+
+    await expect(handler?.({
+      path: 'xiaogui://prompt-catalog/capability-registry',
+      content: 'forged',
+    })).resolves.toEqual({ ok: false, error: '只读预览不可保存' })
+  })
+
+  it('rebinds diagnostics instead of reusing a live Worker from another project', async () => {
     mocks.workerManager.isRunning = true
     mocks.workerManager.cwd = 'C:/project-a'
     const handler = mocks.handlers.get('ipc:resource.read')
 
-    await expect(handler?.({ path: 'pi-desktop://system-prompt-preview' })).resolves.toEqual({
-      content: 'assembled prompt',
-      path: 'pi-desktop://system-prompt-preview',
+    await expect(handler?.({ path: 'xiaogui://prompt-catalog/product-system-layers-preview' })).resolves.toEqual({
+      content: 'product layers only',
+      path: 'xiaogui://prompt-catalog/product-system-layers-preview',
       revisions: [],
     })
 
-    expect(mocks.getSystemPrompt).toHaveBeenCalledWith(expect.objectContaining({ cwd: 'C:/repo' }))
-    expect(mocks.getContextPrompts).not.toHaveBeenCalled()
+    expect(mocks.start).toHaveBeenCalledWith('C:/repo')
+    expect(mocks.getEffectivePromptPreview).toHaveBeenCalledOnce()
+    expect(mocks.getSystemPrompt).not.toHaveBeenCalled()
   })
 
-  it('does not build the prompt catalog from another project worker', async () => {
+  it('rebinds the Prompt catalog to the current project Worker', async () => {
     mocks.workerManager.isRunning = true
     mocks.workerManager.cwd = 'C:/project-a'
     const handler = mocks.handlers.get('ipc:prompts.list')
@@ -149,9 +209,62 @@ describe('system prompt resource preview', () => {
     expect(mocks.listAgentsContextFiles).toHaveBeenCalledWith('C:/repo')
     expect(mocks.listPiBuiltinPromptFiles).toHaveBeenCalledWith('C:/repo', true)
     expect(mocks.listPluginInjectedPromptFiles).toHaveBeenCalledWith('C:/repo')
+    expect(mocks.listCodeOwnedPromptCatalogFiles).toHaveBeenCalledOnce()
     expect(mocks.listPromptsOnDisk).toHaveBeenCalledWith('C:/repo')
-    expect(mocks.getContextPrompts).not.toHaveBeenCalled()
-    expect(mocks.getPromptTemplatesList).not.toHaveBeenCalled()
+    expect(mocks.start).toHaveBeenCalledWith('C:/repo')
+    expect(mocks.getEffectivePromptManifest).toHaveBeenCalledOnce()
+    expect(mocks.getPromptTemplatesList).toHaveBeenCalledOnce()
+  })
+
+  it('keeps product, user, project, Slash, capability and subtask entries distinct', async () => {
+    mocks.listAgentsContextFiles.mockReturnValueOnce([{
+      id: 'agents:project', category: 'project_context', name: 'AGENTS.md',
+      description: '', path: 'C:/repo/AGENTS.md', command: '', editable: true,
+    }])
+    mocks.listPiBuiltinPromptFiles.mockReturnValueOnce([
+      {
+        id: 'builtin:system:default', category: 'product_system_layers', name: 'Manifest',
+        description: '', path: null, command: '', editable: false, readOnly: true,
+      },
+      {
+        id: 'builtin:system:global', category: 'user_system_append', name: 'SYSTEM.md',
+        description: '', path: 'C:/agent/SYSTEM.md', command: '', editable: true,
+      },
+    ])
+    mocks.listCodeOwnedPromptCatalogFiles.mockReturnValueOnce([
+      {
+        id: 'builtin:capability-registry', category: 'tool_capability_guidelines',
+        name: 'Capability', description: '', path: 'xiaogui://prompt-catalog/capability-registry',
+        command: '', editable: false, readOnly: true,
+      },
+      {
+        id: 'builtin:subtask:template-intake-analysis', category: 'subtask_prompts',
+        name: 'Subtask', description: '',
+        path: 'xiaogui://prompt-catalog/subtask/template-intake-analysis',
+        command: '', editable: false, readOnly: true,
+      },
+    ])
+    mocks.listPromptsOnDisk.mockReturnValueOnce([{
+      name: 'review', description: '', path: 'C:/repo/.pi/prompts/review.md',
+      source: 'project', command: '/review',
+    }])
+    const handler = mocks.handlers.get('ipc:prompts.list')
+
+    const result = await handler?.({}) as {
+      prompts: Array<{ category: string }>
+      virtualSystemPreviewPath: string
+    }
+
+    expect(new Set(result.prompts.map((entry) => entry.category))).toEqual(new Set([
+      'product_system_layers',
+      'user_system_append',
+      'project_context',
+      'slash_prompt_templates',
+      'tool_capability_guidelines',
+      'subtask_prompts',
+    ]))
+    expect(result.virtualSystemPreviewPath)
+      .toBe('xiaogui://prompt-catalog/product-system-layers-preview')
   })
 
   it('lazily starts the current project worker before listing skills', async () => {

@@ -2,6 +2,7 @@ import { buildSessionContextPreview } from '@shared/session-context-preview'
 import { errorMessage } from '@shared/error-message'
 import type { SkillCatalogResponse } from '@shared/skill-catalog'
 import { projectModelCatalog } from '@shared/model-auth-projection'
+import { sessionFilePathsEqual } from '@shared/session-file-path'
 import type { WorkerCommandRow, WorkerIncomingMessage } from '../worker-port-types.js'
 import type { WorkerReply } from '../worker-handler-types.js'
 import { st } from '../worker-runtime.js'
@@ -213,7 +214,7 @@ export async function handleGetcontextprompts(msg: WorkerIncomingMessage, reply:
             systemPromptFile: systemPromptFile ?? null,
             appendSystemPromptParts: appendParts,
             builtSystemPreview,
-            projectTrusted: st.session?.settingsManager?.isProjectTrusted?.() ?? true,
+            projectTrusted: st.session?.settingsManager?.isProjectTrusted?.() ?? false,
           })
         } catch (e: unknown) {
           reply({ type: 'error', error: `getContextPrompts failed: ${errorMessage(e)}` })
@@ -275,6 +276,7 @@ export async function handleGetstate(msg: WorkerIncomingMessage, reply: WorkerRe
                 sessionFile: st.session.sessionFile,
                 leafId: st.session.sessionManager.getLeafId?.() ?? null,
                 messageCount: st.session.messages.length,
+                promptDiagnostics: st.promptDiagnostics,
                 tools: (((st.session.agent as unknown as { _state?: { tools?: Array<{ name?: string; description?: string }> } })._state?.tools) || []).map((t) => ({
                   name: t.name,
                   description: t.description,
@@ -283,5 +285,29 @@ export async function handleGetstate(msg: WorkerIncomingMessage, reply: WorkerRe
             : null,
         })
         return
+}
+
+export async function handleGeteffectivepromptmanifest(
+  msg: WorkerIncomingMessage,
+  reply: WorkerReply,
+): Promise<void> {
+  const includePromptBody = msg.includePromptBody === true
+  if (!st.session || !st.promptDiagnostics || (includePromptBody && !st.effectivePrompt)) {
+    reply({ type: 'error', error: 'XIAOGUI_PROMPT_MANIFEST_UNAVAILABLE' })
+    return
+  }
+  if (
+    typeof msg.sessionFile === 'string' &&
+    !sessionFilePathsEqual(st.session.sessionFile, msg.sessionFile)
+  ) {
+    reply({ type: 'error', error: 'XIAOGUI_PROMPT_CONTEXT_SESSION_MISMATCH' })
+    return
+  }
+  reply({
+    type: 'getEffectivePromptManifest-done',
+    sessionId: st.currentSessionId,
+    promptDiagnostics: st.promptDiagnostics,
+    ...(includePromptBody ? { prompt: st.effectivePrompt } : {}),
+  })
 }
 

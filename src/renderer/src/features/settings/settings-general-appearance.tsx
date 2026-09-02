@@ -22,6 +22,7 @@ import {
   type AppIconComponent,
 } from '@renderer/components/icons'
 import { ICON_THEMES, type IconTheme } from '@shared/icon-theme'
+import { XIAOGUI_GITHUB_URL } from '@shared/xiaogui-product'
 
 export function GeneralSettings() {
   const { t } = useTranslation()
@@ -152,7 +153,7 @@ export function GeneralSettings() {
               <button
                 type="button"
                 onClick={() =>
-                  void ipcClient.invoke('app.openRelease', { url: 'https://github.com/justhil/pi-app' })
+                  void ipcClient.invoke('app.openRelease', { url: XIAOGUI_GITHUB_URL })
                 }
                 className={btnOutline}
                 title={t('settings:general.openGitHub')}

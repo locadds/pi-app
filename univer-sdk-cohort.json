@@ -1,0 +1,35 @@
+{
+  "univerSdkVersion": "0.25.1",
+  "testedAt": "2026-08-30",
+  "licenseMode": "CORE_ONLY",
+  "approval": "SINGLE_MACHINE_TRIAL_ONLY",
+  "fidelityCorpusVersion": "synthetic-table-image-browser-smoke-v1",
+  "packages": [
+    "@univerjs/core",
+    "@univerjs/design",
+    "@univerjs/docs",
+    "@univerjs/docs-drawing",
+    "@univerjs/docs-drawing-ui",
+    "@univerjs/docs-ui",
+    "@univerjs/drawing",
+    "@univerjs/drawing-ui",
+    "@univerjs/engine-render",
+    "@univerjs/ui"
+  ],
+  "proPackages": [],
+  "verifiedSurfaces": [
+    "body-image",
+    "table-cell-image",
+    "header-image",
+    "footer-image",
+    "basic-table",
+    "snapshot-save-reload"
+  ],
+  "notApproved": [
+    "stage-line-merge",
+    "production-release",
+    "docx-exchange",
+    "collaboration",
+    "printing"
+  ]
+}

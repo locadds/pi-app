@@ -1,4 +1,5 @@
 import type { PiModelDefinition, PiModelsConfig, PiProviderConfig } from './pi-models-json'
+import { normalizeModelProviderBaseUrl } from '@shared/model-provider-compatibility'
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
@@ -33,6 +34,15 @@ function normalizeProvider(raw: unknown, warnings: string[], key: string): PiPro
   }
 
   const normalized = cloneRecord(provider) as PiProviderConfig
+  const baseUrl = normalizeModelProviderBaseUrl(normalized.api, normalized.baseUrl)
+  if (baseUrl.changed) {
+    normalized.baseUrl = baseUrl.baseUrl
+  }
+  if (baseUrl.warning === 'ANTHROPIC_BASE_URL_ENDPOINT_REMOVED') {
+    warnings.push(
+      `供应商「${key}」: Anthropic Messages 会自动请求 /v1/messages，已移除 baseUrl 末尾重复端点`,
+    )
+  }
   if (Array.isArray(provider.models)) {
     normalized.models = provider.models
       .map((model, index) => normalizeModel(model, warnings, `providers.${key}.models[${index}]`))

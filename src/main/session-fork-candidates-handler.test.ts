@@ -30,6 +30,12 @@ vi.mock('./worker-manager', () => ({
   },
 }))
 vi.mock('./config-store', () => ({ configStore: { get: vi.fn(() => '') } }))
+vi.mock('./xiaogui/scope-service', () => ({
+  sessionScopeResolverV1: { resolve: vi.fn(), registerNew: vi.fn(), derive: vi.fn() },
+}))
+vi.mock('./xiaogui/sidecar-bridge', () => ({
+  xiaogui: { setMode: vi.fn(), getMode: vi.fn(() => 'WORK') },
+}))
 
 import { registerSessionHandlers } from './ipc/handlers/session'
 

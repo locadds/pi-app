@@ -148,7 +148,7 @@ export function GuardPolicyPanel() {
                 部署方式：将小规仓库 <span className="font-mono">src/coding/guard-extension</span>{' '}
                 复制为本项目的{' '}
                 <span className="font-mono">.pi/extensions/xiaogui-coding-guard</span>
-                （入口文件为 index.ts），并在 Pi 扩展设置中启用。部署后危险命令将被拦截并写入审计日志。
+                （入口文件为 index.ts），并在小规扩展设置中启用。部署后危险命令将被拦截并写入审计日志。
               </p>
             </div>
           )}

@@ -19,6 +19,7 @@ import path from 'node:path'
 import {
   resolveXiaoguiConfig,
   isXiaoguiMode,
+  XIAOGUI_DEFAULT_EXECUTION_PHASE_V1,
   type ExecutionPhase,
   type XiaoguiBridgeConfig,
   type XiaoguiMode,
@@ -256,6 +257,7 @@ export interface XiaoguiIntegrationDeps {
 }
 
 export interface XiaoguiIntegrationTestInstance {
+  getExecutionPhase(): ExecutionPhase
   status(): XiaoguiStatus
   shutdown(): Promise<void>
   invokeTool(payload: ToolInvokePayload, opts?: { projectRoot?: string | null }): Promise<ToolResult>
@@ -270,8 +272,9 @@ class XiaoguiIntegration {
   private readonly spawnSidecar: NonNullable<XiaoguiIntegrationDeps['spawnSidecar']>
   // 一级模式持久化在 xiaogui.json（scope-store），重启后恢复上次模式
   private mode: XiaoguiMode
-  // 执行方式（ASK/PLAN/EXECUTE，与一级模式正交）。V0.1 仅内存状态标记，不持久化。
-  private executionPhase: ExecutionPhase = 'ASK'
+  // 执行方式（ASK/PLAN/EXECUTE，与一级模式正交）。默认允许受控执行；
+  // ASK / PLAN 仅在用户明确选择时启用，安全仍由工具、权限和交付门强制。
+  private executionPhase: ExecutionPhase = XIAOGUI_DEFAULT_EXECUTION_PHASE_V1
   // 当前项目根（IPC handler 在 tool.invoke 时传入）：sidecar 尚未启动时并入
   // XIAOGUI_ALLOWED_ROOTS（安全默认收敛）；已启动进程不重写 env，重启后生效
   private projectRoot: string | null = null

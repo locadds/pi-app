@@ -105,6 +105,18 @@ describe('worker session event lifecycle', () => {
     expect(runningEvent).not.toMatchObject({ turnId: 'turn-old' })
   })
 
+  it('keeps the user-run identity stable while Pi advances through tool subturns', () => {
+    const harness = createSessionEventHarness()
+    handleSessionEvent({ type: 'agent_start' } as AgentSessionEvent, harness.dependencies)
+    const runId = harness.getCurrentRunId()
+    const firstTurnId = harness.getCurrentTurnId()
+
+    handleSessionEvent({ type: 'turn_start' } as AgentSessionEvent, harness.dependencies)
+
+    expect(harness.getCurrentRunId()).toBe(runId)
+    expect(harness.getCurrentTurnId()).not.toBe(firstTurnId)
+  })
+
   it('should_preserve_provisional_run_identity_when_agent_starts', () => {
     const harness = createSessionEventHarness()
     harness.dependencies.setCurrentRunId('run-provisional')
@@ -455,20 +467,48 @@ describe('worker session event lifecycle', () => {
     const originalSession = st.session
     const originalAgentTurnActive = st.agentTurnActive
     const originalPromptPreflightActive = st.promptPreflightActive
+    const originalPromptPreflight = st.promptPreflight
+    const originalPromptContext = st.promptContext
+    const originalPromptContextCandidate = st.promptContextCandidate
+    const originalPromptTurnContext = st.promptTurnContext
+    const originalPromptStickyCapabilities = st.promptStickyCapabilities
+    const originalPromptTurnStickyCapabilities = st.promptTurnStickyCapabilities
+    const originalPromptDiagnostics = st.promptDiagnostics
+    const originalEffectivePrompt = st.effectivePrompt
     const originalRunId = st.currentRunId
     const originalTurnId = st.currentTurnId
     const replies: Record<string, unknown>[] = []
 
     try {
+      let activeTools = ['read']
       st.session = {
         isStreaming: false,
         sessionFile: '/workspace/session.jsonl',
         prompt: vi.fn().mockResolvedValue(undefined),
+        getAllTools: () => [{ name: 'read' }],
+        setActiveToolsByName: (names: string[]) => { activeTools = names },
+        getActiveToolNames: () => activeTools,
       } as never
       st.agentTurnActive = false
       st.promptPreflightActive = false
       st.currentRunId = ''
       st.currentTurnId = ''
+      const promptContext = {
+        schemaVersion: 1 as const,
+        mode: 'WORK' as const,
+        phase: 'ASK' as const,
+        workspaceAvailable: true,
+        projectTrusted: true,
+        enabledCapabilities: [] as const,
+        availableToolNames: [] as const,
+      }
+      st.promptContextCandidate = promptContext
+      st.promptPreflight = () => ({
+        prompt: 'effective prompt',
+        productPrompt: 'product prompt',
+        context: promptContext,
+        diagnostics: {} as never,
+      })
 
       await handlePrompt(
         { type: 'prompt', text: '/extension-command' },
@@ -486,6 +526,14 @@ describe('worker session event lifecycle', () => {
       st.session = originalSession
       st.agentTurnActive = originalAgentTurnActive
       st.promptPreflightActive = originalPromptPreflightActive
+      st.promptPreflight = originalPromptPreflight
+      st.promptContext = originalPromptContext
+      st.promptContextCandidate = originalPromptContextCandidate
+      st.promptTurnContext = originalPromptTurnContext
+      st.promptStickyCapabilities = originalPromptStickyCapabilities
+      st.promptTurnStickyCapabilities = originalPromptTurnStickyCapabilities
+      st.promptDiagnostics = originalPromptDiagnostics
+      st.effectivePrompt = originalEffectivePrompt
       st.currentRunId = originalRunId
       st.currentTurnId = originalTurnId
     }

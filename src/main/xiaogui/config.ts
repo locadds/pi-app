@@ -19,6 +19,11 @@
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
+import {
+  XIAOGUI_DEFAULT_EXECUTION_PHASE_V1,
+  type XiaoguiExecutionPhase,
+} from '@shared/xiaogui-prompt-contract'
+
 /** 一级工作模式（与小规产品定义一致，禁止使用 PLANNING 命名）。 */
 export type XiaoguiMode = 'WORK' | 'DESIGN' | 'CODING'
 
@@ -42,7 +47,8 @@ export function isXiaoguiMode(value: unknown): value is XiaoguiMode {
  * 执行方式（与一级工作模式正交，命名与小规仓库 src/main/xiaogui/types.ts 一致）。
  * V0.1 仅做状态标记与策略路由接口，不实现 Plan Engine。
  */
-export type ExecutionPhase = 'ASK' | 'PLAN' | 'EXECUTE'
+export type ExecutionPhase = XiaoguiExecutionPhase
+export { XIAOGUI_DEFAULT_EXECUTION_PHASE_V1 }
 
 const BUNDLED_XIAOGUI_DIR = 'xiaogui'
 

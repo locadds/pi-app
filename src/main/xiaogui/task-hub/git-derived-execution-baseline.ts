@@ -1,0 +1,403 @@
+import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { isAbsolute, resolve } from 'node:path'
+
+import type { FlowId, HubAddressV1, TaskRunId } from '@shared/xiaogui-collaboration-hub'
+import type {
+  ArtifactId,
+  Sha256Digest,
+  TaskChangeSetId,
+  TaskChangeSetV1,
+} from '@shared/xiaogui-task-verification'
+
+import type {
+  DerivedExecutionBaselineProviderV1,
+  DerivedTaskExecutionBaselineV1,
+  ExecutionBaselineV1,
+} from './application'
+import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
+import {
+  resolveTaskChangeSetFilesV1,
+  type DeliveryComposerTaskInputV1,
+} from './delivery-composer'
+import {
+  cleanupDeliveryIntegrationWorktreeRootV1,
+  MainProcessDeliveryIntegrationWorktreePortV1,
+} from './delivery-integration-worktree'
+import { digestJson } from './digest'
+import {
+  CollaborationHubSqliteStoreV1,
+  type DerivedExecutionBaselineReservationResultV1,
+} from './sqlite-store'
+
+const GIT_OID_PATTERN = /^[0-9a-f]{40}$/
+const INTERNAL_COMMIT_DATE = '2000-01-01T00:00:00Z'
+const RESERVATION_LEASE_MS = 5 * 60_000
+const RESERVATION_WAIT_MS = 30_000
+const RESERVATION_POLL_MS = 25
+
+export interface VerifiedTaskChangeSetMaterialV1 {
+  readonly changeSet: TaskChangeSetV1
+  readonly patchArtifact: {
+    readonly artifactId: ArtifactId
+    readonly digest: Sha256Digest
+    readonly bytes: Uint8Array
+  }
+}
+
+export interface VerifiedTaskChangeSetReaderV1 {
+  read(taskChangeSetId: TaskChangeSetId): VerifiedTaskChangeSetMaterialV1 | null | Promise<VerifiedTaskChangeSetMaterialV1 | null>
+}
+
+export interface GitDerivedExecutionBaselineProviderOptionsV1 {
+  readonly storeFactory: () => CollaborationHubSqliteStoreV1
+  readonly projectResolver: ProjectWorkspaceResolverV1
+  readonly managedRoot: string
+  readonly taskChangeSetReader?: VerifiedTaskChangeSetReaderV1
+  readonly now?: () => string
+}
+
+export type GitDerivedExecutionBaselineSafeCodeV1 =
+  | 'DERIVED_BASELINE_BASE_INVALID'
+  | 'DERIVED_BASELINE_CHANGESET_MISSING'
+  | 'DERIVED_BASELINE_CHANGESET_INVALID'
+  | 'DERIVED_BASELINE_CACHE_INVALID'
+  | 'DERIVED_BASELINE_GIT_FAILED'
+
+export class GitDerivedExecutionBaselineErrorV1 extends Error {
+  constructor(readonly reasonCode: GitDerivedExecutionBaselineSafeCodeV1) {
+    super(reasonCode)
+    this.name = 'GitDerivedExecutionBaselineErrorV1'
+  }
+}
+
+/**
+ * Main-process deep Module that squashes the verified dependency closure into
+ * an unreferenced deterministic Git commit. A linked worktree necessarily
+ * writes private administration records under `.git/worktrees` and internal
+ * objects to the repository object database; that is the permitted architecture
+ * boundary. The source worktree, its index, and user-visible refs/branches stay
+ * unchanged, the internal commit is not assigned a visible ref, and the linked
+ * worktree is removed before the path-free baseline is returned.
+ */
+export class GitDerivedExecutionBaselineProviderV1 implements DerivedExecutionBaselineProviderV1 {
+  constructor(private readonly options: GitDerivedExecutionBaselineProviderOptionsV1) {
+    if (!isAbsolute(options.managedRoot)) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_BASE_INVALID')
+  }
+
+  async derive(input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0]): Promise<DerivedTaskExecutionBaselineV1> {
+    if (!input.flowBaseline.baseRevision || !GIT_OID_PATTERN.test(input.flowBaseline.baseRevision) ||
+      !GIT_OID_PATTERN.test(input.flowBaseline.baselineTreeHash) || input.ancestorTaskChangeSetIds.length === 0) {
+      throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_BASE_INVALID')
+    }
+    const taskInputs = await this.readTaskInputs(input.ancestorTaskChangeSetIds)
+    const dependencyOrder = input.ancestorTaskChangeSetIds as readonly TaskChangeSetId[]
+    const resolved = resolveTaskChangeSetFilesV1({
+      flowId: input.flowId,
+      taskInputs,
+      dependencyOrder,
+      allowOrderedSameFileChanges: true,
+    })
+    if (!resolved.ok) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_CHANGESET_INVALID')
+
+    const derivationInputDigest = digestJson({
+      version: 1,
+      address: input.address,
+      flowId: input.flowId,
+      taskRunId: input.taskRunId,
+      flowBaseline: input.flowBaseline,
+      dependencyOrder,
+      taskChangeSets: taskInputs.map(({ changeSet, patchArtifact }) => ({
+        taskChangeSetId: changeSet.taskChangeSetId,
+        digest: changeSet.digest,
+        patchArtifactId: patchArtifact.artifactId,
+        patchArtifactDigest: patchArtifact.digest,
+      })),
+    })
+    const repositoryRoot = resolve(await this.options.projectResolver.resolveProjectRoot(input.address.projectId))
+    return this.deriveReserved({
+      input,
+      files: resolved.files,
+      derivationInputDigest,
+      repositoryRoot,
+    })
+  }
+
+  private async deriveReserved(context: {
+    input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0]
+    files: Parameters<MainProcessDeliveryIntegrationWorktreePortV1['integrate']>[0]
+    derivationInputDigest: string
+    repositoryRoot: string
+  }): Promise<DerivedTaskExecutionBaselineV1> {
+    const ownerToken = randomUUID()
+    const deadline = Date.now() + RESERVATION_WAIT_MS
+    while (true) {
+      const reservation = this.reserve(context, ownerToken)
+      if (reservation.kind === 'CACHED') {
+        return this.validateCached(reservation.cache.baseline_json, context.input, context.repositoryRoot)
+      }
+      if (reservation.kind === 'ACQUIRED') {
+        try {
+          return await this.materializeReserved(context, ownerToken)
+        } catch (error) {
+          try {
+            this.releaseReservation(context.derivationInputDigest, ownerToken)
+          } catch {
+            // Preserve the materialization failure; the finite lease remains auditable
+            // and permits a later owner to recover this reservation.
+          }
+          throw error
+        }
+      }
+      if (Date.now() >= deadline) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_GIT_FAILED')
+      await delay(RESERVATION_POLL_MS)
+    }
+  }
+
+  private reserve(
+    context: {
+      input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0]
+      derivationInputDigest: string
+    },
+    ownerToken: string,
+  ): DerivedExecutionBaselineReservationResultV1 {
+    const now = new Date().toISOString()
+    const store = this.options.storeFactory()
+    try {
+      return store.reserveDerivedExecutionBaseline({
+        derivation_input_digest: context.derivationInputDigest,
+        project_id: context.input.address.projectId,
+        flow_id: context.input.flowId,
+        task_run_id: context.input.taskRunId,
+        owner_token: ownerToken,
+        lease_expires_at: new Date(Date.now() + RESERVATION_LEASE_MS).toISOString(),
+        now,
+      })
+    } finally {
+      store.close()
+    }
+  }
+
+  private async validateCached(
+    value: string,
+    input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0],
+    repositoryRoot: string,
+  ): Promise<DerivedTaskExecutionBaselineV1> {
+    const baseline = parseCachedBaseline(value, input)
+    await assertCommitTree(repositoryRoot, baseline.baseRevision!, baseline.baselineTreeHash)
+    return baseline
+  }
+
+  private async materializeReserved(
+    context: {
+      input: Parameters<DerivedExecutionBaselineProviderV1['derive']>[0]
+      files: Parameters<MainProcessDeliveryIntegrationWorktreePortV1['integrate']>[0]
+      derivationInputDigest: string
+      repositoryRoot: string
+    },
+    ownerToken: string,
+  ): Promise<DerivedTaskExecutionBaselineV1> {
+    const { input, files, derivationInputDigest, repositoryRoot } = context
+    const baseRevision = input.flowBaseline.baseRevision
+    if (!baseRevision) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_BASE_INVALID')
+
+    const target = {
+      projectId: input.address.projectId,
+      baseRevision,
+      baselineTreeHash: input.flowBaseline.baselineTreeHash,
+      initialTargetFingerprint: input.flowBaseline.initialTargetFingerprint as Sha256Digest,
+    }
+    const integration = await new MainProcessDeliveryIntegrationWorktreePortV1({
+      projectResolver: this.options.projectResolver,
+      managedRoot: this.options.managedRoot,
+      target,
+      batchId: `derived-${derivationInputDigest}`,
+    }).integrate(files)
+
+    let derivedCommit: string
+    let derivedTree: string
+    try {
+      derivedTree = exactGitOid(await git(integration.privateIntegrationContext.worktreeRoot, ['write-tree']))
+      derivedCommit = exactGitOid(await git(
+        integration.privateIntegrationContext.worktreeRoot,
+        [
+          '-c', 'user.name=Xiaogui Internal',
+          '-c', 'user.email=xiaogui@internal.invalid',
+          'commit-tree', derivedTree,
+          '-p', baseRevision,
+          '-m', `xiaogui-derived-baseline-v1 ${derivationInputDigest}`,
+        ],
+        {
+          GIT_AUTHOR_DATE: INTERNAL_COMMIT_DATE,
+          GIT_COMMITTER_DATE: INTERNAL_COMMIT_DATE,
+        },
+      ))
+      await assertCommitTree(repositoryRoot, derivedCommit, derivedTree)
+    } finally {
+      await cleanupDeliveryIntegrationWorktreeRootV1(
+        integration.privateIntegrationContext.trustedToolchainRoot,
+        integration.privateIntegrationContext.worktreeRoot,
+      )
+    }
+
+    const baselineWithoutDerivation = {
+      version: 1 as const,
+      taskRunId: input.taskRunId,
+      ancestorTaskChangeSetIds: [...input.ancestorTaskChangeSetIds],
+      baselineId: `git-derived-baseline-v1-${derivationInputDigest}`,
+      baseRevision: derivedCommit,
+      baselineTreeHash: derivedTree,
+      initialTargetFingerprint: input.flowBaseline.initialTargetFingerprint,
+    }
+    const withBaselineDigest = {
+      ...baselineWithoutDerivation,
+      baselineDigest: executionBaselineDigest(baselineWithoutDerivation),
+    }
+    const baseline: DerivedTaskExecutionBaselineV1 = {
+      ...withBaselineDigest,
+      derivationDigest: digestJson(withBaselineDigest),
+    }
+    this.writeCached(derivationInputDigest, input, baseline, ownerToken)
+    return baseline
+  }
+
+  private async readTaskInputs(ids: readonly string[]): Promise<DeliveryComposerTaskInputV1[]> {
+    if (this.options.taskChangeSetReader) {
+      return Promise.all(ids.map(async (id) => {
+        const material = await this.options.taskChangeSetReader!.read(id as TaskChangeSetId)
+        if (!material) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_CHANGESET_MISSING')
+        return material
+      }))
+    }
+    const store = this.options.storeFactory()
+    try {
+      return ids.map((id) => {
+        const changeSet = store.readTaskChangeSet(id as TaskChangeSetId)
+        if (!changeSet) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_CHANGESET_MISSING')
+        const artifact = store.readArtifact(changeSet.patchArtifactId)
+        if (!artifact || artifact.kind !== 'PATCH') {
+          throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_CHANGESET_MISSING')
+        }
+        return {
+          changeSet,
+          patchArtifact: {
+            artifactId: artifact.artifactId,
+            digest: artifact.contentDigest,
+            bytes: artifact.content,
+          },
+        }
+      })
+    } finally {
+      store.close()
+    }
+  }
+
+  private writeCached(
+    derivationInputDigest: string,
+    input: {
+      address: HubAddressV1
+      flowId: FlowId
+      taskRunId: TaskRunId
+    },
+    baseline: DerivedTaskExecutionBaselineV1,
+    ownerToken?: string,
+  ): void {
+    const store = this.options.storeFactory()
+    try {
+      store.writeDerivedExecutionBaseline({
+        derivation_input_digest: derivationInputDigest,
+        project_id: input.address.projectId,
+        flow_id: input.flowId,
+        task_run_id: input.taskRunId,
+        baseline_json: JSON.stringify(baseline),
+        created_at: this.options.now?.() ?? new Date().toISOString(),
+      }, ownerToken)
+    } finally {
+      store.close()
+    }
+  }
+
+  private releaseReservation(derivationInputDigest: string, ownerToken: string): void {
+    const store = this.options.storeFactory()
+    try {
+      store.releaseDerivedExecutionBaselineReservation(derivationInputDigest, ownerToken)
+    } finally {
+      store.close()
+    }
+  }
+}
+
+function parseCachedBaseline(
+  value: string,
+  input: {
+    taskRunId: TaskRunId
+    ancestorTaskChangeSetIds: readonly string[]
+  },
+): DerivedTaskExecutionBaselineV1 {
+  try {
+    const baseline = JSON.parse(value) as DerivedTaskExecutionBaselineV1
+    const expectedBaselineDigest = executionBaselineDigest(baseline)
+    const { derivationDigest: _ignored, ...withoutDerivation } = baseline
+    const valid = baseline.version === 1 &&
+      baseline.taskRunId === input.taskRunId &&
+      sameStrings(baseline.ancestorTaskChangeSetIds, input.ancestorTaskChangeSetIds) &&
+      baseline.baselineDigest === expectedBaselineDigest &&
+      baseline.derivationDigest === digestJson(withoutDerivation) &&
+      typeof baseline.baseRevision === 'string' && GIT_OID_PATTERN.test(baseline.baseRevision) &&
+      GIT_OID_PATTERN.test(baseline.baselineTreeHash)
+    if (valid) return baseline
+  } catch {
+    // Closed cache failure below.
+  }
+  throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_CACHE_INVALID')
+}
+
+function executionBaselineDigest(value: Pick<
+  ExecutionBaselineV1,
+  'baselineId' | 'baseRevision' | 'baselineTreeHash' | 'initialTargetFingerprint'
+>): string {
+  return digestJson({
+    baselineId: value.baselineId,
+    ...(value.baseRevision ? { baseRevision: value.baseRevision } : {}),
+    baselineTreeHash: value.baselineTreeHash,
+    initialTargetFingerprint: value.initialTargetFingerprint,
+  })
+}
+
+async function assertCommitTree(repositoryRoot: string, commit: string, expectedTree: string): Promise<void> {
+  const actualTree = exactGitOid(await git(repositoryRoot, ['rev-parse', '--verify', `${commit}^{tree}`]))
+  if (actualTree !== expectedTree) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_CACHE_INVALID')
+}
+
+function exactGitOid(value: string): string {
+  const oid = value.trim()
+  if (!GIT_OID_PATTERN.test(oid)) throw new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_GIT_FAILED')
+  return oid
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))
+}
+
+function git(cwd: string, args: readonly string[], env: Readonly<Record<string, string>> = {}): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    execFile('git', [...args], {
+      cwd,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, ...env },
+    }, (error, stdout) => {
+      if (error) {
+        reject(new GitDerivedExecutionBaselineErrorV1('DERIVED_BASELINE_GIT_FAILED'))
+        return
+      }
+      resolvePromise(stdout ?? '')
+    })
+  })
+}

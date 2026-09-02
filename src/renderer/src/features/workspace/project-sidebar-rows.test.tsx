@@ -6,6 +6,13 @@ import { ProjectSessionTree } from './project-sidebar-rows'
 const mocks = vi.hoisted(() => ({
   collectActiveSubagentSessionChildren: vi.fn(),
   openSubagentSessionPreview: vi.fn(),
+  switchSessionInPlace: vi.fn(),
+  activateWorkspace: vi.fn(),
+}))
+
+vi.mock('@renderer/lib/activate-workspace', () => ({
+  switchSessionInPlace: mocks.switchSessionInPlace,
+  activateWorkspace: mocks.activateWorkspace,
 }))
 
 vi.mock('@renderer/lib/subagent-session-navigation', () => ({
@@ -26,6 +33,10 @@ describe('ProjectSessionTree subagent rows', () => {
     mocks.collectActiveSubagentSessionChildren.mockReturnValue([])
     mocks.openSubagentSessionPreview.mockReset()
     mocks.openSubagentSessionPreview.mockResolvedValue(undefined)
+    mocks.switchSessionInPlace.mockReset()
+    mocks.switchSessionInPlace.mockResolvedValue(undefined)
+    mocks.activateWorkspace.mockReset()
+    mocks.activateWorkspace.mockResolvedValue(undefined)
     useUIStore.setState({
       currentWorkspace: '/workspace',
       currentSessionId: 'child-session',
@@ -48,6 +59,54 @@ describe('ProjectSessionTree subagent rows', () => {
         ],
       },
     })
+  })
+
+  it('renders injected mode groups and prepares the canonical mode before opening', async () => {
+    const order: string[] = []
+    const beforeOpenSession = vi.fn(async () => {
+      order.push('prepare')
+    })
+    mocks.switchSessionInPlace.mockImplementation(async () => {
+      order.push('open')
+    })
+
+    const session = {
+      sessionId: 'coding-session',
+      sessionFile: '/sessions/coding.jsonl',
+      title: 'Coding conversation',
+      updatedAt: 1,
+      modelId: '',
+    }
+
+    render(
+      <ProjectSessionTree
+        workspacePath="/workspace"
+        projectSessions={[session]}
+        loading={false}
+        currentWorkspace="/workspace"
+        currentSessionId={null}
+        displayStrategy={{
+          projectSessions: (sessions) => [
+            {
+              session: sessions[0]!,
+              groupKey: 'CODING',
+              groupLabel: '编程',
+            },
+          ],
+          beforeOpenSession,
+        }}
+        onSessionContextMenu={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('编程')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Coding conversation/ }))
+
+    await waitFor(() =>
+      expect(mocks.switchSessionInPlace).toHaveBeenCalledWith('coding-session', '/sessions/coding.jsonl'),
+    )
+    expect(beforeOpenSession).toHaveBeenCalledWith(session)
+    expect(order).toEqual(['prepare', 'open'])
   })
 
   it('should_turn_the_current_parent_row_into_a_collapsible_menu_when_children_exist', () => {
@@ -93,9 +152,11 @@ describe('ProjectSessionTree subagent rows', () => {
       />,
     )
 
-    expect(screen.getByRole('button', {
-      name: 'Toggle subagents for Parent conversation',
-    })).toHaveAttribute('aria-expanded', 'false')
+    expect(
+      screen.getByRole('button', {
+        name: 'Toggle subagents for Parent conversation',
+      }),
+    ).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('should_show_only_running_children_and_keep_the_title_before_the_right_toggle', () => {
@@ -141,7 +202,9 @@ describe('ProjectSessionTree subagent rows', () => {
       />,
     )
 
-    const titleButton = screen.getByRole('button', { name: /^Parent conversation/ })
+    const titleButton = screen.getByRole('button', {
+      name: /^Parent conversation/,
+    })
     const toggle = screen.getByRole('button', {
       name: 'Toggle subagents for Parent conversation',
     })
@@ -199,9 +262,11 @@ describe('ProjectSessionTree subagent rows', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', {
-      name: 'Toggle subagents for Parent conversation',
-    }))
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Toggle subagents for Parent conversation',
+      }),
+    )
 
     act(() => {
       useUIStore.setState({
@@ -216,9 +281,13 @@ describe('ProjectSessionTree subagent rows', () => {
         ],
       })
     })
-    await waitFor(() => expect(screen.queryByRole('button', {
-      name: 'Toggle subagents for Parent conversation',
-    })).not.toBeInTheDocument())
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', {
+          name: 'Toggle subagents for Parent conversation',
+        }),
+      ).not.toBeInTheDocument(),
+    )
 
     act(() => {
       useUIStore.setState({
@@ -234,9 +303,11 @@ describe('ProjectSessionTree subagent rows', () => {
       })
     })
 
-    expect(await screen.findByRole('button', {
-      name: 'Toggle subagents for Parent conversation',
-    })).toHaveAttribute('aria-expanded', 'false')
+    expect(
+      await screen.findByRole('button', {
+        name: 'Toggle subagents for Parent conversation',
+      }),
+    ).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('should_use_the_current_parent_timeline_instead_of_stale_retained_children', () => {
@@ -273,9 +344,11 @@ describe('ProjectSessionTree subagent rows', () => {
       />,
     )
 
-    expect(screen.queryByRole('button', {
-      name: 'Toggle subagents for Parent conversation',
-    })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', {
+        name: 'Toggle subagents for Parent conversation',
+      }),
+    ).not.toBeInTheDocument()
   })
 
   it('should_expand_parent_and_select_child_when_subagent_preview_is_open', async () => {
@@ -303,12 +376,12 @@ describe('ProjectSessionTree subagent rows', () => {
     })
     await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'true'))
 
-    const child = screen.getByRole('button', { name: 'Open scout subagent session' })
+    const child = screen.getByRole('button', {
+      name: 'Open scout subagent session',
+    })
     expect(child).toHaveClass('nav-row-active')
 
     fireEvent.click(child)
-    expect(mocks.openSubagentSessionPreview).toHaveBeenCalledWith(
-      '/sessions/parent/run-1/session.jsonl',
-    )
+    expect(mocks.openSubagentSessionPreview).toHaveBeenCalledWith('/sessions/parent/run-1/session.jsonl')
   })
 })

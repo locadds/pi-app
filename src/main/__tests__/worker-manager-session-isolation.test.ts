@@ -3,9 +3,38 @@ import type { WorkerSlot } from '../worker-manager-types'
 import { WorkerManager } from '../worker-manager'
 import { attachWorkerHandlers } from '../worker-manager-pool'
 import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
+import {
+  clearSessionLeafOverride,
+  getSessionLeafOverride,
+  setSessionLeafOverride,
+} from '../session-leaf-override'
+
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => process.cwd()) },
+  utilityProcess: { fork: vi.fn() },
+}))
 
 vi.mock('../config-store', () => ({
   configStore: { get: vi.fn(() => undefined) },
+}))
+vi.mock('../session-file-meta', () => ({
+  readSessionMetaFromFile: vi.fn(() => ({ cwd: '/workspace' })),
+}))
+vi.mock('../sandbox-workspaces', () => ({
+  findSandboxWorkspaceForSessionFile: vi.fn(() => null),
+}))
+vi.mock('../xiaogui/prompt-context-runtime', () => ({
+  xiaoguiPromptContextResolverV1: {
+    forWorkspace: vi.fn(async (_cwd: string, mode = 'WORK') => ({
+      schemaVersion: 1, mode, phase: 'ASK', workspaceAvailable: true, projectTrusted: true,
+      enabledCapabilities: ['work.file-organize'], availableToolNames: [], projectId: 'xgp1_test',
+    })),
+    forSession: vi.fn(async (_cwd: string, sessionFile: string) => ({
+      schemaVersion: 1, mode: 'WORK', phase: 'ASK', workspaceAvailable: true, projectTrusted: true,
+      enabledCapabilities: ['work.file-organize'], availableToolNames: [], projectId: 'xgp1_test',
+      sessionKey: `xgs1_${Buffer.from(sessionFile).toString('hex')}`,
+    })),
+  },
 }))
 
 const { forkWorkerForCwd, readMaxSessionWorkers } = vi.hoisted(() => ({
@@ -52,6 +81,7 @@ function fakeSlot(poolKey: string, active = false): WorkerSlot {
     cwd: '/workspace',
     runtime: { mode: 'host', distro: null },
     sessionFile: poolKey.startsWith('ws:') ? null : poolKey,
+    sessionId: `session:${poolKey}`,
     worker,
     pendingRequests: new Map(),
     requestCounter: 0,
@@ -91,6 +121,7 @@ describe('WorkerManager session isolation', () => {
   beforeEach(() => {
     forkWorkerForCwd.mockReset()
     readMaxSessionWorkers.mockReturnValue(4)
+    clearSessionLeafOverride()
   })
 
   it('queries context only from the worker bound to the requested session', async () => {
@@ -108,6 +139,62 @@ describe('WorkerManager session isolation', () => {
     expect(await manager.getSessionContextPreview('/sessions/missing.jsonl')).toBeNull()
   })
 
+  it('routes a private checkpoint capture to the bound session without returning path or leaf', async () => {
+    const foreground = fakeSlot(normalizeSessionKey('/sessions/a.jsonl'))
+    const target = fakeSlot(normalizeSessionKey('/sessions/b.jsonl'))
+    target.sessionId = 'pi_session_1'
+    const { manager, internals } = managerWithForeground(foreground)
+    internals.pool.set(target.poolKey, target)
+    replyFrom(target, {
+      type: 'codingSessionCheckpoint-done',
+      action: 'CAPTURE',
+      sessionId: 'pi_session_1',
+      snapshotRef: `xgscp_${'1'.repeat(64)}`,
+      snapshotDigest: `sha256:${'a'.repeat(64)}`,
+      // Even if a compromised Worker adds private fields, Manager projects them out.
+      sessionFile: target.poolKey,
+      leafId: 'private_leaf',
+    })
+
+    const result = await manager.capturePiSessionCheckpoint({
+      sessionFile: target.poolKey,
+      expectedSessionId: 'pi_session_1',
+      snapshotRef: `xgscp_${'1'.repeat(64)}`,
+    })
+
+    expect(result).toEqual({
+      sessionId: 'pi_session_1',
+      snapshotRef: `xgscp_${'1'.repeat(64)}`,
+      snapshotDigest: `sha256:${'a'.repeat(64)}`,
+    })
+    expect(result).not.toHaveProperty('sessionFile')
+    expect(result).not.toHaveProperty('leafId')
+    expect(foreground.worker.postMessage).not.toHaveBeenCalled()
+    expect(internals.foregroundPoolKey).toBe(foreground.poolKey)
+  })
+
+  it('clears a stale manual leaf override after a persisted checkpoint restore', async () => {
+    const target = fakeSlot(normalizeSessionKey('/sessions/b.jsonl'))
+    const { manager } = managerWithForeground(target)
+    const snapshotDigest = `sha256:${'a'.repeat(64)}`
+    replyFrom(target, {
+      type: 'codingSessionCheckpoint-done',
+      action: 'RESTORE',
+      sessionId: 'pi_session_1',
+      restoredSnapshotDigest: snapshotDigest,
+    })
+    setSessionLeafOverride(target.poolKey, 'stale_manual_leaf')
+
+    await manager.restorePiSessionCheckpoint({
+      sessionFile: target.poolKey,
+      expectedSessionId: 'pi_session_1',
+      snapshotRef: `xgscp_${'2'.repeat(64)}`,
+      expectedDigest: snapshotDigest,
+    })
+
+    expect(getSessionLeafOverride(target.poolKey)).toBeUndefined()
+  })
+
   it('creates a separate worker when the foreground session is running', async () => {
     const running = fakeSlot(normalizeSessionKey('/sessions/running.jsonl'), true)
     const { manager, internals } = managerWithForeground(running)
@@ -120,6 +207,127 @@ describe('WorkerManager session isolation', () => {
     expect(running.worker.postMessage).not.toHaveBeenCalled()
     expect(internals.pool.get(running.poolKey)).toBe(running)
     expect(internals.pool.get(createdFile)).toBe(created)
+    const newSessionMessage = (created.worker.postMessage as ReturnType<typeof vi.fn>).mock.calls
+      .map(([message]) => message as Record<string, unknown>)
+      .find((message) => message.type === 'newSession')!
+    expect(newSessionMessage.promptContext).toEqual(expect.objectContaining({
+      schemaVersion: 1,
+      mode: 'WORK',
+    }))
+    expect(newSessionMessage.promptContext).not.toHaveProperty('sessionKey')
+    expect(created.worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'loadSession',
+      sessionFile: createdFile,
+      promptContext: expect.objectContaining({
+        schemaVersion: 1,
+        sessionKey: `xgs1_${Buffer.from(createdFile).toString('hex')}`,
+      }),
+    }))
+  })
+
+  it('reuses the registered workspace after a new-session worker exits even when the Pi header cwd is stale', async () => {
+    const manager = new WorkerManager()
+    const internals = manager as unknown as Internals
+    const workspace = '/selected-workspace'
+    const createdFile = normalizeSessionKey('/sessions/new-with-stale-header.jsonl')
+    const created = fakeSlot(workspacePoolKey(workspace))
+    created.cwd = workspace
+    replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
+
+    const reloaded = fakeSlot(createdFile)
+    reloaded.cwd = workspace
+    replyFrom(reloaded, {
+      type: 'loadSession-done',
+      sessionId: 'new',
+      sessionFile: createdFile,
+    })
+    forkWorkerForCwd
+      .mockResolvedValueOnce({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
+      .mockResolvedValueOnce({ slot: reloaded, init: Promise.resolve({ sessionId: 'bootstrap' }) })
+
+    await manager.newSession(workspace)
+    internals.pool.clear()
+    internals.foregroundPoolKey = null
+    await manager.loadSession(createdFile)
+
+    expect(forkWorkerForCwd).toHaveBeenLastCalledWith(
+      workspace,
+      expect.objectContaining({ sessionFile: createdFile }),
+    )
+  })
+
+  it('bootstraps a cold Session worker without pre-binding the target Session identity', async () => {
+    const manager = new WorkerManager()
+    const targetFile = normalizeSessionKey('/sessions/cold.jsonl')
+    const created = fakeSlot(targetFile)
+    replyFrom(created, {
+      type: 'loadSession-done',
+      sessionId: 'cold',
+      sessionFile: targetFile,
+    })
+    forkWorkerForCwd.mockResolvedValue({
+      slot: created,
+      init: Promise.resolve({ sessionId: 'bootstrap' }),
+    })
+
+    await manager.ensureSessionWorker(targetFile, '/workspace')
+
+    expect(forkWorkerForCwd).toHaveBeenCalledWith('/workspace', expect.objectContaining({
+      sessionFile: targetFile,
+      promptContext: expect.not.objectContaining({ sessionKey: expect.any(String) }),
+    }))
+    expect(created.worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'loadSession',
+      sessionFile: targetFile,
+      promptContext: expect.objectContaining({
+        sessionKey: `xgs1_${Buffer.from(targetFile).toString('hex')}`,
+      }),
+    }))
+  })
+
+  it('runs the new-session persistence gate before foreground activation', async () => {
+    const running = fakeSlot(normalizeSessionKey('/sessions/running.jsonl'), true)
+    const { manager, internals } = managerWithForeground(running)
+    const created = fakeSlot(workspacePoolKey('/workspace'))
+    const createdFile = normalizeSessionKey('/sessions/new.jsonl')
+    replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
+    forkWorkerForCwd.mockResolvedValue({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
+    const beforeActivate = vi.fn(async () => {
+      expect(internals.foregroundPoolKey).toBe(running.poolKey)
+      expect(internals.pool.has(createdFile)).toBe(false)
+      expect(created.poolKey).toBe(workspacePoolKey('/workspace'))
+    })
+
+    await expect(manager.newSession('/workspace', { beforeActivate })).resolves.toEqual({
+      sessionId: 'new',
+      sessionFile: createdFile,
+    })
+
+    expect(beforeActivate).toHaveBeenCalledWith({ sessionId: 'new', sessionFile: createdFile })
+    expect(internals.foregroundPoolKey).toBe(createdFile)
+    expect(internals.pool.get(createdFile)).toBe(created)
+  })
+
+  it('disposes the candidate worker when the new-session persistence gate fails', async () => {
+    const running = fakeSlot(normalizeSessionKey('/sessions/running.jsonl'), true)
+    const { manager, internals } = managerWithForeground(running)
+    const created = fakeSlot(workspacePoolKey('/workspace'))
+    const createdFile = normalizeSessionKey('/sessions/new.jsonl')
+    replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
+    forkWorkerForCwd.mockResolvedValue({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
+
+    await expect(
+      manager.newSession('/workspace', {
+        beforeActivate: async () => {
+          throw new Error('SCOPE_PERSISTENCE_FAILED')
+        },
+      }),
+    ).rejects.toThrow('SCOPE_PERSISTENCE_FAILED')
+
+    expect(internals.foregroundPoolKey).toBe(running.poolKey)
+    expect(internals.pool.has(createdFile)).toBe(false)
+    expect(internals.pool.has(created.poolKey)).toBe(false)
+    expect(created.worker.kill).toHaveBeenCalled()
   })
 
   it('evicts an idle slot before forking when the pool is at capacity', async () => {
@@ -166,6 +374,72 @@ describe('WorkerManager session isolation', () => {
     expect(internals.pool.has(normalizeSessionKey('/sessions/new-1.jsonl'))).toBe(true)
     expect(internals.pool.has(normalizeSessionKey('/sessions/new-2.jsonl'))).toBe(true)
   })
+
+  it.each(['fork', 'clone'] as const)(
+    'runs the %s persistence gate before remapping the foreground slot',
+    async (kind) => {
+      const sourceFile = normalizeSessionKey('/sessions/source.jsonl')
+      const targetFile = normalizeSessionKey(`/sessions/${kind}.jsonl`)
+      const source = fakeSlot(sourceFile)
+      const { manager, internals } = managerWithForeground(source)
+      replyFrom(source, {
+        type: `${kind}-done`,
+        sessionId: kind,
+        sessionFile: targetFile,
+      })
+      const beforeActivate = vi.fn(async () => {
+        expect(internals.foregroundPoolKey).toBe(sourceFile)
+        expect(internals.pool.get(sourceFile)).toBe(source)
+        expect(internals.pool.has(targetFile)).toBe(false)
+      })
+
+      if (kind === 'fork') {
+        await expect(
+          manager.forkSession({
+            sessionFile: sourceFile,
+            entryId: 'entry',
+            beforeActivate,
+          }),
+        ).resolves.toMatchObject({ sessionId: 'fork', sessionFile: targetFile })
+      } else {
+        await expect(
+          manager.cloneSession({ sessionFile: sourceFile, beforeActivate }),
+        ).resolves.toMatchObject({ sessionId: 'clone', sessionFile: targetFile })
+      }
+
+      expect(beforeActivate).toHaveBeenCalledWith({ sessionId: kind, sessionFile: targetFile })
+      expect(internals.foregroundPoolKey).toBe(targetFile)
+      expect(internals.pool.get(targetFile)).toBe(source)
+    },
+  )
+
+  it.each(['fork', 'clone'] as const)(
+    'disposes the candidate slot when the %s persistence gate fails',
+    async (kind) => {
+      const sourceFile = normalizeSessionKey('/sessions/source.jsonl')
+      const targetFile = normalizeSessionKey(`/sessions/${kind}.jsonl`)
+      const source = fakeSlot(sourceFile)
+      const { manager, internals } = managerWithForeground(source)
+      replyFrom(source, {
+        type: `${kind}-done`,
+        sessionId: kind,
+        sessionFile: targetFile,
+      })
+      const beforeActivate = async () => {
+        throw new Error('SCOPE_PERSISTENCE_FAILED')
+      }
+
+      const operation = kind === 'fork'
+        ? manager.forkSession({ sessionFile: sourceFile, entryId: 'entry', beforeActivate })
+        : manager.cloneSession({ sessionFile: sourceFile, beforeActivate })
+
+      await expect(operation).rejects.toThrow('SCOPE_PERSISTENCE_FAILED')
+      expect(internals.foregroundPoolKey).toBeNull()
+      expect(internals.pool.has(sourceFile)).toBe(false)
+      expect(internals.pool.has(targetFile)).toBe(false)
+      expect(source.worker.kill).toHaveBeenCalled()
+    },
+  )
 
   it('sends abort only to the worker bound to the requested session', async () => {
     const foreground = fakeSlot(normalizeSessionKey('/sessions/a.jsonl'), true)

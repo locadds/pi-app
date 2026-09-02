@@ -1,0 +1,444 @@
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type {
+  FlowId,
+  HubAddressV1,
+  InitialPlanDraftInputV1,
+  TaskFileAuthorizationScopeV1,
+} from '@shared/xiaogui-collaboration-hub'
+import type { RuntimeCapabilityV2 } from '@shared/xiaogui-agent-runtime'
+import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
+
+import type { AcpTransportFactoryV1 } from '../agent-runtime/acp/types'
+import {
+  KIMI_ACP_APPROVED_VERSION_V1,
+  KIMI_ACP_LEGACY_AGENT_PROFILE_CONTENT_V1,
+} from '../agent-runtime/acp/kimi-tool-policy'
+import { KIMI_PRODUCTION_CONFIG_CONTENT_V1 } from '../agent-runtime/kimi-production-home'
+import type { KimiAcpProbeV1 } from '../agent-runtime/kimi-adapter'
+import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
+import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
+import { digestJson } from './digest'
+import { resolvePiE2eScriptedRuntimeLaunchV1 } from './pi-e2e-scripted-runtime'
+import {
+  createXiaoguiRuntimeCompositionV1,
+  type XiaoguiRuntimeCompositionV1,
+} from './runtime-composition'
+
+const ADDRESS = {
+  projectId: `xgp1_${'1'.repeat(64)}`,
+  sessionKey: `xgs1_${'2'.repeat(64)}`,
+} as SessionAddressV1
+
+function authorizationScope(label: string): TaskFileAuthorizationScopeV1 {
+  const digit = label.length % 10
+  const token = `sha256:${String(digit).repeat(64)}` as TaskFileAuthorizationScopeV1['pathTokens'][number]
+  const pathTokens = [token]
+  const base = { version: 1 as const, pathTokens }
+  return { ...base, scopeDigest: `sha256:${digestJson(base)}` as TaskFileAuthorizationScopeV1['scopeDigest'] }
+}
+
+const roots: string[] = []
+const compositions: XiaoguiRuntimeCompositionV1[] = []
+const CONTROLLED_EVIDENCE_ROOT = 'D:\\CodexTemp\\xiaogui-hub-m4g-real-journey-v1\\evidence'
+
+afterEach(async () => {
+  for (const composition of compositions.splice(0)) {
+    try {
+      await composition.close()
+    } catch {
+      // The test assertion remains the primary failure.
+    }
+  }
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+describe('Xiaogui runtime composition v1', () => {
+  it('rejects a Scripted runtime scenario and event log outside the controlled journey roots', () => {
+    const token = 'a'.repeat(64)
+
+    expect(resolvePiE2eScriptedRuntimeLaunchV1({
+      isPackaged: false,
+      argv: ['electron', `--pi-e2e-scripted-runtime-token=${token}`],
+      env: {
+        PI_E2E: '1',
+        PI_E2E_SCRIPTED_RUNTIME_TOKEN: token,
+        PI_E2E_SCRIPTED_RUNTIME_SCENARIO: join(tempUserData(), 'scenario.json'),
+        PI_E2E_EVENT_LOG: join(tempUserData(), 'events.jsonl'),
+      },
+    })).toBeUndefined()
+  })
+
+  it('rejects an event log whose controlled path traverses a directory link', () => {
+    const controlledDir = tempControlledEvidenceDir()
+    const outsideDir = tempUserData()
+    const linkedDir = join(controlledDir, 'linked-output')
+    symlinkSync(outsideDir, linkedDir, 'junction')
+    const scenarioPath = join(controlledDir, 'scenario.json')
+    writeFileSync(scenarioPath, `${JSON.stringify({
+      version: 1,
+      eventLog: 'linked-output/events.jsonl',
+      tasks: [{ label: 'A', allowedPath: 'src/a.ts', releaseFile: 'release-a', content: 'A' }],
+    })}\n`, 'utf8')
+    const token = 'b'.repeat(64)
+
+    expect(resolvePiE2eScriptedRuntimeLaunchV1({
+      isPackaged: false,
+      argv: ['electron', `--pi-e2e-scripted-runtime-token=${token}`],
+      env: {
+        PI_E2E: '1',
+        PI_E2E_SCRIPTED_RUNTIME_TOKEN: token,
+        PI_E2E_SCRIPTED_RUNTIME_SCENARIO: scenarioPath,
+        PI_E2E_EVENT_LOG: join(linkedDir, 'events.jsonl'),
+      },
+    })).toBeUndefined()
+  })
+
+  it('rejects a forged Scripted launch object at the runtime composition seam', async () => {
+    const controlledDir = tempControlledEvidenceDir()
+    const scenarioPath = join(controlledDir, 'scenario.json')
+    const eventLogPath = join(controlledDir, 'events.jsonl')
+    writeFileSync(scenarioPath, `${JSON.stringify({
+      version: 1,
+      eventLog: 'events.jsonl',
+      tasks: [{ label: 'A', allowedPath: 'src/a.ts', releaseFile: 'release-a', content: 'A' }],
+    })}\n`, 'utf8')
+
+    let unexpectedComposition: XiaoguiRuntimeCompositionV1 | undefined
+    try {
+      expect(() => {
+        unexpectedComposition = createXiaoguiRuntimeCompositionV1({
+          userDataDir: tempUserData(),
+          productionEnabled: false,
+          lookup: lookup('CODING'),
+          projectResolver: unusedProjectResolver(),
+          piE2eScriptedRuntimeLaunch: { scenarioPath, eventLogPath },
+        } as unknown as Parameters<typeof createXiaoguiRuntimeCompositionV1>[0])
+      }).toThrow('PI_E2E_SCRIPTED_RUNTIME_FORBIDDEN')
+    } finally {
+      await unexpectedComposition?.close()
+    }
+  })
+
+  it('accepts a gate-issued controlled Scripted launch without enabling the Kimi production composition', () => {
+    const controlledDir = tempControlledEvidenceDir()
+    const scenarioPath = join(controlledDir, 'scenario.json')
+    const eventLogPath = join(controlledDir, 'events.jsonl')
+    writeFileSync(scenarioPath, `${JSON.stringify({
+      version: 1,
+      eventLog: 'events.jsonl',
+      tasks: [{ label: 'A', allowedPath: 'src/a.ts', releaseFile: 'release-a', content: 'A' }],
+    })}\n`, 'utf8')
+    const token = 'd'.repeat(64)
+    const launch = resolvePiE2eScriptedRuntimeLaunchV1({
+      isPackaged: false,
+      argv: ['electron', `--pi-e2e-scripted-runtime-token=${token}`],
+      env: {
+        PI_E2E: '1',
+        PI_E2E_SCRIPTED_RUNTIME_TOKEN: token,
+        PI_E2E_SCRIPTED_RUNTIME_SCENARIO: scenarioPath,
+        PI_E2E_EVENT_LOG: eventLogPath,
+      },
+    })
+    if (!launch) throw new Error('expected controlled Scripted launch')
+
+    track(createXiaoguiRuntimeCompositionV1({
+      userDataDir: tempUserData(),
+      productionEnabled: false,
+      lookup: lookup('CODING'),
+      projectResolver: unusedProjectResolver(),
+      piE2eScriptedRuntimeLaunch: launch,
+    }))
+
+    expect(readFileSync(eventLogPath, 'utf8')).toContain('runtime.adapter.ready')
+  })
+
+  it('maps one explicit staging seam to private stores and closes idempotently without provisioning Kimi', async () => {
+    const userDataDir = tempUserData()
+    const probe = fakeKimiProbe()
+    const transportFactory = rejectingTransportFactory()
+    const composition = track(createXiaoguiRuntimeCompositionV1({
+      userDataDir,
+      productionEnabled: false,
+      lookup: lookup('CODING'),
+      projectResolver: unusedProjectResolver(),
+      kimiProbe: probe,
+      kimiTransportFactory: transportFactory,
+      now: () => '2026-08-17T00:00:00.000Z',
+    }))
+
+    const staged = composition.stageAttemptInput({
+      attemptId: 'xhba_stage_input',
+      projectId: ADDRESS.projectId,
+      sessionKey: ADDRESS.sessionKey,
+      promptBytes: '只修改明确授权的文件',
+      grants: [{ operation: 'CREATE', relativePath: 'src/new-file.ts' }],
+    })
+    expect(staged).toMatchObject({
+      attemptId: 'xhba_stage_input',
+      projectId: ADDRESS.projectId,
+      sessionKey: ADDRESS.sessionKey,
+      grants: [{ operation: 'CREATE', relativePath: 'src/new-file.ts' }],
+      promptRef: { attemptId: 'xhba_stage_input' },
+    })
+    expect(composition.stageAttemptInput({
+      attemptId: 'xhba_stage_input',
+      projectId: ADDRESS.projectId,
+      sessionKey: ADDRESS.sessionKey,
+      promptBytes: '只修改明确授权的文件',
+      grants: [{ operation: 'CREATE', relativePath: 'src/new-file.ts' }],
+    })).toEqual(staged)
+
+    await expect(composition.application.observe(ADDRESS)).resolves.toMatchObject({ ok: true })
+    await expect(composition.application.executeSystem({
+      contractVersion: 'm2b.v1',
+      address: ADDRESS as HubAddressV1,
+      trustedActor: { kind: 'main-process-system' },
+      requestId: 'sys-disabled',
+      intent: {
+        type: 'system.schedule',
+        flowId: 'xhbf_disabled' as FlowId,
+        authorizationScope: authorizationScope('disabled'),
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'AGENT_UNAVAILABLE', safeArgs: { reason: 'NO_AGENT_RUNTIME' } },
+    })
+    const taskHubDir = join(userDataDir, 'xiaogui', 'task-hub')
+    expect([
+      'attempt-workspaces.sqlite',
+      'private-runtime-payloads.sqlite',
+      'attempt-execution-inputs.sqlite',
+      'delivery-apply-attempts.sqlite',
+    ].every((name) => existsSync(join(taskHubDir, name)))).toBe(true)
+    expect(existsSync(join(userDataDir, 'xiaogui-task-hub-m2a.sqlite'))).toBe(true)
+    expect(existsSync(join(userDataDir, 'xiaogui', 'agent-runtime'))).toBe(false)
+    expect(probe.findExecutable).not.toHaveBeenCalled()
+    expect(transportFactory.create).not.toHaveBeenCalled()
+
+    const firstClose = composition.close()
+    const secondClose = composition.close()
+    expect(secondClose).toBe(firstClose)
+    await firstClose
+    expect(() => composition.stageAttemptInput({
+      attemptId: 'xhba_after_close',
+      projectId: ADDRESS.projectId,
+      sessionKey: ADDRESS.sessionKey,
+      promptBytes: 'closed',
+      grants: [],
+    })).toThrow('XIAOGUI_RUNTIME_COMPOSITION_CLOSED')
+  })
+
+  it('provisions the isolated Kimi home only when production is enabled', () => {
+    const userDataDir = tempUserData()
+    const probe = fakeKimiProbe()
+    const transportFactory = rejectingTransportFactory()
+    track(createXiaoguiRuntimeCompositionV1({
+      userDataDir,
+      productionEnabled: true,
+      lookup: lookup('CODING'),
+      projectResolver: unusedProjectResolver(),
+      kimiProbe: probe,
+      kimiTransportFactory: transportFactory,
+    }))
+
+    const home = join(userDataDir, 'xiaogui', 'agent-runtime', 'kimi-v1')
+    expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(KIMI_PRODUCTION_CONFIG_CONTENT_V1)
+    expect(readFileSync(join(home, 'agents', 'agent.md'), 'utf8')).toBe(
+      KIMI_ACP_LEGACY_AGENT_PROFILE_CONTENT_V1,
+    )
+    expect(probe.findExecutable).not.toHaveBeenCalled()
+    expect(transportFactory.create).not.toHaveBeenCalled()
+  })
+
+  it('pins the application preflight to the approved Kimi 0.34.0 production selection without running Git or Kimi', async () => {
+    const userDataDir = tempUserData()
+    const probe = fakeKimiProbe()
+    const transportFactory = rejectingTransportFactory()
+    const resolveProjectRoot = vi.fn(async () => {
+      throw new Error('STOP_BEFORE_GIT')
+    })
+    const composition = track(createXiaoguiRuntimeCompositionV1({
+      userDataDir,
+      productionEnabled: true,
+      lookup: lookup('CODING'),
+      projectResolver: { resolveProjectRoot },
+      kimiProbe: probe,
+      kimiTransportFactory: transportFactory,
+    }))
+
+    const start = await composition.application.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'req-start',
+      intent: { type: 'flow.start.with_draft', draft: draft() },
+    })
+    if (!start.ok || !start.value.flowId || !start.value.revisionId) throw new Error('start failed')
+    const draftProjection = await composition.application.observe(ADDRESS)
+    if (!draftProjection.ok || !draftProjection.value.activeRevision) throw new Error('draft missing')
+    await expect(composition.application.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'req-approve',
+      expectedSessionVersion: draftProjection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: start.value.flowId,
+        baseRevisionId: start.value.revisionId,
+        draft: draftProjection.value.activeRevision.draft,
+      },
+    })).resolves.toMatchObject({ ok: true })
+    const approved = await composition.application.observeM2B(ADDRESS)
+
+    await expect(composition.application.executeSystem({
+      contractVersion: 'm2b.v1',
+      address: ADDRESS as HubAddressV1,
+      trustedActor: { kind: 'main-process-system' },
+      requestId: 'sys-schedule',
+      expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+      intent: {
+        type: 'system.schedule',
+        flowId: start.value.flowId as FlowId,
+        authorizationScope: authorizationScope('first'),
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: 'BASELINE_UNAVAILABLE',
+        safeArgs: { reason: 'BASELINE_PROVIDER_ERROR' },
+      },
+    })
+    expect(probe.findExecutable).toHaveBeenCalledTimes(2)
+    expect(resolveProjectRoot).toHaveBeenCalledWith(ADDRESS.projectId)
+    expect(transportFactory.create).not.toHaveBeenCalled()
+  })
+
+  it('accepts an additional adapter and an explicit deterministic routing policy', async () => {
+    const adapter = new ScriptedAgentRuntimeAdapterV1({ capabilities: [localCapability()] })
+    const health = vi.spyOn(adapter, 'health')
+    const composition = track(createXiaoguiRuntimeCompositionV1({
+      userDataDir: tempUserData(),
+      productionEnabled: true,
+      lookup: lookup('CODING'),
+      projectResolver: { resolveProjectRoot: vi.fn(async () => { throw new Error('STOP_BEFORE_GIT') }) },
+      kimiProbe: fakeKimiProbe(),
+      kimiTransportFactory: rejectingTransportFactory(),
+      additionalRuntimeAdapters: [adapter],
+      runtimeRoutingPolicy: {
+        mode: 'CODING',
+        requiredCapabilities: ['CODING.TYPESCRIPT', 'EXECUTION.LOCAL_ONLY'],
+        dataEgressPolicy: 'LOCAL_ONLY',
+        priorityAdapterIds: ['scripted-local'],
+        requireProductionApproval: true,
+      },
+    }))
+    const start = await composition.application.execute({
+      contractVersion: 'm2a.v1', address: ADDRESS, trustedActor: { kind: 'main-process-user' }, requestId: 'route-start',
+      intent: { type: 'flow.start.with_draft', draft: draft() },
+    })
+    if (!start.ok || !start.value.flowId || !start.value.revisionId) throw new Error('start failed')
+    const projection = await composition.application.observe(ADDRESS)
+    if (!projection.ok || !projection.value.activeRevision) throw new Error('draft missing')
+    await composition.application.execute({
+      contractVersion: 'm2a.v1', address: ADDRESS, trustedActor: { kind: 'main-process-user' }, requestId: 'route-approve',
+      expectedSessionVersion: projection.value.sessionVersion,
+      intent: { type: 'plan.revision.submit', flowId: start.value.flowId, baseRevisionId: start.value.revisionId, draft: projection.value.activeRevision.draft },
+    })
+    const approved = await composition.application.observeM2B(ADDRESS)
+    await composition.application.executeSystem({
+      contractVersion: 'm2b.v1', address: ADDRESS, trustedActor: { kind: 'main-process-system' }, requestId: 'route-schedule',
+      expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+      intent: {
+        type: 'system.schedule',
+        flowId: start.value.flowId,
+        authorizationScope: authorizationScope('second'),
+      },
+    })
+    expect(health).toHaveBeenCalledWith('scripted-local')
+  })
+})
+
+function tempUserData(): string {
+  const root = mkdtempSync(join(tmpdir(), 'xiaogui-runtime-composition-'))
+  roots.push(root)
+  return root
+}
+
+function tempControlledEvidenceDir(): string {
+  mkdirSync(CONTROLLED_EVIDENCE_ROOT, { recursive: true })
+  const root = mkdtempSync(join(CONTROLLED_EVIDENCE_ROOT, 'runtime-composition-'))
+  roots.push(root)
+  return root
+}
+
+function track(composition: XiaoguiRuntimeCompositionV1): XiaoguiRuntimeCompositionV1 {
+  compositions.push(composition)
+  return composition
+}
+
+function lookup(mode: SessionMode): SessionScopeLookupV1 {
+  return {
+    lookup: async (address: SessionAddressV1) => ({
+      kind: 'FOUND' as const,
+      scope: { ...address, sessionMode: mode },
+    }),
+  }
+}
+
+function unusedProjectResolver(): ProjectWorkspaceResolverV1 {
+  return {
+    resolveProjectRoot: vi.fn(async () => {
+      throw new Error('PROJECT_RESOLVER_MUST_NOT_RUN')
+    }),
+  }
+}
+
+function fakeKimiProbe(): KimiAcpProbeV1 & { findExecutable: ReturnType<typeof vi.fn> } {
+  return {
+    findExecutable: vi.fn(async () => ({
+      available: true as const,
+      command: 'never-spawn-kimi',
+      version: KIMI_ACP_APPROVED_VERSION_V1,
+    })),
+  }
+}
+
+function rejectingTransportFactory(): AcpTransportFactoryV1 & { create: ReturnType<typeof vi.fn> } {
+  return {
+    create: vi.fn(() => {
+      throw new Error('KIMI_TRANSPORT_MUST_NOT_START')
+    }),
+  }
+}
+
+function draft(): InitialPlanDraftInputV1 {
+  return {
+    objective: '验证固定 Kimi 生产选择',
+    tasks: [{ taskKey: 'first', title: '执行首个任务' }],
+  }
+}
+
+function localCapability(): RuntimeCapabilityV2 {
+  return {
+    adapterId: 'scripted-local', runtimeKind: 'OTHER', protocol: 'HEADLESS', capabilityDigest: 'sha256:scripted-local',
+    approvalStatus: 'APPROVED_FOR_PRODUCTION', health: 'AVAILABLE', canCreateSession: true, canResumeSession: true,
+    stream: 'POLL', interrupt: 'BEST_EFFORT', inspect: 'RECONCILE', interactivePermission: 'HOST_MEDIATED', diagnosticOnly: false,
+    version: 2, runtimeVersion: '1.0.0', capabilitySummary: '本机测试运行时', workModes: ['CODING'],
+    taskCapabilities: ['CODING.TYPESCRIPT', 'EXECUTION.LOCAL_ONLY'], executionLocation: 'LOCAL', requiresDataEgress: false,
+    supportsResume: true, supportsEventStream: true, supportsInterrupt: true, supportsResultReconcile: true,
+  }
+}

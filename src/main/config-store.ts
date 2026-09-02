@@ -66,6 +66,8 @@ export interface StoreSchema {
   asrConfig: AsrConfig
   /** Agent 运行时：host = Windows 宿主，wsl = 在 WSL 发行版内运行 */
   agentRuntime: { mode: 'host' | 'wsl'; distro: string | null }
+  /** 小规 Kimi 生产执行开关；仅在下次运行时组合创建时生效 */
+  xiaoguiKimiProductionEnabled: boolean
 }
 
 const store = new Store<StoreSchema>({
@@ -95,7 +97,8 @@ const store = new Store<StoreSchema>({
     rightPanelOrder: [],
     language: 'zh',
     autoOpenLastProject: true,
-    autoCheckRegistryUpdates: true,
+    // 内部试用版默认不主动查询公开更新；已有用户的显式设置不受影响。
+    autoCheckRegistryUpdates: false,
     ignoredUpdateVersion: '',
     alertSoundEnabled: true,
     alertNotificationEnabled: true,
@@ -119,6 +122,7 @@ const store = new Store<StoreSchema>({
       builtinServePort: 18788,
     } as AsrConfig,
     agentRuntime: { mode: 'host', distro: null },
+    xiaoguiKimiProductionEnabled: false,
   },
 })
 

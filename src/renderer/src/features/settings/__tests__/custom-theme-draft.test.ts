@@ -57,6 +57,7 @@ function draft(): SettingsDraft {
       builtinServePort: 18788,
     },
     agentRuntime: { mode: 'host', distro: null },
+    xiaoguiKimiProductionEnabled: false,
   }
 }
 
@@ -131,5 +132,29 @@ describe('custom theme settings draft contract', () => {
       value: { enabled: true, css: ':root { --brand: #ff0000; }' },
     })
     expect(invokeMock).toHaveBeenCalledWith('settings.set', { key: 'customTheme', value: null })
+  })
+
+  it('loads Kimi task execution as off by default and persists an explicit choice', async () => {
+    invokeMock.mockImplementation(async (method: string) => {
+      if (method === 'settings.get') {
+        return { settings: { xiaoguiKimiProductionEnabled: true } }
+      }
+      return { catalog: [] }
+    })
+    const { commitSettingsDraft, draftSignature, loadSettingsDraftFromDisk } = await import(
+      '../settings-draft'
+    )
+    const loaded = await loadSettingsDraftFromDisk('zh')
+    const disabled = { ...loaded, xiaoguiKimiProductionEnabled: false }
+
+    expect(loaded.xiaoguiKimiProductionEnabled).toBe(true)
+    expect(draftSignature(disabled)).not.toBe(draftSignature(loaded))
+
+    invokeMock.mockResolvedValue({ value: disabled.asrConfig })
+    await commitSettingsDraft(disabled, { language: 'zh', changeLanguage: vi.fn() } as never)
+    expect(invokeMock).toHaveBeenCalledWith('settings.set', {
+      key: 'xiaoguiKimiProductionEnabled',
+      value: false,
+    })
   })
 })

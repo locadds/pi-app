@@ -41,6 +41,30 @@ describe('resolveAppEventRoute', () => {
     ).toBe('visible')
   })
 
+  it('prefers an exact viewed session file over stale workspace metadata', () => {
+    expect(
+      resolveAppEventRoute(
+        {
+          currentWorkspace: '/w/sandbox',
+          currentSessionId: 'view-sid',
+          historySessionFile: '/tmp/preview.jsonl',
+          workerLiveSnapshot: { sessionId: 'view-sid', sessionFile: '/tmp/preview.jsonl' },
+        },
+        {
+          type: 'message',
+          role: 'assistant',
+          phase: 'delta',
+          text: 'visible reply',
+          seq: 1,
+          workspaceId: '/w/legacy-header',
+          sessionFile: '/tmp/preview.jsonl',
+          sessionId: 'view-sid',
+          timestamp: 1,
+        },
+      ),
+    ).toBe('visible')
+  })
+
   it('routes worker-bound events as visible when viewFile is null (first send)', () => {
     expect(
       resolveAppEventRoute(

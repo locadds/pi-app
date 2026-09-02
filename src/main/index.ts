@@ -18,6 +18,10 @@ import { notifyForegroundChanged } from './completion-notification-events'
 import { focusCompletionNotificationHost } from './completion-notification-delivery'
 import { isCompletionNotificationShortcut } from './completion-notification-shortcut'
 import { initXiaogui, shutdownXiaoguiSidecar } from './xiaogui'
+import {
+  XIAOGUI_PRODUCT_NAME,
+  XIAOGUI_WINDOWS_APP_USER_MODEL_ID,
+} from '@shared/xiaogui-product'
 // Prevent EPIPE / write errors from crashing the main process
 process.stdout?.on?.('error', () => {})
 process.stderr?.on?.('error', () => {})
@@ -57,12 +61,20 @@ function createMenu(): void {
         { role: 'appMenu' },
         { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
         { role: 'window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }] },
-        { role: 'help', submenu: [{ label: 'Documentation', click: () => shell.openExternal('https://pi.dev') }] },
+        { role: 'help', submenu: [{ label: '小规项目主页', click: () => shell.openExternal('https://github.com/locadds/pi-planning-agent') }] },
       ] as Electron.MenuItemConstructorOptions[]),
     )
     return
   }
   Menu.setApplicationMenu(null)
+}
+
+// Windows uses the application identity to group taskbar windows and resolve
+// their branded icon. Apply it before creating the window; notification code
+// may repeat this call later, which is intentionally harmless.
+app.setName(XIAOGUI_PRODUCT_NAME)
+if (process.platform === 'win32') {
+  app.setAppUserModelId(XIAOGUI_WINDOWS_APP_USER_MODEL_ID)
 }
 
 const gotLock = app.requestSingleInstanceLock()
@@ -96,7 +108,7 @@ app.whenReady().then(() => {
         responseHeaders: {
           ...details.responseHeaders,
           'Content-Security-Policy': [
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://chatgpt.com; font-src 'self' data:"
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://chatgpt.com; font-src 'self' data:; frame-src http://127.0.0.1:*"
           ]
         }
       })
@@ -167,8 +179,7 @@ async function gracefulShutdownWorkers(): Promise<void> {
   } catch {
     /* optional */
   }
-  // 小规：优雅停止 Python sidecar（并入本链，带超时 await，避免 app.exit(0)
-  // 竞态残留孤儿 python 进程；shutdown 内部已有超时 + SIGKILL 兜底）
+  // 小规：优雅停止 Python sidecar 与内嵌任务中枢运行时。
   try {
     await Promise.race([
       shutdownXiaoguiSidecar(),
@@ -178,7 +189,7 @@ async function gracefulShutdownWorkers(): Promise<void> {
       }),
     ])
   } catch (error) {
-    console.error('[Main] graceful xiaogui sidecar stop failed:', error)
+    console.error('[Main] graceful xiaogui stop failed:', error)
   }
 }
 

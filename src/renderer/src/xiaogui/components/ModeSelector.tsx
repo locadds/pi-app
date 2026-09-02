@@ -21,8 +21,8 @@ const ACCENT = '#c0392b'
 
 const MODE_HINT: Record<XiaoguiMode, string> = {
   WORK: '日常工作 · 轻量任务',
-  DESIGN: '规划设计 · 专业 Tool',
-  CODING: '编程 · Pi 原生 Harness',
+  DESIGN: '规划设计 · 接口预留',
+  CODING: '编程 · 小规工作台',
 }
 
 export function ModeSelector() {

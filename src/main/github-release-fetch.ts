@@ -25,7 +25,7 @@ export type GitHubReleaseFetchResult =
 function githubHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'pi-desktop',
+    'User-Agent': 'xiaogui-agent',
   }
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
   if (token) headers.Authorization = `Bearer ${token}`

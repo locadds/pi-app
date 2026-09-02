@@ -3,6 +3,7 @@ import { useUIStore } from '@renderer/stores/ui-store'
 import type { SessionItem } from '@renderer/stores/ui-store-types'
 import { titleFromFirstMessage } from '@renderer/lib/ephemeral-sandbox'
 import { enterBlankSession } from '@renderer/lib/blank-session-transition'
+import type { SessionMode } from '@shared/xiaogui-session-scope'
 
 /** 侧栏「新会话」：仅占位，不碰 Worker */
 export function enterNewSessionPlaceholder(): void {
@@ -14,13 +15,14 @@ export async function materializePendingNewSession(
   workspaceId: string,
   firstMessage: string,
   onSessionCreated?: (sessionFile: string) => void,
+  mode?: SessionMode,
 ): Promise<void> {
   if (!workspaceId) return
   const store = useUIStore.getState()
 
   const title = titleFromFirstMessage(firstMessage, 48) || '新会话'
 
-  const res = await ipcClient.invoke('session.new', { workspaceId })
+  const res = await ipcClient.invoke('session.new', { workspaceId, mode })
   const sessionId = res?.session?.sessionId
   if (!sessionId) throw new Error('session.new returned no sessionId')
 
@@ -66,13 +68,22 @@ export async function materializePendingNewSession(
   const { refreshComposerRunDisplay } = await import('@renderer/lib/composer-run-display')
   void refreshComposerRunDisplay()
 
-  const listRes = await ipcClient.invoke('session.list', { workspaceId })
-  let sessions = (listRes?.sessions || []) as Array<{
+  type ListedSession = {
     sessionId: string
     sessionFile?: string
     title?: string
     updatedAt?: number
-  }>
+    canonicalScope?: SessionItem['canonicalScope']
+  }
+  let sessions = [...useUIStore.getState().sessions] as ListedSession[]
+  try {
+    const listRes = await ipcClient.invoke('session.list', { workspaceId })
+    sessions = (listRes?.sessions || []) as ListedSession[]
+  } catch {
+    // Sidebar refresh is best-effort and must never block the first prompt.
+    // Keep the already-created local row and refresh again after the prompt.
+    console.warn('[new-session] sidebar session refresh failed; keeping the local session list')
+  }
   const row = {
     sessionId,
     sessionFile,
@@ -80,13 +91,21 @@ export async function materializePendingNewSession(
     updatedAt: Date.now(),
     messageCount: 0,
     modelId: '',
+    canonicalScope: res.session.canonicalScope,
   }
   const inList = sessions.some((s) => s.sessionId === sessionId)
   if (!inList) {
     sessions = [row as SessionItem, ...sessions]
   } else {
     sessions = sessions.map((s) =>
-      s.sessionId === sessionId ? { ...s, sessionFile: sessionFile ?? s.sessionFile, title } : s,
+      s.sessionId === sessionId
+        ? {
+            ...s,
+            sessionFile: sessionFile ?? s.sessionFile,
+            title,
+            canonicalScope: res.session.canonicalScope ?? s.canonicalScope,
+          }
+        : s,
     )
   }
   store.setSessions(sessions as SessionItem[])

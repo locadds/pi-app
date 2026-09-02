@@ -1,5 +1,6 @@
 import { shell, BrowserWindow } from 'electron'
 import type { AppUpdateAvailableInfo } from '@shared/app-update'
+import { XIAOGUI_GITHUB_REPOSITORY } from '@shared/xiaogui-product'
 import { configStore, type StoreSchema } from '../../config-store'
 import { asrConfigForSettingsResponse, loadAsrConfig, saveAsrConfig } from '../../asr-config-store'
 import { getMainWindow } from '../../window'
@@ -49,6 +50,13 @@ export function registerSettingsHandlers(): void {
       }
       return { key: req.key, value: next }
     }
+    if (key === 'xiaoguiKimiProductionEnabled') {
+      if (typeof req.value !== 'boolean') {
+        throw new Error('XIAOGUI_KIMI_PRODUCTION_ENABLED_INVALID')
+      }
+      configStore.set(key, req.value)
+      return { key: req.key, value: req.value }
+    }
     configStore.set(key, req.value as StoreSchema[typeof key])
     return { key: req.key, value: req.value }
   })
@@ -94,7 +102,11 @@ export function registerSettingsHandlers(): void {
   })
 
   registerHandler('ipc:app.openRelease', async (req) => {
-    const slug = (process.env.PI_DESKTOP_GITHUB_REPO || 'justhil/pi-app').trim()
+    const slug = (
+      process.env.XIAOGUI_GITHUB_REPO ||
+      process.env.PI_DESKTOP_GITHUB_REPO ||
+      XIAOGUI_GITHUB_REPOSITORY
+    ).trim()
     const url = (req.url && String(req.url).trim()) || `https://github.com/${slug}/releases`
     await shell.openExternal(url)
     return { ok: true }
@@ -130,7 +142,7 @@ export function registerSettingsHandlers(): void {
     const kind = req.kind === 'run_idle' ? 'run_idle' : 'extension_ui'
     deliverDesktopAlert(win, {
       kind,
-      title: String(req.title || 'pi Desktop'),
+      title: String(req.title || '小规 Agent'),
       body: String(req.body || ''),
       background: req.background === true,
     })

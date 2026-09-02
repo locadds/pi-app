@@ -1,36 +1,112 @@
 /**
  * WORK 模式首屏视图（小规 Agent · WORK 模式专用）。
  *
- * 定位：轻量引导面板——说明 WORK 模式用途，引导用户直接使用常驻对话框
- * 让小规帮忙读写/整理文件、撰写文本报告。不引入任何额外依赖，
- * 不宣称未安装的第三方能力（AGENTS.md §5：WORK 保持轻量）。
+ * 定位：轻量业务入口。三个快捷项负责完成必要的本机选择，再把自然语言请求
+ * 交给常驻 Composer；后续分析仍由 WORK 会话及其受控工具完成。
  *
  * 仅在 WORK 模式下呈现；其他模式渲染占位提示（与 ProjectInspectView 一致）。
  */
 
+import { useState } from 'react'
+import { activateWorkspace } from '@renderer/lib/activate-workspace'
+import { submitComposerPrompt } from '@renderer/lib/composer-quick-submit'
+import { ipcClient } from '@renderer/lib/ipc-client'
+import { useUIStore } from '@renderer/stores/ui-store'
 import { useXiaoguiStore } from '../stores/xiaogui-store'
+import { TemplateLibraryView } from './TemplateLibraryView'
 
 /** 朱砂红——与 ModeSelector / ProjectInspectView 保持同一强调色。 */
 const ACCENT = '#c0392b'
 
-/** 示例提示词：全部基于 Pi 原生已具备的对话 + 文件读写能力。 */
-const EXAMPLE_PROMPTS: { title: string; prompt: string }[] = [
+type QuickActionId = 'FOLDER' | 'DOCUMENT' | 'TEMPLATE'
+
+const QUICK_ACTIONS: { id: QuickActionId; title: string; description: string; ariaLabel: string }[] = [
   {
-    title: '整理文件',
-    prompt: '帮我看看当前目录里有哪些文件，按类型归类列一份清单',
+    id: 'FOLDER',
+    title: '整理资料',
+    description: '选择文件夹后，读取所有类型并整理归纳',
+    ariaLabel: '选择文件夹并整理资料',
   },
   {
-    title: '撰写文本报告',
-    prompt: '根据本项目里的资料，帮我起草一份工作小结的文本初稿',
+    id: 'DOCUMENT',
+    title: '整理普通文档',
+    description: '选择 DOC 或 DOCX，开始只读分析和模板整理',
+    ariaLabel: '选择普通文档并开始分析',
   },
   {
-    title: '读写与汇总',
-    prompt: '读取我指定的几个文本文件，把要点汇总成一份纪要',
+    id: 'TEMPLATE',
+    title: '按模板生成',
+    description: '从本机模板库选择历史模板和版本',
+    ariaLabel: '从历史模板生成文档',
   },
 ]
 
+function displayName(path: string): string {
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '所选资料'
+}
+
+async function ensureWorkWorkspace(label: string): Promise<string | null> {
+  const state = useUIStore.getState()
+  if (state.currentWorkspace) return state.currentWorkspace
+  const response = await ipcClient.invoke('workspace.sandbox.create', { label }) as {
+    sandbox?: { path?: string }
+  }
+  const path = response.sandbox?.path
+  if (!path) return null
+  await activateWorkspace(path, { preferHome: true })
+  return path
+}
+
 export function WorkHomeView() {
   const mode = useXiaoguiStore((s) => s.mode)
+  const [view, setView] = useState<'HOME' | 'TEMPLATE_LIBRARY'>('HOME')
+  const [busyAction, setBusyAction] = useState<QuickActionId | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const runQuickAction = async (action: QuickActionId) => {
+    if (busyAction) return
+    setBusyAction(action)
+    setError(null)
+    try {
+      // Renderer 可能仍显示 WORK，但主进程持久模式来自上一次 CODING 会话。
+      // 快捷入口必须先走权威切换通道，避免随后创建的工作区/会话继承错误模式。
+      const workModeBound = await useXiaoguiStore.getState().switchMode('WORK')
+      if (!workModeBound) {
+        setError('未能进入 WORK 模式，请重试。')
+        return
+      }
+      if (action === 'TEMPLATE') {
+        setView('TEMPLATE_LIBRARY')
+        return
+      }
+      if (action === 'FOLDER') {
+        const selected = await ipcClient.invoke('dialog:openDirectory') as { path?: string | null }
+        if (!selected.path) return
+        await activateWorkspace(selected.path, { preferHome: true })
+        submitComposerPrompt(
+          `整理我刚选择的文件夹“${displayName(selected.path)}”（${selected.path}）。请读取其中所有类型的文件并形成完整资料总账：能提取内容的请结合正文归类和概括；暂时不能语义解析的格式也必须按路径、类型和大小列入清单，并明确标注正文未读取。不要再次让我选择文件。`,
+        )
+        return
+      }
+      const workspaceRoot = await ensureWorkWorkspace('普通文档整理')
+      if (!workspaceRoot) {
+        setError('请先新建对话或打开一个工作区，再选择普通文档。')
+        return
+      }
+      const selected = await ipcClient.invoke('xiaogui.work.template-intake.source.choose', {
+        workspaceRoot,
+      }) as { cancelled?: boolean; fileDisplayName?: string }
+      if (selected.cancelled || !selected.fileDisplayName) return
+      submitComposerPrompt(
+        `请使用普通文档模板整理能力，把普通成品文档整理成可复用模板。我刚选择的文件是“${selected.fileDisplayName}”。请立即开始只读分析并生成模板整理报告，不要再次让我选择文件；原文档不得修改。`,
+      )
+    } catch (reason) {
+      console.error('[WorkHomeView] 快捷入口执行失败:', reason)
+      setError('没有完成选择或启动，请重试。')
+    } finally {
+      setBusyAction(null)
+    }
+  }
 
   if (mode !== 'WORK') {
     return (
@@ -43,9 +119,12 @@ export function WorkHomeView() {
     )
   }
 
+  if (view === 'TEMPLATE_LIBRARY') {
+    return <TemplateLibraryView onBack={() => setView('HOME')} />
+  }
+
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
-      {/* ---- 标题 ---- */}
       <header className="mb-5 flex items-baseline gap-3">
         <h1 className="text-lg font-semibold text-foreground">工作台</h1>
         <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
@@ -53,23 +132,6 @@ export function WorkHomeView() {
         </span>
       </header>
 
-      {/* ---- 用途说明（虚线测量框，与 DESIGN 视图同一观感） ---- */}
-      <section className="rounded-lg border border-dashed border-border bg-background/40 px-5 py-4">
-        <p className="text-[13px] leading-relaxed text-foreground">
-          <span className="font-semibold" style={{ color: ACCENT }}>
-            小规
-          </span>
-          可以陪你处理日常工作：
-          <span className="font-medium">直接在下方对话框里说话即可</span>
-          。它能读取与写入你指定路径下的文件、帮你整理目录、汇总文本资料、
-          起草报告与纪要——无需额外配置，对话即指令。
-        </p>
-        <p className="mt-2 text-[11px] text-muted-foreground/80">
-          常驻对话框位于页面底部；涉及文件的操作会先经你确认路径与范围。
-        </p>
-      </section>
-
-      {/* ---- 示例提示词 ---- */}
       <div className="mb-1 mt-6 flex items-baseline justify-between">
         <h2 className="text-[12px] font-semibold text-foreground">试试这样说</h2>
         <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground/70">
@@ -77,27 +139,34 @@ export function WorkHomeView() {
         </span>
       </div>
       <ul className="grid gap-2 sm:grid-cols-3">
-        {EXAMPLE_PROMPTS.map((ex) => (
-          <li
-            key={ex.title}
-            className="flex flex-col gap-1.5 rounded-lg border border-border/70 bg-background/40 px-3 py-2.5"
-          >
-            <span
-              className="w-fit rounded border px-1.5 py-px font-mono text-[10px] font-bold tracking-wider"
-              style={{ color: ACCENT, borderColor: `${ACCENT}55` }}
+        {QUICK_ACTIONS.map((action) => (
+          <li key={action.id}>
+            <button
+              type="button"
+              aria-label={action.ariaLabel}
+              data-testid="work-quick-action"
+              disabled={busyAction != null}
+              onClick={() => void runQuickAction(action.id)}
+              className="group flex h-full w-full flex-col gap-1.5 rounded-lg border border-border/70 bg-background/40 px-3 py-2.5 text-left transition-colors hover:border-foreground/30 hover:bg-background/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             >
-              {ex.title}
-            </span>
-            <span className="text-[12px] leading-relaxed text-muted-foreground">
-              {ex.prompt}
-            </span>
+              <span
+                className="w-fit rounded border px-1.5 py-px font-mono text-[10px] font-bold tracking-wider"
+                style={{ color: ACCENT, borderColor: `${ACCENT}55` }}
+              >
+                {action.title}
+              </span>
+              <span className="text-[12px] leading-relaxed text-muted-foreground transition-colors group-hover:text-foreground">
+                {busyAction === action.id ? '正在打开…' : action.description}
+              </span>
+            </button>
           </li>
         ))}
       </ul>
 
-      {/* ---- 尾注 ---- */}
+      {error && <p role="alert" className="mt-3 text-[11px] text-destructive">{error}</p>}
+
       <footer className="mt-6 border-t border-dashed border-border/70 pt-2 font-mono text-[10px] text-muted-foreground">
-        以上能力均为 Pi 原生对话与文件读写能力，无需安装额外组件。
+        自然语言是主入口；专用能力以实际接入状态为准。
       </footer>
     </div>
   )

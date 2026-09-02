@@ -72,6 +72,7 @@ type SettingsDraftContextValue = {
   setSessionWorkerIdleTimeoutMinutes: (n: number) => void
   setTimelineMaxAutoExpandedTools: (n: number) => void
   setAgentRuntime: (r: AgentRuntimeChoice) => void
+  setXiaoguiKimiProductionEnabled: (enabled: boolean) => void
   setExtensionOverride: (id: string, enabled: boolean) => void
   setRightPanelPref: (id: string, on: boolean) => void
   reorderRightPanels: (fromId: string, toIndex: number) => void
@@ -289,6 +290,8 @@ export function SettingsDraftProvider({ children }: { children: ReactNode }) {
           timelineMaxAutoExpandedTools: normalizeTimelineMaxAutoExpandedTools(n),
         })),
       setAgentRuntime: (r) => patch((d) => ({ ...d, agentRuntime: r })),
+      setXiaoguiKimiProductionEnabled: (xiaoguiKimiProductionEnabled) =>
+        patch((d) => ({ ...d, xiaoguiKimiProductionEnabled })),
       setExtensionOverride: (id, enabled) =>
         patch((d) => ({
           ...d,

@@ -1,3 +1,5 @@
+import type { CanonicalSessionAddressScopeV1 } from '@shared/xiaogui-session-scope'
+
 export type SandboxEntry = {
   id: string
   path: string
@@ -15,6 +17,19 @@ export type SessionItem = {
   updatedAt: number
   messageCount?: number
   modelId: string
+  canonicalScope?: CanonicalSessionAddressScopeV1
+}
+
+export type ProjectSessionDisplayItem = {
+  session: SessionItem
+  groupKey?: string
+  groupLabel?: string
+}
+
+/** Optional product-layer projection. Undefined keeps the native Pi flat list. */
+export type ProjectSessionDisplayStrategy = {
+  projectSessions: (sessions: readonly SessionItem[]) => ProjectSessionDisplayItem[]
+  beforeOpenSession?: (session: SessionItem) => Promise<void>
 }
 
 export function diskProjectName(path: string) {

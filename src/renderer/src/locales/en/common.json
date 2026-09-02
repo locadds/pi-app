@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "pi Desktop",
+    "name": "小规 Agent",
     "status": {
       "idle": "Idle",
       "ready": "Ready",
@@ -40,8 +40,8 @@
     "deleted": "Deleted",
     "deleteFailed": "Delete failed",
     "deleteMissingFile": "Cannot delete: session file path is missing",
-    "deleteSessionConfirm": "Delete session \"{{name}}\"? Its pi session file will be permanently removed.",
-    "deleteConfirm": "Delete \"{{name}}\"? Directory and pi sessions will be removed."
+    "deleteSessionConfirm": "Delete session \"{{name}}\"? Its Xiaogui session file will be permanently removed.",
+    "deleteConfirm": "Delete \"{{name}}\"? Directory and Xiaogui sessions will be removed."
   },
   "composer": {
     "placeholder": "Message or / command",
@@ -67,7 +67,7 @@
     "title": "Settings",
     "general": "General",
     "appearance": "Appearance",
-    "pi": "Pi",
+    "pi": "Xiaogui Engine",
     "extensions": "Extensions",
     "resources": "Resources",
     "diagnostics": "Diagnostics",
@@ -144,7 +144,7 @@
     "restore": "Restore",
     "close": "Close",
     "closeWhileRunningTitle": "A conversation is still running",
-    "closeWhileRunningMessage": "Closing now would interrupt the running conversation and lose its tail. You can wait for it to finish so the session is saved completely and can be continued later (e.g. with the pi CLI).",
+    "closeWhileRunningMessage": "Closing now would interrupt the running conversation and lose its tail. You can wait for it to finish so the session is saved completely and can be continued later with the compatible CLI.",
     "waitThenClose": "Wait for it to finish, then close",
     "closeNow": "Close now",
     "waitingTitle": "Waiting for the conversation to finish…",

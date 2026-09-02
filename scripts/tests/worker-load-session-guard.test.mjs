@@ -9,9 +9,12 @@ const src = (relativePath) => readFileSync(join(root, relativePath), 'utf8').rep
 
 describe('worker loadSession guard', () => {
   it('handleLoadsession refuses to dispose while agent turn is active on another file', () => {
-    const text = src('src/worker/handlers/worker-handlers-session.ts')
-    assert.match(text, /WORKER_AGENT_BUSY/)
-    assert.match(text, /st\.session!\.sessionFile/)
+    const handler = src('src/worker/handlers/worker-handlers-session.ts')
+    const binding = src('src/worker/xiaogui-prompt/session-binding.ts')
+    assert.match(handler, /const busy = isSessionBusy\(\)/)
+    assert.match(handler, /decideXiaoguiPromptContextTransitionV1\(\{/)
+    assert.match(handler, /busy: sameSession \? busy : msg\.force !== true && busy/)
+    assert.match(binding, /if \(input\.busy\) throw new Error\('WORKER_AGENT_BUSY'\)/)
   })
 
   it('session.prepare remains disk-only and does not create or bind a worker', () => {
@@ -32,7 +35,9 @@ describe('worker loadSession guard', () => {
     const activeIdx = text.indexOf('st.agentTurnActive = true', promptIdx)
     const awaitIdx = text.indexOf('await promptSession.prompt', promptIdx)
     assert.ok(promptIdx >= 0 && alreadyIdx > promptIdx && activeIdx > alreadyIdx && awaitIdx > activeIdx)
-    assert.match(text, /alreadyStreaming && !extra\?\.streamingBehavior/)
+    assert.match(text, /createXiaoguiPromptAssemblyGateV1\(/)
+    assert.match(text, /alreadyStreaming && !gated\.streamingBehavior/)
+    assert.match(text, /await promptSession\.prompt\(promptText, merged\)/)
   })
 
   it('workerManager changes foreground only through explicit view-focus paths', () => {

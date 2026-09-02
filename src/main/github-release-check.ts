@@ -1,10 +1,9 @@
 import { app, net } from 'electron'
 import log from 'electron-log'
 import type { AppUpdateAsset, AppUpdateAssetKind } from '@shared/app-update'
+import { XIAOGUI_GITHUB_REPOSITORY } from '@shared/xiaogui-product'
 import { fetchLatestGitHubRelease, type GhAsset } from './github-release-fetch'
 import { emitOperationEvent } from './operation-events'
-
-const DEFAULT_REPO = 'justhil/pi-app'
 
 export type GitHubReleaseCheckResult = {
   ok: boolean
@@ -20,7 +19,11 @@ export type GitHubReleaseCheckResult = {
 }
 
 function repoSlug(): string {
-  return (process.env.PI_DESKTOP_GITHUB_REPO || DEFAULT_REPO).trim()
+  return (
+    process.env.XIAOGUI_GITHUB_REPO ||
+    process.env.PI_DESKTOP_GITHUB_REPO ||
+    XIAOGUI_GITHUB_REPOSITORY
+  ).trim()
 }
 
 export function parseSemver(tag: string): number[] {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ModelAuthProjectionRuntime } from '@shared/model-auth-projection'
 import {
+  handleGeteffectivepromptmanifest,
   handleGetmodels,
   handleGetmodelsettingssnapshot,
   handleGetsessioncontextpreview,
@@ -27,6 +28,103 @@ afterEach(() => {
   st.modelRuntime = null
   st.session = null
   st.currentSessionId = ''
+  st.promptDiagnostics = null
+  st.effectivePrompt = null
+  st.promptPreflight = null
+})
+
+describe('worker effective Prompt diagnostics handler', () => {
+  it('keeps Prompt text out of the default response and returns only product Layers for advanced diagnostics', async () => {
+    st.currentSessionId = 'session-a'
+    st.session = { sessionFile: 'C:/sessions/a.jsonl' } as never
+    st.promptDiagnostics = {
+      manifest: {
+        schemaVersion: 1,
+        mode: 'WORK',
+        phase: 'EXECUTE',
+        workspaceAvailable: true,
+        projectTrusted: true,
+        capabilityIds: ['work.file-organize'],
+        toolNames: ['read'],
+        layers: [],
+        completePromptCharacterCount: 21,
+        completePromptSha256: 'f'.repeat(64),
+        generatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      migrationNotices: [],
+    }
+    st.effectivePrompt = 'code-owned product layers'
+    const manifestReply = vi.fn()
+    const advancedReply = vi.fn()
+
+    await handleGeteffectivepromptmanifest({ sessionFile: 'C:/sessions/a.jsonl' }, manifestReply)
+    await handleGeteffectivepromptmanifest({
+      sessionFile: 'C:/sessions/a.jsonl',
+      includePromptBody: true,
+    }, advancedReply)
+
+    expect(manifestReply).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'getEffectivePromptManifest-done',
+      promptDiagnostics: st.promptDiagnostics,
+    }))
+    expect(manifestReply.mock.calls[0]?.[0]).not.toHaveProperty('prompt')
+    expect(advancedReply).toHaveBeenCalledWith(expect.objectContaining({
+      promptDiagnostics: st.promptDiagnostics,
+      prompt: 'code-owned product layers',
+    }))
+  })
+
+  it('does not let an idle diagnostic query overwrite the last real Turn hash', async () => {
+    const turnDiagnostics = {
+      manifest: {
+        schemaVersion: 1 as const,
+        mode: 'CODING' as const,
+        phase: 'PLAN' as const,
+        workspaceAvailable: true,
+        projectTrusted: true,
+        capabilityIds: ['coding.workspace' as const],
+        toolNames: ['read'],
+        layers: [],
+        completePromptCharacterCount: 12,
+        completePromptSha256: 'a'.repeat(64),
+        generatedAt: '2026-08-30T00:00:00.000Z',
+      },
+      migrationNotices: [],
+    }
+    st.session = { sessionFile: 'C:/sessions/a.jsonl', isStreaming: false } as never
+    st.promptDiagnostics = turnDiagnostics
+    st.effectivePrompt = 'turn product layers'
+    st.promptPreflight = vi.fn(() => ({
+      prompt: 'different complete preflight prompt',
+      productPrompt: 'different product preflight prompt',
+      context: {
+        schemaVersion: 1 as const,
+        mode: 'WORK' as const,
+        phase: 'ASK' as const,
+        workspaceAvailable: false,
+        projectTrusted: false,
+        enabledCapabilities: [],
+        availableToolNames: [],
+      },
+      diagnostics: {
+        ...turnDiagnostics,
+        manifest: {
+          ...turnDiagnostics.manifest,
+          completePromptSha256: 'd'.repeat(64),
+        },
+      },
+    }))
+    const reply = vi.fn()
+
+    await handleGeteffectivepromptmanifest({}, reply)
+
+    expect(st.promptPreflight).not.toHaveBeenCalled()
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      promptDiagnostics: turnDiagnostics,
+    }))
+    expect(st.promptDiagnostics?.manifest.completePromptSha256).toBe('a'.repeat(64))
+    expect(st.effectivePrompt).toBe('turn product layers')
+  })
 })
 
 describe('worker model catalog handlers', () => {

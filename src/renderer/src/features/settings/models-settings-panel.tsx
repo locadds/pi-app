@@ -187,6 +187,10 @@ export function ModelsSettingsPanel() {
       toast.error(t('models.fetchNeedBaseUrl'))
       return
     }
+    if (p.api === 'anthropic-messages') {
+      toast.error(t('models.fetchAnthropicManual'))
+      return
+    }
     setFetching(providerId)
     setRemoteCatalog((prev) => ({ ...prev, [providerId]: { ids: prev[providerId]?.ids || [] } }))
     try {

@@ -65,6 +65,7 @@ export const sessionGetMessagesSchema = z
 
 export const sessionNewSchema = z.object({
   workspaceId: z.string().min(1),
+  mode: z.enum(['WORK', 'DESIGN', 'CODING']).optional(),
 })
 
 export const sessionDeleteSchema = z
@@ -98,6 +99,7 @@ export const workspaceSandboxDeleteSchema = z.object({
 export const promptTextSchema = z.object({
   text: z.string(),
   sessionFile: z.string().optional(),
+  codingContextSnapshotIds: z.array(z.string().regex(/^xgctx_[0-9a-f-]{36}$/i)).max(20).optional(),
 })
 
 const CLIPBOARD_IMAGE_MAX_BYTES = 8 * 1024 * 1024
@@ -210,6 +212,7 @@ const settingsValueSchemas: Record<string, z.ZodTypeAny> = {
       distro: z.string().nullable(),
     })
     .strict(),
+  xiaoguiKimiProductionEnabled: z.boolean(),
 }
 
 export const settingsSetSchema = z

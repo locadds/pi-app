@@ -1,9 +1,26 @@
 import { utilityProcess, app, type BrowserWindow } from 'electron'
 import type { AppEvent } from '@shared/app-events'
 import type { WorkerResponsePayload } from '@shared/worker-rpc-types'
+import type {
+  XiaoguiEffectivePromptDiagnosticsV1,
+  XiaoguiPromptContextV1,
+} from '@shared/xiaogui-prompt-contract'
+import {
+  XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1,
+  XIAOGUI_WORK_DOCX_METHOD_V1,
+  XIAOGUI_WORK_REPORT_DOCX_METHOD_V1,
+  XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1,
+  type WorkerHostToolOutcomeV1,
+  type WorkerHostToolRequestV1,
+  type WorkerHostToolResponseV1,
+} from '@shared/worker-host-tools'
 import { windowsPathToWsl } from '@shared/wsl-path'
 import { resolveActiveSdk } from './sdk-loader'
-import type { WorkerInitResult, WorkerSlot } from './worker-manager-types'
+import type {
+  WorkerHostToolRequestHandler,
+  WorkerInitResult,
+  WorkerSlot,
+} from './worker-manager-types'
 import { readMaxSessionWorkers, minutesToIdleDelayMs, readSessionWorkerIdleTimeoutMinutes } from './worker-pool-config'
 import { normalizeSessionKey, workspacePoolKey } from './worker-session-key'
 import {
@@ -18,6 +35,33 @@ import { resolveUtilityEntry } from './utility-entry-path'
 import { buildXiaoguiWorkerEnv } from './xiaogui/worker-env'
 
 export const extensionUiDialogSource = new Map<string, WorkerSlot>()
+const hostToolAbortControllers = new WeakMap<WorkerSlot, Map<string, AbortController>>()
+
+function requiresForegroundHostTool(request: WorkerHostToolRequestV1): boolean {
+  return (
+    request.method === XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 ||
+    request.method === XIAOGUI_WORK_DOCX_METHOD_V1 ||
+    request.method === XIAOGUI_WORK_REPORT_DOCX_METHOD_V1 ||
+    request.method === XIAOGUI_WORK_DOCX_TEMPLATE_DATA_METHOD_V1
+  )
+}
+
+function hostToolControllersFor(slot: WorkerSlot): Map<string, AbortController> {
+  let controllers = hostToolAbortControllers.get(slot)
+  if (!controllers) {
+    controllers = new Map()
+    hostToolAbortControllers.set(slot, controllers)
+  }
+  return controllers
+}
+
+function abortHostToolsForSlot(slot: WorkerSlot): void {
+  const controllers = hostToolAbortControllers.get(slot)
+  if (!controllers) return
+  for (const controller of controllers.values()) controller.abort()
+  controllers.clear()
+  hostToolAbortControllers.delete(slot)
+}
 
 export function dismissExtensionUiRequestsForSlot(
   slot: WorkerSlot,
@@ -50,6 +94,7 @@ function createSlot(
   runtime: { mode: 'host' | 'wsl'; distro: string | null },
   worker: WorkerTransport,
   sessionFile: string | null = null,
+  promptContext: XiaoguiPromptContextV1 | null = null,
 ): WorkerSlot {
   const now = Date.now()
   return {
@@ -57,6 +102,9 @@ function createSlot(
     cwd,
     runtime,
     sessionFile,
+    sessionId: null,
+    promptContext,
+    promptDiagnostics: null,
     worker,
     pendingRequests: new Map(),
     requestCounter: 0,
@@ -77,6 +125,27 @@ function safeWrite(msg: string): void {
     process.stderr.write(msg + '\n')
   } catch {
     /* ignore */
+  }
+}
+
+const SESSION_IDENTITY_RESPONSE_TYPES = new Set([
+  'init-done',
+  'newSession-done',
+  'loadSession-done',
+  'fork-done',
+  'clone-done',
+])
+
+function synchronizeSlotSessionIdentity(slot: WorkerSlot, data: WorkerResponsePayload): void {
+  if (!SESSION_IDENTITY_RESPONSE_TYPES.has(String(data.type ?? ''))) return
+  if (typeof data.sessionId === 'string' && data.sessionId.trim()) {
+    slot.sessionId = data.sessionId.trim()
+  }
+  if (typeof data.sessionFile === 'string' && data.sessionFile.trim()) {
+    slot.sessionFile = normalizeSessionKey(data.sessionFile)
+  }
+  if (data.promptDiagnostics && typeof data.promptDiagnostics === 'object') {
+    slot.promptDiagnostics = data.promptDiagnostics as XiaoguiEffectivePromptDiagnosticsV1
   }
 }
 
@@ -130,6 +199,7 @@ export function attachWorkerHandlers(
       sessionFile: string | null
       agentTurnActive: boolean
     }) => void
+    onHostToolRequest?: WorkerHostToolRequestHandler
     onSlotExit: (slot: WorkerSlot, code: number) => void
     /** When set, only forward extension UI from this pool key (X1). */
     getForegroundPoolKey?: () => string | null
@@ -151,6 +221,9 @@ export function attachWorkerHandlers(
   transport.onMessage((data) => {
     if (slot.worker !== transport) return
     if (!data || typeof data !== 'object') return
+    // 必须在 pending promise 的微任务续体前同步更新；WSL 一个 chunk 可连续带来
+    // 生命周期回包和新会话的首个 host-tool 请求。
+    synchronizeSlotSessionIdentity(slot, data)
 
     if (data.type === 'app-event') {
       const ev = data.event as AppEvent
@@ -169,6 +242,81 @@ export function attachWorkerHandlers(
         sessionFile: slot.sessionFile,
         agentTurnActive: slot.agentTurnActive,
       })
+    }
+
+    if (data.type === 'host-tool-cancel') {
+      const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+      if (requestId) hostToolAbortControllers.get(slot)?.get(requestId)?.abort()
+      return
+    }
+
+    if (data.type === 'host-tool-request') {
+      const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+      if (!requestId) return
+      const respond = (outcome: WorkerHostToolOutcomeV1): void => {
+        if (slot.worker !== transport || slot.stopping) return
+        try {
+          transport.postMessage({
+            type: 'host-tool-response',
+            requestId,
+            outcome,
+          } satisfies WorkerHostToolResponseV1)
+        } catch {
+          safeWrite('[WorkerManager] Dropped host-tool response after worker transport closed')
+        }
+      }
+      const handler = opts.onHostToolRequest
+      if (!handler) {
+        respond({
+          ok: false,
+          error: { code: 'HOST_TOOL_UNAVAILABLE', message: '小规主进程能力尚未就绪' },
+        })
+        return
+      }
+      const request = data as unknown as WorkerHostToolRequestV1
+      if (requiresForegroundHostTool(request)) {
+        const foregroundPoolKey = opts.getForegroundPoolKey?.() ?? null
+        if (!foregroundPoolKey || foregroundPoolKey !== slot.poolKey) {
+          respond({
+            ok: false,
+            error: {
+              code: 'HOST_TOOL_NOT_FOREGROUND',
+              message: '请切回发起这项操作的对话后重试',
+            },
+          })
+          return
+        }
+      }
+      const controllers = hostToolControllersFor(slot)
+      if (controllers.has(requestId)) {
+        respond({
+          ok: false,
+          error: { code: 'HOST_TOOL_REQUEST_INVALID', message: '重复的小规操作请求已拒绝' },
+        })
+        return
+      }
+      const controller = new AbortController()
+      controllers.set(requestId, controller)
+      void handler({
+        request,
+        fromCwd: slot.cwd,
+        fromPoolKey: slot.poolKey,
+        sessionFile: slot.sessionFile,
+        fromSessionId: slot.sessionId,
+        signal: controller.signal,
+      })
+        .then(respond)
+        .catch(() =>
+          respond({
+            ok: false,
+            error: { code: 'HOST_TOOL_FAILED', message: '小规操作失败，请稍后重试' },
+          }),
+        )
+        .finally(() => {
+          controllers.delete(requestId)
+          if (controllers.size === 0) hostToolAbortControllers.delete(slot)
+        })
+      return
     }
 
     const win = opts.mainWindow
@@ -215,7 +363,12 @@ export function attachWorkerHandlers(
       if (!allow) return
       if (!isForeground && req.notifyType !== 'error') return
       if (req.id && method !== 'notify') extensionUiDialogSource.set(req.id, slot)
-      win.webContents.send('ipc:extension-ui-request', data.request)
+      // Worker requests always cross the Renderer boundary with a Main-owned
+      // provenance marker. A Worker-supplied origin must never survive.
+      win.webContents.send('ipc:extension-ui-request', {
+        ...(data.request as Record<string, unknown>),
+        origin: 'worker',
+      })
     }
 
     if (data.type === 'init-done' && slot.initResolver) {
@@ -225,6 +378,7 @@ export function attachWorkerHandlers(
         sessionId: String(data.sessionId ?? ''),
         model: data.model as string | undefined,
         thinkingLevel: data.thinkingLevel as string | undefined,
+        promptDiagnostics: data.promptDiagnostics as XiaoguiEffectivePromptDiagnosticsV1 | undefined,
       })
       slot.initResolver = null
       slot.initRejecter = null
@@ -252,6 +406,7 @@ export function attachWorkerHandlers(
       return
     }
     rejectPendingWorkerRequests(slot, new Error(`Worker exited with code ${code}`))
+    abortHostToolsForSlot(slot)
     clearExtensionUiSourcesForSlot(slot, opts.mainWindow)
     opts.onSlotExit(slot, code)
   })
@@ -262,6 +417,7 @@ export async function disposeWorkerSlot(
   mainWindow?: BrowserWindow | null,
 ): Promise<void> {
   slot.stopping = true
+  abortHostToolsForSlot(slot)
   clearExtensionUiSourcesForSlot(slot, mainWindow)
   if (slot.initRejecter) {
     slot.initRejecter(new Error('Worker stopped'))
@@ -330,9 +486,13 @@ export function slotRequest(
 
 export async function forkWorkerForCwd(
   cwd: string,
-  opts?: { poolKey?: string; sessionFile?: string | null },
+  opts: {
+    poolKey?: string
+    sessionFile?: string | null
+    promptContext: XiaoguiPromptContextV1
+  },
 ): Promise<{ slot: WorkerSlot; init: Promise<WorkerInitResult> }> {
-  const poolKey = opts?.poolKey || workspacePoolKey(cwd)
+  const poolKey = opts.poolKey || workspacePoolKey(cwd)
   const runtime = getAgentRuntimeConfig()
   let transport: WorkerTransport
   let sdkPath: string | null
@@ -379,7 +539,7 @@ export async function forkWorkerForCwd(
     const activeSdk = resolveActiveSdk(app.getPath('userData'))
     sdkPath = activeSdk.kind === 'builtin' ? null : activeSdk.entryPath
   }
-  const slot = createSlot(poolKey, cwd, runtime, transport, opts?.sessionFile ?? null)
+  const slot = createSlot(poolKey, cwd, runtime, transport, opts.sessionFile ?? null, opts.promptContext)
   const initPromise = new Promise<WorkerInitResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       if (slot.worker !== transport) return
@@ -398,7 +558,7 @@ export async function forkWorkerForCwd(
     }
   })
   slot.initPromise = initPromise
-  transport.postMessage({ type: 'init', cwd: workerCwd, sdkPath })
+  transport.postMessage({ type: 'init', cwd: workerCwd, sdkPath, promptContext: opts.promptContext })
   return { slot, init: initPromise }
 }
 

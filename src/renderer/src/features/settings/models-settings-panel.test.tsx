@@ -107,7 +107,7 @@ describe('ModelsSettingsPanel save', () => {
     expect(userSection).toHaveTextContent(/User-configured providers/i)
     expect(userSection).toHaveTextContent(/Original provider/i)
     expect(userSection).toContainElement(screen.getByRole('button', { name: /Add Provider/i }))
-    expect(sdkSection).toHaveTextContent(/Active Pi SDK providers/i)
+    expect(sdkSection).toHaveTextContent(/Active Xiaogui model providers/i)
     expect(sdkSection).toHaveTextContent('store-only')
     expect(sdkSection).not.toContainElement(screen.getByRole('button', { name: /Add Provider/i }))
   })

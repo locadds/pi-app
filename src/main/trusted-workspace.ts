@@ -2,7 +2,11 @@ import { isAbsolute, posix, resolve } from 'path'
 import { existsSync } from 'fs'
 import { isWslWindowsPath, wslPathToWindows, wslWindowsPathDistro } from '@shared/wsl-path'
 import { configStore } from './config-store'
-import { isSandboxWorkspacePath } from './sandbox-workspaces'
+import {
+  findSandboxWorkspaceForSessionFile,
+  isSandboxWorkspacePath,
+  sandboxOwnsSessionFile,
+} from './sandbox-workspaces'
 import { readSessionMetaFromFile } from './session-file-meta'
 import { workerManager } from './worker-manager'
 import { getAgentRuntimeConfig } from './wsl/runtime-config'
@@ -63,13 +67,17 @@ export function authorizeTrustedSessionFile(
   reqCwd: string | undefined,
   requestedSessionFile: string | undefined,
 ): TrustedSessionFileResult {
-  const authorizedCwd = resolveTrustedSessionCwd(reqCwd)
-  if (!authorizedCwd.ok) return authorizedCwd
-
   const sessionFile = String(requestedSessionFile || '').trim()
   if (!sessionFile || !isPortableAbsolutePath(sessionFile)) {
     return { ok: false, error: 'invalid_session_path' }
   }
+
+  // Managed sandboxes persist the exact Session file in private metadata. Use
+  // that stronger identity when a legacy JSONL header still names the project
+  // from which the sandbox was first created.
+  const boundSandbox = findSandboxWorkspaceForSessionFile(sessionFile)
+  const authorizedCwd = resolveTrustedSessionCwd(boundSandbox ?? reqCwd)
+  if (!authorizedCwd.ok) return authorizedCwd
 
   const meta = readSessionMetaFromFile(sessionFile)
   if (!meta?.cwd) return { ok: false, error: 'invalid_session' }
@@ -77,7 +85,11 @@ export function authorizeTrustedSessionFile(
   const sessionCwd = fileDistro
     ? wslPathToWindows(fileDistro, meta.cwd)
     : meta.cwd
-  if (!workspacePathsEqual(sessionCwd, authorizedCwd.cwd)) {
+  const managedSandboxBinding =
+    (boundSandbox !== null && workspacePathsEqual(boundSandbox, authorizedCwd.cwd)) ||
+    (isSandboxWorkspacePath(authorizedCwd.cwd) &&
+      sandboxOwnsSessionFile(authorizedCwd.cwd, sessionFile))
+  if (!workspacePathsEqual(sessionCwd, authorizedCwd.cwd) && !managedSandboxBinding) {
     return { ok: false, error: 'session_workspace_mismatch' }
   }
 

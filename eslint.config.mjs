@@ -6,6 +6,7 @@ export default tseslint.config(
     ignores: [
       'out/**',
       'dist/**',
+      'artifacts/**',
       'node_modules/**',
       '.agents/**',
       '.claude/**',
@@ -18,6 +19,7 @@ export default tseslint.config(
       'tmp/**',
       '参考/**',
       'scripts/tests/fixtures/**',
+      'resources/libreoffice-runtime/**',
     ],
   },
   ...tseslint.configs.recommended,

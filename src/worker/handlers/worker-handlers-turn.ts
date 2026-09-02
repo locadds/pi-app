@@ -10,7 +10,14 @@ import {
   beginRunIdentity,
   emit,
   currentSessionModelKey,
+  runXiaoguiPromptPreflightV1,
+  prepareXiaoguiPromptTurnV1,
+  clearXiaoguiPromptTurnV1,
+  completeXiaoguiPromptTurnV1,
+  createXiaoguiPromptAssemblyGateV1,
+  resetXiaoguiPromptAssemblyGateV1,
 } from '../worker-runtime.js'
+import { freezeCodingContextAgentPayloadV1 } from '../xiaogui-coding-extensions/context-extension.js'
 
 export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
         try {
@@ -37,9 +44,9 @@ export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply)
           }
           if (!st.sdk) throw new Error('SDK load failed')
           if (!st.sharedEventBus) st.sharedEventBus = st.sdk.createEventBus()
-          await initSession(String(msg.cwd || ''))
+          await initSession(String(msg.cwd || ''), msg.promptContext)
           console.log('[Worker] Init done, sessionId:', st.currentSessionId)
-          reply({ type: 'init-done', sessionId: st.currentSessionId, model: currentSessionModelKey(), thinkingLevel: st.session?.thinkingLevel, sdkFallback })
+          reply({ type: 'init-done', sessionId: st.currentSessionId, sessionFile: st.session?.sessionFile, model: currentSessionModelKey(), thinkingLevel: st.session?.thinkingLevel, promptDiagnostics: st.promptDiagnostics, sdkFallback })
         } catch (e: unknown) {
           console.error('[Worker] Init FAILED:', errorMessage(e), e instanceof Error ? e.stack : '')
           reply({ type: 'error', error: `Init failed: ${errorMessage(e)}`, stack: e instanceof Error ? e.stack : undefined })
@@ -52,6 +59,23 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
         const promptSession = st.session
         if (!promptSession) { reply({ type: 'error', error: 'No session' }); return }
         const promptText = String(msg.text ?? '').trim()
+        const alreadyStreaming = promptSession.isStreaming || st.agentTurnActive
+        if (alreadyStreaming && msg.codingContext) {
+          reply({ type: 'error', error: 'Coding context cannot be attached to a queued turn' })
+          return
+        }
+        try {
+          st.promptCodingContext = msg.codingContext
+            ? freezeCodingContextAgentPayloadV1(msg.codingContext)
+            : null
+          if (!alreadyStreaming) prepareXiaoguiPromptTurnV1(promptText)
+          runXiaoguiPromptPreflightV1()
+        } catch (error) {
+          if (!alreadyStreaming) clearXiaoguiPromptTurnV1()
+          st.promptCodingContext = null
+          reply({ type: 'error', error: `prompt preflight failed: ${errorMessage(error)}` })
+          return
+        }
         const slashMatch = promptText.match(/^(\/\S+)/)
         if (slashMatch) {
           emit({
@@ -64,7 +88,6 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
         }
         st.promptSent = true
         // 在首个 stream 事件前就标 busy，避免切会话/evict 误杀；streamingBehavior 须用标记前的状态
-        const alreadyStreaming = promptSession.isStreaming || st.agentTurnActive
         if (!alreadyStreaming) {
           beginRunIdentity()
           st.agentTurnActive = true
@@ -73,13 +96,21 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
         }
         reply({ type: 'prompt-done' })
         void (async () => {
+          let turnCompleted = false
           try {
             const extra = msg.options as Parameters<typeof promptSession.prompt>[1]
+            const gated = {
+              ...extra,
+              preflightResult: createXiaoguiPromptAssemblyGateV1(
+                !alreadyStreaming && !promptText.startsWith('/'),
+              ),
+            }
             const merged =
-              alreadyStreaming && !extra?.streamingBehavior
-                ? { ...extra, streamingBehavior: 'followUp' as const }
-                : extra
+              alreadyStreaming && !gated.streamingBehavior
+                ? { ...gated, streamingBehavior: 'followUp' as const }
+                : gated
             await promptSession.prompt(promptText, merged)
+            turnCompleted = true
             if (!alreadyStreaming && st.promptPreflightActive) {
               st.promptPreflightActive = false
               st.agentTurnActive = false
@@ -118,6 +149,13 @@ export async function handlePrompt(msg: WorkerIncomingMessage, reply: WorkerRepl
                 text: `执行失败: ${errText}`,
               })
             }
+          } finally {
+            if (!alreadyStreaming) {
+              if (turnCompleted) completeXiaoguiPromptTurnV1()
+              else clearXiaoguiPromptTurnV1()
+            }
+            st.promptCodingContext = null
+            resetXiaoguiPromptAssemblyGateV1()
           }
         })()
         return
@@ -223,6 +261,17 @@ export async function handleDispose(msg: WorkerIncomingMessage, reply: WorkerRep
         st.session = null
         st.modelRuntime = null
         st.runtime = null
+        st.promptContext = null
+        st.promptContextCandidate = null
+        st.promptTurnContext = null
+        st.promptStickyCapabilities = []
+        st.promptTurnStickyCapabilities = []
+        st.promptTurnStickyToolCalls.clear()
+        st.pendingPromptContext = null
+        st.promptDiagnostics = null
+        st.effectivePrompt = null
+        st.promptPreflight = null
+        resetXiaoguiPromptAssemblyGateV1()
         reply({ type: 'dispose-done' })
         return
 }

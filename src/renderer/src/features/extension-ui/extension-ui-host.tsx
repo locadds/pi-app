@@ -4,6 +4,13 @@ import { useTranslation } from 'react-i18next'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { QuestionnaireDialog, type AskQuestionPayload } from './questionnaire-dialog'
 import { ImageReviewDialog, type ImageReviewPayload } from './image-review-dialog'
+import { TemplateIntakeReviewDialog } from './template-intake-review-dialog'
+import { TemplateReviewV2Dialog } from './template-review-v2-dialog'
+import { TemplateMaterializePreviewDialog } from './template-materialize-preview-dialog'
+import { CodingPermissionDialog } from './coding-permission-dialog'
+import type { TemplateIntakeReviewRequestV1 } from '@shared/xiaogui-work-docx-template-intake'
+import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
+import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from '@shared/xiaogui-work-template-review'
 import { ExtensionDialogShell } from './extension-dialog-shell'
 import {
   useExtensionUIStore,
@@ -51,8 +58,11 @@ function findToolContextForUi(): { toolCallId?: string; toolName?: string; timel
 }
 
 function suspendActiveDialog() {
+  const state = useExtensionUIStore.getState()
+  const direct = state.activePending?.method === 'template_intake_review'
+    && state.activePending.origin === 'DIRECT'
   const meta = findToolContextForUi()
-  useExtensionUIStore.getState().suspendActive(meta)
+  state.suspendActive(meta)
   const { timelineItemId } = meta
   if (timelineItemId) {
     useUIStore.getState().updateTimelineItem(timelineItemId, {
@@ -60,7 +70,11 @@ function suspendActiveDialog() {
       toolStatusLine: '等待你的作答（点击「继续作答」）',
     })
   }
-  toast.message('已挂起，可在时间线该工具行点击「继续作答」')
+  toast.message(
+    direct
+      ? '复核已暂存，可点击报告下方的「继续复核」恢复'
+      : '已挂起，可在时间线该工具行点击「继续作答」',
+  )
 }
 
 export function ExtensionUIHost() {
@@ -103,6 +117,68 @@ export function ExtensionUIHost() {
           onCancel={() => cancelWorker(pending.id)}
           onSubmit={(r) => {
             respond({ id: pending.id, result: r })
+            clearAfterRespond()
+          }}
+        />
+      ) : pending.method === 'template_intake_review' ? (
+        'reviewVersion' in pending.payload && [2, 3, 4].includes(pending.payload.reviewVersion) ? (
+          <TemplateReviewV2Dialog
+            requestId={pending.id}
+            payload={pending.payload as TemplateDraftReviewRequestV2 | TemplateReviewRequestV2 | TemplateReviewRequestV3}
+            onSuspend={suspendActiveDialog}
+            onCancel={(result) => {
+              const tid = findToolContextForUi().timelineItemId
+              respond({ id: pending.id, result })
+              clearExtensionToolRowFlags(tid)
+              clearAfterRespond()
+              reconcileStaleInteractiveToolRows(pending.id)
+            }}
+            onSubmit={(result) => {
+              const s = useExtensionUIStore.getState().suspended
+              const tid = findToolContextForUi().timelineItemId || s?.timelineItemId
+              respond({ id: pending.id, result })
+              clearExtensionToolRowFlags(tid)
+              clearAfterRespond()
+            }}
+          />
+        ) : (
+          <TemplateIntakeReviewDialog
+            requestId={pending.id}
+            payload={pending.payload as TemplateIntakeReviewRequestV1}
+            onSuspend={suspendActiveDialog}
+            onCancel={(result) => {
+              // 关闭只保存逐项草稿，不产生人工确认记录。
+              const tid = findToolContextForUi().timelineItemId
+              respond({ id: pending.id, result })
+              clearExtensionToolRowFlags(tid)
+              clearAfterRespond()
+              reconcileStaleInteractiveToolRows(pending.id)
+            }}
+            onSubmit={(r) => {
+              const s = useExtensionUIStore.getState().suspended
+              const tid = findToolContextForUi().timelineItemId || s?.timelineItemId
+              respond({ id: pending.id, result: r })
+              clearExtensionToolRowFlags(tid)
+              clearAfterRespond()
+            }}
+          />
+        )
+      ) : pending.method === 'template_materialize_preview' ? (
+        <TemplateMaterializePreviewDialog
+          payload={pending.payload}
+          onResult={(result) => {
+            const s = useExtensionUIStore.getState().suspended
+            const tid = findToolContextForUi().timelineItemId || s?.timelineItemId
+            respond({ id: pending.id, result })
+            clearExtensionToolRowFlags(tid)
+            clearAfterRespond()
+          }}
+        />
+      ) : pending.method === 'coding_permission' ? (
+        <CodingPermissionDialog
+          prompt={pending.prompt}
+          onChoose={(choice) => {
+            respond({ id: pending.id, result: { choice } })
             clearAfterRespond()
           }}
         />

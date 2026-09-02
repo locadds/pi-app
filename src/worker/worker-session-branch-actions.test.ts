@@ -18,6 +18,20 @@ function installSession(leafId = 'leaf-current') {
   st.currentSessionId = 'session-source'
   st.agentTurnActive = false
   st.promptSent = false
+  st.promptContextCandidate = null
+  st.promptTurnContext = null
+  st.promptStickyCapabilities = []
+  st.promptTurnStickyCapabilities = []
+  st.promptContext = {
+    schemaVersion: 1,
+    mode: 'CODING',
+    phase: 'EXECUTE',
+    workspaceAvailable: true,
+    projectTrusted: true,
+    enabledCapabilities: ['coding.workspace'],
+    availableToolNames: ['read'],
+    sessionKey: 'session-source',
+  }
   return fork
 }
 

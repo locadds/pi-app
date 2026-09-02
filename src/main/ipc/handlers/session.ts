@@ -6,11 +6,7 @@ import { readSessionIdFromFile } from '../../session-file-meta'
 import { resolvePreparedSessionFile } from '../../session-prepare'
 import { clearSessionDisplayName, resolveSessionListTitle } from '../../session-display-names'
 import { renamePiSessionOnDisk } from '../../rename-pi-session'
-import {
-  bindSandboxSession,
-  isSandboxWorkspacePath,
-  renameSandboxWorkspace,
-} from '../../sandbox-workspaces'
+import { bindSandboxSession, isSandboxWorkspacePath, renameSandboxWorkspace } from '../../sandbox-workspaces'
 import {
   ensureWorkerSessionBound,
   getPendingWorkerSessionFile,
@@ -35,6 +31,62 @@ import {
 } from '../schemas'
 import { authorizeTrustedSessionFile } from '../../trusted-workspace'
 import { errorMessage } from '@shared/error-message'
+import { isAbsolute } from 'node:path'
+import type { CanonicalSessionAddressScopeV1, SessionMode } from '@shared/xiaogui-session-scope'
+import type { PiSessionRefV1, PiSessionScopeV1 } from '../../xiaogui/scope-derive'
+import { sessionScopeResolverV1 } from '../../xiaogui/scope-service'
+import { xiaogui } from '../../xiaogui/sidecar-bridge'
+import { recordDefaultCodingCheckpointSessionAddressV1 } from '../../xiaogui/coding-extensions/checkpoint-default-composition'
+
+function publicSessionScope(scope: PiSessionScopeV1): CanonicalSessionAddressScopeV1 {
+  return {
+    projectId: scope.projectId,
+    sessionKey: scope.sessionKey,
+    sessionMode: scope.sessionMode,
+  }
+}
+
+function trustedSessionRef(workspaceId: string, sessionFile: string): PiSessionRefV1 {
+  const authorized = authorizeTrustedSessionFile(workspaceId, sessionFile)
+  if (!authorized.ok) throw new Error(authorized.error)
+  return { rootPath: authorized.cwd, sessionFile: authorized.sessionFile }
+}
+
+/**
+ * A new/fork/clone target is issued by the already-running Pi worker inside the
+ * main-process lifecycle gate. Pi intentionally defers creating the JSONL file
+ * until the first assistant message, so an existing-file authorization would
+ * reject legitimate pre-activation targets. Keep renderer-provided source files
+ * on trustedSessionRef(); only the worker-issued target may use this seam.
+ */
+function runtimeIssuedSessionRef(rootPath: string, sessionFile: string): PiSessionRefV1 {
+  const trustedRoot = String(rootPath || '').trim()
+  const issuedFile = String(sessionFile || '').trim()
+  const portableAbsolute = isAbsolute(issuedFile) || /^[a-zA-Z]:[\\/]/.test(issuedFile)
+  if (!trustedRoot || !issuedFile || issuedFile.includes('\0') || !portableAbsolute) {
+    throw new Error('invalid_runtime_session_path')
+  }
+  return { rootPath: trustedRoot, sessionFile: issuedFile }
+}
+
+async function resolveTrustedSessionScope(
+  workspaceId: string,
+  sessionFile: string,
+): Promise<{ ref: PiSessionRefV1; scope: PiSessionScopeV1 }> {
+  const ref = trustedSessionRef(workspaceId, sessionFile)
+  const scope = await sessionScopeResolverV1.resolve(ref)
+  if (scope.sessionMode === 'CODING') {
+    const sourceSessionId = readSessionIdFromFile(ref.sessionFile)
+    if (sourceSessionId) {
+      recordDefaultCodingCheckpointSessionAddressV1({
+        address: { projectId: scope.projectId, sessionKey: scope.sessionKey },
+        sourceSessionId,
+        sessionFile: ref.sessionFile,
+      })
+    }
+  }
+  return { ref, scope }
+}
 
 export function registerSessionHandlers(): void {
   registerHandler('ipc:session.list', async (req) => {
@@ -43,27 +95,48 @@ export function registerSessionHandlers(): void {
       await sessionPreviewProcess.invalidateListSessions(workspaceId)
     }
     const sessions = workspaceId ? await sessionPreviewProcess.listSessions(workspaceId) : []
-    const formatted = sessions.map((s: SessionOnDiskRow) => ({
-      sessionId: s.id,
-      sessionFile: s.path,
-      workspaceId: s.cwd || workspaceId,
-      title: resolveSessionListTitle(
-        s.path,
-        s.firstMessage?.slice(0, 60) || s.id.slice(0, 8),
-        s.name,
-      ),
-      createdAt: s.created?.getTime() || 0,
-      updatedAt: s.modified?.getTime() || 0,
-      messageCount: s.messageCount || 0,
-      modelId: '',
-      status: 'idle' as const,
-    }))
+    const candidates = await Promise.all(
+      sessions.map(async (s: SessionOnDiskRow) => {
+        try {
+          const sessionWorkspace = s.cwd || workspaceId
+          const { scope } = await resolveTrustedSessionScope(sessionWorkspace, s.path)
+          return {
+            sessionId: s.id,
+            sessionFile: s.path,
+            workspaceId: sessionWorkspace,
+            title: resolveSessionListTitle(s.path, s.firstMessage?.slice(0, 60) || s.id.slice(0, 8), s.name),
+            createdAt: s.created?.getTime() || 0,
+            updatedAt: s.modified?.getTime() || 0,
+            messageCount: s.messageCount || 0,
+            modelId: '',
+            status: 'idle' as const,
+            canonicalScope: publicSessionScope(scope),
+          }
+        } catch (error) {
+          // SessionManager.list is trusted discovery output, but one legacy or
+          // corrupt row must not prevent a new message from being sent. Keep the
+          // row hidden and avoid logging its local path.
+          console.warn(
+            '[session.list] skipped an invalid historical session:',
+            errorMessage(error) || 'authorization_failed',
+          )
+          return null
+        }
+      }),
+    )
+    const formatted = candidates.filter((session): session is NonNullable<typeof session> => session !== null)
     return { sessions: formatted }
   })
 
   registerHandler('ipc:session.open', async (req) => {
     const sessionId = req.sessionId
+    let canonicalScope: CanonicalSessionAddressScopeV1 | undefined
     if (req.sessionFile) {
+      const workspaceId = String(req.workspaceId || workerManager.cwd || configStore.get('currentProject') || '')
+      const resolved = await resolveTrustedSessionScope(workspaceId, req.sessionFile)
+      canonicalScope = publicSessionScope(resolved.scope)
+      workerManager.rememberSessionWorkspace(resolved.ref.sessionFile, resolved.ref.rootPath)
+      xiaogui.setMode(resolved.scope.sessionMode)
       setPendingWorkerSessionFile(req.sessionFile)
       workerManager.focusExistingSession(req.sessionFile)
     }
@@ -76,12 +149,21 @@ export function registerSessionHandlers(): void {
         updatedAt: 0,
         modelId: '',
         status: 'idle' as const,
+        canonicalScope,
       },
     }
   })
 
   registerHandler('ipc:session.setPendingBind', async (req) => {
     const sessionFile = req.sessionFile ?? null
+    let canonicalScope: CanonicalSessionAddressScopeV1 | undefined
+    if (sessionFile) {
+      const workspaceId = String(req.workspaceId || workerManager.cwd || configStore.get('currentProject') || '')
+      const resolved = await resolveTrustedSessionScope(workspaceId, sessionFile)
+      canonicalScope = publicSessionScope(resolved.scope)
+      workerManager.rememberSessionWorkspace(resolved.ref.sessionFile, resolved.ref.rootPath)
+      xiaogui.setMode(resolved.scope.sessionMode)
+    }
     setPendingWorkerSessionFile(sessionFile)
     if (sessionFile) {
       const hasLiveSlot = workerManager.focusExistingSession(sessionFile)
@@ -97,11 +179,13 @@ export function registerSessionHandlers(): void {
         }
       }
     }
-    return { ok: true }
+    return { ok: true, canonicalScope }
   })
 
   registerHandler('ipc:session.setVisible', async (req) => {
-    setVisibleSessionFile(typeof req.sessionFile === 'string' ? req.sessionFile : null)
+    const visibleSessionFile = typeof req.sessionFile === 'string' ? req.sessionFile : null
+    setVisibleSessionFile(visibleSessionFile)
+    if (!visibleSessionFile) workerManager.clearForegroundSession()
     return { ok: true }
   })
 
@@ -133,9 +217,7 @@ export function registerSessionHandlers(): void {
 
   registerHandlerWithSchema('ipc:session.tree', sessionTreeSchema, async (req) => {
     const requestedSessionFile = req.sessionFile
-    const authorized = requestedSessionFile
-      ? authorizeTrustedSessionFile(req.workspaceId, requestedSessionFile)
-      : null
+    const authorized = requestedSessionFile ? authorizeTrustedSessionFile(req.workspaceId, requestedSessionFile) : null
     if (authorized && !authorized.ok) {
       return { nodes: [], leafId: null, error: authorized.error }
     }
@@ -152,7 +234,7 @@ export function registerSessionHandlers(): void {
         workerSessionFile = (st as { sessionFile?: string } | null)?.sessionFile
         if (!sessionFile) sessionFile = workerSessionFile
         if (leafOverride === undefined && st && 'leafId' in (st || {})) {
-          leafOverride = ((st as { leafId?: string | null }).leafId) ?? null
+          leafOverride = (st as { leafId?: string | null }).leafId ?? null
         }
       } catch {
         /* disk tree still works */
@@ -165,7 +247,11 @@ export function registerSessionHandlers(): void {
           cwd,
           leafId: leafOverride,
         })
-        return { nodes: r.nodes, leafId: r.leafId, workerBound: workerSessionFile === sessionFile }
+        return {
+          nodes: r.nodes,
+          leafId: r.leafId,
+          workerBound: workerSessionFile === sessionFile,
+        }
       } catch (e: unknown) {
         return { nodes: [], leafId: null, error: errorMessage(e) }
       }
@@ -213,7 +299,11 @@ export function registerSessionHandlers(): void {
   registerHandler('ipc:session.branchAnchors', async (req) => {
     const file =
       req.sessionFile ||
-      ((await workerManager.getState().catch(() => null)) as { sessionFile?: string } | null)?.sessionFile
+      (
+        (await workerManager.getState().catch(() => null)) as {
+          sessionFile?: string
+        } | null
+      )?.sessionFile
     if (!file) return { anchors: [] }
     return { anchors: listMessageAnchorsFromSessionFile(file) }
   })
@@ -277,7 +367,11 @@ export function registerSessionHandlers(): void {
       }
     } catch (e: unknown) {
       console.error('[IPC] session.getMessages failed:', e)
-      return { items: [], totalCount: 0, error: errorMessage(e) || 'get_messages_failed' }
+      return {
+        items: [],
+        totalCount: 0,
+        error: errorMessage(e) || 'get_messages_failed',
+      }
     }
   })
 
@@ -287,11 +381,21 @@ export function registerSessionHandlers(): void {
       await workerManager.start(workspaceId)
     }
     setPendingWorkerSessionFile(null)
-    const result = await workerManager.newSession(workspaceId)
+    const requestedMode = (req.mode ?? xiaogui.getMode()) as SessionMode
+    let canonical: PiSessionScopeV1 | undefined
+    const result = await workerManager.newSession(workspaceId, {
+      mode: requestedMode,
+      beforeActivate: async ({ sessionFile }) => {
+        canonical = await sessionScopeResolverV1.registerNew(
+          runtimeIssuedSessionRef(workspaceId, sessionFile),
+          requestedMode,
+        )
+      },
+    })
     await sessionPreviewProcess.invalidateListSessions(workspaceId)
     const state = await workerManager.getState().catch(() => ({}))
-    const sessionFile =
-      result.sessionFile || (state as { sessionFile?: string })?.sessionFile
+    const sessionFile = result.sessionFile || (state as { sessionFile?: string })?.sessionFile
+    if (!sessionFile || !canonical) throw new Error('canonical_session_scope_missing')
     if (isSandboxWorkspacePath(workspaceId)) {
       bindSandboxSession(workspaceId, result.sessionId, sessionFile)
     }
@@ -305,6 +409,7 @@ export function registerSessionHandlers(): void {
         updatedAt: Date.now(),
         modelId: '',
         status: 'idle' as const,
+        canonicalScope: publicSessionScope(canonical),
       },
     }
   })
@@ -347,10 +452,19 @@ export function registerSessionHandlers(): void {
           },
         }
       }
+      const source = trustedSessionRef(workspaceId, sessionFile)
+      let canonical: PiSessionScopeV1 | undefined
       const result = await workerManager.forkSession({
         sessionFile,
         entryId,
         position: req?.position === 'at' ? 'at' : 'before',
+        beforeActivate: async ({ sessionFile: targetSessionFile }) => {
+          canonical = await sessionScopeResolverV1.derive({
+            kind: 'FORK',
+            source,
+            target: runtimeIssuedSessionRef(source.rootPath, targetSessionFile),
+          })
+        },
       })
       if (result.error) {
         return {
@@ -383,6 +497,7 @@ export function registerSessionHandlers(): void {
           },
         }
       }
+      if (!result.sessionFile || !canonical) throw new Error('canonical_session_scope_missing')
       setPendingWorkerSessionFile(null)
       await sessionPreviewProcess.invalidateListSessions(workspaceId)
       return {
@@ -400,6 +515,7 @@ export function registerSessionHandlers(): void {
           updatedAt: Date.now(),
           modelId: result.model || '',
           status: 'idle' as const,
+          canonicalScope: publicSessionScope(canonical),
         },
       }
     } catch (e: unknown) {
@@ -441,7 +557,18 @@ export function registerSessionHandlers(): void {
           },
         }
       }
-      const result = await workerManager.cloneSession({ sessionFile })
+      const source = trustedSessionRef(workspaceId, sessionFile)
+      let canonical: PiSessionScopeV1 | undefined
+      const result = await workerManager.cloneSession({
+        sessionFile,
+        beforeActivate: async ({ sessionFile: targetSessionFile }) => {
+          canonical = await sessionScopeResolverV1.derive({
+            kind: 'CLONE',
+            source,
+            target: runtimeIssuedSessionRef(source.rootPath, targetSessionFile),
+          })
+        },
+      })
       if (result.error) {
         return {
           cancelled: false,
@@ -473,6 +600,7 @@ export function registerSessionHandlers(): void {
           },
         }
       }
+      if (!result.sessionFile || !canonical) throw new Error('canonical_session_scope_missing')
       setPendingWorkerSessionFile(null)
       await sessionPreviewProcess.invalidateListSessions(workspaceId)
       return {
@@ -489,6 +617,7 @@ export function registerSessionHandlers(): void {
           updatedAt: Date.now(),
           modelId: result.model || '',
           status: 'idle' as const,
+          canonicalScope: publicSessionScope(canonical),
         },
       }
     } catch (e: unknown) {
@@ -514,7 +643,9 @@ export function registerSessionHandlers(): void {
     try {
       if (!sessionFile) return { messages: [] }
       const leafId = getSessionLeafOverride(sessionFile)
-      return { messages: listForkCandidatesFromSessionFile(sessionFile, leafId) }
+      return {
+        messages: listForkCandidatesFromSessionFile(sessionFile, leafId),
+      }
     } catch (e: unknown) {
       return { messages: [], error: errorMessage(e) }
     }
@@ -535,10 +666,7 @@ export function registerSessionHandlers(): void {
     const file = req.sessionFile as string | undefined
     if (!file) return { ok: false, title, error: 'missing sessionFile' }
     const workspaceCwd =
-      (req.workspaceId as string | undefined) ||
-      workerManager.cwd ||
-      configStore.get('currentProject') ||
-      undefined
+      (req.workspaceId as string | undefined) || workerManager.cwd || configStore.get('currentProject') || undefined
     const r = await renamePiSessionOnDisk(file, title, workspaceCwd)
     if (!r.ok) return { ok: false, title, error: r.error || 'rename failed' }
     clearSessionDisplayName(file)
@@ -551,6 +679,7 @@ export function registerSessionHandlers(): void {
     if (!authorized.ok) return { ok: false, error: authorized.error }
     const r = await workerManager.deleteSessionFile(authorized.sessionFile)
     if (r.ok) {
+      workerManager.forgetSessionWorkspace(authorized.sessionFile)
       clearSessionDisplayName(authorized.sessionFile)
       await sessionPreviewProcess.invalidateListSessions(authorized.cwd)
     }
@@ -558,8 +687,7 @@ export function registerSessionHandlers(): void {
   })
 
   registerHandler('ipc:session.reloadFromDisk', async (req) => {
-    const sessionFile =
-      (req.sessionFile as string | undefined) || getPendingWorkerSessionFile() || undefined
+    const sessionFile = (req.sessionFile as string | undefined) || getPendingWorkerSessionFile() || undefined
     if (!sessionFile) return { ok: false, error: 'no session file' }
     try {
       const st = await workerManager.getState().catch(() => null)
@@ -588,12 +716,22 @@ export function registerSessionHandlers(): void {
   registerHandler('ipc:session.compact', async () => {
     try {
       if (!workerManager.isRunning) {
-        return { sessionId: '', compacted: false, tokensSaved: 0, error: 'worker_not_ready' }
+        return {
+          sessionId: '',
+          compacted: false,
+          tokensSaved: 0,
+          error: 'worker_not_ready',
+        }
       }
       await workerManager.runExtensionCommand('/compact')
       return { sessionId: '', compacted: true, tokensSaved: 0 }
     } catch (e: unknown) {
-      return { sessionId: '', compacted: false, tokensSaved: 0, error: errorMessage(e) }
+      return {
+        sessionId: '',
+        compacted: false,
+        tokensSaved: 0,
+        error: errorMessage(e),
+      }
     }
   })
 
@@ -601,9 +739,20 @@ export function registerSessionHandlers(): void {
     const format = String(req.format || 'json')
     const sessionFile = String(req.sessionFile || '')
     try {
-      if (!sessionFile) return { content: '', format, filename: 'export', error: 'missing sessionFile' }
+      if (!sessionFile)
+        return {
+          content: '',
+          format,
+          filename: 'export',
+          error: 'missing sessionFile',
+        }
       if (!workerManager.isRunning) {
-        return { content: '', format, filename: 'export', error: 'worker_not_ready' }
+        return {
+          content: '',
+          format,
+          filename: 'export',
+          error: 'worker_not_ready',
+        }
       }
       const messages = await workerManager.getMessages(sessionFile, 0, 10000)
       const items = messages.items || []
@@ -627,11 +776,20 @@ export function registerSessionHandlers(): void {
             return `<div><strong>${role}</strong><p>${String(content).replace(/</g, '&lt;')}</p></div>`
           })
           .join('\n')
-        return { content: `<!DOCTYPE html><html><body>${body}</body></html>`, format, filename }
+        return {
+          content: `<!DOCTYPE html><html><body>${body}</body></html>`,
+          format,
+          filename,
+        }
       }
       return { content: '', format, filename, error: 'unsupported format' }
     } catch (e: unknown) {
-      return { content: '', format, filename: 'export', error: errorMessage(e) }
+      return {
+        content: '',
+        format,
+        filename: 'export',
+        error: errorMessage(e),
+      }
     }
   })
 }

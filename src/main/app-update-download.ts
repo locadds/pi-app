@@ -61,7 +61,7 @@ export async function downloadAndLaunchUpdate(opts: {
     })
 
     const response = await net.fetch(url, {
-      headers: { 'User-Agent': 'pi-desktop', Accept: 'application/octet-stream' },
+      headers: { 'User-Agent': 'xiaogui-agent', Accept: 'application/octet-stream' },
       redirect: 'follow',
     })
     if (!response.ok || !response.body) {

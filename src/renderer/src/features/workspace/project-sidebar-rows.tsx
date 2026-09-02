@@ -11,7 +11,12 @@ import { openSubagentSessionPreview } from '@renderer/lib/subagent-session-navig
 import { collectActiveSubagentSessionChildren } from '@renderer/lib/subagent-session-activity'
 import { useToolCardCatalogReady } from '@renderer/features/timeline/tool-card-registry'
 import { SessionRunningPixelGrid } from './session-running-pixel-grid'
-import type { SandboxEntry, SessionItem } from './project-sidebar-types'
+import type {
+  ProjectSessionDisplayItem,
+  ProjectSessionDisplayStrategy,
+  SandboxEntry,
+  SessionItem,
+} from './project-sidebar-types'
 
 export function ProjectSessionTree({
   workspacePath,
@@ -19,6 +24,7 @@ export function ProjectSessionTree({
   loading,
   currentWorkspace,
   currentSessionId,
+  displayStrategy,
   onSessionContextMenu,
 }: {
   workspacePath: string
@@ -26,9 +32,15 @@ export function ProjectSessionTree({
   loading: boolean
   currentWorkspace: string | null
   currentSessionId: string | null
+  displayStrategy?: ProjectSessionDisplayStrategy
   onSessionContextMenu: (
     e: React.MouseEvent,
-    payload: { sessionId: string; sessionFile?: string; title: string; workspacePath: string },
+    payload: {
+      sessionId: string
+      sessionFile?: string
+      title: string
+      workspacePath: string
+    },
   ) => void
 }) {
   const { t } = useTranslation()
@@ -38,21 +50,17 @@ export function ProjectSessionTree({
   const subagentSessionGroup = useUIStore((st) => st.subagentSessionGroup)
   const catalogReady = useToolCardCatalogReady()
   const [expandedSessionFiles, setExpandedSessionFiles] = useState<Set<string>>(() => new Set())
-  const liveChildren = useMemo(
-    () => collectActiveSubagentSessionChildren(timelineItems),
-    [catalogReady, timelineItems],
-  )
+  const liveChildren = useMemo(() => collectActiveSubagentSessionChildren(timelineItems), [catalogReady, timelineItems])
 
   const activeParentSessionFiles = useMemo(() => {
     const activeFiles = new Set<string>()
     for (const session of projectSessions) {
       if (!session.sessionFile) continue
       const currentParent =
-        currentWorkspace === workspacePath
-        && sessionFilesEqual(session.sessionFile, historySessionFile)
+        currentWorkspace === workspacePath && sessionFilesEqual(session.sessionFile, historySessionFile)
       const retainedChildren =
-        subagentSessionGroup?.workspacePath === workspacePath
-        && sessionFilesEqual(subagentSessionGroup.parentSessionFile, session.sessionFile)
+        subagentSessionGroup?.workspacePath === workspacePath &&
+        sessionFilesEqual(subagentSessionGroup.parentSessionFile, session.sessionFile)
           ? subagentSessionGroup.children
           : []
       const children = currentParent ? liveChildren : retainedChildren
@@ -60,6 +68,11 @@ export function ProjectSessionTree({
     }
     return activeFiles
   }, [currentWorkspace, historySessionFile, liveChildren, projectSessions, subagentSessionGroup, workspacePath])
+
+  const displayedSessions = useMemo<ProjectSessionDisplayItem[]>(
+    () => displayStrategy?.projectSessions(projectSessions) ?? projectSessions.map((session) => ({ session })),
+    [displayStrategy, projectSessions],
+  )
 
   useEffect(() => {
     const group = subagentSessionGroup
@@ -76,23 +89,24 @@ export function ProjectSessionTree({
 
   useEffect(() => {
     setExpandedSessionFiles((previous) => {
-      const next = new Set(
-        [...previous].filter((sessionFile) => activeParentSessionFiles.has(sessionFile)),
-      )
+      const next = new Set([...previous].filter((sessionFile) => activeParentSessionFiles.has(sessionFile)))
       return next.size === previous.size ? previous : next
     })
   }, [activeParentSessionFiles])
 
   const openParentSession = (session: SessionItem) => {
     guardSessionSwitch(() => {
-      if (workspacePath === currentWorkspace) {
-        void switchSessionInPlace(session.sessionId, session.sessionFile)
-      } else {
-        void activateWorkspace(workspacePath, {
-          sessionId: session.sessionId,
-          sessionFile: session.sessionFile,
-        })
-      }
+      void (async () => {
+        await displayStrategy?.beforeOpenSession?.(session)
+        if (workspacePath === currentWorkspace) {
+          await switchSessionInPlace(session.sessionId, session.sessionFile)
+        } else {
+          await activateWorkspace(workspacePath, {
+            sessionId: session.sessionId,
+            sessionFile: session.sessionFile,
+          })
+        }
+      })().catch((error) => console.error('[ProjectSessionTree] open failed:', error))
     })
   }
 
@@ -103,15 +117,14 @@ export function ProjectSessionTree({
       ) : projectSessions.length === 0 ? (
         <p className="px-2 py-2 text-[12px] text-foreground-secondary/80">{t('common:sidebar.noSessions')}</p>
       ) : (
-        projectSessions.map((s) => {
+        displayedSessions.map(({ session: s, groupKey, groupLabel }) => {
           const sessionFile = s.sessionFile
-          const currentParent = !!sessionFile
-            && currentWorkspace === workspacePath
-            && sessionFilesEqual(sessionFile, historySessionFile)
+          const currentParent =
+            !!sessionFile && currentWorkspace === workspacePath && sessionFilesEqual(sessionFile, historySessionFile)
           const retainedChildren =
-            sessionFile
-            && subagentSessionGroup?.workspacePath === workspacePath
-            && sessionFilesEqual(subagentSessionGroup.parentSessionFile, sessionFile)
+            sessionFile &&
+            subagentSessionGroup?.workspacePath === workspacePath &&
+            sessionFilesEqual(subagentSessionGroup.parentSessionFile, sessionFile)
               ? subagentSessionGroup.children
               : []
           const children = currentParent ? liveChildren : retainedChildren
@@ -123,121 +136,131 @@ export function ProjectSessionTree({
             )
           )
           const parentActive =
-            currentSessionId === s.sessionId
-            && workspacePath === currentWorkspace
-            && sessionFilesEqual(historySessionFile, sessionFile)
+            currentSessionId === s.sessionId &&
+            workspacePath === currentWorkspace &&
+            sessionFilesEqual(historySessionFile, sessionFile)
           return (
-            <div key={s.sessionId} className="mb-0.5">
-              <div
-                onContextMenu={(event) =>
-                  onSessionContextMenu(event, {
-                    sessionId: s.sessionId,
-                    sessionFile,
-                    title: s.title || s.sessionId.slice(0, 8),
-                    workspacePath,
-                  })
-                }
-                className={cn(
-                  'nav-row sidebar-session-row flex min-h-[38px] items-center gap-0.5 rounded-lg px-1 py-0.5',
-                  parentActive
-                    ? 'nav-row-active'
-                    : 'text-foreground-secondary hover:text-foreground',
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => openParentSession(s)}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
+            <div key={`${groupKey ?? 'session'}:${s.sessionId}`}>
+              {groupLabel ? (
+                <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium tracking-wide text-foreground-secondary/70">
+                  {groupLabel}
+                </div>
+              ) : null}
+              <div className="mb-0.5">
+                <div
+                  onContextMenu={(event) =>
+                    onSessionContextMenu(event, {
+                      sessionId: s.sessionId,
+                      sessionFile,
+                      title: s.title || s.sessionId.slice(0, 8),
+                      workspacePath,
+                    })
+                  }
+                  className={cn(
+                    'nav-row sidebar-session-row flex min-h-[38px] items-center gap-0.5 rounded-lg px-1 py-0.5',
+                    parentActive ? 'nav-row-active' : 'text-foreground-secondary hover:text-foreground',
+                  )}
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] leading-[18px] text-foreground">
-                      {s.title || s.sessionId.slice(0, 8)}
-                    </div>
-                    <div className="text-[11px] leading-[16px] tabular-nums text-foreground-secondary/85">
-                      {new Date(s.updatedAt).toLocaleString(undefined, {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </div>
-                  </div>
-                  {running ? (
-                    <SessionRunningPixelGrid
-                      className="ml-0.5 opacity-80"
-                      title={t('common:status.running', { defaultValue: 'Running' })}
-                    />
-                  ) : null}
-                </button>
-                {children.length > 0 && sessionFile && (
                   <button
                     type="button"
-                    aria-label={t('common:sidebar.toggleSubagents', {
-                      title: s.title || s.sessionId.slice(0, 8),
-                    })}
-                    aria-expanded={expanded}
-                    onClick={() => {
-                      setExpandedSessionFiles((previous) => {
-                        const next = new Set(previous)
-                        if (next.has(sessionFile)) next.delete(sessionFile)
-                        else next.add(sessionFile)
-                        return next
-                      })
-                    }}
-                    className="chrome-icon-btn flex h-7 w-6 shrink-0 items-center justify-center rounded-md"
+                    onClick={() => openParentSession(s)}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
                   >
-                    <ChevronRight
-                      className="chevron-expand h-3 w-3 text-foreground-secondary/75"
-                      data-open={expanded ? 'true' : 'false'}
-                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[13px] leading-[18px] text-foreground">
+                        {s.title || s.sessionId.slice(0, 8)}
+                      </div>
+                      <div className="text-[11px] leading-[16px] tabular-nums text-foreground-secondary/85">
+                        {new Date(s.updatedAt).toLocaleString(undefined, {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </div>
+                    </div>
+                    {running ? (
+                      <SessionRunningPixelGrid
+                        className="ml-0.5 opacity-80"
+                        title={t('common:status.running', {
+                          defaultValue: 'Running',
+                        })}
+                      />
+                    ) : null}
                   </button>
+                  {children.length > 0 && sessionFile && (
+                    <button
+                      type="button"
+                      aria-label={t('common:sidebar.toggleSubagents', {
+                        title: s.title || s.sessionId.slice(0, 8),
+                      })}
+                      aria-expanded={expanded}
+                      onClick={() => {
+                        setExpandedSessionFiles((previous) => {
+                          const next = new Set(previous)
+                          if (next.has(sessionFile)) next.delete(sessionFile)
+                          else next.add(sessionFile)
+                          return next
+                        })
+                      }}
+                      className="chrome-icon-btn flex h-7 w-6 shrink-0 items-center justify-center rounded-md"
+                    >
+                      <ChevronRight
+                        className="chevron-expand h-3 w-3 text-foreground-secondary/75"
+                        data-open={expanded ? 'true' : 'false'}
+                      />
+                    </button>
+                  )}
+                </div>
+                {children.length > 0 && (
+                  <SidebarAnimatedCollapse open={expanded}>
+                    <div className="ml-5 border-l border-border/35 pb-0.5 pl-1.5 pt-0.5">
+                      {children.map((child) => {
+                        const childActive =
+                          !!child.sessionFile &&
+                          workspacePath === currentWorkspace &&
+                          sessionFilesEqual(child.sessionFile, historySessionFile)
+                        const canOpen = !!child.sessionFile
+                        return (
+                          <button
+                            key={child.key}
+                            type="button"
+                            disabled={!canOpen}
+                            aria-label={
+                              canOpen
+                                ? t('common:sidebar.openSubagentSession', {
+                                    agent: child.agent,
+                                  })
+                                : t('common:sidebar.subagentSessionUnavailable', { agent: child.agent })
+                            }
+                            onClick={() => {
+                              if (child.sessionFile) void openSubagentSessionPreview(child.sessionFile)
+                            }}
+                            className={cn(
+                              'nav-row sidebar-subagent-row mb-0.5 flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left',
+                              childActive ? 'nav-row-active' : 'text-foreground-secondary hover:text-foreground',
+                              !canOpen && 'cursor-default opacity-60',
+                            )}
+                          >
+                            <GitBranch className="h-3.5 w-3.5 shrink-0 text-foreground-secondary/70" />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-mono text-[11px] leading-[16px] text-foreground">
+                                {child.agent}
+                              </div>
+                              <div className="truncate text-[10px] leading-[14px] text-foreground-secondary/75">
+                                {child.task || t(`timeline:tree.state.${child.state}`)}
+                              </div>
+                            </div>
+                            <span className="shrink-0 text-[9px] font-medium text-foreground-secondary/65">
+                              {t(`timeline:tree.state.${child.state}`)}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </SidebarAnimatedCollapse>
                 )}
               </div>
-              {children.length > 0 && (
-                <SidebarAnimatedCollapse open={expanded}>
-                  <div className="ml-5 border-l border-border/35 pb-0.5 pl-1.5 pt-0.5">
-                    {children.map((child) => {
-                      const childActive = !!child.sessionFile
-                        && workspacePath === currentWorkspace
-                        && sessionFilesEqual(child.sessionFile, historySessionFile)
-                      const canOpen = !!child.sessionFile
-                      return (
-                        <button
-                          key={child.key}
-                          type="button"
-                          disabled={!canOpen}
-                          aria-label={canOpen
-                            ? t('common:sidebar.openSubagentSession', { agent: child.agent })
-                            : t('common:sidebar.subagentSessionUnavailable', { agent: child.agent })}
-                          onClick={() => {
-                            if (child.sessionFile) void openSubagentSessionPreview(child.sessionFile)
-                          }}
-                          className={cn(
-                            'nav-row sidebar-subagent-row mb-0.5 flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left',
-                            childActive
-                              ? 'nav-row-active'
-                              : 'text-foreground-secondary hover:text-foreground',
-                            !canOpen && 'cursor-default opacity-60',
-                          )}
-                        >
-                          <GitBranch className="h-3.5 w-3.5 shrink-0 text-foreground-secondary/70" />
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate font-mono text-[11px] leading-[16px] text-foreground">
-                              {child.agent}
-                            </div>
-                            <div className="truncate text-[10px] leading-[14px] text-foreground-secondary/75">
-                              {child.task || t(`timeline:tree.state.${child.state}`)}
-                            </div>
-                          </div>
-                          <span className="shrink-0 text-[9px] font-medium text-foreground-secondary/65">
-                            {t(`timeline:tree.state.${child.state}`)}
-                          </span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </SidebarAnimatedCollapse>
-              )}
             </div>
           )
         })
@@ -329,17 +352,16 @@ export function SandboxDialogRow({
   onContextMenu: (e: React.MouseEvent) => void
 }) {
   const { t } = useTranslation()
-  const running = useUIStore((state) =>
-    !!(
-      box.sessionFile &&
-      Object.entries(state.sessionRuntimeRunning).some(
-        ([runtimeKey, isRunning]) =>
-          isRunning && sessionFilesEqual(runtimeKey, box.sessionFile),
-      )
-    ),
+  const running = useUIStore(
+    (state) =>
+      !!(
+        box.sessionFile &&
+        Object.entries(state.sessionRuntimeRunning).some(
+          ([runtimeKey, isRunning]) => isRunning && sessionFilesEqual(runtimeKey, box.sessionFile),
+        )
+      ),
   )
-  const displayLabel =
-    box.label?.trim() || t('common:sidebar.tempChat')
+  const displayLabel = box.label?.trim() || t('common:sidebar.tempChat')
   return (
     <div
       key={box.path}

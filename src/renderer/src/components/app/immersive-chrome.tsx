@@ -40,14 +40,10 @@ export function ImmersiveChrome({
           />
         </button>
         <div className="flex items-center gap-1.5 px-1 text-[12px] text-foreground-secondary select-none">
-          <PiMark size={14} className="rounded-[3px]" />
-          <span className="font-medium text-foreground/90">pi</span>
-          {projectName && (
-            <>
-              <span className="opacity-35">/</span>
-              <span className="max-w-[200px] truncate">{projectName}</span>
-            </>
-          )}
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] bg-[#111318] text-[#F7F5EF] dark:bg-[#34363B]">
+            <PiMark size={14} inverted />
+          </span>
+          {projectName && <span className="max-w-[200px] truncate">{projectName}</span>}
         </div>
       </div>
       <div className="electron-no-drag flex h-9 items-center gap-2">

@@ -44,6 +44,7 @@ vi.mock('../../worker-manager', () => ({
     isRunning: false,
     getState: vi.fn(async () => ({})),
     deleteSessionFile: mocks.deleteSessionFile,
+    forgetSessionWorkspace: vi.fn(),
     getSessionTree: vi.fn(),
   },
 }))
@@ -73,6 +74,12 @@ vi.mock('../../session-bind-state', () => ({
   setPendingEphemeralSandboxDraft: vi.fn(),
   setPendingWorkerSessionFile: vi.fn(),
 }))
+vi.mock('../../xiaogui/scope-service', () => ({
+  sessionScopeResolverV1: { resolve: vi.fn(), registerNew: vi.fn(), derive: vi.fn() },
+}))
+vi.mock('../../xiaogui/sidecar-bridge', () => ({
+  xiaogui: { setMode: vi.fn(), getMode: vi.fn(() => 'WORK') },
+}))
 vi.mock('../../session-prepare', () => ({ resolvePreparedSessionFile: vi.fn() }))
 vi.mock('../../session-display-names', () => ({ clearSessionDisplayName: vi.fn(), resolveSessionListTitle: vi.fn() }))
 vi.mock('../../pi-rewind-read', () => ({ listRewindCheckpoints: vi.fn() }))
@@ -80,6 +87,7 @@ vi.mock('../../session-branch-anchors', () => ({ listMessageAnchorsFromSessionFi
 vi.mock('../../rename-pi-session', () => ({ renamePiSessionOnDisk: vi.fn() }))
 vi.mock('../../sandbox-workspaces', () => ({
   bindSandboxSession: vi.fn(),
+  findSandboxWorkspaceForSessionFile: vi.fn(() => null),
   isSandboxWorkspacePath: vi.fn(() => false),
   renameSandboxWorkspace: vi.fn(),
 }))

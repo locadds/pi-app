@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mem = vi.hoisted(() => ({
   data: {} as Record<string, unknown>,
   lastOptions: null as null | { name?: string; clearInvalidConfig?: boolean },
+  setCalls: [] as Array<{ key: string; value: unknown }>,
+  throwOnCanonicalSet: false,
 }))
 
 vi.mock('electron-store', () => {
@@ -18,6 +20,10 @@ vi.mock('electron-store', () => {
       return key in mem.data ? mem.data[key] : (this.defaults as Record<string, unknown>)[key]
     }
     set(key: string, value: unknown): void {
+      if (key === 'canonicalScopeBindings' && mem.throwOnCanonicalSet) {
+        throw new Error('cannot write D:/private/xiaogui.json')
+      }
+      mem.setCalls.push({ key, value })
       mem.data[key] = value
     }
   }
@@ -32,12 +38,18 @@ import {
   loadPersistedMode,
   persistMode,
   recordProjectBaseline,
+  sessionScopePersistenceV1,
   setScope,
 } from './scope-store'
+import { opaqueScopeIdDeriverV1 } from './scope-derive'
+import { SessionScopeResolutionError } from './scope-resolver'
 
 beforeEach(() => {
   mem.data = {}
+  mem.setCalls = []
+  mem.throwOnCanonicalSet = false
   __resetScopeStoreForTests()
+  mem.setCalls = []
 })
 
 describe('scope-store 构造与崩溃防护', () => {
@@ -111,5 +123,202 @@ describe('scope-store：项目基线', () => {
   it('脏基线数据被 sanitize', () => {
     mem.data['projectBaseline'] = ['D:/ok/', '', 42, null]
     expect(getProjectBaseline()).toEqual(['D:/ok'])
+  })
+})
+
+function sessionCommit(root: string, file: string, sessionMode: 'WORK' | 'DESIGN' | 'CODING') {
+  const project = opaqueScopeIdDeriverV1.deriveProject(root)
+  const session = opaqueScopeIdDeriverV1.deriveSession(project.projectId, file)
+  return {
+    project: {
+      kind: 'PROJECT' as const,
+      opaqueId: project.projectId,
+      canonicalInputFingerprint: project.canonicalInputFingerprint,
+    },
+    session: {
+      kind: 'SESSION' as const,
+      opaqueId: session.sessionKey,
+      projectId: project.projectId,
+      canonicalInputFingerprint: session.canonicalInputFingerprint,
+    },
+    sessionMode,
+  }
+}
+
+describe('scope-store：canonical binding 原子持久化', () => {
+  it('一次写入 project + session，并以无路径 DTO 只读查询', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'CODING')
+    expect(sessionScopePersistenceV1.commitSession(input)).toBe('CODING')
+    expect(mem.setCalls.filter((call) => call.key === 'canonicalScopeBindings')).toHaveLength(1)
+
+    mem.setCalls = []
+    expect(
+      sessionScopePersistenceV1.lookup({
+        projectId: input.project.opaqueId,
+        sessionKey: input.session.opaqueId,
+      }),
+    ).toEqual({
+      kind: 'FOUND',
+      scope: {
+        projectId: input.project.opaqueId,
+        sessionKey: input.session.opaqueId,
+        sessionMode: 'CODING',
+      },
+    })
+    expect(mem.setCalls).toEqual([])
+  })
+
+  it('按可信绑定只读查询时核对指纹且绝不补写', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'DESIGN')
+    expect(sessionScopePersistenceV1.lookupBoundSession(input)).toEqual({ kind: 'NOT_FOUND' })
+    expect(mem.setCalls).toEqual([])
+
+    sessionScopePersistenceV1.commitSession(input)
+    mem.setCalls = []
+    expect(sessionScopePersistenceV1.lookupBoundSession(input)).toMatchObject({
+      kind: 'FOUND',
+      scope: { sessionMode: 'DESIGN' },
+    })
+    expect(() =>
+      sessionScopePersistenceV1.lookupBoundSession({
+        project: input.project,
+        session: {
+          ...input.session,
+          canonicalInputFingerprint: 'e'.repeat(64) as never,
+        },
+      }),
+    ).toThrow(expect.objectContaining({ code: 'OPAQUE_ID_COLLISION' }))
+    expect(mem.setCalls).toEqual([])
+  })
+
+  it('same binding is idempotent and preserves the first canonical mode', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'WORK')
+    expect(sessionScopePersistenceV1.commitSession(input)).toBe('WORK')
+    mem.setCalls = []
+    expect(sessionScopePersistenceV1.commitSession({ ...input, sessionMode: 'DESIGN' })).toBe('WORK')
+    expect(mem.setCalls).toEqual([])
+  })
+
+  it('fails closed for project/session collisions without overwriting', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'WORK')
+    sessionScopePersistenceV1.commitSession(input)
+    const snapshot = structuredClone(mem.data['canonicalScopeBindings'])
+
+    expect(() =>
+      sessionScopePersistenceV1.commitSession({
+        ...input,
+        project: {
+          ...input.project,
+          canonicalInputFingerprint: 'f'.repeat(64) as never,
+        },
+      }),
+    ).toThrow(expect.objectContaining({ code: 'OPAQUE_ID_COLLISION' }))
+    expect(() =>
+      sessionScopePersistenceV1.commitSession({
+        ...input,
+        session: {
+          ...input.session,
+          canonicalInputFingerprint: 'e'.repeat(64) as never,
+        },
+      }),
+    ).toThrow(expect.objectContaining({ code: 'OPAQUE_ID_COLLISION' }))
+    expect(mem.data['canonicalScopeBindings']).toEqual(snapshot)
+  })
+
+  it('distinguishes a parent-project mismatch and keeps lookup zero-write', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'WORK')
+    sessionScopePersistenceV1.commitSession(input)
+    const otherProject = opaqueScopeIdDeriverV1.deriveProject('D:/projects/other')
+
+    mem.setCalls = []
+    expect(
+      sessionScopePersistenceV1.lookup({
+        projectId: otherProject.projectId,
+        sessionKey: input.session.opaqueId,
+      }),
+    ).toEqual({ kind: 'PROJECT_MISMATCH' })
+    expect(mem.setCalls).toEqual([])
+  })
+
+  it('does not leave a half-written canonical mapping when persistence fails', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'WORK')
+    const before = structuredClone(mem.data['canonicalScopeBindings'])
+    mem.throwOnCanonicalSet = true
+    expect(() => sessionScopePersistenceV1.commitSession(input)).toThrow('cannot write')
+    expect(mem.data['canonicalScopeBindings']).toEqual(before)
+  })
+
+  it('fails closed on malformed persisted canonical data', () => {
+    mem.data['canonicalScopeBindings'] = {
+      version: 1,
+      projects: { 'D:/leaked-path': { canonicalInputFingerprint: 'a'.repeat(64) } },
+      sessions: {},
+      sandboxes: {},
+    }
+    expect(() =>
+      sessionScopePersistenceV1.lookup({
+        projectId: 'xgp1_invalid' as never,
+        sessionKey: 'xgs1_invalid' as never,
+      }),
+    ).toThrow(SessionScopeResolutionError)
+  })
+
+  it('rejects orphan session bindings and invalid incoming modes', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'WORK')
+    mem.data['canonicalScopeBindings'] = {
+      version: 1,
+      projects: {},
+      sessions: {
+        [input.session.opaqueId]: {
+          projectId: input.project.opaqueId,
+          canonicalInputFingerprint: input.session.canonicalInputFingerprint,
+          sessionMode: 'WORK',
+        },
+      },
+      sandboxes: {},
+    }
+    expect(() =>
+      sessionScopePersistenceV1.lookup({
+        projectId: input.project.opaqueId,
+        sessionKey: input.session.opaqueId,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'CANONICAL_SCOPE_STORE_CORRUPT' }))
+
+    __resetScopeStoreForTests()
+    expect(() =>
+      sessionScopePersistenceV1.commitSession({ ...input, sessionMode: 'UNKNOWN' as never }),
+    ).toThrow(expect.objectContaining({ code: 'CANONICAL_INPUT_MISMATCH' }))
+  })
+
+  it('persists and collision-checks sandbox bindings without a locator', () => {
+    const project = opaqueScopeIdDeriverV1.deriveProject('D:/projects/alpha')
+    const sandbox = opaqueScopeIdDeriverV1.deriveSandbox(project.projectId, 'D:/sandboxes/one')
+    const input = {
+      project: {
+        kind: 'PROJECT' as const,
+        opaqueId: project.projectId,
+        canonicalInputFingerprint: project.canonicalInputFingerprint,
+      },
+      sandbox: {
+        kind: 'SANDBOX' as const,
+        opaqueId: sandbox.sandboxKey,
+        projectId: project.projectId,
+        canonicalInputFingerprint: sandbox.canonicalInputFingerprint,
+      },
+    }
+    sessionScopePersistenceV1.commitSandbox(input)
+    mem.setCalls = []
+    sessionScopePersistenceV1.commitSandbox(input)
+    expect(mem.setCalls).toEqual([])
+
+    expect(() =>
+      sessionScopePersistenceV1.commitSandbox({
+        ...input,
+        sandbox: {
+          ...input.sandbox,
+          canonicalInputFingerprint: 'd'.repeat(64) as never,
+        },
+      }),
+    ).toThrow(expect.objectContaining({ code: 'OPAQUE_ID_COLLISION' }))
   })
 })

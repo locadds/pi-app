@@ -5,7 +5,7 @@ export function notificationHostPageHtml(): string {
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; media-src 'none'" />
-  <title>pi Desktop</title>
+  <title>小规 Agent</title>
   <style>
     :root {
       color-scheme: light dark;

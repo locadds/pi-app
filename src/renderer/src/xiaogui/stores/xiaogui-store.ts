@@ -12,6 +12,10 @@ import { create } from 'zustand'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { navigateToModeHome } from '@renderer/xiaogui/lib/navigate-mode-home'
 import { refreshWorkspaceSessionLists } from '@renderer/lib/refresh-workspace-session-lists'
+import {
+  XIAOGUI_DEFAULT_EXECUTION_PHASE_V1,
+  type XiaoguiExecutionPhase,
+} from '@shared/xiaogui-prompt-contract'
 
 export type XiaoguiMode = 'WORK' | 'DESIGN' | 'CODING'
 
@@ -22,7 +26,7 @@ export const XIAOGUI_MODES: { id: XiaoguiMode; zhLabel: string }[] = [
 ]
 
 /** 执行方式（与一级工作模式正交，与主进程 src/main/xiaogui/config.ts 保持一致）。 */
-export type ExecutionPhase = 'ASK' | 'PLAN' | 'EXECUTE'
+export type ExecutionPhase = XiaoguiExecutionPhase
 
 /** ToolResult（与小规仓库 docs/DESIGN_TOOLS.md 统一返回结构一致）。 */
 export interface XiaoguiEvidence {
@@ -80,7 +84,7 @@ interface XiaoguiStoreState {
   lastError: string | null
 
   refreshMode: () => Promise<void>
-  switchMode: (mode: XiaoguiMode) => Promise<void>
+  switchMode: (mode: XiaoguiMode) => Promise<boolean>
   refreshExecutionPhase: () => Promise<void>
   switchExecutionPhase: (phase: ExecutionPhase) => Promise<void>
   refreshSidecarStatus: () => Promise<void>
@@ -91,7 +95,7 @@ interface XiaoguiStoreState {
 
 export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
   mode: 'WORK',
-  executionPhase: 'ASK',
+  executionPhase: XIAOGUI_DEFAULT_EXECUTION_PHASE_V1,
   sidecar: null,
   guardStatus: null,
   invoking: false,
@@ -109,18 +113,35 @@ export const useXiaoguiStore = create<XiaoguiStoreState>((set, get) => ({
   },
 
   switchMode: async (mode) => {
+    const previousMode = get().mode
     set({ mode }) // 乐观更新
     // 切模式立即回到新模式首屏（只清视图绑定，后台会话继续运行）
     navigateToModeHome()
     try {
       const res = await ipcClient.invoke('xiaogui.mode.switch', { mode })
-      if (res?.mode) set({ mode: res.mode as XiaoguiMode })
+      const promptContextStatus = res?.promptContextStatus
+      if (
+        res?.ok === true &&
+        res.mode === mode &&
+        (
+          promptContextStatus === 'REBUILT' ||
+          promptContextStatus === 'NOT_BOUND' ||
+          promptContextStatus === 'UNCHANGED'
+        )
+      ) {
+        set({ mode })
+        void refreshWorkspaceSessionLists()
+        return true
+      }
+      console.warn('[xiaogui] mode.switch 响应错配:', res)
     } catch (e) {
       console.error('[xiaogui] mode.switch 失败:', e)
-      void get().refreshMode()
     }
+    set({ mode: previousMode })
+    await get().refreshMode()
     // 模式切换后主动刷新会话列表，让侧栏按新模式重新过滤（小规 scope）
     void refreshWorkspaceSessionLists()
+    return false
   },
 
   refreshExecutionPhase: async () => {

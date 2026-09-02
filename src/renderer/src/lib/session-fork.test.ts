@@ -16,7 +16,10 @@ vi.hoisted(() => {
       return mem.size
     },
   }
-  Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true })
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: storage,
+    configurable: true,
+  })
 })
 
 import { useUIStore } from '@renderer/stores/ui-store'
@@ -24,17 +27,38 @@ import { useUIStore } from '@renderer/stores/ui-store'
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn().mockResolvedValue({}),
   openSessionIntoWorker: vi.fn().mockResolvedValue(undefined),
+  prepareCanonicalSessionOpen: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@renderer/lib/ipc-client', () => ({ ipcClient: { invoke: mocks.invoke } }))
-vi.mock('@renderer/lib/open-session', () => ({ openSessionIntoWorker: mocks.openSessionIntoWorker }))
-vi.mock('@renderer/lib/composer-run-display', () => ({ refreshComposerRunDisplay: vi.fn() }))
+vi.mock('@renderer/lib/ipc-client', () => ({
+  ipcClient: { invoke: mocks.invoke },
+}))
+vi.mock('@renderer/lib/open-session', () => ({
+  openSessionIntoWorker: mocks.openSessionIntoWorker,
+}))
+vi.mock('@renderer/xiaogui/lib/canonical-session-open', () => ({
+  prepareCanonicalSessionOpen: mocks.prepareCanonicalSessionOpen,
+}))
+vi.mock('@renderer/lib/composer-run-display', () => ({
+  refreshComposerRunDisplay: vi.fn(),
+}))
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn() },
 }))
 
 import { cloneCurrentSession, forkSessionFromEntry } from './session-fork'
-import { useXiaoguiStore } from '@renderer/xiaogui/stores/xiaogui-store'
+
+const codingScope = {
+  projectId: `xgp1_${'1'.repeat(64)}`,
+  sessionKey: `xgs1_${'2'.repeat(64)}`,
+  sessionMode: 'CODING' as const,
+}
+
+const designScope = {
+  projectId: `xgp1_${'3'.repeat(64)}`,
+  sessionKey: `xgs1_${'4'.repeat(64)}`,
+  sessionMode: 'DESIGN' as const,
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -63,6 +87,7 @@ describe('session fork renderer actions', () => {
           sessionId: 'fork-session',
           sessionFile: '/sessions/fork.jsonl',
           editorText: 'original prompt',
+          session: { canonicalScope: codingScope },
         }
       }
       if (channel === 'session.list') return { sessions: [] }
@@ -71,15 +96,16 @@ describe('session fork renderer actions', () => {
 
     await expect(forkSessionFromEntry('user-entry')).resolves.toBe(true)
 
-    expect(mocks.invoke).toHaveBeenCalledWith('session.fork', expect.objectContaining({
-      sessionFile: '/sessions/source.jsonl',
-      entryId: 'user-entry',
-      position: 'before',
-    }))
-    expect(mocks.openSessionIntoWorker).toHaveBeenCalledWith(
-      'fork-session',
-      '/sessions/fork.jsonl',
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      'session.fork',
+      expect.objectContaining({
+        sessionFile: '/sessions/source.jsonl',
+        entryId: 'user-entry',
+        position: 'before',
+      }),
     )
+    expect(mocks.openSessionIntoWorker).toHaveBeenCalledWith('fork-session', '/sessions/fork.jsonl')
+    expect(mocks.prepareCanonicalSessionOpen).toHaveBeenCalledWith(codingScope)
     expect(useUIStore.getState().composerPrefill).toBe('original prompt')
   })
 
@@ -90,6 +116,7 @@ describe('session fork renderer actions', () => {
           cancelled: false,
           sessionId: 'clone-session',
           sessionFile: '/sessions/clone.jsonl',
+          session: { canonicalScope: designScope },
         }
       }
       if (channel === 'session.list') return { sessions: [] }
@@ -98,18 +125,20 @@ describe('session fork renderer actions', () => {
 
     await expect(cloneCurrentSession()).resolves.toBe(true)
 
-    expect(mocks.openSessionIntoWorker).toHaveBeenCalledWith(
-      'clone-session',
-      '/sessions/clone.jsonl',
-    )
+    expect(mocks.openSessionIntoWorker).toHaveBeenCalledWith('clone-session', '/sessions/clone.jsonl')
+    expect(mocks.prepareCanonicalSessionOpen).toHaveBeenCalledWith(designScope)
     expect(useUIStore.getState().composerPrefill).toBeNull()
   })
 
-  it('fork 成功后为新会话打当前一级模式标签（小规三模式隔离）', async () => {
-    useXiaoguiStore.setState({ mode: 'CODING' })
+  it('fork consumes the main-process canonical scope without renderer path tagging', async () => {
     mocks.invoke.mockImplementation(async (channel: string) => {
       if (channel === 'session.fork') {
-        return { cancelled: false, sessionId: 'fork-session', sessionFile: '/sessions/fork.jsonl' }
+        return {
+          cancelled: false,
+          sessionId: 'fork-session',
+          sessionFile: '/sessions/fork.jsonl',
+          session: { canonicalScope: codingScope },
+        }
       }
       if (channel === 'session.list') return { sessions: [] }
       return {}
@@ -117,20 +146,19 @@ describe('session fork renderer actions', () => {
 
     await expect(forkSessionFromEntry('user-entry')).resolves.toBe(true)
 
-    await vi.waitFor(() =>
-      expect(mocks.invoke).toHaveBeenCalledWith('xiaogui.scope.set', {
-        kind: 'session',
-        key: '/sessions/fork.jsonl',
-        mode: 'CODING',
-      }),
-    )
+    expect(mocks.prepareCanonicalSessionOpen).toHaveBeenCalledWith(codingScope)
+    expect(mocks.invoke).not.toHaveBeenCalledWith('xiaogui.scope.set', expect.anything())
   })
 
-  it('clone 成功后为新会话打当前一级模式标签（小规三模式隔离）', async () => {
-    useXiaoguiStore.setState({ mode: 'DESIGN' })
+  it('clone consumes the inherited canonical scope without renderer path tagging', async () => {
     mocks.invoke.mockImplementation(async (channel: string) => {
       if (channel === 'session.clone') {
-        return { cancelled: false, sessionId: 'clone-session', sessionFile: '/sessions/clone.jsonl' }
+        return {
+          cancelled: false,
+          sessionId: 'clone-session',
+          sessionFile: '/sessions/clone.jsonl',
+          session: { canonicalScope: designScope },
+        }
       }
       if (channel === 'session.list') return { sessions: [] }
       return {}
@@ -138,13 +166,8 @@ describe('session fork renderer actions', () => {
 
     await expect(cloneCurrentSession()).resolves.toBe(true)
 
-    await vi.waitFor(() =>
-      expect(mocks.invoke).toHaveBeenCalledWith('xiaogui.scope.set', {
-        kind: 'session',
-        key: '/sessions/clone.jsonl',
-        mode: 'DESIGN',
-      }),
-    )
+    expect(mocks.prepareCanonicalSessionOpen).toHaveBeenCalledWith(designScope)
+    expect(mocks.invoke).not.toHaveBeenCalledWith('xiaogui.scope.set', expect.anything())
   })
 
   it('should_block_branch_mutations_in_read_only_subagent_preview', async () => {

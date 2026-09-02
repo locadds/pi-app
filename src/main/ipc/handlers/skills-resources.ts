@@ -13,10 +13,15 @@ import {
   listAgentsContextFiles,
   listPiBuiltinPromptFiles,
   listPluginInjectedPromptFiles,
+  listCodeOwnedPromptCatalogFiles,
   groupPromptCatalog,
   getGlobalSystemMd,
   type PromptCatalogItem,
 } from '../../pi-prompt-catalog'
+import {
+  readCodeOwnedPromptCatalogResourceV1,
+  XIAOGUI_PRODUCT_SYSTEM_LAYERS_PREVIEW_URI,
+} from '../../pi-prompt-catalog-virtual-resources'
 import { listRevisions, pushRevision, restoreRevision, readRevision } from '../../resource-revisions'
 import type { ResourceSource } from '../../pi-resources-editor'
 import { errorMessage } from '@shared/error-message'
@@ -115,19 +120,25 @@ export function registerSkillsResourceHandlers(): void {
 
   registerHandler('ipc:prompts.list', async () => {
     const cwd = configStore.get('currentProject') || workerManager.cwd || process.cwd()
-    const useLiveWorker =
+    let useLiveWorker =
       workerManager.isRunning &&
       normalizeSessionKey(workerManager.cwd || '') === normalizeSessionKey(cwd)
     let projectTrusted = true
-    let defaultSystemPreview = ''
-    if (useLiveWorker) {
+    let effectivePromptDiagnostics = null
+    try {
+      if (!useLiveWorker) {
+        await workerManager.start(cwd)
+        useLiveWorker = true
+      }
       try {
         const ctx = await workerManager.getContextPrompts()
         projectTrusted = ctx.projectTrusted !== false
-        defaultSystemPreview = String(ctx.builtSystemPreview || '')
       } catch (e) {
         /* */
       }
+      effectivePromptDiagnostics = await workerManager.getEffectivePromptManifest()
+    } catch (e) {
+      useLiveWorker = false
     }
 
     const byPath = new Map<string, PromptCatalogItem>()
@@ -138,11 +149,12 @@ export function registerSkillsResourceHandlers(): void {
 
     for (const a of listAgentsContextFiles(cwd)) push(a)
     for (const b of listPiBuiltinPromptFiles(cwd, projectTrusted)) {
-      if (b.id === 'builtin:system:default' && defaultSystemPreview) {
-        push({ ...b, description: '当前会话实际组装的 system 提示词（只读预览）' })
+      if (b.id === 'builtin:system:default' && effectivePromptDiagnostics) {
+        push({ ...b, description: '当前会话真实 Effective Prompt 诊断（高级模式只显示产品层正文）' })
       } else push(b)
     }
     for (const plug of listPluginInjectedPromptFiles(cwd)) push(plug)
+    for (const resource of listCodeOwnedPromptCatalogFiles()) push(resource)
 
     const disk = listPromptsOnDisk(cwd)
     const tplByPath = new Map<string, (typeof disk)[0]>()
@@ -172,7 +184,7 @@ export function registerSkillsResourceHandlers(): void {
     for (const p of tplByPath.values()) {
       push({
         id: `template:${p.path}`,
-        category: 'prompt_template',
+        category: 'slash_prompt_templates',
         name: p.name,
         description: p.description,
         path: p.path,
@@ -187,30 +199,33 @@ export function registerSkillsResourceHandlers(): void {
     return {
       prompts,
       groups: groupPromptCatalog(prompts),
-      defaultSystemPreview,
-      virtualSystemPreviewPath: 'pi-desktop://system-prompt-preview',
+      effectivePromptDiagnostics,
+      virtualSystemPreviewPath: XIAOGUI_PRODUCT_SYSTEM_LAYERS_PREVIEW_URI,
     }
   })
 
   registerHandler('ipc:resource.read', async (req) => {
     const path = String(req.path || '')
     if (!path) return { error: 'missing path' }
-    if (path === 'pi-desktop://system-prompt-preview') {
+    if (path === XIAOGUI_PRODUCT_SYSTEM_LAYERS_PREVIEW_URI) {
       try {
         const cwd = configStore.get('currentProject') || workerManager.cwd || process.cwd()
         if (
-          workerManager.isRunning &&
-          normalizeSessionKey(workerManager.cwd || '') === normalizeSessionKey(cwd)
+          !workerManager.isRunning ||
+          normalizeSessionKey(workerManager.cwd || '') !== normalizeSessionKey(cwd)
         ) {
-          const ctx = await workerManager.getContextPrompts()
-          return { content: String(ctx.builtSystemPreview || '（空）'), path, revisions: [] }
+          await workerManager.start(cwd)
+        }
+        const preview = await workerManager.getEffectivePromptPreview()
+        const expectedPromptSha256 = String(req.expectedPromptSha256 || '').trim()
+        if (
+          expectedPromptSha256 &&
+          preview.manifest.completePromptSha256 !== expectedPromptSha256
+        ) {
+          return { error: 'XIAOGUI_PROMPT_DIAGNOSTICS_STALE' }
         }
         return {
-          content: await sessionPreviewProcess.getSystemPrompt({
-            cwd,
-            globalSettings: readPiAgentGlobalSettingsFromDisk() || {},
-            projectSettings: readPiProjectSettingsFromDisk(cwd) || {},
-          }),
+          content: preview.prompt,
           path,
           revisions: [],
         }
@@ -218,12 +233,16 @@ export function registerSkillsResourceHandlers(): void {
         return { error: errorMessage(e) }
       }
     }
+    const codeOwnedResource = readCodeOwnedPromptCatalogResourceV1(path)
+    if (codeOwnedResource) {
+      return { content: codeOwnedResource.content, path, revisions: [] }
+    }
     const resolved = resolve(path)
     const isGlobalSystem = resolved.toLowerCase() === resolve(getGlobalSystemMd()).toLowerCase()
     if (isGlobalSystem && !existsSync(resolved)) {
       let seed =
-        '# pi 系统提示词\n\n' +
-        '保存本文件后将替换 pi 内置 harness 默认文案（与终端 pi 的 SYSTEM.md 一致）。\n\n'
+        '# 小规引擎系统提示词\n\n' +
+        '保存本文件后将替换小规底层运行时的默认文案（与兼容的 SYSTEM.md 一致）。\n\n'
       const cwd = configStore.get('currentProject') || workerManager.cwd || process.cwd()
       if (
         workerManager.isRunning &&
@@ -260,7 +279,9 @@ export function registerSkillsResourceHandlers(): void {
 
   registerHandler('ipc:resource.write', async (req) => {
     const path = String(req.path || '')
-    if (path.startsWith('pi-desktop://')) return { ok: false, error: '只读预览不可保存' }
+    if (path.startsWith('xiaogui://') || path.startsWith('pi-desktop://')) {
+      return { ok: false, error: '只读预览不可保存' }
+    }
     const content = String(req.content ?? '')
     if (!path) return { ok: false, error: 'missing path' }
     try {

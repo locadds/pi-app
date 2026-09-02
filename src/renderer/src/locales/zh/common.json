@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "pi Desktop",
+    "name": "小规 Agent",
     "status": {
       "idle": "空闲",
       "ready": "就绪",
@@ -40,8 +40,8 @@
     "deleted": "已删除",
     "deleteFailed": "删除失败",
     "deleteMissingFile": "无法删除：缺少会话文件路径",
-    "deleteSessionConfirm": "删除会话「{{name}}」？对应的 pi 会话文件将永久删除。",
-    "deleteConfirm": "删除「{{name}}」？目录与 pi 会话将一并移除。"
+    "deleteSessionConfirm": "删除会话「{{name}}」？对应的小规会话文件将永久删除。",
+    "deleteConfirm": "删除「{{name}}」？目录与小规会话将一并移除。"
   },
   "composer": {
     "placeholder": "消息或 / 命令",
@@ -67,7 +67,7 @@
     "title": "设置",
     "general": "常规",
     "appearance": "外观",
-    "pi": "Pi",
+    "pi": "小规引擎",
     "extensions": "插件",
     "resources": "资源",
     "diagnostics": "诊断",
@@ -144,7 +144,7 @@
     "restore": "还原",
     "close": "关闭",
     "closeWhileRunningTitle": "当前有对话正在进行",
-    "closeWhileRunningMessage": "关闭窗口会中断正在进行的对话，其尾部内容不会保存。可以选择等待对话完成后再关闭，这样会话会完整保存，之后可以继续（如用 pi 命令行）。",
+    "closeWhileRunningMessage": "关闭窗口会中断正在进行的对话，其尾部内容不会保存。可以选择等待对话完成后再关闭，这样会话会完整保存，之后可以通过兼容命令行继续。",
     "waitThenClose": "等待完成后再关闭",
     "closeNow": "立即关闭",
     "waitingTitle": "正在等待对话结束…",

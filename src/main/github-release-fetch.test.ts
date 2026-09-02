@@ -95,7 +95,7 @@ describe('fetchLatestGitHubRelease', () => {
     expect(fetch.mock.calls[0][0]).toMatch(/\/releases\/latest$/)
     expect(fetch.mock.calls[0][1]?.headers).toMatchObject({
       Accept: 'application/vnd.github+json',
-      'User-Agent': 'pi-desktop',
+      'User-Agent': 'xiaogui-agent',
     })
     expect(fetch.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
   })

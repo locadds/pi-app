@@ -3,6 +3,21 @@
 import type { EventBus, Theme } from '@earendil-works/pi-coding-agent'
 import { randomUUID } from 'node:crypto'
 import type {
+  TemplateIntakeReviewRequestV1,
+  TemplateIntakeReviewResultV1,
+} from '@shared/xiaogui-work-docx-template-intake'
+import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draft-review'
+import type {
+  TemplateReviewRequestV2,
+  TemplateReviewRequestV3,
+  TemplateReviewResultV2,
+  TemplateReviewResultV3,
+} from '@shared/xiaogui-work-template-review'
+import type {
+  TemplateMaterializePreviewRequestV1,
+  TemplateMaterializePreviewResultV1,
+} from '@shared/xiaogui-work-docx-template-materialize'
+import type {
   ExtensionUIQuestion,
   ExtensionUIQuestionnaireResult,
 } from './questionnaire-types.js'
@@ -29,6 +44,20 @@ export type ExtensionUIRequest =
       toolCallId?: string
     }
   | { id: string; method: 'custom'; kind: 'image_review'; image: string; title: string; question: string; context?: string; options: string[]; allowFeedback: boolean }
+  | {
+      id: string
+      method: 'custom'
+      kind: 'template_intake_review'
+      payload: TemplateIntakeReviewRequestV1 | TemplateDraftReviewRequestV2 | TemplateReviewRequestV2 | TemplateReviewRequestV3
+      toolCallId: string
+    }
+  | {
+      id: string
+      method: 'custom'
+      kind: 'template_materialize_preview'
+      payload: TemplateMaterializePreviewRequestV1
+      toolCallId: string
+    }
 
 type Pending = {
   resolve: (v: unknown) => void
@@ -45,6 +74,16 @@ export type DesktopUIBridge = {
     questions: ExtensionUIQuestion[],
     signal?: AbortSignal,
   ) => Promise<ExtensionUIQuestionnaireResult>
+  requestTemplateIntakeReview: (
+    toolCallId: string,
+    payload: TemplateIntakeReviewRequestV1 | TemplateDraftReviewRequestV2 | TemplateReviewRequestV2 | TemplateReviewRequestV3,
+    signal?: AbortSignal,
+  ) => Promise<TemplateIntakeReviewResultV1 | TemplateReviewResultV2 | TemplateReviewResultV3>
+  requestTemplateMaterializePreview: (
+    toolCallId: string,
+    payload: TemplateMaterializePreviewRequestV1,
+    signal?: AbortSignal,
+  ) => Promise<TemplateMaterializePreviewResultV1>
   /** Cache interact args extracted by Worker (driven by adapter.json interact.fields). */
   setInteractArgs: (schema: 'questions' | 'review' | 'clarify', args: Record<string, unknown> | null) => void
   attachWidgetHost: (host: { setWidget: (key: string, content: unknown) => void; dispose: () => void } | null) => void
@@ -308,6 +347,54 @@ export function createDesktopUIBridge(
             ? { cancelled: true, answers: [] }
             : (response.result as ExtensionUIQuestionnaireResult),
         { cancelled: true, answers: [] },
+        { signal, ...dismissOpts },
+      )
+    },
+    requestTemplateIntakeReview(toolCallId, payload, signal) {
+      const id = randomUUID()
+      const fallback = 'reviewVersion' in payload
+        ? {
+            cancelled: true as const,
+            draftActions: payload.reviewVersion === 4
+              ? payload.recommendedActions
+              : payload.draftActions,
+          }
+        : { cancelled: true as const, draftDecisions: payload.draftDecisions }
+      return createDialogPromise(
+        emitReq,
+        pending,
+        {
+          id,
+          method: 'custom',
+          kind: 'template_intake_review',
+          payload,
+          toolCallId,
+        },
+        (response) =>
+          response.cancelled
+            ? fallback
+            : (response.result as TemplateIntakeReviewResultV1 | TemplateReviewResultV2),
+        fallback,
+        { signal, ...dismissOpts },
+      )
+    },
+    requestTemplateMaterializePreview(toolCallId, payload, signal) {
+      const id = randomUUID()
+      const fallback: TemplateMaterializePreviewResultV1 = { action: 'CANCEL' }
+      return createDialogPromise(
+        emitReq,
+        pending,
+        {
+          id,
+          method: 'custom',
+          kind: 'template_materialize_preview',
+          payload,
+          toolCallId,
+        },
+        (response) => response.cancelled
+          ? fallback
+          : (response.result as TemplateMaterializePreviewResultV1),
+        fallback,
         { signal, ...dismissOpts },
       )
     },

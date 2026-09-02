@@ -12,6 +12,7 @@ import {
   workerStdioMode,
 } from './worker-transport.js'
 import { translateIncomingPaths, translateOutgoingPaths } from './worker-path-bridge.js'
+import { receiveWorkerHostToolResponse } from './worker-host-tool-channel.js'
 import './worker-runtime.js'
 
 routeWorkerLogsToStderr()
@@ -39,6 +40,7 @@ async function handleIncomingMessage(
     console.log('[Worker] Received:', msg.type)
   }
   const translated = translateIncomingPaths(msg)
+  if (receiveWorkerHostToolResponse(translated)) return
   const reply = (payload: Record<string, unknown>) => {
     sendToMain({ requestId: msg?.requestId, ...translateOutgoingPaths(payload) })
   }

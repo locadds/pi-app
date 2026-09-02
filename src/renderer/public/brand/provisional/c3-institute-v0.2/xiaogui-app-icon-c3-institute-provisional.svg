@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024" role="img" aria-label="小规应用图标 C3 院标底纹临时稿">
+  <metadata>{"name":"小规应用图标 C3 院标底纹临时稿","variant":"c3-light-institute-watermark","version":"0.2.0","status":"provisional-raster-institute-mark","instituteMarkSource":"院内PPT透明PNG 160x160","foregroundSource":"小规Hub A方案生产标准包 v1.0"}</metadata>
+  <defs>
+    <clipPath id="tile-clip">
+      <rect x="32" y="32" width="960" height="960" rx="224"/>
+    </clipPath>
+    <clipPath id="institute-symbol-crop">
+      <rect x="96" y="96" width="832" height="816" rx="96"/>
+    </clipPath>
+    <filter id="institute-grey" color-interpolation-filters="sRGB">
+      <feColorMatrix type="matrix" values="
+        0 0 0 0 0.067
+        0 0 0 0 0.075
+        0 0 0 0 0.082
+        0 0 0 1 0"/>
+    </filter>
+    <mask id="app-cut" x="0" y="0" width="1024" height="1024" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" style="mask-type:luminance">
+      <rect width="1024" height="1024" fill="#fff"/>
+      <path d="M700 194C700 390 683 514 592 606C548 650 500 692 445 794" fill="none" stroke="#000" stroke-width="72" stroke-linecap="round"/>
+      <path d="M170 295h70M170 345h56M170 395h46M170 445h36" stroke="#000" stroke-width="15"/>
+      <path d="M208 610l-72 190" stroke="#000" stroke-width="13" stroke-dasharray="3 25" stroke-linecap="round"/>
+    </mask>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="#F7F5EF"/>
+  <g clip-path="url(#tile-clip)">
+    <g clip-path="url(#institute-symbol-crop)" filter="url(#institute-grey)" opacity="0.08">
+      <!-- 只显示院标上半部方形图形；SUPDRI 字样被裁出图标。 -->
+      <image x="-152" y="-65" width="1328" height="1328" preserveAspectRatio="none" href="院标源-来自院内PPT-160.png" xlink:href="院标源-来自院内PPT-160.png"/>
+    </g>
+  </g>
+  <rect x="36" y="36" width="952" height="952" rx="220" fill="none" stroke="#D8D3C8" stroke-width="8" opacity="0.72"/>
+
+  <!-- 前景“规”字沿用 A 方案生产路径，几何中心约为 (517, 512)。 -->
+  <g mask="url(#app-cut)">
+    <path d="M50 708H420V575H50ZM31 476H432V339H31ZM171 845H308V530Q308 458 301.5 377Q295 296 276 213Q257 130 220 53.5Q183-23 122-85Q112-71 94-52Q76-33 56-15Q36 3 18 14Q72 64 102.5 129.5Q133 195 148 266Q163 337 167 405Q171 473 171 530ZM291 348Q302 339 319.5 320Q337 301 357.5 277.5Q378 254 398.5 230.5Q419 207 435 188.5Q451 170 458 161L360 57Q345 82 325 112Q305 142 283 173Q261 204 240 232Q219 260 202 281ZM457 812H945V279H800V688H595V279H457ZM655 310H782V70Q782 51 788 44Q794 37 806 37H839Q850 37 856 48.5Q862 60 865 91Q868 122 869 178Q892 161 924 147Q956 133 980 128Q975 52 962.5 8.5Q950-35 922-53.5Q894-72 840-72H778Q712-72 683.5-46Q655-20 655 53ZM631 639H765V498Q765 430 752 350Q739 270 704.5 189Q670 108 605.5 35Q541-38 438-93Q430-79 413.5-59Q397-39 379-19.5Q361 0 347 10Q444 60 501 121.5Q558 183 586 248.5Q614 314 622.5 379Q631 444 631 501Z" fill="#111318" transform="translate(138.53 800.73) scale(.74844 -.76759)"/>
+  </g>
+  <g>
+    <circle cx="700" cy="350" r="38" fill="#E8463A"/>
+    <path d="M700 291v118M641 350h118" stroke="#F7F5EF" stroke-width="10" opacity="0.92"/>
+    <circle cx="700" cy="350" r="29" fill="#E8463A"/>
+  </g>
+</svg>

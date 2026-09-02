@@ -2,8 +2,15 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { join, resolve, basename, dirname } from 'path'
 import { readGlobalSettingsJson } from './pi-skill-overrides'
 import { resolveActiveAgentDir } from './agent-dir'
+import { XIAOGUI_CODE_OWNED_PROMPT_CATALOG_RESOURCES_V1 } from './pi-prompt-catalog-virtual-resources'
 
-export type PromptCategory = 'plugin_inject' | 'agents_context' | 'pi_builtin' | 'prompt_template'
+export type PromptCategory =
+  | 'product_system_layers'
+  | 'user_system_append'
+  | 'project_context'
+  | 'slash_prompt_templates'
+  | 'tool_capability_guidelines'
+  | 'subtask_prompts'
 
 export type PromptCatalogItem = {
   id: string
@@ -53,7 +60,7 @@ export function listAgentsContextFiles(cwd: string): PromptCatalogItem[] {
     seen.add(global.path.toLowerCase())
     items.push({
       id: `agents:${global.path}`,
-      category: 'agents_context',
+      category: 'project_context',
       name: basename(global.path),
       description: '全局 agent 目录下的项目上下文（进入 <project_context>）',
       path: global.path,
@@ -83,7 +90,7 @@ export function listAgentsContextFiles(cwd: string): PromptCatalogItem[] {
     const rel = ctx.path.startsWith(resolvedCwd) ? ctx.path.slice(resolvedCwd.length).replace(/^[/\\]/, '') : ctx.path
     items.push({
       id: `agents:${ctx.path}`,
-      category: 'agents_context',
+      category: 'project_context',
       name: basename(ctx.path),
       description: rel ? `工作区路径：${rel}` : ctx.path,
       path: ctx.path,
@@ -106,7 +113,7 @@ export function listPiBuiltinPromptFiles(cwd: string, projectTrusted = true): Pr
   if (projectTrusted && existsSync(projectSystem)) {
     out.push({
       id: `builtin:system:project`,
-      category: 'pi_builtin',
+      category: 'user_system_append',
       name: 'SYSTEM.md（项目）',
       description: '替换默认 harness 系统提示词（优先于全局 SYSTEM.md）',
       path: projectSystem,
@@ -120,7 +127,7 @@ export function listPiBuiltinPromptFiles(cwd: string, projectTrusted = true): Pr
   const globalExists = existsSync(globalSystem)
   out.push({
     id: 'builtin:system:global',
-    category: 'pi_builtin',
+    category: 'user_system_append',
     name: globalExists ? 'SYSTEM.md（全局）' : 'SYSTEM.md（全局 · 可编辑）',
     description: globalExists
       ? '替换默认 harness 系统提示词'
@@ -132,25 +139,23 @@ export function listPiBuiltinPromptFiles(cwd: string, projectTrusted = true): Pr
     inSystemContext: !existsSync(projectSystem) || !projectTrusted,
   })
 
-  if (!globalExists && !(projectTrusted && existsSync(projectSystem))) {
-    out.push({
-      id: 'builtin:system:default',
-      category: 'pi_builtin',
-      name: '当前内置 system（只读预览）',
-      description: '未配置 SYSTEM.md 时 Worker 实际使用的组装结果；要修改请编辑上方全局 SYSTEM.md',
-      path: null,
-      command: '',
-      source: 'builtin',
-      editable: false,
-      readOnly: true,
-      inSystemContext: true,
-    })
-  }
+  out.push({
+    id: 'builtin:system:default',
+    category: 'product_system_layers',
+    name: '当前真实 Effective Prompt（诊断）',
+    description: '当前真实会话的完整 Manifest；高级诊断只显示产品层正文',
+    path: null,
+    command: '',
+    source: 'runtime',
+    editable: false,
+    readOnly: true,
+    inSystemContext: true,
+  })
 
   if (projectTrusted && existsSync(projectAppend)) {
     out.push({
       id: `builtin:append:project`,
-      category: 'pi_builtin',
+      category: 'user_system_append',
       name: 'APPEND_SYSTEM.md（项目）',
       description: '追加到系统提示词末尾',
       path: projectAppend,
@@ -165,7 +170,7 @@ export function listPiBuiltinPromptFiles(cwd: string, projectTrusted = true): Pr
     if (!dup) {
       out.push({
         id: `builtin:append:global`,
-        category: 'pi_builtin',
+        category: 'user_system_append',
         name: 'APPEND_SYSTEM.md（全局）',
         description: '追加到系统提示词末尾',
         path: globalAppend,
@@ -213,7 +218,7 @@ export function listPluginInjectedPromptFiles(cwd: string): PromptCatalogItem[] 
     if (['AGENTS.md', 'CLAUDE.md', 'SYSTEM.md', 'APPEND_SYSTEM.md'].includes(base)) return
     items.push({
       id: `plugin:${full}`,
-      category: 'plugin_inject',
+      category: 'subtask_prompts',
       name: base,
       description: `扩展包资源 · ${pkgLabel}`,
       path: full,
@@ -274,15 +279,41 @@ export function listPluginInjectedPromptFiles(cwd: string): PromptCatalogItem[] 
   return items
 }
 
+export function listCodeOwnedPromptCatalogFiles(): PromptCatalogItem[] {
+  return XIAOGUI_CODE_OWNED_PROMPT_CATALOG_RESOURCES_V1.map((resource) => ({
+    id: resource.id,
+    category: resource.id === 'builtin:subtask:template-intake-analysis'
+      ? 'subtask_prompts'
+      : 'tool_capability_guidelines',
+    name: resource.name,
+    description: resource.description,
+    path: resource.uri,
+    command: '',
+    source: 'product',
+    editable: false,
+    readOnly: true,
+    inSystemContext: false,
+  }))
+}
+
 export const PROMPT_GROUP_LABELS: Record<PromptCategory, string> = {
-  plugin_inject: '插件注入',
-  agents_context: '项目上下文（AGENTS.md 等）',
-  pi_builtin: 'pi 内置 / SYSTEM',
-  prompt_template: '提示词模板（/name）',
+  product_system_layers: '产品 System Layers',
+  user_system_append: '用户 System / Append',
+  project_context: '项目上下文',
+  slash_prompt_templates: 'Slash Prompt 模板',
+  tool_capability_guidelines: 'Tool / Capability Guidelines',
+  subtask_prompts: '专用 Subtask Prompts',
 }
 
 export function groupPromptCatalog(items: PromptCatalogItem[]): { category: PromptCategory; label: string; items: PromptCatalogItem[] }[] {
-  const order: PromptCategory[] = ['agents_context', 'pi_builtin', 'prompt_template', 'plugin_inject']
+  const order: PromptCategory[] = [
+    'product_system_layers',
+    'user_system_append',
+    'project_context',
+    'slash_prompt_templates',
+    'tool_capability_guidelines',
+    'subtask_prompts',
+  ]
   return order
     .map((category) => ({
       category,

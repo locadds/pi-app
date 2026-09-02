@@ -10,8 +10,10 @@ export default defineConfig({
     setupFiles: ['src/renderer/src/test/setup.ts'],
     include: [
       'src/renderer/src/**/*.test.{ts,tsx}',
+      'src/office-viewer/**/*.test.{ts,tsx}',
       'src/main/**/*.test.ts',
       'src/worker/**/*.test.ts',
+      'src/office-gateway/**/*.test.ts',
       'packages/shared/**/*.test.ts',
       'src/extension-compat/**/*.test.ts',
     ],

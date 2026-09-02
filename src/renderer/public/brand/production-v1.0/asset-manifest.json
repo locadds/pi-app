@@ -1,0 +1,335 @@
+{
+  "name": "小规品牌标准包",
+  "version": "1.0.0",
+  "direction": "A",
+  "assets": [
+    {
+      "path": "可直接使用/动画/xiaogui-loader-source.svg",
+      "role": "启动动画矢量分层源",
+      "bytes": 3298,
+      "sha256": "78baff1e0bf8d62f8796c7070a185be448b968dd6f7f91affb66a678b002e953"
+    },
+    {
+      "path": "可直接使用/动画/xiaogui-loader.js",
+      "role": "可复用 Web Component 启动动画",
+      "bytes": 9150,
+      "sha256": "bad1b80d90f0cc64235edc03e94d024a0c17ef584756e5cfe8fb534897064d68"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-color-20.png",
+      "role": "控制台小标 20px",
+      "width": 20,
+      "height": 20,
+      "bytes": 634,
+      "sha256": "0ec45c09eed09ae1c0bdbf12dc2a7f317d0f39cd6cd9c97f61a3ac524105af79"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-color-24.png",
+      "role": "控制台小标 24px",
+      "width": 24,
+      "height": 24,
+      "bytes": 697,
+      "sha256": "dc5f90f7f66a95467f9bc547e26c40b3f5ff286d9f69d00b6e19b7c8482fd423"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-color-32.png",
+      "role": "控制台小标 32px",
+      "width": 32,
+      "height": 32,
+      "bytes": 898,
+      "sha256": "afa58345cf279b5d4a2ee4a11aa47c1edd06cf0ad3e95113518635d0b51f8a1c"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-color.svg",
+      "role": "控制台彩色小标",
+      "bytes": 1812,
+      "sha256": "df771899cf0454961e8af27eb2265de9ac03af7ff1456d2558f83fdf20dd9c33"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-inverse-14.png",
+      "role": "深色控制台小标 14px",
+      "width": 14,
+      "height": 14,
+      "bytes": 451,
+      "sha256": "13fa17d3ddb2c40207b7cd14913ed03f20fdb006ae838a57b86502d3c6d3f844"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-inverse-16.png",
+      "role": "深色控制台小标 16px",
+      "width": 16,
+      "height": 16,
+      "bytes": 533,
+      "sha256": "9c6bd586c332a8c617576696b1a26bf3b96228e528a9a7011953e7a14bbae717"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-inverse-20.png",
+      "role": "深色控制台小标 20px",
+      "width": 20,
+      "height": 20,
+      "bytes": 628,
+      "sha256": "5dac22a3a9ca43764b7e104a10015cfb8bc42724f322a397a2d003510e44a874"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-inverse-24.png",
+      "role": "深色控制台小标 24px",
+      "width": 24,
+      "height": 24,
+      "bytes": 703,
+      "sha256": "c8b829ec63f4dccfacda6d9ec45832a18c4fe40ccd1052dc4f4e2b994617038f"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-inverse-32.png",
+      "role": "深色控制台小标 32px",
+      "width": 32,
+      "height": 32,
+      "bytes": 901,
+      "sha256": "5ecb210e79a0af0b8e32c6381e63ee81c3883e508603770041fb8fedbf4bef46"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-inverse.svg",
+      "role": "控制台反白小标",
+      "bytes": 1818,
+      "sha256": "2864ac76355579288233badb129f58f9ce9c43eaa8b92a883776a72572211474"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-mono-14.png",
+      "role": "控制台小标 14px",
+      "width": 14,
+      "height": 14,
+      "bytes": 454,
+      "sha256": "e35010335844366ea08cab60787eca882fd823ffd198113805fccff756a372c1"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-mono-16.png",
+      "role": "控制台小标 16px",
+      "width": 16,
+      "height": 16,
+      "bytes": 534,
+      "sha256": "afd3f3c9fa008df9e9a1eee008acbca532aa9f90eabe5560f02b23ed14a4c5bd"
+    },
+    {
+      "path": "可直接使用/控制台小标/xiaogui-console-mono.svg",
+      "role": "控制台单色小标",
+      "bytes": 1809,
+      "sha256": "33bf6e208ac8689856fd0972996c4711f385803c89ab3d9e78fe455a94fbc238"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-1024.png",
+      "role": "应用图标 1024px",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 57283,
+      "sha256": "719b0f87a1ef6aeee05c09bbe537656e43097833b7ec06d5238b383cac00d278"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-128.png",
+      "role": "应用图标 128px",
+      "width": 128,
+      "height": 128,
+      "bytes": 3929,
+      "sha256": "f39f1a9e1690f2cbfb59a9de5328854af7d67cd61569a3a540ff93557ea55a45"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-16.png",
+      "role": "应用图标 16px",
+      "width": 16,
+      "height": 16,
+      "bytes": 622,
+      "sha256": "60c7c1de3a28c513f5ca7637b6793c3a0b71e1de21572f0be0f5396535c0f5d4"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-20.png",
+      "role": "应用图标 20px",
+      "width": 20,
+      "height": 20,
+      "bytes": 730,
+      "sha256": "a19b678abb3c7d5d3fcb0a0d35755a03b00ae1da3ba69af1cb2c1b319455a182"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-24.png",
+      "role": "应用图标 24px",
+      "width": 24,
+      "height": 24,
+      "bytes": 894,
+      "sha256": "5479c76893457e502161a84cbbaa40f8d09490a16f3ffb39d31cf3c03b9b2965"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-256.png",
+      "role": "应用图标 256px",
+      "width": 256,
+      "height": 256,
+      "bytes": 8458,
+      "sha256": "c79702d7d7cd978f5cbb3e8bdd0f6a2d4e03be7f173338a4960942916a34634d"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-32.png",
+      "role": "应用图标 32px",
+      "width": 32,
+      "height": 32,
+      "bytes": 1168,
+      "sha256": "30e9a70293fd95b4df124f9813c0fe02cb6b02d5aa54dcee8c4370dbc294c430"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-48.png",
+      "role": "应用图标 48px",
+      "width": 48,
+      "height": 48,
+      "bytes": 1643,
+      "sha256": "f07802f2d4812d8ca3f339fa2c4dbaae179d1646c6a8fd9b8a6140572ec962dd"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-512.png",
+      "role": "应用图标 512px",
+      "width": 512,
+      "height": 512,
+      "bytes": 21587,
+      "sha256": "b7b4afe12a22ff305f2ef69c1aba39801f4428add0763295c86cebfb0d039289"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-64.png",
+      "role": "应用图标 64px",
+      "width": 64,
+      "height": 64,
+      "bytes": 2067,
+      "sha256": "1ac4abe9e4f6e39b2e430d2aa0ac55ae5d772b34a02b3bff554270bf51094e21"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon-micro.svg",
+      "role": "应用图标小尺寸母版",
+      "bytes": 1901,
+      "sha256": "3c7bf4a97902d5fcbd543de9e36ff34ee0b5d0f88a16ead1f759988e95933b83"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon.ico",
+      "role": "Windows 多尺寸应用图标",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        48,
+        64,
+        128,
+        256
+      ],
+      "bytes": 19645,
+      "sha256": "ffa143f74f6f2b8c5082075a155350ac8e08ea60256281291307b34767ea52d5"
+    },
+    {
+      "path": "可直接使用/应用图标/xiaogui-app-icon.svg",
+      "role": "应用图标矢量母版",
+      "bytes": 2086,
+      "sha256": "62ca766ff4ccb65870dbac6cb5b49d7967c308fa99ce12eecf10b2bb7e36777d"
+    },
+    {
+      "path": "可直接使用/预览/品牌标准包预览.html",
+      "role": "品牌标准包交互预览",
+      "bytes": 10309,
+      "sha256": "e45762227f8c05319c7e17f57af5fff19eb4dd842d455d9bda1fca5b8ca58a22"
+    },
+    {
+      "path": "可直接使用/预览/xiaogui-hub-dark-preview.png",
+      "role": "深色背景主标预览",
+      "width": 2400,
+      "height": 699,
+      "background": "#111318",
+      "bytes": 72068,
+      "sha256": "db75f4c5ec92aa8c63ecd9f0eee712aaf38ebd9d16bb8ab8d5597fb9270a74fd"
+    },
+    {
+      "path": "可直接使用/预览/xiaogui-hub-paper-preview.png",
+      "role": "浅色背景主标预览",
+      "width": 2400,
+      "height": 699,
+      "background": "#F4F1E8",
+      "bytes": 72013,
+      "sha256": "7ca3a15827dc161970259ed28a1c9be5beab5a6a1b15c943487b52556b5fc8a4"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-hub-inverse-2400.png",
+      "role": "小规 Hub 反白透明底 PNG",
+      "width": 2400,
+      "height": 699,
+      "bytes": 68013,
+      "sha256": "be287f062506f4e9203d54a030a6882047f81cacb4fc486fad57ce20e227c90f"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-hub-inverse.svg",
+      "role": "小规 Hub inverse 矢量主标",
+      "bytes": 2947,
+      "sha256": "35ca6747b46d4303d279f9fbba871ca5ff44cc7173b2a73c73857bce372e3fda"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-hub-mono.svg",
+      "role": "小规 Hub mono 矢量主标",
+      "bytes": 2944,
+      "sha256": "2db4c24d8036e433d0f6e8aacef353d7e03bbe2ed8982cb85694592ac469cf8d"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-hub-primary-2400.png",
+      "role": "小规 Hub 透明底 PNG",
+      "width": 2400,
+      "height": 699,
+      "bytes": 67765,
+      "sha256": "701fadd5098b70f55c88718881c29eb4d287a2888e48a4fdb20c562b365716f1"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-hub-primary.svg",
+      "role": "小规 Hub primary 矢量主标",
+      "bytes": 2947,
+      "sha256": "54d6a4d6b6276396ad6db45fea763b1cead4d0dd958b90736c541c0c2c619542"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-symbol-color-1024.png",
+      "role": "小规彩色符号透明底 PNG",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 42419,
+      "sha256": "20f29588f9186ae1c9e132b3d11dd6ef098c6a29671921d81291d5d2f4118ad7"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-symbol-color.svg",
+      "role": "小规彩色符号矢量",
+      "bytes": 1979,
+      "sha256": "a7895099ec1a6e1bd97f652fa6b257eca195dc87498b9c38dbb4c7d6362fd417"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-symbol-inverse.svg",
+      "role": "小规反白符号矢量",
+      "bytes": 1979,
+      "sha256": "4992b45ce5cd5d7597cb572e688e2349704295f5583e538157e389534e14be12"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-symbol-mono.svg",
+      "role": "小规单色符号矢量",
+      "bytes": 1787,
+      "sha256": "b8aeeb5d4072f10aaff01a2bd1979695131166f843856366d35cf9d19f21d23d"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-wordmark-inverse.svg",
+      "role": "小规 inverse 矢量字标",
+      "bytes": 2125,
+      "sha256": "e3f51d9b659e622d0b1b019b8f1682ce571841ef18ae84a763b9253cb118eb6d"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-wordmark-mono.svg",
+      "role": "小规 mono 矢量字标",
+      "bytes": 2122,
+      "sha256": "6fae00c87936b4d80c441c10ff3ad8cc30f51ddde284f3c1e5a99173677cdd1a"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-wordmark-primary-1600.png",
+      "role": "小规透明底 PNG",
+      "width": 1600,
+      "height": 838,
+      "bytes": 57056,
+      "sha256": "1998e0fb94df2fa6e213f0bb9f5fbafc4162c11d10ced5666bb6e062045b34b5"
+    },
+    {
+      "path": "可直接使用/主标/xiaogui-wordmark-primary.svg",
+      "role": "小规 primary 矢量字标",
+      "bytes": 2125,
+      "sha256": "5a9bb2173f754919f272a3ecb26f7be857de426e4b236b44b115bb705237808b"
+    }
+  ]
+}

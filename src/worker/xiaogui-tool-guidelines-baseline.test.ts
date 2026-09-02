@@ -1,0 +1,201 @@
+import type { LoadExtensionsResult } from '@earendil-works/pi-coding-agent'
+import { describe, expect, it } from 'vitest'
+
+import {
+  activeToolNamesForPromptContextV1,
+  workerBuiltinToolNamesForPromptContextV1,
+  workerBuiltinToolNamesForModeV1,
+  XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
+} from '@shared/xiaogui-prompt-capabilities'
+import type { XiaoguiExecutionPhase, XiaoguiMode } from '@shared/xiaogui-prompt-contract'
+import { addXiaoguiWorkerToolsV1 } from './xiaogui-worker-tools'
+
+function promptContext(mode: XiaoguiMode, phase: XiaoguiExecutionPhase = 'EXECUTE') {
+  return {
+    mode,
+    phase,
+    workspaceAvailable: true,
+    enabledCapabilities: mode === 'WORK'
+      ? ['work.file-organize' as const, 'collaboration.execution' as const]
+      : mode === 'DESIGN'
+        ? ['design.analysis' as const]
+        : ['coding.workspace' as const],
+  }
+}
+
+function loadCurrentWorkerBuiltinTools(
+  mode: XiaoguiMode = 'WORK',
+  phase: XiaoguiExecutionPhase = 'EXECUTE',
+) {
+  const collaborationOptions = {
+    getSourceSessionId: () => 'session-1',
+    getSourceTurnId: () => 'turn-1',
+  }
+  const sessionOptions = {
+    getSourceSessionId: collaborationOptions.getSourceSessionId,
+    getSourceRunId: () => 'run-1',
+  }
+  let loaded = { extensions: [], errors: [], runtime: {} } as unknown as LoadExtensionsResult
+  loaded = addXiaoguiWorkerToolsV1(loaded, promptContext(mode, phase), {
+    collaboration: collaborationOptions,
+    session: sessionOptions,
+  })
+  return new Map(loaded.extensions.flatMap((extension) => [...extension.tools.entries()]))
+}
+
+function workerToolOptions() {
+  return {
+    collaboration: {
+      getSourceSessionId: () => 'session-1',
+      getSourceTurnId: () => 'turn-1',
+    },
+    session: {
+      getSourceSessionId: () => 'session-1',
+      getSourceRunId: () => 'run-1',
+    },
+  }
+}
+
+describe('current Xiaogui Worker Tool Guidelines baseline', () => {
+  it('matches the Capability Registry for each Runtime mode', () => {
+    const tools = loadCurrentWorkerBuiltinTools()
+    expect([...tools.keys()].sort()).toEqual(
+      workerBuiltinToolNamesForModeV1('WORK'),
+    )
+    expect([...loadCurrentWorkerBuiltinTools('CODING').keys()].sort())
+      .toEqual(workerBuiltinToolNamesForModeV1('CODING'))
+  })
+
+  it('references the exact Tool Definition constants owned by the Capability Registry', () => {
+    const tools = new Map([
+      ...loadCurrentWorkerBuiltinTools('WORK'),
+      ...loadCurrentWorkerBuiltinTools('CODING'),
+    ])
+    for (const [name, expected] of Object.entries(XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1)) {
+      const actual = tools.get(name)?.definition
+      expect(actual?.description).toBe(expected.description)
+      expect(actual?.promptSnippet).toBe(expected.promptSnippet)
+      expect(actual?.promptGuidelines).toBe(expected.promptGuidelines)
+    }
+  })
+
+  it('removes known mode-disallowed extension tools while preserving unrelated extensions', () => {
+    const empty = { extensions: [], errors: [], runtime: {} } as unknown as LoadExtensionsResult
+    const work = addXiaoguiWorkerToolsV1(empty, promptContext('WORK'), workerToolOptions())
+    const source = work.extensions[0]
+    const registered = source && [...source.tools.values()][0]
+    expect(source).toBeDefined()
+    expect(registered).toBeDefined()
+    const seeded = {
+      ...work,
+      extensions: [
+        ...work.extensions,
+        {
+          ...source!,
+          path: '<test:mode-tools>',
+          resolvedPath: '<test:mode-tools>',
+          tools: new Map([
+            ['design_gis', registered!],
+            ['third_party_tool', registered!],
+          ]),
+        },
+      ],
+    }
+
+    const coding = addXiaoguiWorkerToolsV1(
+      seeded,
+      promptContext('CODING'),
+      workerToolOptions(),
+    )
+    const names = coding.extensions.flatMap((extension) => [...extension.tools.keys()])
+    expect(names).not.toContain('design_gis')
+    expect(names).not.toContain('xiaogui_work_report_docx')
+    expect(names).toContain('third_party_tool')
+  })
+
+  it('registers mode candidates but removes persistent tools from ASK/PLAN activation', () => {
+    for (const phase of ['ASK', 'PLAN'] as const) {
+      const registered = [...loadCurrentWorkerBuiltinTools('WORK', phase).keys()]
+      expect(registered).toContain('xiaogui_work_docx_template_intake')
+      expect(registered).toContain('xiaogui_work_report_docx')
+      const active = activeToolNamesForPromptContextV1(
+        promptContext('WORK', phase),
+        ['read', ...registered],
+      )
+      expect(active).toEqual(['read', 'xiaogui_read_pdf', 'xiaogui_work_read_materials'])
+      expect(workerBuiltinToolNamesForPromptContextV1(promptContext('WORK', phase)))
+        .toEqual(['xiaogui_read_pdf', 'xiaogui_work_read_materials'])
+    }
+  })
+
+  it('freezes the current snippets and critical stop conditions', () => {
+    const tools = loadCurrentWorkerBuiltinTools()
+    const baseline = Object.fromEntries([...tools].map(([name, registered]) => [name, {
+      promptSnippet: registered.definition.promptSnippet,
+      promptGuidelines: registered.definition.promptGuidelines,
+    }]))
+
+    expect(baseline).toEqual({
+      xiaogui_create_collaboration_plan: {
+        promptSnippet: '把明确的多步骤协作需求写入小规协作计划，等待用户批准',
+        promptGuidelines: expect.arrayContaining([
+          expect.stringContaining('不要让用户填写 taskKey'),
+          expect.stringContaining('不代表用户已经批准或开始执行'),
+        ]),
+      },
+      xiaogui_read_pdf: {
+        promptSnippet: '用自然语言读取 PDF；系统选择器由用户选文件，不让用户输入路径',
+        promptGuidelines: expect.arrayContaining([
+          expect.stringContaining('不要让用户输入路径'),
+          expect.stringContaining('快照被截断或没有正文时如实告知用户'),
+        ]),
+      },
+      xiaogui_work_read_materials: {
+        promptSnippet: '读取任意类型的本机资料或整个文件夹；能解析则提取内容，否则保留元数据并明确说明',
+        promptGuidelines: expect.arrayContaining([
+          expect.stringContaining('不限制在当前工作区'),
+          expect.stringContaining('METADATA_ONLY'),
+        ]),
+      },
+      xiaogui_work_report_docx: {
+        promptSnippet: '自然语言提交报告草稿、预览、跨轮确认另存、取消或打开',
+        promptGuidelines: expect.arrayContaining([
+          expect.stringContaining('下一条消息明确确认'),
+          expect.stringContaining('请单独回复“确认”'),
+          expect.stringContaining('不得声称覆盖或修改了已有文件'),
+        ]),
+      },
+      xiaogui_work_docx: {
+        promptSnippet: '用自然语言选择模板、整理字段、准备、确认、取消或打开 Word；生成前必须等待用户下一条确认消息',
+        promptGuidelines: expect.arrayContaining([
+          expect.stringContaining('不能猜测'),
+          expect.stringContaining('不得同一轮调用 CONFIRM'),
+          expect.stringContaining('请单独回复“确认”'),
+        ]),
+      },
+      xiaogui_work_docx_template_intake: {
+        promptSnippet: '用自然语言开始、调整、复核、继续、删除或取消普通成品文档的模板整理',
+        promptGuidelines: expect.arrayContaining([
+          expect.stringContaining('必须先询问是否整理'),
+          expect.stringContaining('请单独回复“复核”或“打开复核卡”'),
+          expect.stringContaining('不得声称已经写入原文档'),
+        ]),
+      },
+      xiaogui_work_docx_template_materialize: {
+        promptSnippet: '从已确认的模板整理报告生成预览、保存模板库、另存一份、恢复、取消或打开正式模板',
+        promptGuidelines: expect.arrayContaining([
+          expect.stringContaining('模型不得自行构造该令牌'),
+          expect.stringContaining('必须另存为不存在的新文件'),
+        ]),
+      },
+      xiaogui_work_docx_advanced_generation: {
+        promptSnippet: '自然语言选择正式模板、补齐普通字段和结构槽位、预览、确认另存、恢复或取消成品文档',
+        promptGuidelines: expect.arrayContaining([
+          expect.stringContaining('标为 UNRESOLVED'),
+          expect.stringContaining('请单独回复“确认”'),
+          expect.stringContaining('必须另存为不存在的新文件'),
+        ]),
+      },
+    })
+  })
+})

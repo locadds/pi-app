@@ -61,6 +61,17 @@ export function useComposerSend(opts: {
           workerLiveSnapshot: store.workerLiveSnapshot,
           sessionRuntimeRunning: store.sessionRuntimeRunning,
         })
+        const codingContextSnapshotIds: string[] = []
+        let pendingCodingContextPaths = atts
+          .filter((attachment) => (
+            attachment.codingContextStatus != null &&
+            attachment.codingContextStatus !== 'SNAPSHOT_FAILED'
+          ))
+          .map((attachment) => attachment.path)
+        if (running && pendingCodingContextPaths.length > 0) {
+          toast.error('带代码上下文的消息需等待当前任务结束后发送')
+          return
+        }
         if (displayText.trim()) inputHistory.recordSent(displayText.trim())
         const { hideAllDelayedTooltips } = await import('./delayed-tooltip')
         hideAllDelayedTooltips()
@@ -73,12 +84,33 @@ export function useComposerSend(opts: {
         const { appendOptimisticOutgoingMessage, bindOptimisticOutgoingToSession } =
           await import('@renderer/lib/optimistic-send')
         let optimisticToken: ReturnType<typeof appendOptimisticOutgoingMessage> = null
+        const resolvePendingCodingContext = async () => {
+          if (pendingCodingContextPaths.length === 0) return
+          const liveStore = useUIStore.getState()
+          const scope = liveStore.sessions.find(
+            (session) => session.sessionId === liveStore.currentSessionId,
+          )?.canonicalScope
+          if (!scope || scope.sessionMode !== 'CODING') {
+            throw new Error('CODING_CONTEXT_SESSION_REQUIRED')
+          }
+          const outcome = await ipcClient.invoke('xiaogui.coding.context.snapshot', {
+            address: { projectId: scope.projectId, sessionKey: scope.sessionKey },
+            relativePaths: [...new Set(pendingCodingContextPaths)],
+          })
+          if (!outcome?.ok) throw new Error('CODING_CONTEXT_SNAPSHOT_FAILED')
+          codingContextSnapshotIds.push(outcome.snapshot.snapshotId)
+          pendingCodingContextPaths = []
+        }
         const promptPayload = () => ({
           sessionId: '',
           sessionFile: useUIStore.getState().historySessionFile ?? undefined,
           text: payload,
+          ...(codingContextSnapshotIds.length > 0 ? { codingContextSnapshotIds } : {}),
         })
-        const sendPrompt = () => ipcClient.invoke('prompt.send', promptPayload())
+        const sendPrompt = async () => {
+          await resolvePendingCodingContext()
+          return ipcClient.invoke('prompt.send', promptPayload())
+        }
         const pendMsg = displayText.trim()
         if (pendMsg.startsWith('/')) {
           const routed = await routeDesktopSlashBeforeSend(pendMsg)
@@ -92,13 +124,9 @@ export function useComposerSend(opts: {
               attachments: atts,
               segments,
             })
-            const { finalizeEphemeralSandboxOnFirstSend } =
-              await import('@renderer/lib/ephemeral-sandbox')
+            const { finalizeEphemeralSandboxOnFirstSend } = await import('@renderer/lib/ephemeral-sandbox')
             await finalizeEphemeralSandboxOnFirstSend(pendMsg)
-            bindOptimisticOutgoingToSession(
-              optimisticToken,
-              useUIStore.getState().historySessionFile,
-            )
+            bindOptimisticOutgoingToSession(optimisticToken, useUIStore.getState().historySessionFile)
             const bind = await sendPrompt()
             await afterPromptSent(bind)
             return
@@ -110,13 +138,15 @@ export function useComposerSend(opts: {
               segments,
             })
             const { materializePendingNewSession } = await import('@renderer/lib/new-session')
-            await materializePendingNewSession(store.currentWorkspace, pendMsg, (sessionFile) => {
-              bindOptimisticOutgoingToSession(optimisticToken, sessionFile)
-            // 小规：新建会话打上当前一级模式标签（历史数据默认 WORK，见 xiaogui/lib/mode-scope）
-            void import('@renderer/xiaogui/lib/mode-scope').then((m) =>
-              m.tagSessionWithCurrentMode(sessionFile),
+            const { useXiaoguiStore } = await import('@renderer/xiaogui/stores/xiaogui-store')
+            await materializePendingNewSession(
+              store.currentWorkspace,
+              pendMsg,
+              (sessionFile) => {
+                bindOptimisticOutgoingToSession(optimisticToken, sessionFile)
+              },
+              useXiaoguiStore.getState().mode,
             )
-            })
             const bind = await sendPrompt()
             await afterPromptSent(bind)
             return
@@ -132,7 +162,10 @@ export function useComposerSend(opts: {
             }
             return
           }
-          optimisticToken = appendOptimisticOutgoingMessage(pendMsg, { attachments: atts, segments })
+          optimisticToken = appendOptimisticOutgoingMessage(pendMsg, {
+            attachments: atts,
+            segments,
+          })
           const bind = await sendPrompt()
           await afterPromptSent(bind)
         } catch (e) {
@@ -172,22 +205,16 @@ export function useComposerSend(opts: {
       }
     }
     await sendCurrent(showComposerStop || isRunning ? { queue: 'steer' } : undefined)
-  }, [
-    attachments.length,
-    clearEditor,
-    isRunning,
-    refreshCommands,
-    sendCurrent,
-    showComposerStop,
-    t,
-    text,
-  ])
+  }, [attachments.length, clearEditor, isRunning, refreshCommands, sendCurrent, showComposerStop, t, text])
 
   const runComposerAbort = useCallback(
     async (currentText: string) => {
       const { dismissExtensionDialogState } = await import('@renderer/lib/extension-ui-channel')
       dismissExtensionDialogState()
-      await abortAgentTurn({ restoreEditorText: currentText, setEditorText: setContent })
+      await abortAgentTurn({
+        restoreEditorText: currentText,
+        setEditorText: setContent,
+      })
     },
     [setContent],
   )

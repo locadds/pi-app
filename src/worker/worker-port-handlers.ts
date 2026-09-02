@@ -4,6 +4,8 @@ import * as Turn from './handlers/worker-handlers-turn.js'
 import * as Session from './handlers/worker-handlers-session.js'
 import * as Catalog from './handlers/worker-handlers-catalog.js'
 import * as PiSettings from './handlers/worker-handlers-pi-settings.js'
+import { handleCodingSessionCheckpoint } from './handlers/worker-handlers-coding-checkpoint.js'
+import { handleCodingRoleBinding } from './handlers/worker-handlers-coding-role.js'
 
 const dispatch: Record<string, (msg: WorkerIncomingMessage, reply: WorkerReply) => Promise<void>> = {
   'init': Turn.handleInit,
@@ -25,6 +27,8 @@ const dispatch: Record<string, (msg: WorkerIncomingMessage, reply: WorkerReply) 
   'sessionDeleteFile': Session.handleSessiondeletefile,
   'getSessionTree': Session.handleGetsessiontree,
   'navigateTree': Session.handleNavigatetree,
+  'codingSessionCheckpoint': handleCodingSessionCheckpoint,
+  'codingRoleBinding': handleCodingRoleBinding,
   'fork': Session.handleFork,
   'clone': Session.handleClone,
   'getForkMessages': Session.handleGetforkmessages,
@@ -44,6 +48,7 @@ const dispatch: Record<string, (msg: WorkerIncomingMessage, reply: WorkerReply) 
   'reloadResources': Catalog.handleReloadresources,
   'getCommandCompletions': Catalog.handleGetcommandcompletions,
   'getState': Catalog.handleGetstate,
+  'getEffectivePromptManifest': Catalog.handleGeteffectivepromptmanifest,
   'getPiSettings': PiSettings.handleGetpisettings,
   'setPiSettings': PiSettings.handleSetpisettings,
 }

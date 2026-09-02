@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { notificationHostPageHtml } from './notification-host-page'
 
 describe('notification host page', () => {
+  it('uses the Xiaogui product name instead of the upstream pi Desktop brand', () => {
+    const html = notificationHostPageHtml()
+
+    expect(html).toContain('<title>小规 Agent</title>')
+    expect(html).not.toContain('pi Desktop')
+  })
+
   it('exposes a focus request channel for the explicit keyboard entry', () => {
     const html = notificationHostPageHtml()
 

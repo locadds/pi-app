@@ -17,6 +17,19 @@ import { DiffStatBadge } from './diff-stat-badge'
 import { resolveSkillContextActivity } from './skill-context-activity'
 
 const NATIVE_TOOLS = new Set(['read', 'edit', 'insert', 'write', 'grep', 'ffgrep', 'fffind', 'find', 'bash', 'ls'])
+const XIAOGUI_WORD_TEMPLATE_INTAKE_TOOL = 'xiaogui_work_docx_template_intake'
+
+export function xiaoguiToolDisplayName(toolName: string | undefined): string | null {
+  return toolName === XIAOGUI_WORD_TEMPLATE_INTAKE_TOOL ? '提取文档模板' : null
+}
+
+export function xiaoguiToolActivityLabel(item: ToolTimelineItem): string | null {
+  if (item.toolName !== XIAOGUI_WORD_TEMPLATE_INTAKE_TOOL) return null
+  if (item.toolPhase === 'start' || item.toolPhase === 'update') return '正在提取文档模板…'
+  if (item.isError) return '提取文档模板失败'
+  if (item.toolPhase === 'end') return '成功提取文档模板'
+  return '提取文档模板'
+}
 
 function ToolOutputExpanded({ item }: { item: ToolTimelineItem }) {
   const name = item.toolName || ''
@@ -89,8 +102,11 @@ function ToolCallRowImpl({
   const skillContext = resolveSkillContextActivity(item.toolName || '', item.toolArgs, item.toolDetail)
   const liveStatus = isRunning && item.toolStatusLine ? String(item.toolStatusLine) : null
   const diffStats = useMemo(() => countToolDiffStats(item), [item])
+  const xiaoguiActivityLabel = xiaoguiToolActivityLabel(item)
+  const displayToolName = xiaoguiToolDisplayName(item.toolName) ?? item.toolName ?? 'tool'
 
   const primaryLabel = useMemo(() => {
+    if (xiaoguiActivityLabel) return xiaoguiActivityLabel
     if (skillContext) {
       return t('timeline:activity.skillContext', {
         name: skillContext.name,
@@ -100,13 +116,13 @@ function ToolCallRowImpl({
     if (argSummary) {
       return t(humanToolVerbKey(item.toolName || ''), {
         detail: argSummary,
-        name: item.toolName || 'tool',
+        name: displayToolName,
         defaultValue: argSummary,
       })
     }
-    if (isRunning) return t('timeline:activity.workingTool', { name: item.toolName || 'tool' })
-    return item.toolName || t('timeline:activity.usedTools', { count: 1, names: 'tool' })
-  }, [skillContext, liveStatus, argSummary, isRunning, item.toolName, t])
+    if (isRunning) return t('timeline:activity.workingTool', { name: displayToolName })
+    return displayToolName
+  }, [xiaoguiActivityLabel, skillContext, liveStatus, argSummary, displayToolName, isRunning, item.toolName, t])
 
   const toggleExpanded = () => {
     if (!hasToolBody) return
@@ -119,7 +135,7 @@ function ToolCallRowImpl({
     <div className={cn('tool-call-row', compact ? 'py-0' : 'py-0')}>
       <button
         type="button"
-        title={skillContext ? primaryLabel : item.toolName || undefined}
+        title={skillContext ? primaryLabel : displayToolName}
         aria-expanded={!!expanded && hasToolBody}
         onClick={toggleExpanded}
         className={cn(

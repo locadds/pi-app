@@ -1,10 +1,17 @@
 /** Messages from Main → Worker utilityProcess. */
+import type { CodingContextAgentPayloadV1 } from '@shared/xiaogui-coding-extension-pack'
+import type { CodingRoleAgentSnapshotV1 } from '@shared/xiaogui-coding-role-control'
+
 export type WorkerIncomingMessage = {
   type?: string
   requestId?: string
   cwd?: string
   sdkPath?: string | null
   text?: string
+  codingContext?: CodingContextAgentPayloadV1
+  /** Main-only private Attempt role binding; never accepted from Renderer IPC. */
+  codingRole?: CodingRoleAgentSnapshotV1
+  expectedAttemptId?: string
   options?: unknown
   sessionFile?: string
   offset?: number

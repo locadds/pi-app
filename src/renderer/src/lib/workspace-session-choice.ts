@@ -1,8 +1,11 @@
+import type { CanonicalSessionAddressScopeV1 } from '@shared/xiaogui-session-scope'
+
 export type WorkspaceSessionChoice = {
   sessionId: string
   sessionFile?: string
   title?: string
   updatedAt?: number
+  canonicalScope?: CanonicalSessionAddressScopeV1
 }
 
 export type WorkspaceSessionChoiceOptions = {

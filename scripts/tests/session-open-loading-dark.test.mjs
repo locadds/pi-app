@@ -11,21 +11,20 @@ const view = readFileSync(
 )
 
 describe('session open loading dark theme', () => {
-  it('should_define_dark_pixel_tokens_on_document_root', () => {
-    assert.match(css, /\.dark\s*\{[\s\S]*--session-pixel-ink:\s*#cccccc/i)
-    assert.match(css, /\.dark\s*\{[\s\S]*--session-pixel-surface:\s*#252526/i)
-    assert.match(css, /--session-pixel-card-shadow/)
-    assert.match(css, /--session-pixel-shadow-dim/)
+  it('should_define_xiaogui_loader_tokens_for_light_and_dark_themes', () => {
+    assert.match(css, /:root\s*\{[\s\S]*--xiaogui-loader-ink:\s*#111318/i)
+    assert.match(css, /:root\s*\{[\s\S]*--xiaogui-loader-node:\s*#e8463a/i)
+    assert.match(css, /\.dark\s*\{[\s\S]*--xiaogui-loader-ink:\s*#f7f5ef/i)
+    assert.match(css, /\.xiaogui-loader-card\s*\{[\s\S]*background:\s*transparent/i)
   })
 
   it('should_not_hardcode_light_fallbacks_in_session_open_loading', () => {
     assert.doesNotMatch(view, /#f3f3f3/i)
     assert.doesNotMatch(view, /#1a1a1a/i)
-    assert.doesNotMatch(view, /session-pixel-surface,\s*#/i)
-    assert.doesNotMatch(view, /session-pixel-ink,\s*#/i)
-    assert.match(view, /session-pixel-loading/)
-    assert.match(view, /readSessionPixelShadowTokens|getComputedStyle/)
-    assert.match(view, /--session-pixel-surface/)
-    assert.match(view, /--session-pixel-ink/)
+    assert.match(view, /xiaogui-session-loading/)
+    assert.match(view, /xiaogui-loader__small/)
+    assert.match(view, /xiaogui-loader__gui/)
+    assert.match(view, /xiaogui-loader__node/)
+    assert.match(view, /xiaogui-loader__path/)
   })
 })
