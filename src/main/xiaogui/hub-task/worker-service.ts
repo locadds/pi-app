@@ -452,7 +452,13 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       const pending = this.options.state.pendingReceipts()[0]
       if (!pending) return
       const ack = await port.submitReceipt(pending.receipt)
-      if (!this.options.state.acknowledgeReceipt(ack)) {
+      // A Hub response is not allowed to advance a different queued event.
+      // This comparison belongs here, where the submitted queue head is still
+      // known, and is duplicated by the state store's expected-event gate.
+      if (
+        ack.eventId !== pending.receipt.eventId
+        || !this.options.state.acknowledgeReceipt(pending.receipt.eventId, ack)
+      ) {
         throw new HubTaskWorkerReceiptAckError()
       }
     }

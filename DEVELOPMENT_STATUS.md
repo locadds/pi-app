@@ -2,7 +2,7 @@
 
 更新时间：2026-09-02
 阶段：`TASKHUB-H1-4B` — Worker 签名送达回执的上传、ACK 与离线补传
-状态：阶段候选，已完成桌面端聚焦验证并提交前复核；尚未独立验收、未合并正式主线、未发布。
+状态：阶段候选。首次独立审查发现 ACK 错指后续回执的阻断项，已补正并完成本地复跑；尚待重新独立验收，未合并正式主线、未发布。
 
 ## 本阶段目标
 
@@ -32,6 +32,7 @@
 - HTTP Adapter 向已提交的 Hub H1-4B 路径提交签名回执，只传回执载荷，并严格解析 `ReceiptAckV1`；不向 Renderer 返回 token、私钥、路径、任务正文或响应错误体。
 - Worker 本地状态新增 ACK 出队门：只有同一 `eventId` 且 `verified: true` 的 ACK 才能移除一条持久化回执。错误 ACK、离线、协议异常都保留本地证据。
 - 回执严格按 `sequence` 顺序处理；在一个正在执行的补传中新增的回执也会被顺序继续处理，避免后续事件越过前序事件。
+- 补正 ACK 关联门：服务层与状态层都要求 ACK 的 `eventId` 等于刚刚提交的队首回执。Hub 若错误回传队列中后续回执的 ACK，会 fail-closed，保留两条记录并停止本轮补传。
 - `USER_OPENED` 收到验证 ACK 后，标记为本机 `HUB_CONFIRMED`；下一次 Hub 权威快照仍决定公开的 `deliveryState: OPENED`，不会把本地打开误称为送达。
 - 打开任务和定向接受/拒绝后会启动不阻塞 UI 的补传尝试；网络不可用时操作仍保留为本机草稿，周期刷新或用户“同步”会重试。
 - 延续 H1-4A 语义：`409` 是 Hub 已双鉴权后的回执/状态冲突（如事件载荷不一致、序号重放或关联不匹配），保留凭据、收件箱和签名回执并刷新权威状态；`403` 是节点已吊销/被替换，清除旧节点凭据、缓存任务包与未上传回执。
@@ -53,7 +54,7 @@
 
 | 命令 | 结果 |
 | --- | --- |
-| `npm run test:unit -- src/main/xiaogui/hub-task/worker-state.test.ts src/main/xiaogui/hub-task/worker-service.test.ts src/main/xiaogui/hub-task/http-task-worker-port.test.ts src/renderer/src/xiaogui/components/HubTaskInboxSection.test.tsx` | 通过：4 个测试文件、26 条用例。覆盖 ACK 精确出队、重复 ACK、离线保留、恢复补传、权威 `OPENED` 快照、409 保留和 403 清理。 |
+| `npm run test:unit -- src/main/xiaogui/hub-task/worker-state.test.ts src/main/xiaogui/hub-task/worker-service.test.ts src/main/xiaogui/hub-task/http-task-worker-port.test.ts src/renderer/src/xiaogui/components/HubTaskInboxSection.test.tsx` | 通过：4 个测试文件、27 条用例。覆盖 ACK 精确出队、错误 ACK 指向后序回执时的 fail-closed、重复 ACK、离线保留、恢复补传、权威 `OPENED` 快照、409 保留和 403 清理。 |
 | `npm run typecheck` | 通过：web 与 node 两个 TypeScript 配置。 |
 | `npm run build` | 通过：主进程、预加载与 Renderer 均构建完成；仅保留仓库既有动态导入优化警告。 |
 | `git diff --check` | 通过：无空白或冲突标记。 |
@@ -65,6 +66,7 @@
 - 如果桌面版本先于 Hub `770c0a7` 部署，回执端点不可用，Worker 会保留本地证据并显示可重试状态，不会伪造“已送达”。
 - ACK 通过后必须在下一次权威轮询中看到 `deliveryState: OPENED`，发布方 UI 才能以 Hub 事实展示送达；网络请求成功不等于跨机验收完成。
 - 本阶段仅覆盖功能级桌面测试；真实 LAN、Hub 数据库迁移部署和两账号权限验证仍需在 H1-4C 前单独验收。
+- ACK 错指回执的首轮审查问题已经由双层前序事件校验与双回执回归修复，但必须由独立审查重新验证，当前不能视为阶段验收通过。
 
 ## 下一阶段计划
 

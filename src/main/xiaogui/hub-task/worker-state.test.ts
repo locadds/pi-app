@@ -83,8 +83,9 @@ describe('HubTaskWorkerStateStoreV1', () => {
     store.upsertAssignment(detail())
     store.markOpened('xgh_assignment_1', '2026-09-01T00:01:00.000Z')
     store.enqueueReceipt(receipt(1), '2026-09-01T00:01:00.000Z')
+    store.enqueueReceipt(receipt(2), '2026-09-01T00:01:01.000Z')
 
-    expect(store.acknowledgeReceipt({
+    expect(store.acknowledgeReceipt('xgh_event_1', {
       receiptId: 'xgh_receipt_wrong',
       eventId: 'xgh_event_wrong',
       verified: true,
@@ -92,9 +93,19 @@ describe('HubTaskWorkerStateStoreV1', () => {
       occurredAt: '2026-09-01T00:00:00.000Z',
       receivedAt: '2026-09-01T00:02:00.000Z',
     })).toBe(false)
-    expect(store.pendingReceipts()).toHaveLength(1)
+    expect(store.pendingReceipts()).toHaveLength(2)
 
-    expect(store.acknowledgeReceipt({
+    expect(store.acknowledgeReceipt('xgh_event_1', {
+      receiptId: 'xgh_receipt_2',
+      eventId: 'xgh_event_2',
+      verified: true,
+      duplicate: false,
+      occurredAt: '2026-09-01T00:00:00.000Z',
+      receivedAt: '2026-09-01T00:02:00.000Z',
+    })).toBe(false)
+    expect(store.pendingReceipts().map((entry) => entry.receipt.eventId)).toEqual(['xgh_event_1', 'xgh_event_2'])
+
+    expect(store.acknowledgeReceipt('xgh_event_1', {
       receiptId: 'xgh_receipt_1',
       eventId: 'xgh_event_1',
       verified: true,
@@ -102,7 +113,7 @@ describe('HubTaskWorkerStateStoreV1', () => {
       occurredAt: '2026-09-01T00:00:00.000Z',
       receivedAt: '2026-09-01T00:02:00.000Z',
     })).toBe(true)
-    expect(store.pendingReceipts()).toEqual([])
+    expect(store.pendingReceipts().map((entry) => entry.receipt.eventId)).toEqual(['xgh_event_2'])
     expect(store.requireAssignment('xgh_assignment_1').localDeliveryState).toBe('HUB_CONFIRMED')
   })
 

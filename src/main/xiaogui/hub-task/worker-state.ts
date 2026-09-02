@@ -94,7 +94,7 @@ export interface HubTaskWorkerStateStoreV1 {
    * The event id is the idempotency key; an ACK for any other event is never
    * allowed to advance this local queue.
    */
-  acknowledgeReceipt(ack: XiaoguiTaskReceiptAckV1): boolean
+  acknowledgeReceipt(expectedEventId: string, ack: XiaoguiTaskReceiptAckV1): boolean
   pendingReceipts(): readonly HubTaskWorkerPendingReceiptV1[]
   nextReceiptSequence(): number
   bindPlanDraft(assignmentId: string, binding: HubTaskWorkerPlanDraftBindingV1): void
@@ -236,9 +236,14 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
     this.persist()
   }
 
-  acknowledgeReceipt(ack: XiaoguiTaskReceiptAckV1): boolean {
+  acknowledgeReceipt(expectedEventId: string, ack: XiaoguiTaskReceiptAckV1): boolean {
     const pending = this.state.receipts[ack.eventId]
-    if (!pending || ack.verified !== true || pending.receipt.eventId !== ack.eventId) return false
+    if (
+      !pending
+      || ack.eventId !== expectedEventId
+      || ack.verified !== true
+      || pending.receipt.eventId !== expectedEventId
+    ) return false
 
     const receipts = { ...this.state.receipts }
     delete receipts[ack.eventId]

@@ -353,6 +353,41 @@ describe('HubTaskWorkerServiceV1', () => {
     service.close()
   })
 
+  it('fails closed when the Hub ACK identifies a later pending receipt', async () => {
+    const state = createInMemoryHubTaskWorkerStateStoreV1()
+    const credentials = createInMemoryHubTaskWorkerCredentialsV1()
+    const hubPort = port()
+    const service = createHubTaskWorkerServiceV1({
+      state,
+      credentials,
+      createPort: () => hubPort,
+      application: { perform: vi.fn() },
+    })
+
+    await service.connect({
+      endpoint: 'http://hub.intranet:3000',
+      accessToken: 'hub-access-token-which-never-reaches-renderer',
+      installationIdDigest: `sha256:${'b'.repeat(64)}`,
+    })
+    queueOpenedReceipt(state, 2)
+    queueOpenedReceipt(state, 3)
+    ;(hubPort.submitReceipt as ReturnType<typeof vi.fn>).mockClear()
+    ;(hubPort.submitReceipt as ReturnType<typeof vi.fn>).mockImplementation(async () => receiptAck('xgh_event_opened_3'))
+
+    await expect(service.refresh()).resolves.toEqual({ ok: false, code: 'HUB_WORKER_CONNECTION_FAILED' })
+    expect(hubPort.submitReceipt).toHaveBeenCalledTimes(1)
+    expect(hubPort.submitReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: 'xgh_event_opened_2',
+      sequence: 2,
+    }))
+    expect(state.pendingReceipts().map((entry) => entry.receipt.eventId)).toEqual([
+      'xgh_event_opened_2',
+      'xgh_event_opened_3',
+    ])
+    expect(credentials.snapshot()).not.toBeNull()
+    service.close()
+  })
+
   it.each([
     ['STATE_CONFLICT', 'HUB_WORKER_STATE_CONFLICT', true],
     ['NODE_REVOKED', 'HUB_WORKER_NODE_REVOKED', false],
