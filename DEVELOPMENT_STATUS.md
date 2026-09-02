@@ -1,5 +1,34 @@
 # 小规开发阶段状态
 
+## 2026-09-02｜首批 Pi 原生 Skill 安装包装配候选
+
+### 当前状态
+
+- 状态：首批资源、Pi 原生加载接缝、供应链登记、聚焦自动测试、类型检查、生产构建和真实窗口 Skill Catalog 复验已完成；仍为阶段候选，等待正式目录包/安装包与真实模型任务验收及人工批准。
+- 正式产品线工作树：`D:\PI\pi-app`，分支 `feat/xiaogui-integration`。
+- 实现边界：没有新增 Skill 注册表、中央 PDF/DOC/DOCX 路由、公开 IPC、Agent 可见 Tool 或自定义重试状态机；只把安装包目录传给 Pi 0.84.1 的 `additionalSkillPaths`。
+
+### 首批内容与选型
+
+1. 小规自编 `xiaogui-work-documents`：按读取、归纳、模板整理报告和正式模板等任务意图指导模型选择既有 WORK 工具；工具继续验证真实格式。PDF 仅支持读取、分析和只读模板整理报告，不支持直接生成可编辑正式 Word 模板。
+2. 第三方 `internal-comms`：固定 `anthropics/skills@53048666b05b4799081517d00e09e0a2dd688678`，Apache-2.0，携带许可证和示例，仅清理一处行尾空格，用于内部状态汇报、项目更新、FAQ、简报和事件说明。
+3. `can1357/oh-my-pi@18781d829586fff77af98b222728b5b29bcaba41` 未采用：其三项 Skill 是开发者 Prompt 元能力，没有文档工作 Skill；PDF 能力属于其重写运行时工具而非 Skill，引入会越过本阶段最小边界。
+4. `anthropics/skills` 的 PDF/DOCX Skill 未采用：对应 source-available 条款不允许按小规安装包方式复制、修改和再分发。
+
+### 自动验证与真实窗口证据
+
+- TDD 红灯由缺失的打包路径模块与 Worker 原生接缝触发；最小实现后，路径、Electron Builder 资源映射、Pi 真实 Skill 发现、文档边界和 Worker 传参共 3 个文件、6 项测试通过。
+- Pi 真实 `loadSkills` 对两项 Skill 均无诊断；Skill 名称为 `internal-comms` 与 `xiaogui-work-documents`。
+- 相关 Skill Catalog、override、IPC 与 WorkerManager 聚焦回归合计 8 个文件、52 项测试通过；`npm run typecheck` 与完整 `npm run build` 通过，构建只有既有动态导入与大 chunk 提示；`git diff --check` 通过。
+- 真实开发窗口在 Windows 原生 Worker 初始化后，`ipc:skills.list` 返回 `complete: true`；两项内置 Skill 均为 `enabled: true`、`effective: true`、`diagnostics: []`，设置页搜索显示“`xiaogui-work-documents` 生效”。截图保存在本机审计区 `D:\CodexTemp\xiaogui-bundled-skill-window-20260902.png`。
+- 权威设计与候选审查见 `doc/architecture/xiaogui-bundled-pi-skills.md`，第三方来源见 `THIRD_PARTY_NOTICES.md`。
+
+### 未完成门
+
+- `electron-builder --dir` 在当前工作树的临时 junction 修复版 `node_modules` 中停在既有依赖遍历，未进入 Skill 资源复制阶段，已停止；源码路径与 `extraResources` 映射已有自动测试，但正式目录包/安装包仍须在完整干净依赖和既定 LibreOffice 私有运行时装配环境复验。
+- 尚未用真实模型执行“按意图选择并读取 Skill、再调用受控文档工具”的完整任务；本条不宣称模型任务或发布包已经验收。
+- 本条仍是阶段候选；自动测试与开发窗口 Catalog 不能替代最终人工批准。
+
 ## 2026-09-02｜Pi 原生、Skill 与插件优先规则确立
 
 ### 当前权威结论

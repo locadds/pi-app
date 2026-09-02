@@ -8,6 +8,8 @@ Standalone docs for **pi Desktop compatibility layer v2**. Copy to any AI to aut
 
 Before developing any feature, inspect Pi native capabilities, available Skills, and Pi plugins/Extensions/Packages. If one can solve the real task, integrate and bundle it instead of changing the framework. The authoritative decision is [ADR-PI-NATIVE-SKILL-PLUGIN-FIRST.md](./adr/ADR-PI-NATIVE-SKILL-PLUGIN-FIRST.md); repository agents must also follow the root [AGENTS.md](../AGENTS.md).
 
+The first installer-bundled Skill set and its native Pi loading boundary are documented in [architecture/xiaogui-bundled-pi-skills.md](./architecture/xiaogui-bundled-pi-skills.md).
+
 ## User guide (install, shortcuts, adapter list)
 
 | Path | Purpose |

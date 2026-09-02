@@ -32,6 +32,7 @@ import { getAgentRuntimeConfig } from './wsl/runtime-config'
 import { resolveWslActiveSdk } from './wsl/sdk-resolve'
 import { syncWorkerBundleToWsl } from './wsl/worker-host'
 import { resolveUtilityEntry } from './utility-entry-path'
+import { resolveBundledPiSkillsPath } from './xiaogui/bundled-skills'
 import { buildXiaoguiWorkerEnv } from './xiaogui/worker-env'
 
 export const extensionUiDialogSource = new Map<string, WorkerSlot>()
@@ -497,21 +498,28 @@ export async function forkWorkerForCwd(
   let transport: WorkerTransport
   let sdkPath: string | null
   let workerCwd = cwd
+  let bundledSkillPaths = [resolveBundledPiSkillsPath({
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+  })]
   if (runtime.mode === 'wsl' && runtime.distro) {
-    const sdk = await resolveWslActiveSdk(runtime.distro)
+    const distro = runtime.distro
+    const sdk = await resolveWslActiveSdk(distro)
     if (!sdk) {
       throw new Error(
-        `[WSL] 发行版 ${runtime.distro} 内未找到 pi-coding-agent，请在 WSL 中执行 npm i -g @earendil-works/pi-coding-agent`,
+        `[WSL] 发行版 ${distro} 内未找到 pi-coding-agent，请在 WSL 中执行 npm i -g @earendil-works/pi-coding-agent`,
       )
     }
-    const workerWslPath = syncWorkerBundleToWsl(runtime.distro)
+    const workerWslPath = syncWorkerBundleToWsl(distro)
     if (!workerWslPath) {
       throw new Error('[WSL] 无法将 worker 同步到 WSL 发行版（检查 out/main/worker.mjs）')
     }
-    const wslCwd = windowsPathToWsl(runtime.distro, cwd)
+    const wslCwd = windowsPathToWsl(distro, cwd)
     workerCwd = wslCwd
+    bundledSkillPaths = bundledSkillPaths.map((path) => windowsPathToWsl(distro, path))
     transport = createWslWorkerTransport({
-      distro: runtime.distro,
+      distro,
       wslCwd,
       workerWslPath,
     })
@@ -558,7 +566,13 @@ export async function forkWorkerForCwd(
     }
   })
   slot.initPromise = initPromise
-  transport.postMessage({ type: 'init', cwd: workerCwd, sdkPath, promptContext: opts.promptContext })
+  transport.postMessage({
+    type: 'init',
+    cwd: workerCwd,
+    sdkPath,
+    promptContext: opts.promptContext,
+    bundledSkillPaths,
+  })
   return { slot, init: initPromise }
 }
 

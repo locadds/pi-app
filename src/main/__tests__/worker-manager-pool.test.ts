@@ -24,6 +24,8 @@ import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => process.cwd()),
+    getAppPath: vi.fn(() => process.cwd()),
+    isPackaged: false,
   },
   utilityProcess: {
     fork: vi.fn(),

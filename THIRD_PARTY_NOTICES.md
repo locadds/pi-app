@@ -2,6 +2,15 @@
 
 完整生产依赖清单及版本见仓库根目录的 `sbom.cdx.json`。本文件记录经过单独准入审查、需要说明运行边界的组件。
 
+## Anthropic internal-comms Skill（commit 53048666）
+
+- 来源：https://github.com/anthropics/skills/tree/53048666b05b4799081517d00e09e0a2dd688678/skills/internal-comms
+- 固定版本：上游 commit `53048666b05b4799081517d00e09e0a2dd688678`；小规保留该目录内容及随附 `LICENSE.txt`，仅清理一处不影响语义的行尾空格以通过仓库差异检查。
+- 许可证：Apache License 2.0。
+- 用途：通过 Pi 原生 Skill Loader 为内部状态汇报、项目更新、FAQ、简报和事件说明提供写作流程与格式参考。
+- 运行边界：该 Skill 只是提示与示例资源，不新增工具、网络权限、账号连接器或自动发送能力；只能使用当前会话本来可见且已受控的工具。
+- 装配：随安装包复制到 `resources/pi-skills/internal-comms`，由 Pi 的 `additionalSkillPaths` 原生接缝发现，不使用小规自建 Skill 注册表。
+
 ## LibreOffice 26.2.5 Windows x64
 
 - 来源：https://download.documentfoundation.org/libreoffice/stable/26.2.5/win/x86_64/

@@ -7,6 +7,8 @@ export type WorkerIncomingMessage = {
   requestId?: string
   cwd?: string
   sdkPath?: string | null
+  /** Main-resolved, installation-bundled Pi Skill directories. */
+  bundledSkillPaths?: string[]
   text?: string
   codingContext?: CodingContextAgentPayloadV1
   /** Main-only private Attempt role binding; never accepted from Renderer IPC. */

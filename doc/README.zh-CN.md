@@ -8,6 +8,8 @@
 
 每开发一个功能前，先实查 Pi 原生能力、可用 Skill 和 Pi 插件/Extension/Package。只要其中之一能完成真实任务，就进行集成与安装包装配，不修改框架。权威决策见 [ADR-PI-NATIVE-SKILL-PLUGIN-FIRST.md](./adr/ADR-PI-NATIVE-SKILL-PLUGIN-FIRST.md)；仓库内 Agent 还必须遵守根 [AGENTS.md](../AGENTS.md)。
 
+第一批安装包内置 Skill 及其 Pi 原生加载边界见 [architecture/xiaogui-bundled-pi-skills.md](./architecture/xiaogui-bundled-pi-skills.md)。
+
 ## 用户指南（安装、快捷键、适配器列表）
 
 | 路径 | 用途 |

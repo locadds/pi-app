@@ -36,11 +36,12 @@ describe('worker-runtime session tool registry whitelist', () => {
     st.currentRunId = ''
     st.currentTurnId = ''
     st.currentCwd = ''
+    st.bundledSkillPaths = []
   })
 
   it('passes the full mode tool universe as the registry whitelist, then narrows initial active tools', async () => {
     const universe = workerPromptContextToolNamesForModeV1('WORK')
-    const captured: { tools?: readonly string[] } = {}
+    const captured: { tools?: readonly string[]; additionalSkillPaths?: readonly string[] } = {}
     const activeCalls: string[][] = []
     let active: string[] = []
     let overrideResult: LoadExtensionsResult | null = null
@@ -75,6 +76,7 @@ describe('worker-runtime session tool registry whitelist', () => {
       getAgentDir: () => 'D:\\agent',
       SessionManager: { create: vi.fn((cwd: string) => ({ getCwd: () => cwd })) },
       createAgentSessionServices: vi.fn(async (options) => {
+        captured.additionalSkillPaths = options.resourceLoaderOptions.additionalSkillPaths
         overrideResult = options.resourceLoaderOptions.extensionsOverride({
           extensions: [],
         } as unknown as LoadExtensionsResult)
@@ -117,7 +119,9 @@ describe('worker-runtime session tool registry whitelist', () => {
       availableToolNames: ['read'],
       sessionKey: 'xgs1_probe',
       projectId: 'xgp1_probe',
-    }))
+    }), ['D:\\app\\resources\\pi-skills'])
+
+    expect(captured.additionalSkillPaths).toEqual(['D:\\app\\resources\\pi-skills'])
 
     // 注册表白名单 = 本模式全部候选工具（含非默认能力的 intake/materialize）。
     expect(captured.tools).toEqual([...universe])

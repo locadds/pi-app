@@ -44,7 +44,10 @@ export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply)
           }
           if (!st.sdk) throw new Error('SDK load failed')
           if (!st.sharedEventBus) st.sharedEventBus = st.sdk.createEventBus()
-          await initSession(String(msg.cwd || ''), msg.promptContext)
+          const bundledSkillPaths = Array.isArray(msg.bundledSkillPaths)
+            ? msg.bundledSkillPaths.filter((path): path is string => typeof path === 'string')
+            : []
+          await initSession(String(msg.cwd || ''), msg.promptContext, bundledSkillPaths)
           console.log('[Worker] Init done, sessionId:', st.currentSessionId)
           reply({ type: 'init-done', sessionId: st.currentSessionId, sessionFile: st.session?.sessionFile, model: currentSessionModelKey(), thinkingLevel: st.session?.thinkingLevel, promptDiagnostics: st.promptDiagnostics, sdkFallback })
         } catch (e: unknown) {

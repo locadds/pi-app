@@ -35,6 +35,10 @@ extraResources:
     to: office-viewer
     filter:
       - "**/*"
+  - from: resources/pi-skills
+    to: pi-skills
+    filter:
+      - "**/*"
   - from: resources/codex-asr
     to: codex-asr
     filter:

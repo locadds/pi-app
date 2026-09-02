@@ -99,6 +99,8 @@ export type WorkerMutableState = {
   promptAssemblyError: string | null
   /** Main-validated, one-turn context consumed only by the inline Pi extension. */
   promptCodingContext: CodingContextAgentPayloadV1 | null
+  /** Installation-bundled directories delegated to Pi's native Skill loader. */
+  bundledSkillPaths: readonly string[]
 }
 
 export const st: WorkerMutableState = {
@@ -132,6 +134,7 @@ export const st: WorkerMutableState = {
   promptAssemblyStatus: 'IDLE',
   promptAssemblyError: null,
   promptCodingContext: null,
+  bundledSkillPaths: [],
 }
 
 const codingRoleRuntimeBindingV1 = new CodingRoleRuntimeBindingV1()
@@ -490,6 +493,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       agentDir,
       resourceLoaderOptions: {
         eventBus: st.sharedEventBus!,
+        additionalSkillPaths: [...st.bundledSkillPaths],
         extensionFactories: [
           ...(promptContext.mode === 'CODING'
             ? [createXiaoguiCodingRoleGuardExtensionV1(
@@ -677,8 +681,19 @@ async function disposeRuntimeOrSession(): Promise<void> {
   resetXiaoguiPromptAssemblyGateV1()
 }
 
-export async function initSession(cwd: string, promptContext: unknown): Promise<void> {
+export async function initSession(
+  cwd: string,
+  promptContext: unknown,
+  bundledSkillPaths?: readonly string[],
+): Promise<void> {
   st.promptSent = false
+  if (bundledSkillPaths) {
+    st.bundledSkillPaths = [...new Set(
+      bundledSkillPaths
+        .map((path) => path.trim())
+        .filter((path) => path.length > 0),
+    )]
+  }
   await disposeRuntimeOrSession()
 
   st.currentCwd = cwd
