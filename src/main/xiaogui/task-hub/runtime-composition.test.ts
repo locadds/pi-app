@@ -28,6 +28,10 @@ import {
 } from '../agent-runtime/acp/kimi-tool-policy'
 import { KIMI_PRODUCTION_CONFIG_CONTENT_V1 } from '../agent-runtime/kimi-production-home'
 import type { KimiAcpProbeV1 } from '../agent-runtime/kimi-adapter'
+import {
+  OMP_ACP_APPROVED_VERSION_V1,
+  type OmpAcpProbeV1,
+} from '../agent-runtime/omp-acp-adapter'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
 import { digestJson } from './digest'
@@ -267,6 +271,8 @@ describe('Xiaogui runtime composition v1', () => {
     const userDataDir = tempUserData()
     const probe = fakeKimiProbe()
     const transportFactory = rejectingTransportFactory()
+    const ompProbe = fakeOmpProbe()
+    const ompTransportFactory = rejectingTransportFactory()
     const resolveProjectRoot = vi.fn(async () => {
       throw new Error('STOP_BEFORE_GIT')
     })
@@ -277,6 +283,8 @@ describe('Xiaogui runtime composition v1', () => {
       projectResolver: { resolveProjectRoot },
       kimiProbe: probe,
       kimiTransportFactory: transportFactory,
+      ompProbe,
+      ompTransportFactory,
     }))
 
     const start = await composition.application.execute({
@@ -323,8 +331,10 @@ describe('Xiaogui runtime composition v1', () => {
       },
     })
     expect(probe.findExecutable).toHaveBeenCalledTimes(2)
+    expect(ompProbe.findExecutable).toHaveBeenCalled()
     expect(resolveProjectRoot).toHaveBeenCalledWith(ADDRESS.projectId)
     expect(transportFactory.create).not.toHaveBeenCalled()
+    expect(ompTransportFactory.create).not.toHaveBeenCalled()
   })
 
   it('accepts an additional adapter and an explicit deterministic routing policy', async () => {
@@ -337,6 +347,7 @@ describe('Xiaogui runtime composition v1', () => {
       projectResolver: { resolveProjectRoot: vi.fn(async () => { throw new Error('STOP_BEFORE_GIT') }) },
       kimiProbe: fakeKimiProbe(),
       kimiTransportFactory: rejectingTransportFactory(),
+      ompProbe: unavailableOmpProbe(),
       additionalRuntimeAdapters: [adapter],
       runtimeRoutingPolicy: {
         mode: 'CODING',
@@ -413,6 +424,26 @@ function fakeKimiProbe(): KimiAcpProbeV1 & { findExecutable: ReturnType<typeof v
       available: true as const,
       command: 'never-spawn-kimi',
       version: KIMI_ACP_APPROVED_VERSION_V1,
+    })),
+  }
+}
+
+function fakeOmpProbe(): OmpAcpProbeV1 & { findExecutable: ReturnType<typeof vi.fn> } {
+  return {
+    findExecutable: vi.fn(async () => ({
+      available: true as const,
+      command: 'never-spawn-omp',
+      args: ['--approval-mode', 'always-ask', '--no-skills', '--no-rules', 'acp'],
+      version: OMP_ACP_APPROVED_VERSION_V1,
+    })),
+  }
+}
+
+function unavailableOmpProbe(): OmpAcpProbeV1 {
+  return {
+    findExecutable: vi.fn(async () => ({
+      available: false as const,
+      reasonCode: 'OMP_EXECUTABLE_NOT_FOUND',
     })),
   }
 }

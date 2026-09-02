@@ -1,0 +1,36 @@
+Oh My Pi ACP Windows smoke (sanitized)
+Date: 2026-09-02
+Platform: Windows x64
+Bun: 1.3.14
+Package: @oh-my-pi/pi-coding-agent@18.1.2
+Git revision: 86bf72f52947f62ecaf9bd28e35572812e725a92
+
+Environment used by the test process:
+  XIAOGUI_OMP_ACP_REAL_SMOKE=1
+  XIAOGUI_OMP_ACP_BUNX_TEST_ENABLED=1
+  BUN_INSTALL_CACHE_DIR=D:\CodexCache\bun-omp-v18.1.2
+
+Command:
+  node_modules\.bin\vitest.cmd run src/main/xiaogui/agent-runtime/omp-acp-adapter.test.ts -t "discovers the pinned bunx package" --reporter=verbose
+
+Sanitized stdout emitted by the executable test:
+  {"event":"omp-acp-real-smoke","launch":"bunx --bun @oh-my-pi/pi-coding-agent@18.1.2","protocolVersion":1,"agentInfo":{"name":"oh-my-pi","title":"Oh My Pi","version":"18.1.2"},"loadSession":true,"sessionNew":"ok","sessionId":"<redacted>"}
+
+Failure reproduced before the lifecycle fix:
+  ACP initialize and session/new succeeded, but immediate test cleanup hit
+  Windows EPERM on the xiaogui-omp-acp-* temporary directory.
+  Exit code   1
+
+Post-fix lifecycle regression:
+  The exact command above was invoked three consecutive times against fresh
+  temporary workspaces.
+  Run 1       1 passed | 6 skipped; exit code 0
+  Run 2       1 passed | 6 skipped; exit code 0
+  Run 3       1 passed | 6 skipped; exit code 0
+  Aggregate exit code 0
+
+The real session identifier was asserted to be a non-empty opaque value and was
+redacted before stdout. No model prompt was sent and the test supplied no model
+credential. The executable test is the source of truth for the launch arguments,
+ACP initialize identity, load-session capability, session/new result, and
+process-tree cleanup.

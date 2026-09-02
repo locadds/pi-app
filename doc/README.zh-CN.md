@@ -10,6 +10,8 @@
 
 第一批安装包内置 Skill 及其 Pi 原生加载边界见 [architecture/xiaogui-bundled-pi-skills.md](./architecture/xiaogui-bundled-pi-skills.md)。
 
+Oh My Pi ACP Coding Runtime 的测试接入边界见 [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md)。
+
 ## 用户指南（安装、快捷键、适配器列表）
 
 | 路径 | 用途 |

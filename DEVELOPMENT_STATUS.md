@@ -1,5 +1,70 @@
 # 小规开发阶段状态
 
+## 2026-09-02｜RUNTIME-R4 Oh My Pi ACP Runtime P0 阶段候选
+
+### 本阶段目标与状态
+
+- 目标：把 Oh My Pi 作为独立 ACP Coding Runtime 接到现有 `AgentRuntimeRegistryV1`，证明 Windows 固定版本发现、ACP 握手、新建会话、事件和一次性权限往返；不替换 Pi Worker 或 TaskHub。
+- 状态：实现、真实 Windows Spike、聚焦测试、Node/Web 类型检查和双轴审查均已通过；仍为 `APPROVED_FOR_TEST` 阶段候选，等待人工验收。
+- 独立工作树：`D:\CodexWorktrees\xiaogui-omp-acp-adapter-v1`。
+- 分支：`agent/runtime-r4-omp-acp-adapter-v1`；基线：`xiaogui/feat/xiaogui-integration@f9f333beb0d29d195ca3f63a30ec1ad887e332a5`。
+- 隔离边界：没有修改 WORK 活动工作树，没有合并正式产品线，没有改变默认生产 Runtime。
+
+### 实际修改文件
+
+- `src/main/xiaogui/agent-runtime/omp-acp-adapter.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-adapter.test.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-taskhub-integration.test.ts`
+- `src/main/xiaogui/agent-runtime/acp/process-transport.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.test.ts`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `doc/runtime-r4/OMP-ACP-P0-QA.md`
+- `doc/runtime-r4/OMP-ACP-P0-REVIEW.md`
+- `doc/runtime-r4/evidence/omp-acp-windows-smoke-20260902.txt`
+- `doc/README.md`
+- `doc/README.zh-CN.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 新增 `oh-my-pi-acp` Adapter，复用现有 JSON-RPC/stdio ACP Transport、Runtime Registry、Attempt 工作树、Runtime 事件和 TaskHub 权限契约；没有引入第二套 Agent Loop、权限库或任务状态机。
+2. 固定测试来源为 `@oh-my-pi/pi-coding-agent@18.1.2`、tag `v18.1.2@86bf72f52947f62ecaf9bd28e35572812e725a92`，记录 npm SHA-512 integrity 与 MIT 许可证；不修改 `package.json`，不把 OMP 包或缓存装进小规。
+3. 默认产品装配会注册 OMP Adapter，但能力只有 `APPROVED_FOR_TEST`；生产创建明确返回 `OMP_PRODUCTION_DISABLED`，生产路由不会选择它，Kimi 默认选择保持不变。
+4. 固定 `always-ask`，关闭 OMP Skill/Rules 自动发现；OMP 私有状态目录与用户全局 OMP 目录隔离。小规不提供 ACP Client 终端/写文件能力，写入、命令和外传只生成 TaskHub 一次性权限事件。
+5. 权限和事件均绑定当前 vendor session；越出 Attempt 工作树的目标、跨会话请求、`allow_always` 和重复权限证明不会被放行。公开事件只含相对路径和摘要，不含可执行路径、工作树绝对路径、原始命令或 vendor session 编号。
+6. 通用 ACP Process Transport Factory 从 Kimi 专名中提取，同时保留兼容别名；既有 Kimi 行为未改变。
+7. 修正复审发现的权限形状问题：文件写入事件不再携带 TaskHub 禁止的 `actionDigest`；新增真实 OMP Adapter → Runtime Host → Runtime Monitor → TaskHub Attempt 清单 → `allow_once` 集成回归。
+8. 新增显式固定包测试发现：只有设置 `XIAOGUI_OMP_ACP_BUNX_TEST_ENABLED=1` 才调用固定的 bunx 包；普通注册表发现不会隐式下载。Windows 进程树释放会等待 `taskkill`、目标 child `close` 与 stdio 关闭；测试清理只对系统短暂延迟释放的 SQLite/WAL 句柄做有界重试。
+9. 权限用途不再依赖标题关键词猜测，只读取 ACP 标准 `kind` 和位置字段；因此本地搜索不会被误判为数据外传，命令、外传和文件写入保持确定性映射。
+
+### 真实测试证据
+
+- Windows x64、Bun `1.3.14`：`bunx --bun @oh-my-pi/pi-coding-agent@18.1.2 --version` 返回 `omp/18.1.2`。
+- 真实 stdio ACP `initialize` 成功：协议版本 1、Agent `oh-my-pi/18.1.2`、`loadSession=true`；真实 `session/new` 成功。原始私有 session 编号未写入仓库。
+- 可复跑命令与脱敏 stdout：`doc/runtime-r4/evidence/omp-acp-windows-smoke-20260902.txt`；该测试直接经过产品探针的固定 bunx 包分支。审查复跑曾稳定捕获 Windows 句柄释放竞态；修正后完全相同的真实生命周期门连续 3 次通过，总退出码为 0。
+- 首次固定包缓存显式落到 `D:\CodexCache\bun-omp-v18.1.2`，实测约 `771.1 MiB`；Git 和小规安装包均不包含该缓存。
+- 聚焦回归：`vitest` 运行 OMP Adapter、OMP/TaskHub 权限集成、Runtime Composition、Runtime Registry 和 Kimi Adapter，共 5 个文件、53 项通过；另有 1 项显式真实 OMP 测试在普通回归中按设计跳过，并已用固定环境单独执行通过。
+- 共享 ACP Process Transport 的既有聚焦回归：1 个文件、10 项通过；未扩展到 OMP 自身模型、工具或插件测试。
+- `node_modules\.bin\tsc.cmd -p tsconfig.node.json --noEmit`：通过。
+- `node_modules\.bin\tsc.cmd -p tsconfig.web.json --noEmit`：通过。
+- 审查发现的跨 session 绑定、镜像启动参数、写权限事件形状、真实证据、产品探针发现和 Windows 退出竞态均已修正；最终代码复审为 `WATCH / APPROVE`，规格门为 `PASS / APPROVE`，结论见 `doc/runtime-r4/OMP-ACP-P0-REVIEW.md`。
+
+### 未完成内容、规格偏差与已知风险
+
+- 未完成真实模型的“申请权限 → 修改独立工作树 → 验证 → Diff → 交付”旅程；本阶段只证明 ACP 接缝，不宣称 OMP 可承担生产代码任务。
+- OMP 修改结果尚未从真实工作树生成可重启对账的 `candidateDigest`；当前测试证据摘要不得当作正式 ChangeSet。
+- 默认探针可核对 `omp/18.1.2`，但不能单凭版本输出证明 PATH 可执行物就是已登记 npm integrity 对应构建；生产装配需要受信安装清单和完整性校验。
+- 真实重启恢复、模型凭据/模型选择设置、外传策略实测、设置页、安装包与离线装配均未完成。
+- 与“直接接入”的唯一有意偏差是：本批按阶段门只给测试批准，不把 OMP 设为默认或生产批准；这是为保留 TaskHub 结果对账和人工验收边界。
+- OMP 与 Kimi 当前仍各自维护部分 ACP 生命周期逻辑；若 OMP 通过生产门，再抽取中性共享 ACP Core，P0 不做高风险重构。
+
+### 下一阶段计划
+
+- 人工验收本 P0 后，单独启动 P1：受信 OMP 安装/完整性清单、私有模型配置、真实模型权限旅程、工作树 ChangeSet 对账和断线恢复。
+- P1 通过前不启用生产路由、不新增默认 UI、不制作 Portable、不合入正式产品线。
+- 本阶段提交并推送当前独立分支后停止，等待人工或审查 Agent 验收。
+
 ## 2026-09-02｜首批 Pi 原生 Skill 安装包装配候选
 
 ### 当前状态

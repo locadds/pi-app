@@ -19,6 +19,11 @@ import {
 } from '../agent-runtime/kimi-adapter'
 import { KIMI_ACP_APPROVED_VERSION_V1 } from '../agent-runtime/acp/kimi-tool-policy'
 import type { AcpTransportFactoryV1 } from '../agent-runtime/acp/types'
+import {
+  createOmpAcpRuntimeAdapterV1,
+  type OmpAcpProbeV1,
+  type OmpAcpRuntimeAdapterV1,
+} from '../agent-runtime/omp-acp-adapter'
 import { prepareKimiProductionHomeV1 } from '../agent-runtime/kimi-production-home'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { createAgentRuntimeRegistryV1 } from '../agent-runtime/runtime-registry'
@@ -69,6 +74,8 @@ export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly projectResolver?: ProjectWorkspaceResolverV1
   readonly kimiProbe?: KimiAcpProbeV1
   readonly kimiTransportFactory?: AcpTransportFactoryV1
+  readonly ompProbe?: OmpAcpProbeV1
+  readonly ompTransportFactory?: AcpTransportFactoryV1
   readonly additionalRuntimeAdapters?: readonly AgentRuntimeAdapterV1[]
   /** Opaque, process-launch-gated E2E seam. Forged launch objects are rejected by the adapter. */
   readonly piE2eScriptedRuntimeLaunch?: PiE2eScriptedRuntimeLaunchV1
@@ -132,6 +139,7 @@ export function createXiaoguiRuntimeCompositionV1(
   let inputStore: AttemptExecutionInputStoreV1 | undefined
   let application: CollaborationHubApplicationV1 | undefined
   let kimiAdapter: KimiAcpRuntimeAdapterV1 | undefined
+  let ompAdapter: OmpAcpRuntimeAdapterV1 | undefined
   let runtimeRegistry: AgentRuntimeRegistryV1 | undefined
   let taskExecution: XiaoguiTaskExecutionOrchestratorV1 | undefined
   let runtimeMonitor: RuntimeOutcomeMonitorV1 | undefined
@@ -188,8 +196,19 @@ export function createXiaoguiRuntimeCompositionV1(
         ? { enabled: true, selection: KIMI_PRODUCTION_SELECTION_V1 }
         : { enabled: false },
     })
+    const ompRuntimeStateDir = join(xiaoguiDir, 'agent-runtime', 'omp-v18.1.2')
+    ompAdapter = createOmpAcpRuntimeAdapterV1({
+      payloadResolver: payloadVault,
+      // The attempt resolver already validates the exact TaskHub workspace
+      // binding. Its Kimi-only home field is ignored by the OMP adapter.
+      workspaceResolver: kimiWorkspaceResolver,
+      runtimeStateDir: ompRuntimeStateDir,
+      probe: options.ompProbe,
+      transportFactory: options.ompTransportFactory,
+    })
     runtimeRegistry = createAgentRuntimeRegistryV1()
     void runtimeRegistry.register(kimiAdapter)
+    void runtimeRegistry.register(ompAdapter)
     const piE2eAdapter = options.piE2eScriptedRuntimeLaunch
       ? new PiE2eWorkspaceScriptedRuntimeAdapterV1(
           attemptWorkspaces,

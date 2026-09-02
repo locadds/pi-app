@@ -25,6 +25,7 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
   private onDisconnect: (reasonCode: string) => void = () => {}
   private closed = false
   private closedReason: string | null = null
+  private childClosed = false
 
   constructor(
     private readonly command: string,
@@ -48,6 +49,7 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
     if (this.closed) throw new Error(this.closedReason ?? 'PROCESS_DISCONNECTED')
     const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.command)
     const command = useShell ? `"${this.command}" ${this.args.join(' ')}` : this.command
+    this.childClosed = false
     this.child = spawn(command, useShell ? [] : [...this.args], {
       cwd: this.cwd,
       shell: useShell,
@@ -57,7 +59,10 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
     this.child.stdout?.on('data', (chunk: Buffer | string) => this.readStdout(chunk))
     this.child.stdin?.on('error', () => this.close('PROCESS_STDIN_CLOSED'))
     this.child.on('error', () => this.close('PROCESS_ERROR'))
-    this.child.on('close', () => this.close('PROCESS_DISCONNECTED'))
+    this.child.on('close', () => {
+      this.childClosed = true
+      this.close('PROCESS_DISCONNECTED')
+    })
     return this.call<AcpInitializeResultV1>('initialize', options.initialize, 30000)
   }
 
@@ -79,12 +84,20 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
 
   async dispose(): Promise<void> {
     const child = this.child
-    if (child && child.exitCode === null && !child.killed) {
-      if (process.platform === 'win32' && child.pid !== undefined) {
-        spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).unref()
-      } else {
-        child.kill('SIGTERM')
+    if (child) {
+      const childClose = this.childClosed ? Promise.resolve() : waitForChildClose(child)
+      if (child.exitCode === null && !child.killed) {
+        if (process.platform === 'win32' && child.pid !== undefined) {
+          await waitForProcessTreeKill(child.pid)
+        } else {
+          child.kill('SIGTERM')
+        }
       }
+      await childClose
+      child.stdin?.destroy()
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+      this.child = null
     }
     this.close('DISPOSED')
   }
@@ -196,11 +209,45 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
   }
 }
 
-export class KimiAcpProcessTransportFactoryV1 implements AcpTransportFactoryV1 {
+function waitForProcessTreeKill(pid: number): Promise<void> {
+  return new Promise((resolve) => {
+    const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+    const timer = setTimeout(() => {
+      killer.kill()
+      resolve()
+    }, 5_000)
+    const done = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    killer.once('error', done)
+    killer.once('close', done)
+  })
+}
+
+function waitForChildClose(child: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.removeListener('close', done)
+      resolve()
+    }, 5_000)
+    const done = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    child.once('close', done)
+  })
+}
+
+/** Generic stdio ACP transport factory shared by vendor-specific runtime adapters. */
+export class AcpProcessTransportFactoryV1 implements AcpTransportFactoryV1 {
   create(command: string, args: readonly string[], cwd: string, options?: AcpTransportCreateOptionsV1): AcpTransportV1 {
     return new NdjsonAcpProcessTransportV1(command, args, cwd, options)
   }
 }
+
+/** @deprecated Use AcpProcessTransportFactoryV1 for new runtime adapters. */
+export class KimiAcpProcessTransportFactoryV1 extends AcpProcessTransportFactoryV1 {}
 
 function reasonCodeFromError(error: unknown, fallback: string): string {
   if (typeof error === 'object' && error !== null && typeof (error as { reasonCode?: unknown }).reasonCode === 'string') {
