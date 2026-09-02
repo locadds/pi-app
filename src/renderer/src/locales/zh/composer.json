@@ -22,6 +22,13 @@
   "subagentPreviewBanner": "正在查看子 Agent 会话；如需发送消息，请返回父会话。",
   "joinQueue": "加入队列 (follow-up)",
   "addFile": "添加文件",
+  "permissionMode": {
+    "title": "Coding 权限",
+    "appliesNextAttempt": "本次选择从下一个 Coding 任务开始生效；任务开始后不会静默改变。",
+    "taskHubBoundary": "任何档位都不能越过 TaskHub 已批准的文件、命令和外传边界。",
+    "saveFailed": "权限档位保存失败",
+    "close": "关闭权限档位选择"
+  },
   "dropToAdd": "松手添加",
   "paramCompletion": "参数补全",
   "select": "选择",

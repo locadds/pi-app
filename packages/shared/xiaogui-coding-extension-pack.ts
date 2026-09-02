@@ -174,6 +174,7 @@ export const CODING_PERMISSION_MODES_V1 = Object.freeze([
 ] as const)
 
 export type CodingPermissionModeV1 = typeof CODING_PERMISSION_MODES_V1[number]
+export const XIAOGUI_CODING_PERMISSION_MODE_SETTING_KEY_V1 = 'xiaoguiCodingPermissionMode' as const
 export type CodingPermissionPolicyEffectV1 = 'ASK_USER' | 'ALLOW_ONCE' | 'DENY'
 
 export interface CodingPermissionModeOptionV1 {

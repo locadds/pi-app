@@ -64,6 +64,7 @@ import {
   switchModePreservingComposerDraftV1,
 } from './mode-recommendation-draft'
 import { onComposerQuickSubmit } from '@renderer/lib/composer-quick-submit'
+import { CodingPermissionModePicker } from './coding-permission-mode-picker'
 
 export function Composer() {
   const { t } = useTranslation()
@@ -615,6 +616,9 @@ export function Composer() {
               <Plus className="h-[15px] w-[15px]" strokeWidth={2} />
             </button>
             <ComposerCollaborationButton />
+            {mode === 'CODING' && (
+              <CodingPermissionModePicker disabled={showComposerStop || !canSendMessages} />
+            )}
             {canCompose && (
               <ComposerMetricsInline metrics={metrics} isRunning={showComposerStop || isRunning} />
             )}

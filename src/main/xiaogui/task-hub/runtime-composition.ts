@@ -59,6 +59,7 @@ import {
   type PiE2eScriptedRuntimeLaunchV1,
 } from './pi-e2e-scripted-runtime'
 import { CodingPermissionModuleV1 } from '../coding-extensions/permission-module'
+import { CodingPermissionModeModuleV1 } from '../coding-extensions/permission-mode-module'
 import { MainProcessCodingPermissionUIAdapterV1 } from '../coding-extensions/permission-ui-adapter'
 import { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-module'
 import {
@@ -66,6 +67,7 @@ import {
   GitAttemptReviewDiffPortV1,
 } from '../coding-extensions/attempt-review-module'
 import { CodingRoleProfileModuleV1 } from '../coding-extensions/role-profile-module'
+import { resolveOmpPrivateLayoutV1 } from '../agent-runtime/omp-private-layout'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
@@ -80,6 +82,8 @@ export interface XiaoguiRuntimeCompositionOptionsV1 {
   /** Opaque, process-launch-gated E2E seam. Forged launch objects are rejected by the adapter. */
   readonly piE2eScriptedRuntimeLaunch?: PiE2eScriptedRuntimeLaunchV1
   readonly runtimeRoutingPolicy?: RuntimeRoutingPolicyV1
+  /** Main-process preference seam; omission keeps the safest deterministic default. */
+  readonly codingPermissionModeProvider?: () => unknown
   readonly now?: () => string
 }
 
@@ -147,6 +151,7 @@ export function createXiaoguiRuntimeCompositionV1(
   let deliveryWorkflow: XiaoguiDeliveryWorkflowV1 | undefined
   let deliveryApplyRegistry: SqliteDeliveryApplyAttemptRegistryV1 | undefined
   let codingPermissionModule: CodingPermissionModuleV1 | undefined
+  let codingPermissionModeModule: CodingPermissionModeModuleV1 | undefined
   let codingAttemptPlanModule: CodingAttemptPlanModuleV1 | undefined
   let codingReviewStore: CollaborationHubSqliteStoreV1 | undefined
   let codingRoleProfiles: CodingRoleProfileModuleV1 | undefined
@@ -196,7 +201,7 @@ export function createXiaoguiRuntimeCompositionV1(
         ? { enabled: true, selection: KIMI_PRODUCTION_SELECTION_V1 }
         : { enabled: false },
     })
-    const ompRuntimeStateDir = join(xiaoguiDir, 'agent-runtime', 'omp-v18.1.2')
+    const ompRuntimeStateDir = resolveOmpPrivateLayoutV1(userDataDir).stateDir
     ompAdapter = createOmpAcpRuntimeAdapterV1({
       payloadResolver: payloadVault,
       // The attempt resolver already validates the exact TaskHub workspace
@@ -278,11 +283,18 @@ export function createXiaoguiRuntimeCompositionV1(
       now: options.now,
     })
 
+    codingPermissionModeModule = new CodingPermissionModeModuleV1({
+      dbPath: hubDbPath,
+      readSelectedMode: options.codingPermissionModeProvider ?? (() => 'CONFIRM_EACH'),
+      readAttemptManifest: (attemptId) => attemptWorkspaces.manifest(attemptId),
+      now: options.now,
+    })
     codingPermissionModule = new CodingPermissionModuleV1({
       dbPath: hubDbPath,
       // The UI Adapter dismisses first; the Module's longer timeout remains a
       // fail-closed backstop for any future Adapter implementation.
       ui: new MainProcessCodingPermissionUIAdapterV1({ timeoutMs: 55_000 }),
+      policy: codingPermissionModeModule,
       timeoutMs: 60_000,
       now: options.now,
     })
@@ -331,6 +343,15 @@ export function createXiaoguiRuntimeCompositionV1(
           }
         },
       },
+      attemptPermissionModeGate: {
+        captureSelection: () => codingPermissionModeModule!.captureSelection(),
+        bindAttempt: (attemptId, selection) => (
+          codingPermissionModeModule!.bindAttempt(attemptId, selection)
+        ),
+        verifyAttemptBinding: (attemptId, selection) => (
+          codingPermissionModeModule!.verifyAttemptBinding(attemptId, selection)
+        ),
+      },
       now: options.now,
     })
     void taskExecution.recover().catch(() => undefined)
@@ -358,6 +379,7 @@ export function createXiaoguiRuntimeCompositionV1(
       payloadVault,
       workspaceRegistry,
       codingPermissionModule,
+      codingPermissionModeModule,
       codingAttemptPlanModule,
       codingAttemptReviewModule,
       codingRoleProfiles,
@@ -376,6 +398,7 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(payloadVault)
     closeQuietly(workspaceRegistry)
     closeQuietly(codingPermissionModule)
+    closeQuietly(codingPermissionModeModule)
     closeQuietly(codingAttemptPlanModule)
     closeQuietly(codingRoleProfiles)
     closeQuietly(codingReviewStore)
@@ -396,6 +419,7 @@ function createCompositionInterface(
   payloadVault: PrivateRuntimePayloadVaultV1,
   workspaceRegistry: SqliteAttemptWorkspaceRegistryV1,
   codingPermissionModule: CodingPermissionModuleV1,
+  codingPermissionModeModule: CodingPermissionModeModuleV1,
   codingAttemptPlanModule: CodingAttemptPlanModuleV1,
   codingAttemptReviewModule: CodingAttemptReviewModuleV1,
   codingRoleProfiles: CodingRoleProfileModuleV1,
@@ -431,6 +455,7 @@ function createCompositionInterface(
             payloadVault,
             workspaceRegistry,
             codingPermissionModule,
+            codingPermissionModeModule,
             codingAttemptPlanModule,
             codingRoleProfiles,
             codingReviewStore,

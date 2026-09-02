@@ -4,9 +4,11 @@
 
 `can1357/oh-my-pi` 通过标准 ACP stdio 接缝接入小规现有 `AgentRuntimeRegistryV1`，不替换 Pi Worker、TaskHub、Attempt、工作树、权限、验证或交付状态机。
 
-`RUNTIME-R4-OMP-ACP-ADAPTER-01 / P0` 已于 2026-09-02 通过人工验收，固定提交为 `607618f952b102b889bc12f5ab101f802ab6b401`。当前进入隔离的 P1 生产门施工，但 Runtime 仍只有 `APPROVED_FOR_TEST`，不会被生产路由选中；默认生产运行时保持不变。
+`RUNTIME-R4-OMP-ACP-ADAPTER-01 / P0` 已于 2026-09-02 通过人工验收，固定提交为 `607618f952b102b889bc12f5ab101f802ab6b401`；P1A 已在 `b4f93e561d02673a62bbf7b0d7797bbe41b9d498` 通过人工验收。P1B 当前为隔离实现候选，但 Runtime 仍只有 `APPROVED_FOR_TEST`，不会被生产路由选中；默认生产运行时保持不变。
 
 P1 的三批任务与六项生产门映射见 `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`。P1 不把 OMP 改为 `write` 或 `yolo`；OMP 继续以 `always-ask` 作为内层审批基础，由 TaskHub 在硬边界核验后应用用户选择的三档权限策略。
+
+P1B 已增加受信完整性回执、OMP 私有模型设置和三档权限 UI。完整性信任根固定到 npm 官方 archive 的 SHA-512 SRI 及其完整解包树，不接受调用方自报 integrity 或仅匹配版本的目录。全局权限偏好只在 Attempt 创建时取样，之后由 TaskHub 以策略摘要不可变绑定；命令和外传在没有权威白名单时保持 `UNVERIFIED` 并拒绝。受信回执的生产消费与真实模型结果对账仍属于 P1C，不因 UI 已出现而提前批准 Runtime。
 
 ## 固定来源
 
@@ -63,8 +65,8 @@ omp --approval-mode always-ask --no-skills --no-rules acp
 1. OMP 内建工具的工作区读取边界、命令摘要和数据外传需要真实模型旅程核对；上游当前权限配置本身不提供小规所需的细粒度目录规则。
 2. 真实代码修改结束后，需要从 TaskHub 工作树生成可对账的 `candidateDigest`，不能把模型或 ACP 文本自述当作交付证据。
 3. 断线恢复必须验证同一 Attempt、同一 Runtime、同一会话和同一工作树，不得静默换 Agent。
-4. 模型凭据、模型选择和 OMP 私有状态目录尚未形成小规设置页或安装指引。
+4. OMP 私有模型设置已形成小规设置页，但 ACP 会话级模型选择和受信安装发布指引尚未完成。
 5. 尚未完成真实模型的“申请权限 → 修改独立工作树 → 验证 → Diff → 交付”桌面旅程。
-6. 当前默认探针只能核对 `omp/18.1.2`，尚不能证明 PATH 上的任意同版本可执行物就是上述 npm 完整性对应的构建；生产装配必须由受信安装流程生成并验证运行时清单。
+6. P1B 已能为固定包生成并复验完整性回执，但禁用中的 Adapter 尚未消费该回执作为生产启动源；PATH 上的任意同版本可执行物仍不能通过生产门。
 
-因此本阶段不会改变默认路由，不增加 UI，不制作 Portable，也不宣称 OMP 已可用于生产任务。
+因此本阶段不会改变默认路由，不制作 Portable，也不宣称 OMP 已可用于生产任务。P1B UI 只用于配置与后续任务权限选择，不等于生产批准。

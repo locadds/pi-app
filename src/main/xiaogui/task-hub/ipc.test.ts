@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   getElectronPath: vi.fn(() => 'D:/fake-xiaogui-user-data'),
   isPackaged: false,
   kimiProductionEnabled: false,
+  codingPermissionMode: 'CONFIRM_EACH',
   scopeLookup: { lookup: vi.fn() },
   runtimeCompositions: [] as Array<{
     application: { generation: number }
@@ -100,9 +101,11 @@ vi.mock('../../ipc/registry', () => ({
 
 vi.mock('../../config-store', () => ({
   configStore: {
-    get: vi.fn((key: string) =>
-      key === 'xiaoguiKimiProductionEnabled' ? mocks.kimiProductionEnabled : undefined,
-    ),
+    get: vi.fn((key: string) => {
+      if (key === 'xiaoguiKimiProductionEnabled') return mocks.kimiProductionEnabled
+      if (key === 'xiaoguiCodingPermissionMode') return mocks.codingPermissionMode
+      return undefined
+    }),
   },
 }))
 
@@ -147,6 +150,7 @@ afterEach(async () => {
   mocks.runtimeCompositions.splice(0)
   mocks.loginCoordinators.splice(0)
   mocks.kimiProductionEnabled = false
+  mocks.codingPermissionMode = 'CONFIRM_EACH'
   mocks.isPackaged = false
   vi.clearAllMocks()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -217,6 +221,7 @@ describe('M2A collaboration hub IPC adapter', () => {
         userDataDir: 'D:/fake-xiaogui-user-data',
         productionEnabled: false,
         lookup: mocks.scopeLookup,
+        codingPermissionModeProvider: expect.any(Function),
       })
     } finally {
       if (previousPiE2e === undefined) delete process.env.PI_E2E
@@ -244,6 +249,7 @@ describe('M2A collaboration hub IPC adapter', () => {
         userDataDir: 'D:/fake-xiaogui-user-data',
         productionEnabled: false,
         lookup: mocks.scopeLookup,
+        codingPermissionModeProvider: expect.any(Function),
       })
     } finally {
       process.argv = previousArgv
@@ -279,6 +285,7 @@ describe('M2A collaboration hub IPC adapter', () => {
         userDataDir: 'D:/fake-xiaogui-user-data',
         productionEnabled: false,
         lookup: mocks.scopeLookup,
+        codingPermissionModeProvider: expect.any(Function),
         piE2eScriptedRuntimeLaunch: { scenarioPath, eventLogPath },
         runtimeRoutingPolicy: expect.objectContaining({
           priorityAdapterIds: ['pi-e2e-scripted-local'],
@@ -317,7 +324,11 @@ describe('M2A collaboration hub IPC adapter', () => {
       userDataDir: 'D:/fake-xiaogui-user-data',
       productionEnabled: false,
       lookup: mocks.scopeLookup,
+      codingPermissionModeProvider: expect.any(Function),
     })
+    const firstPermissionModeProvider = mocks.createRuntimeComposition.mock.calls[0]?.[0]
+      ?.codingPermissionModeProvider as (() => unknown) | undefined
+    expect(firstPermissionModeProvider?.()).toBe('CONFIRM_EACH')
     expect(getDefaultCollaborationHubApplication()).toBe(firstApplication)
     expect(mocks.createRuntimeComposition).toHaveBeenCalledOnce()
 
@@ -336,7 +347,12 @@ describe('M2A collaboration hub IPC adapter', () => {
       userDataDir: 'D:/fake-xiaogui-user-data',
       productionEnabled: true,
       lookup: mocks.scopeLookup,
+      codingPermissionModeProvider: expect.any(Function),
     })
+    const secondPermissionModeProvider = mocks.createRuntimeComposition.mock.calls[1]?.[0]
+      ?.codingPermissionModeProvider as (() => unknown) | undefined
+    mocks.codingPermissionMode = 'AUTONOMOUS'
+    expect(secondPermissionModeProvider?.()).toBe('AUTONOMOUS')
     expect(mocks.loginCoordinators[1]!.options).toEqual({
       effectiveEnabled: true,
       userDataDir: 'D:/fake-xiaogui-user-data',

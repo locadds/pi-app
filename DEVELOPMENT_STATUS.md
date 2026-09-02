@@ -1,5 +1,133 @@
 # 小规开发阶段状态
 
+## 2026-09-02｜RUNTIME-R4 OMP ACP Runtime P1B 受信清单、私有模型与三档权限 UI
+
+### 本阶段目标与状态
+
+- P1A 人工验收：用户已于 2026-09-02 明确放行 `agent/runtime-r4-omp-acp-p1-v1@b4f93e561d02673a62bbf7b0d7797bbe41b9d498`。
+- P1B 目标：建立固定 OMP 包的完整性回执；复用现有模型配置表单管理 OMP 私有 `models.json`；在 CODING Composer 提供三档权限选择；由 TaskHub 在 Attempt 创建时冻结档位，并在恢复时校验同一绑定。
+- 状态：实现、聚焦测试、真实 D 盘固定包清单、Node/Web 类型检查、Electron 构建和真实窗口检查均已完成；当前为 P1B 阶段候选，提交并推送后等待人工验收。
+- 工作树：`D:\CodexWorktrees\xiaogui-omp-acp-p1-v1`；分支：`agent/runtime-r4-omp-acp-p1-v1`；基线：已验收 P1A `b4f93e561d02673a62bbf7b0d7797bbe41b9d498`。
+- 隔离边界：未触碰 WORK 工作树或产品主线；未改变默认 Runtime、`APPROVED_FOR_TEST`、`OMP_PRODUCTION_DISABLED`、`--approval-mode always-ask`、`package.json` 或发布包。
+
+### 实际修改文件
+
+- `packages/shared/ipc-channels.ts`
+- `packages/shared/ipc-contract.ts`
+- `packages/shared/xiaogui-coding-extension-pack.ts`
+- `src/main/config-store.ts`
+- `src/main/ipc/handlers/pi-sdk.ts`
+- `src/main/ipc/pi-models-handler.test.ts`
+- `src/main/ipc/schemas.ts`
+- `src/main/ipc/schemas.xiaogui-runtime.test.ts`
+- `src/main/pi-models-json.ts`
+- `src/main/xiaogui/agent-runtime/omp-private-layout.ts`
+- `src/main/xiaogui/agent-runtime/omp-trusted-installation.ts`
+- `src/main/xiaogui/agent-runtime/omp-trusted-installation.test.ts`
+- `src/main/xiaogui/coding-extensions/permission-mode-module.ts`
+- `src/main/xiaogui/coding-extensions/permission-mode-module.test.ts`
+- `src/main/xiaogui/task-hub/execution-orchestrator.ts`
+- `src/main/xiaogui/task-hub/execution-orchestrator.test.ts`
+- `src/main/xiaogui/task-hub/ipc.test.ts`
+- `src/main/xiaogui/task-hub/ipc.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.ts`
+- `src/renderer/src/features/composer/composer.tsx`
+- `src/renderer/src/features/composer/coding-permission-mode-picker.tsx`
+- `src/renderer/src/features/composer/coding-permission-mode-picker.test.tsx`
+- `src/renderer/src/features/settings/models-settings-panel.tsx`
+- `src/renderer/src/features/settings/models-settings-panel.test.tsx`
+- `src/renderer/src/locales/en/composer.json`
+- `src/renderer/src/locales/en/settings.json`
+- `src/renderer/src/locales/zh/composer.json`
+- `src/renderer/src/locales/zh/settings.json`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 以一个共享版本化来源提供三档名称、说明、设置键和策略效果；Composer 只在 CODING 模式显示“逐条确认 / 自动通过 / 完全自主”，活动任务期间不可切换。
+2. 全局选择仅在新任务开始时取样。TaskHub 将档位和策略摘要写入执行 Saga，并把 `CodingPermissionModeBindingV1` 不可变绑定到真实 Attempt；重复绑定冲突、缺失绑定或摘要漂移均停止恢复，不会读取后来更改的全局偏好。
+3. 文件边界只接受当前 Attempt 清单中的安全相对路径；绝对路径、`.git`、越界或不在清单的文件均拒绝。由于本阶段没有权威命令/外传白名单，命令和外传明确返回 `UNVERIFIED`，即使选择“完全自主”也拒绝，Renderer 无权伪造核验结果。
+4. OMP 私有安装、状态和回执路径由 `omp-private-layout.ts` 单一计算。信任根固定为官方 npm archive URL、SHA-512 SRI 及该已验证 archive 的完整解包树摘要；回执固定包名、版本、上游 revision、入口、文件数、体积及私有状态目录摘要。调用方不再能用“版本相同”或自行传入 integrity 常量签收任意目录。
+5. 已从 npm 官方 registry 获取 `18.1.2` 固定 archive 到 D 盘，实际 SHA-512 与固定 SRI 相同；官方 archive 解包树与 D 盘 Bun 固定缓存均为 3,136 个文件、48,326,575 字节，且 package、入口和完整树摘要逐项一致。符号链接、异常项、超限、私有状态目录丢失/重定向、回执覆盖和任意内容漂移均拒绝；回执不保存安装绝对路径。
+6. 设置页复用既有 Pi SDK `models.json` 校验器和供应商编辑表单，增加“小规默认模型 / Oh My Pi（测试）”目标。OMP 配置写入其私有 `PI_CODING_AGENT_DIR`；界面只显示“小规私有目录”标签，不把绝对路径、配置或凭据放入 TaskHub DTO，也不会重启当前 Pi Worker。
+7. 生产装配通过显式偏好读取接缝接入权限模块；未装配该接缝时安全回落“逐条确认”，避免 TaskHub 单测或其他装配隐式初始化桌面全局设置。
+
+### 未完成内容
+
+- 本阶段没有启用 OMP 生产路由。受信回执验证器已经具备，但禁用中的 OMP Adapter 尚未以该回执作为真实启动来源；P1C 在提出生产批准前必须接通并复验，PATH 上只有同版本号的程序仍不能通过生产门。
+- TaskHub 还没有可把命令或数据外传认定为 `VERIFIED` 的权威白名单，因此两类操作当前在三档下都保持拒绝；不以关键词或模型自报补齐。
+- 尚未完成真实模型“权限申请 → 修改独立工作树 → 验证 → Diff → Delivery”、`candidateDigest` 对账和断线后的同 Attempt/Runtime/vendor session/worktree 旅程；这些属于 P1C。
+- 未修改 OMP ACP 会话中的 `model` / `thinking` 动态选择；本阶段只完成其私有模型供应商配置入口。
+- 未合并阶段线、未发布、未制作 Portable，也未运行无关 WORK、Office 或 OMP 上游全量测试。
+
+### 与规格和冻结决策的偏差
+
+- 无架构偏差：继续复用 OMP ACP、现有 Renderer 设置/Composer、TaskHub Attempt/权限/Saga 和现有模型校验器；没有第二套 Agent Loop、权限数据库、任务状态机或模型注册表。
+- 有意保留的阶段边界：P1B 只生成并验证受信清单，不在生产仍禁用时提前更换 Adapter 启动源；该消费门与真实结果对账一起留给 P1C。
+- 有意收紧：P1A 表格描述的是“已核验命令/外传”的最终语义；P1B 因缺少权威白名单把两类状态固定为 `UNVERIFIED` 并拒绝，没有把“完全自主”误实现成无边界放行。
+
+### 测试命令和测试结果
+
+聚焦回归：
+
+```powershell
+node node_modules\vitest\vitest.mjs run src/main/xiaogui/coding-extensions/permission-mode-module.test.ts src/main/xiaogui/agent-runtime/omp-trusted-installation.test.ts src/main/xiaogui/task-hub/execution-orchestrator.test.ts src/main/ipc/pi-models-handler.test.ts src/main/ipc/schemas.xiaogui-runtime.test.ts src/renderer/src/features/composer/coding-permission-mode-picker.test.tsx src/renderer/src/features/settings/models-settings-panel.test.tsx packages/shared/xiaogui-coding-extension-pack.test.ts src/main/xiaogui/coding-extensions/permission-policy.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/main/xiaogui/task-hub/ipc.test.ts --reporter=dot --pool=threads
+```
+
+结果：`12 test files passed`，`96 tests passed`，`1 test skipped`。跳过项仅为需要显式提供固定缓存路径的真实包门。
+
+真实 D 盘固定包完整性检查：
+
+```powershell
+$env:TEMP='D:\CodexTemp'
+$env:TMP='D:\CodexTemp'
+$env:XIAOGUI_OMP_TRUSTED_PACKAGE_ROOT='D:\CodexCache\bun-omp-v18.1.2\@oh-my-pi\pi-coding-agent@18.1.2@@@1'
+node node_modules\vitest\vitest.mjs run src/main/xiaogui/agent-runtime/omp-trusted-installation.test.ts src/main/xiaogui/coding-extensions/permission-mode-module.test.ts --reporter=verbose --pool=threads
+```
+
+结果：`2 test files passed`，`9 tests passed`，真实包完整树生成回执并再次检查成功；测试临时目录位于 D 盘。
+
+信任根来源复核：
+
+```powershell
+npm view '@oh-my-pi/pi-coding-agent@18.1.2' dist.tarball dist.integrity --json
+npm pack '@oh-my-pi/pi-coding-agent@18.1.2' --pack-destination D:\CodexTemp\omp-trust-root --silent
+Get-FileHash D:\CodexTemp\omp-trust-root\oh-my-pi-pi-coding-agent-18.1.2.tgz -Algorithm SHA512
+```
+
+结果：registry 返回的 SRI 与代码固定值相同，下载 archive 的 SHA-512 为 `6b3b147ada235324f67be0b20cfba7d8b805ac2b6cf05b67bc195b3ebcd88fa63b51b44891d79baa135956132b3abb9e36746c2deb6a72b63c10fa26c5396f0a`；该 archive 解包后和 D 盘 Bun 缓存分别通过同一完整树门，均为 3,136 文件、48,326,575 字节及同一 `treeDigest`。
+
+类型与构建：
+
+```powershell
+node node_modules\typescript\bin\tsc -p tsconfig.node.json --noEmit
+node node_modules\typescript\bin\tsc -p tsconfig.web.json --noEmit
+node node_modules\electron-vite\bin\electron-vite.js build
+```
+
+结果：Node/Web 类型检查退出码均为 `0`；Electron Main、Preload、Renderer 构建成功。构建只出现仓库既有的动态导入和体积提示，没有新增错误。
+
+真实窗口检查：
+
+- 当前独立分支以 CDP `9341` 启动；CODING Composer 能显示并展开三档菜单，实际切换到“自动通过”后可读回设置值，再恢复为“逐条确认”。
+- 模型设置页能切换到“Oh My Pi（测试）”，显示私有目录说明且不显示绝对路径；该私有目标为空时不会读取或展示当前 Pi SDK 模型目录。
+- 测试结束后已恢复 `currentProject = null`、`xiaoguiCodingPermissionMode = CONFIRM_EACH` 并关闭本分支 Electron 进程。
+- 可见证据（不提交仓库）：`D:\CodexTemp\xiaogui-omp-p1b-permission-menu.png`、`D:\CodexTemp\xiaogui-omp-p1b-private-model-settings.png`。
+
+差异检查：`git diff --check` 退出码 `0`；仅有 Windows LF/CRLF 提示。
+
+### 已知风险
+
+1. 受信模块不在运行时联网下载；它以已验证官方 archive 派生的固定完整树作为独立信任根。P1C/发布装配仍必须从固定 archive 复现私有安装，并让 Adapter 在启动前消费回执，不能回退到 PATH 或任意同版本目录。
+2. OMP 模型表单沿用现有受信 Renderer 编辑流程；敏感配置落盘只在主进程私有目录，但用户主动编辑时会在设置页内存中短暂存在，不进入对话或 TaskHub。
+3. 真实模型、命令核验、外传核验、结果对账和恢复仍未验收，因此 OMP 继续测试专用，不能作为默认或生产 Runtime。
+
+### 下一阶段计划
+
+等待人工或审查 Agent 验收 P1B。通过后进入 P1C：接通受信回执启动源，执行一条真实 OMP Coding 工作树旅程，核对 `candidateDigest`、Diff/Delivery 与同 Attempt/Runtime/session/worktree 恢复；不扩大到 WORK 或发布。
+
 ## 2026-09-02｜RUNTIME-R4 OMP ACP Runtime P1A 权限契约与接缝 Spike
 
 ### 本阶段目标与状态

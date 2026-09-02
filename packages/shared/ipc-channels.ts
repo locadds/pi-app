@@ -148,6 +148,8 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.coding.plan.observe',
   'ipc:xiaogui.coding.plan.perform',
   'ipc:xiaogui.coding.review.read',
+  'ipc:xiaogui.omp.models.get',
+  'ipc:xiaogui.omp.models.set',
   'ipc:xiaogui.hub.observe',
   'ipc:xiaogui.hub.execution.start',
   'ipc:xiaogui.hub.execution.startBatch',

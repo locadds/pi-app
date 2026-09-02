@@ -23,8 +23,11 @@ import { ModelsSdkProviderSection } from './models-sdk-provider-section'
 import { saveModelsConfigDraft } from './save-models-config'
 import { invalidateAvailableModels, prefetchAvailableModels } from '@renderer/lib/available-models-cache'
 
+type ModelsConfigTarget = 'PI' | 'OMP'
+
 export function ModelsSettingsPanel() {
   const { t } = useTranslation('settings')
+  const [target, setTarget] = useState<ModelsConfigTarget>('PI')
   const [filePath, setFilePath] = useState('')
   const [baseline, setBaseline] = useState<PiModelsConfigPayload | null>(null)
   const [draft, setDraft] = useState<PiModelsConfigPayload | null>(null)
@@ -49,14 +52,21 @@ export function ModelsSettingsPanel() {
   } | null>(null)
 
   const load = useCallback(async () => {
-    const res = await ipcClient.invoke('pi.models.get', {})
+    const res = await ipcClient.invoke(
+      target === 'OMP' ? 'xiaogui.omp.models.get' : 'pi.models.get',
+      {},
+    )
     setFilePath(res?.path || '')
     setParseError(res?.parseError || null)
     setSchemaError(res?.schemaError || null)
     setLoadWarnings(res?.warnings?.length ? res.warnings : [])
     setSaveError(null)
-    const snapshot = await ipcClient.invoke('model.list', { scope: 'settings' }).catch(() => ({ models: [] }))
-    setSettingsModels(snapshot?.models || [])
+    if (target === 'PI') {
+      const snapshot = await ipcClient.invoke('model.list', { scope: 'settings' }).catch(() => ({ models: [] }))
+      setSettingsModels(snapshot?.models || [])
+    } else {
+      setSettingsModels([])
+    }
     const cfg = res?.config ?? { providers: {} }
     setBaseline(cloneConfig(cfg))
     setDraft(cloneConfig(cfg))
@@ -66,10 +76,12 @@ export function ModelsSettingsPanel() {
       for (const k of keys) if (next[k] === undefined) next[k] = keys.length <= 3
       return next
     })
-  }, [])
+  }, [target])
 
   useEffect(() => {
     setLoading(true)
+    setBaseline(null)
+    setDraft(null)
     void load()
       .catch((e: unknown) => {
         toast.error((e instanceof Error ? e.message : String(e)) || t('models.loadFailedToast'))
@@ -98,11 +110,14 @@ export function ModelsSettingsPanel() {
       if (!draft || configEqual(draft, baseline)) return
       try {
         await saveModelsConfigDraft(draft, {
-          setConfig: (config) => ipcClient.invoke('pi.models.set', { config }),
-          onWritten: invalidateAvailableModels,
+          setConfig: (config) => ipcClient.invoke(
+            target === 'OMP' ? 'xiaogui.omp.models.set' : 'pi.models.set',
+            { config },
+          ),
+          onWritten: target === 'PI' ? invalidateAvailableModels : () => undefined,
           reload: load,
         })
-        prefetchAvailableModels()
+        if (target === 'PI') prefetchAvailableModels()
       } catch (error) {
         const message = error instanceof Error && error.message !== 'SAVE_FAILED'
           ? error.message
@@ -116,6 +131,8 @@ export function ModelsSettingsPanel() {
       notifySettingsDirtyChanged()
     },
   })
+
+  const dirty = !configEqual(draft, baseline)
 
   const sdkModelsByProvider = useMemo(() => {
     const byProvider: Record<string, ModelInfo[]> = {}
@@ -272,8 +289,12 @@ export function ModelsSettingsPanel() {
   return (
     <div className="space-y-5">
       <SettingsPageHeader
-        title={t('models.providerLabel')}
-        description={t('models.description', { path: filePath || '~/.pi/agent/models.json' })}
+        title={`${t('models.providerLabel')} · ${t(target === 'OMP' ? 'models.targetOmp' : 'models.targetPi')}`}
+        description={t('models.description', {
+          path: filePath || (target === 'OMP'
+            ? t('models.ompPrivatePath')
+            : '~/.pi/agent/models.json'),
+        })}
         action={
           <button
             type="button"
@@ -285,6 +306,31 @@ export function ModelsSettingsPanel() {
           </button>
         }
       />
+
+      <div className="inline-flex rounded-lg border border-border/70 bg-muted/25 p-1" aria-label={t('models.targetLabel')}>
+        {(['PI', 'OMP'] as const).map((candidate) => (
+          <button
+            key={candidate}
+            type="button"
+            disabled={dirty && candidate !== target}
+            aria-pressed={candidate === target}
+            onClick={() => setTarget(candidate)}
+            className={`rounded-md px-3 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+              candidate === target
+                ? 'bg-background font-medium text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {t(candidate === 'OMP' ? 'models.targetOmp' : 'models.targetPi')}
+          </button>
+        ))}
+      </div>
+
+      {target === 'OMP' && (
+        <p className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          {t('models.ompPrivateHint')}
+        </p>
+      )}
 
       {(parseError || schemaError || saveError) && (
         <div className="rounded-md border border-amber-500/35 bg-amber-500/10 whitespace-pre-wrap px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
@@ -430,7 +476,9 @@ export function ModelsSettingsPanel() {
         )}
       </section>
 
-      <ModelsSdkProviderSection providerIds={sdkProviderIds} modelsByProvider={sdkModelsByProvider} />
+      {target === 'PI' && (
+        <ModelsSdkProviderSection providerIds={sdkProviderIds} modelsByProvider={sdkModelsByProvider} />
+      )}
 
       {manualAddProviderId && draft?.providers[manualAddProviderId] && (
         <ManualModelAddDialog

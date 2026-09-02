@@ -24,6 +24,7 @@ import { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-mod
 import {
   XiaoguiTaskExecutionOrchestratorV1,
   type TaskExecutionAttemptPlanGateV1,
+  type TaskExecutionAttemptPermissionModeGateV1,
   type TaskExecutionAttemptRoleGateV1,
   type TaskExecutionInputStageV1,
   type TaskExecutionPermissionPortV1,
@@ -60,6 +61,66 @@ afterEach(async () => {
 })
 
 describe('XiaoguiTaskExecutionOrchestratorV1', () => {
+  it('freezes the selected permission mode before scheduling and reuses it during recovery', async () => {
+    const events: string[] = []
+    const hub = fakeHub(events)
+    const dbPath = await tempDb()
+    let selected: 'AUTO_APPROVE' | 'FULL_AUTONOMY' = 'AUTO_APPROVE'
+    const bindings = new Map<string, { mode: 'AUTO_APPROVE' | 'FULL_AUTONOMY'; policyDigest: string }>()
+    const permissionModeGate: TaskExecutionAttemptPermissionModeGateV1 = {
+      captureSelection: () => ({
+        schemaVersion: 1,
+        mode: selected,
+        source: 'USER_SELECTED',
+        policyDigest: `sha256:${selected.toLowerCase()}`,
+      }),
+      bindAttempt: (attemptId, selection) => {
+        const existing = bindings.get(attemptId)
+        if (existing && (
+          existing.mode !== selection.mode ||
+          existing.policyDigest !== selection.policyDigest
+        )) throw new Error('binding conflict')
+        bindings.set(attemptId, {
+          mode: selection.mode as 'AUTO_APPROVE' | 'FULL_AUTONOMY',
+          policyDigest: selection.policyDigest,
+        })
+      },
+      verifyAttemptBinding: (attemptId, selection) => {
+        const binding = bindings.get(attemptId)
+        return binding?.mode === selection.mode && binding.policyDigest === selection.policyDigest
+      },
+    }
+    const planGate: TaskExecutionAttemptPlanGateV1 = {
+      ensureAttemptPlan: vi.fn(async () => undefined),
+      isAttemptPlanApproved: vi.fn(async () => false),
+      markAttemptExecutionStarted: vi.fn(async () => undefined),
+      markAttemptExecutionDispatchFailed: vi.fn(async () => undefined),
+    }
+    const first = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      attemptPlanGate: planGate,
+      attemptPermissionModeGate: permissionModeGate,
+    })
+    await expect(first.start(request())).resolves.toMatchObject({
+      ok: true,
+      value: { attempt: { status: 'READY' } },
+    })
+    expect(bindings.get(ATTEMPT_ID)).toEqual({
+      mode: 'AUTO_APPROVE',
+      policyDigest: 'sha256:auto_approve',
+    })
+    await first.close()
+
+    selected = 'FULL_AUTONOMY'
+    const restarted = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      attemptPlanGate: planGate,
+      attemptPermissionModeGate: permissionModeGate,
+    })
+    await restarted.recover()
+    expect(bindings.get(ATTEMPT_ID)?.mode).toBe('AUTO_APPROVE')
+    expect(events).not.toContain('dispatch')
+    await restarted.close()
+  })
+
   it('keeps a prepared Attempt read-only until its exact execution plan is approved', async () => {
     const events: string[] = []
     const hub = fakeHub(events)
@@ -891,6 +952,7 @@ async function createOrchestrator(
     permissionScope?: TaskExecutionPermissionScopePortV1
     attemptPlanGate?: TaskExecutionAttemptPlanGateV1
     attemptRoleGate?: TaskExecutionAttemptRoleGateV1
+    attemptPermissionModeGate?: TaskExecutionAttemptPermissionModeGateV1
   },
   inputStageOverride?: TaskExecutionInputStageV1,
 ): Promise<XiaoguiTaskExecutionOrchestratorV1> {

@@ -308,6 +308,7 @@ function getDefaultRuntimeLifecycle(): DefaultRuntimeLifecycleV1 {
     userDataDir,
     productionEnabled: effectiveEnabled,
     lookup: sessionScopeResolverV1,
+    codingPermissionModeProvider: () => configStore.get('xiaoguiCodingPermissionMode'),
     ...(piE2eLaunch
       ? {
           piE2eScriptedRuntimeLaunch: piE2eLaunch,

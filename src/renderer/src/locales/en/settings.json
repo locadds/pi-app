@@ -398,6 +398,11 @@
   },
   "models": {
     "title": "Model Providers",
+    "targetLabel": "Model configuration target",
+    "targetPi": "Xiaogui default models",
+    "targetOmp": "Oh My Pi (test)",
+    "ompPrivatePath": "Xiaogui private directory / Oh My Pi / models.json",
+    "ompPrivateHint": "Models and credentials here are written only to the main-process-managed private Oh My Pi directory. They do not enter TaskHub, conversations, or public paths. OMP remains test-approved only.",
     "description": "Edit {{path}}, consistent with the Xiaogui runtime. Model list reloads after save.",
     "reload": "Reload",
     "loading": "Loading models.json…",

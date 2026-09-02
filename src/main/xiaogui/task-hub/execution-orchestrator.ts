@@ -13,7 +13,11 @@ import type {
   TaskRunId,
 } from '@shared/xiaogui-collaboration-hub'
 import type { RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
-import type { CodingPermissionIntentV1 } from '@shared/xiaogui-coding-extension-pack'
+import type {
+  CodingPermissionIntentV1,
+  CodingPermissionModeV1,
+} from '@shared/xiaogui-coding-extension-pack'
+import type { CodingPermissionModeSelectionV1 } from '../coding-extensions/permission-mode-module'
 import { safeCodingPermissionDisplayMetadata } from '../coding-extensions/safe-display-metadata'
 import { XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 } from '@shared/xiaogui-task-execution'
 import type {
@@ -67,6 +71,8 @@ interface ExecutionSagaRowV1 {
   phase: ExecutionSagaPhaseV1
   task_run_id: TaskRunId | null
   attempt_id: AttemptId | null
+  permission_mode: CodingPermissionModeV1 | null
+  permission_policy_digest: string | null
   last_safe_code: string | null
 }
 
@@ -121,6 +127,13 @@ export interface TaskExecutionAttemptRoleGateV1 {
   isAttemptRoleExecutable(attemptId: AttemptId): Promise<boolean>
 }
 
+/** TaskHub-owned immutable permission selection for one Attempt. */
+export interface TaskExecutionAttemptPermissionModeGateV1 {
+  captureSelection(): CodingPermissionModeSelectionV1
+  bindAttempt(attemptId: AttemptId, selection: CodingPermissionModeSelectionV1): unknown
+  verifyAttemptBinding(attemptId: AttemptId, selection: CodingPermissionModeSelectionV1): boolean
+}
+
 export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly dbPath: string
   readonly application: CollaborationHubApplicationV1
@@ -133,6 +146,7 @@ export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly permissionScope?: TaskExecutionPermissionScopePortV1
   readonly attemptPlanGate?: TaskExecutionAttemptPlanGateV1
   readonly attemptRoleGate?: TaskExecutionAttemptRoleGateV1
+  readonly attemptPermissionModeGate?: TaskExecutionAttemptPermissionModeGateV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
 }
@@ -304,9 +318,15 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     } catch {
       return executionError('EXECUTION_INPUT_INVALID')
     }
+    let permissionModeSelection: CodingPermissionModeSelectionV1 | undefined
+    try {
+      permissionModeSelection = this.options.attemptPermissionModeGate?.captureSelection()
+    } catch {
+      return executionError('INTERNAL')
+    }
     let operation: ExecutionSagaRowV1
     try {
-      operation = this.saga.acquire(input, grants, this.id('xhbe'))
+      operation = this.saga.acquire(input, grants, this.id('xhbe'), permissionModeSelection)
     } catch (error) {
       return error instanceof ActiveExecutionConflict
         ? executionError('EXECUTION_IN_PROGRESS')
@@ -350,6 +370,12 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     if (operation.phase === 'FAILED') return executionError('WORKSPACE_PREPARATION_FAILED')
 
     if (operation.attempt_id) {
+      if (!this.verifyPermissionModeBinding(operation)) {
+        this.saga.advance(operation.operation_id, 'FAILED', {
+          lastSafeCode: 'PERMISSION_MODE_BINDING_INVALID',
+        })
+        return executionError('WORKSPACE_PREPARATION_FAILED')
+      }
       const authority = await this.authority(operation)
       if (!authority.ok) return authority.outcome
       const status = authority.result.attempt.status
@@ -414,6 +440,13 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
         attemptId: scheduled.value.attemptId,
       })
       operation = this.saga.byId(operation.operation_id)!
+      if (!this.bindPermissionMode(operation)) {
+        await this.closeWorkspaceFailure(operation)
+        this.saga.advance(operation.operation_id, 'FAILED', {
+          lastSafeCode: 'PERMISSION_MODE_BINDING_FAILED',
+        })
+        return executionError('WORKSPACE_PREPARATION_FAILED')
+      }
     }
 
     if (operation.phase === 'SCHEDULED') {
@@ -702,6 +735,33 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     }
   }
 
+  private bindPermissionMode(operation: ExecutionSagaRowV1): boolean {
+    const gate = this.options.attemptPermissionModeGate
+    if (!gate) return true
+    if (!operation.attempt_id) return false
+    const selection = permissionModeSelectionOf(operation)
+    if (!selection) return false
+    try {
+      gate.bindAttempt(operation.attempt_id, selection)
+      return gate.verifyAttemptBinding(operation.attempt_id, selection)
+    } catch {
+      return false
+    }
+  }
+
+  private verifyPermissionModeBinding(operation: ExecutionSagaRowV1): boolean {
+    const gate = this.options.attemptPermissionModeGate
+    if (!gate) return true
+    if (!operation.attempt_id) return false
+    const selection = permissionModeSelectionOf(operation)
+    if (!selection) return false
+    try {
+      return gate.verifyAttemptBinding(operation.attempt_id, selection)
+    } catch {
+      return false
+    }
+  }
+
   private runtimePermissionDecisionFactory(
     operation: ExecutionSagaRowV1,
     current: XiaoguiTaskExecutionStartResultV1,
@@ -983,7 +1043,8 @@ class SqliteTaskExecutionSagaStoreV1 {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
-               prompt_blob, grants_json, phase, task_run_id, attempt_id, last_safe_code
+               prompt_blob, grants_json, phase, task_run_id, attempt_id,
+               permission_mode, permission_policy_digest, last_safe_code
           from task_execution_sagas
          where project_id = ? and session_key = ? and flow_id = ? and input_digest = ?
            and phase not in ('FAILED', 'SETTLED')
@@ -996,7 +1057,8 @@ class SqliteTaskExecutionSagaStoreV1 {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
-               prompt_blob, grants_json, phase, task_run_id, attempt_id, last_safe_code
+               prompt_blob, grants_json, phase, task_run_id, attempt_id,
+               permission_mode, permission_policy_digest, last_safe_code
           from task_execution_sagas
          where phase not in ('FAILED', 'SETTLED')
          order by rowid
@@ -1019,7 +1081,8 @@ class SqliteTaskExecutionSagaStoreV1 {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
-               prompt_blob, grants_json, phase, task_run_id, attempt_id, last_safe_code
+               prompt_blob, grants_json, phase, task_run_id, attempt_id,
+               permission_mode, permission_policy_digest, last_safe_code
           from task_execution_sagas where operation_id = ?
       `)
       .get(operationId) as ExecutionSagaRowV1 | undefined
@@ -1029,7 +1092,8 @@ class SqliteTaskExecutionSagaStoreV1 {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
-               prompt_blob, grants_json, phase, task_run_id, attempt_id, last_safe_code
+               prompt_blob, grants_json, phase, task_run_id, attempt_id,
+               permission_mode, permission_policy_digest, last_safe_code
           from task_execution_sagas
          where project_id = ? and session_key = ? and attempt_id = ?
            and phase not in ('FAILED', 'SETTLED')
@@ -1042,6 +1106,7 @@ class SqliteTaskExecutionSagaStoreV1 {
     input: CanonicalExecutionInputV1,
     grants: readonly AttemptFileGrantV1[],
     operationId: string,
+    permissionModeSelection?: CodingPermissionModeSelectionV1,
   ): ExecutionSagaRowV1 {
     this.db.exec('begin immediate')
     try {
@@ -1055,8 +1120,9 @@ class SqliteTaskExecutionSagaStoreV1 {
         insert into task_execution_sagas (
           operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
           prompt_blob, grants_json, phase, task_run_id, attempt_id,
+          permission_mode, permission_policy_digest,
           last_safe_code, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, 'ACCEPTED', null, null, null, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, 'ACCEPTED', null, null, ?, ?, null, ?, ?)
       `).run(
         operationId,
         input.address.projectId,
@@ -1066,6 +1132,8 @@ class SqliteTaskExecutionSagaStoreV1 {
         input.inputDigest,
         Buffer.from(input.prompt, 'utf8'),
         JSON.stringify(grants),
+        permissionModeSelection?.mode ?? null,
+        permissionModeSelection?.policyDigest ?? null,
         now,
         now,
       )
@@ -1129,6 +1197,8 @@ class SqliteTaskExecutionSagaStoreV1 {
         phase text not null,
         task_run_id text,
         attempt_id text,
+        permission_mode text,
+        permission_policy_digest text,
         last_safe_code text,
         created_at text not null,
         updated_at text not null
@@ -1144,6 +1214,24 @@ class SqliteTaskExecutionSagaStoreV1 {
     if (!columns.some((column) => column.name === 'target_task_run_id')) {
       this.db.exec('alter table task_execution_sagas add column target_task_run_id text')
     }
+    if (!columns.some((column) => column.name === 'permission_mode')) {
+      this.db.exec('alter table task_execution_sagas add column permission_mode text')
+    }
+    if (!columns.some((column) => column.name === 'permission_policy_digest')) {
+      this.db.exec('alter table task_execution_sagas add column permission_policy_digest text')
+    }
+  }
+}
+
+function permissionModeSelectionOf(
+  operation: ExecutionSagaRowV1,
+): CodingPermissionModeSelectionV1 | null {
+  if (!operation.permission_mode || !operation.permission_policy_digest) return null
+  return {
+    schemaVersion: 1,
+    mode: operation.permission_mode,
+    source: 'USER_SELECTED',
+    policyDigest: operation.permission_policy_digest,
   }
 }
 

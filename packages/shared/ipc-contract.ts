@@ -516,6 +516,8 @@ export interface IpcMethodMap {
   'pi.models.get': { request: PiModelsGetRequest; response: PiModelsGetResponse }
   'pi.models.set': { request: PiModelsSetRequest; response: PiModelsSetResponse }
   'pi.models.fetch': { request: PiModelsFetchRequest; response: PiModelsFetchResponse }
+  'xiaogui.omp.models.get': { request: PiModelsGetRequest; response: PiModelsGetResponse }
+  'xiaogui.omp.models.set': { request: PiModelsSetRequest; response: PiModelsSetResponse }
   'thinkingLevel.set': { request: ThinkingLevelSetRequest; response: ThinkingLevelSetResponse }
   'commands.list': { request: CommandsListRequest; response: CommandsListResponse }
   'review.getDiff': { request: ReviewGetDiffRequest; response: ReviewGetDiffResponse }

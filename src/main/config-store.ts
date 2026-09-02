@@ -5,6 +5,7 @@ import { DEFAULT_ICON_THEME, type IconTheme } from '@shared/icon-theme'
 import { DEFAULT_TIMELINE_MAX_AUTO_EXPANDED_TOOLS } from '@shared/timeline-settings'
 import { bindSecretStoreBacking } from './secret-store'
 import { nextRecentProjects } from './recent-projects'
+import type { CodingPermissionModeV1 } from '@shared/xiaogui-coding-extension-pack'
 
 export interface StoreSchema {
   recentProjects: string[]
@@ -68,6 +69,8 @@ export interface StoreSchema {
   agentRuntime: { mode: 'host' | 'wsl'; distro: string | null }
   /** 小规 Kimi 生产执行开关；仅在下次运行时组合创建时生效 */
   xiaoguiKimiProductionEnabled: boolean
+  /** CODING 新 Attempt 的权限档位；创建后由 TaskHub 冻结到 Attempt。 */
+  xiaoguiCodingPermissionMode: CodingPermissionModeV1
 }
 
 const store = new Store<StoreSchema>({
@@ -123,6 +126,7 @@ const store = new Store<StoreSchema>({
     } as AsrConfig,
     agentRuntime: { mode: 'host', distro: null },
     xiaoguiKimiProductionEnabled: false,
+    xiaoguiCodingPermissionMode: 'CONFIRM_EACH',
   },
 })
 
