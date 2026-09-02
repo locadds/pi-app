@@ -41,8 +41,8 @@ nul
 .env.*
 !.env.example
 
-# Agent / local assistant instructions (本机约定，不进仓库)
-AGENTS.md
+# Repository-wide Agent instructions live in the tracked root AGENTS.md.
+# Machine-local Agent state belongs under the already ignored .pi/ directory.
 
 # IDE / editor local (not shipped)
 .cursor/

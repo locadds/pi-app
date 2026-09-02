@@ -4,6 +4,10 @@
 
 Standalone docs for **pi Desktop compatibility layer v2**. Copy to any AI to author **`adapter.json`** for **pi npm extensions** without reading the whole pi-app tree.
 
+## Mandatory architecture premise for agents
+
+Before developing any feature, inspect Pi native capabilities, available Skills, and Pi plugins/Extensions/Packages. If one can solve the real task, integrate and bundle it instead of changing the framework. The authoritative decision is [ADR-PI-NATIVE-SKILL-PLUGIN-FIRST.md](./adr/ADR-PI-NATIVE-SKILL-PLUGIN-FIRST.md); repository agents must also follow the root [AGENTS.md](../AGENTS.md).
+
 ## User guide (install, shortcuts, adapter list)
 
 | Path | Purpose |

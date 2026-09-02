@@ -4,6 +4,10 @@
 
 本目录是 **pi Desktop 兼容层 v2** 的独立说明包，可整份复制给任意 AI，用于为 **pi npm 扩展** 编写或更新 **`adapter.json`**，无需阅读整个 pi-app 源码。
 
+## Agent 必读架构前提
+
+每开发一个功能前，先实查 Pi 原生能力、可用 Skill 和 Pi 插件/Extension/Package。只要其中之一能完成真实任务，就进行集成与安装包装配，不修改框架。权威决策见 [ADR-PI-NATIVE-SKILL-PLUGIN-FIRST.md](./adr/ADR-PI-NATIVE-SKILL-PLUGIN-FIRST.md)；仓库内 Agent 还必须遵守根 [AGENTS.md](../AGENTS.md)。
+
 ## 用户指南（安装、快捷键、适配器列表）
 
 | 路径 | 用途 |
