@@ -1,5 +1,31 @@
 # 小规开发阶段状态
 
+## 2026-09-02｜WORK/CODING 集成与 Prompt A1—B5 人工验收通过并进入正式主线
+
+### 入线状态
+
+- 人工验收：2026-09-02 用户明确确认通过，并授权进入主线。
+- 正式产品线：`feat/xiaogui-integration`。
+- 已验收来源：`codex/coding-work-integration-v1@52432efc1b9b11b1df313e22f69571193f28a929`。
+- 普通合并提交：`9d516c23b937517baca980ab1685c5ee2f4ce020`；两个父提交分别为原正式主线 `0820b64297ddb38fae41c3241cf37f5b36abf306` 与已验收来源 `52432efc1b9b11b1df313e22f69571193f28a929`。
+- 合并方式：在隔离晋级工作树执行 `--no-ff` 普通合并；无冲突，合并树与已验收来源树完全一致。
+- 合并后验证：Prompt、intake、长文件名入口与 CODING 角色链路共 14 个文件、134 项测试通过；`npm run typecheck` 与 `npx electron-vite build` 通过，构建仅有既有动态导入提示；`git diff --check` 通过。
+- 发布边界：本次只表示源码进入正式产品线；未制作新的 Portable、安装包或正式发布版本。
+
+### 验收范围
+
+1. WORK 与完整 CODING Extension Pack 集成，以及新会话默认受控 `EXECUTE`。
+2. A1：模板整理子模型 `riskFlags` 八值契约与一次 repair。
+3. A2：长中文 `.doc` 快捷入口与能力选择解耦。
+4. A3：封闭式 sticky 确认语法及真实成功结果续接门。
+5. B1/B2/B3/B5：共享路径规则、文档术语、工具 guideline 结构化、Runtime Facts 去噪与旧版 DOC 转换错误码拆分。
+6. B4：CODING 三角色五段式 Prompt、旧默认 digest 精确迁移、用户修改保留、迁移幂等及新旧 Attempt 快照隔离。
+
+### 保持不变
+
+- Prompt 六层组装顺序、模板领域状态机、Office/Univer、DOCX 降级路径、TaskHub、安全门、数据库表结构和 Agent 可见 Tool 集合均未因最终入线追加修改。
+- 既有阶段条目保留其当时的“候选/未验收”历史描述；本条是覆盖这些历史状态的最新结论。
+
 ## 2026-09-02｜Prompt 分层优化 B4：CODING 默认角色 Prompt 与兼容迁移
 
 ### 阶段状态
