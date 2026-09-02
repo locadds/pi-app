@@ -78,6 +78,34 @@ describe('HubTaskWorkerStateStoreV1', () => {
     ])
   })
 
+  it('removes a pending receipt only after its exact verified Hub acknowledgement', () => {
+    const store = createInMemoryHubTaskWorkerStateStoreV1()
+    store.upsertAssignment(detail())
+    store.markOpened('xgh_assignment_1', '2026-09-01T00:01:00.000Z')
+    store.enqueueReceipt(receipt(1), '2026-09-01T00:01:00.000Z')
+
+    expect(store.acknowledgeReceipt({
+      receiptId: 'xgh_receipt_wrong',
+      eventId: 'xgh_event_wrong',
+      verified: true,
+      duplicate: false,
+      occurredAt: '2026-09-01T00:00:00.000Z',
+      receivedAt: '2026-09-01T00:02:00.000Z',
+    })).toBe(false)
+    expect(store.pendingReceipts()).toHaveLength(1)
+
+    expect(store.acknowledgeReceipt({
+      receiptId: 'xgh_receipt_1',
+      eventId: 'xgh_event_1',
+      verified: true,
+      duplicate: true,
+      occurredAt: '2026-09-01T00:00:00.000Z',
+      receivedAt: '2026-09-01T00:02:00.000Z',
+    })).toBe(true)
+    expect(store.pendingReceipts()).toEqual([])
+    expect(store.requireAssignment('xgh_assignment_1').localDeliveryState).toBe('HUB_CONFIRMED')
+  })
+
   it('removes only stale local package projections after an authoritative active-node snapshot', () => {
     const store = createInMemoryHubTaskWorkerStateStoreV1()
     store.upsertAssignment(detail())

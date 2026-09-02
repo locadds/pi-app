@@ -166,7 +166,7 @@ describe('HubTaskInboxSection', () => {
     expect(await screen.findByText('整理院内资料')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '同步' }))
 
-    await waitFor(() => expect(screen.getByText('任务状态已发生变化，本机连接和收件箱已保留；请同步后再操作。')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('任务或回执状态已发生变化，本机连接、收件箱和签名回执均已保留；请同步后再操作。')).toBeInTheDocument())
     expect(screen.getByText('整理院内资料')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '同步' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '登录并配对此小规' })).toBeNull()

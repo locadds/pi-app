@@ -119,6 +119,63 @@ describe('HttpXiaoguiHubTaskWorkerPortV1', () => {
     )
   })
 
+  it('submits only the signed receipt envelope and accepts an idempotent Hub acknowledgement', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response({
+      data: {
+        receiptId: 'xgh_receipt_1',
+        eventId: 'xgh_event_1',
+        verified: true,
+        duplicate: true,
+        occurredAt: '2026-09-01T00:01:00.000Z',
+        receivedAt: '2026-09-01T00:02:00.000Z',
+      },
+    }))
+    const port = createHttpXiaoguiHubTaskWorkerPortV1({
+      endpoint: 'http://hub.intranet:3000',
+      accessToken: 'account-jwt',
+      node: { deviceToken: 'node-token' },
+      fetchImpl,
+    })
+
+    await expect(port.submitReceipt({
+      schemaVersion: 'xiaogui.task-receipt.v1',
+      eventId: 'xgh_event_1',
+      assignmentId: 'xgh_assignment_1',
+      taskId: 'xgh_task_1',
+      subjectId: 'xgh_subject_1',
+      nodeId: 'xgh_node_1',
+      keyId: 'ed25519:test-key',
+      eventType: 'USER_OPENED',
+      packageSha256: PACKAGE_SHA256,
+      occurredAt: '2026-09-01T00:01:00.000Z',
+      sequence: 2,
+      resultSha256: null,
+      signature: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    })).resolves.toEqual({
+      receiptId: 'xgh_receipt_1',
+      eventId: 'xgh_event_1',
+      verified: true,
+      duplicate: true,
+      occurredAt: '2026-09-01T00:01:00.000Z',
+      receivedAt: '2026-09-01T00:02:00.000Z',
+    })
+
+    expect(fetchImpl).toHaveBeenCalledWith('http://hub.intranet:3000/api/v2/taskhub/worker/receipts', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({
+        authorization: 'Bearer account-jwt',
+        'x-xiaogui-node-token': 'node-token',
+      }),
+    }))
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>
+    expect(body).toEqual(expect.objectContaining({
+      eventId: 'xgh_event_1',
+      signature: expect.any(String),
+    }))
+    expect(body).not.toHaveProperty('privateKeyPem')
+    expect(body).not.toHaveProperty('deviceToken')
+  })
+
   it('maps a replaced node to the dedicated safe status', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(response({ error: { code: 'FORBIDDEN', message: 'node was replaced' } }, 403))
     const port = createHttpXiaoguiHubTaskWorkerPortV1({

@@ -1,6 +1,8 @@
 import type {
   XiaoguiHubNodePairRequestV1,
   XiaoguiHubNodePairResponseV1,
+  XiaoguiTaskDeliveryReceiptV1,
+  XiaoguiTaskReceiptAckV1,
 } from '@shared/xiaogui-hub-task-contract'
 import type {
   HubTaskWorkerAssignmentDetailV1,
@@ -155,6 +157,15 @@ class HttpXiaoguiHubTaskWorkerPortV1 implements XiaoguiHubTaskWorkerPortV1 {
     return parseDetail(payload)
   }
 
+  async submitReceipt(receipt: XiaoguiTaskDeliveryReceiptV1): Promise<XiaoguiTaskReceiptAckV1> {
+    const payload = await this.request('/worker/receipts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(receipt),
+    }, true)
+    return parseReceiptAck(payload)
+  }
+
   private async request(path: string, init: RequestInit, needsNodeToken: boolean): Promise<unknown> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.accessToken}`,
@@ -245,6 +256,28 @@ function parseDetail(value: unknown): HubTaskWorkerAssignmentDetailV1 {
   const offer = parseOffer(source.offer)
   if (assignment.taskId !== offer.taskId) throw new HubTaskWorkerHttpErrorV1('RESPONSE_INVALID')
   return { assignment, offer }
+}
+
+function parseReceiptAck(value: unknown): XiaoguiTaskReceiptAckV1 {
+  const source = record(value)
+  if (
+    !isOpaqueId(source.receiptId)
+    || !isOpaqueId(source.eventId)
+    || source.verified !== true
+    || typeof source.duplicate !== 'boolean'
+    || !isTimestamp(source.occurredAt)
+    || !isTimestamp(source.receivedAt)
+  ) {
+    throw new HubTaskWorkerHttpErrorV1('RESPONSE_INVALID')
+  }
+  return {
+    receiptId: source.receiptId,
+    eventId: source.eventId,
+    verified: true,
+    duplicate: source.duplicate,
+    occurredAt: source.occurredAt,
+    receivedAt: source.receivedAt,
+  }
 }
 
 function parseAssignment(value: unknown): HubTaskWorkerAssignmentV1 {

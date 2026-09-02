@@ -273,7 +273,7 @@ export function HubTaskInboxSection({
         <>
           {status.pendingReceiptCount > 0 && (
             <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
-              有 {status.pendingReceiptCount} 条本机回执等待 Hub 验证同步；在 H1-4 前不会标记为“已送达”。
+              有 {status.pendingReceiptCount} 条本机签名回执等待 Hub 验证同步；联网后会按顺序重试。
             </div>
           )}
           {items.length === 0 ? (
@@ -371,7 +371,7 @@ function errorText(code: string): string {
     case 'HUB_WORKER_NODE_REVOKED':
       return '这台小规已被新设备替换，已锁定本地任务内容。'
     case 'HUB_WORKER_STATE_CONFLICT':
-      return '任务状态已发生变化，本机连接和收件箱已保留；请同步后再操作。'
+      return '任务或回执状态已发生变化，本机连接、收件箱和签名回执均已保留；请同步后再操作。'
     case 'HUB_WORKER_UNCONFIGURED':
       return '请先登录并配对此小规。'
     case 'HUB_ASSIGNMENT_NOT_READY':

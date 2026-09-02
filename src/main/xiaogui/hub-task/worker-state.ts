@@ -2,6 +2,7 @@ import type { HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
 import {
   parseXiaoguiTaskDeliveryReceiptV1,
   type XiaoguiTaskDeliveryReceiptV1,
+  type XiaoguiTaskReceiptAckV1,
 } from '@shared/xiaogui-hub-task-contract'
 
 /**
@@ -35,7 +36,10 @@ export interface HubTaskWorkerAssignmentDetailV1 {
   offer: HubTaskWorkerOfferV1
 }
 
-export type HubTaskWorkerLocalDeliveryStateV1 = 'NOT_OPENED' | 'PENDING_H1_4_RECEIPT'
+export type HubTaskWorkerLocalDeliveryStateV1 =
+  | 'NOT_OPENED'
+  | 'PENDING_H1_4_RECEIPT'
+  | 'HUB_CONFIRMED'
 
 export interface HubTaskWorkerPlanDraftBindingV1 extends HubAddressV1 {
   flowId: string
@@ -85,6 +89,12 @@ export interface HubTaskWorkerStateStoreV1 {
   reconcileAssignments(authoritativeAssignmentIds: readonly string[]): void
   markOpened(assignmentId: string, openedAt: string): HubTaskWorkerInboxEntryV1
   enqueueReceipt(receipt: XiaoguiTaskDeliveryReceiptV1, queuedAt: string): void
+  /**
+   * Removes exactly one durable receipt only after the Hub's verified ACK.
+   * The event id is the idempotency key; an ACK for any other event is never
+   * allowed to advance this local queue.
+   */
+  acknowledgeReceipt(ack: XiaoguiTaskReceiptAckV1): boolean
   pendingReceipts(): readonly HubTaskWorkerPendingReceiptV1[]
   nextReceiptSequence(): number
   bindPlanDraft(assignmentId: string, binding: HubTaskWorkerPlanDraftBindingV1): void
@@ -226,6 +236,40 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
     this.persist()
   }
 
+  acknowledgeReceipt(ack: XiaoguiTaskReceiptAckV1): boolean {
+    const pending = this.state.receipts[ack.eventId]
+    if (!pending || ack.verified !== true || pending.receipt.eventId !== ack.eventId) return false
+
+    const receipts = { ...this.state.receipts }
+    delete receipts[ack.eventId]
+
+    let assignments = this.state.assignments
+    if (pending.receipt.eventType === 'USER_OPENED') {
+      const entry = assignments[pending.receipt.assignmentId]
+      if (
+        entry
+        && entry.openedAt !== null
+        && entry.assignment.taskId === pending.receipt.taskId
+        && entry.offer.packageSha256 === pending.receipt.packageSha256
+      ) {
+        assignments = {
+          ...assignments,
+          [pending.receipt.assignmentId]: {
+            ...entry,
+            // The Hub ACK is the first proof that this user-open event was
+            // accepted. A later poll remains authoritative for the delivery
+            // state itself, but the renderer no longer calls it merely local.
+            localDeliveryState: 'HUB_CONFIRMED',
+          },
+        }
+      }
+    }
+
+    this.state = { ...this.state, assignments, receipts }
+    this.persist()
+    return true
+  }
+
   pendingReceipts(): readonly HubTaskWorkerPendingReceiptV1[] {
     return Object.values(this.state.receipts)
       .map((entry) => ({ receipt: cloneReceipt(entry.receipt), queuedAt: entry.queuedAt }))
@@ -348,7 +392,11 @@ function isStoredEntry(value: unknown, assignmentId: string): value is HubTaskWo
   if (!isRecord(value) || !isStoredAssignment(value.assignment, assignmentId) || !isStoredOffer(value.offer)) return false
   if (value.assignment.taskId !== value.offer.taskId) return false
   if (value.openedAt !== null && !isTimestamp(value.openedAt)) return false
-  if (value.localDeliveryState !== 'NOT_OPENED' && value.localDeliveryState !== 'PENDING_H1_4_RECEIPT') return false
+  if (
+    value.localDeliveryState !== 'NOT_OPENED'
+    && value.localDeliveryState !== 'PENDING_H1_4_RECEIPT'
+    && value.localDeliveryState !== 'HUB_CONFIRMED'
+  ) return false
   return value.localPlanDraft === null || isStoredPlanDraft(value.localPlanDraft)
 }
 

@@ -9,6 +9,7 @@ import {
   type XiaoguiHubNodePairResponseV1,
   type XiaoguiTaskDeliveryReceiptUnsignedV1,
   type XiaoguiTaskDeliveryReceiptV1,
+  type XiaoguiTaskReceiptAckV1,
 } from '@shared/xiaogui-hub-task-contract'
 import type { CollaborationHubApplicationV1 } from '../task-hub/application'
 import { signXiaoguiTaskDeliveryReceiptV1 } from './receipt-crypto'
@@ -29,6 +30,8 @@ export interface XiaoguiHubTaskWorkerPortV1 {
   submitDecision(assignmentId: string, decision: 'ACCEPT' | 'REJECT'): Promise<HubTaskWorkerAssignmentDetailV1>
   returnAssignment(assignmentId: string): Promise<HubTaskWorkerAssignmentDetailV1>
   claimOffer(taskId: string): Promise<HubTaskWorkerAssignmentDetailV1>
+  /** Main-process-only, signed evidence upload. The Hub returns no task body. */
+  submitReceipt(receipt: XiaoguiTaskDeliveryReceiptV1): Promise<XiaoguiTaskReceiptAckV1>
 }
 
 export interface HubTaskWorkerCredentialBundleV1 {
@@ -139,6 +142,7 @@ export function createHubTaskWorkerServiceV1(
 class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   private state: HubTaskWorkerPublicStatusV1
   private timer: NodeJS.Timeout | null = null
+  private receiptFlush: Promise<void> | null = null
 
   constructor(private readonly options: CreateHubTaskWorkerServiceOptionsV1) {
     const configured = Boolean(options.credentials.read())
@@ -229,6 +233,14 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     }
     try {
       const port = this.options.createPort(credentials)
+      let receiptFailure: unknown = null
+      try {
+        await this.flushPendingReceipts(port)
+      } catch (error) {
+        receiptFailure = error
+        this.recordPortFailure(error)
+        if (this.terminalActionCode()) return { ok: false, code: this.portFailureCode(error) }
+      }
       const snapshot = await port.pollAssignments(this.options.state.cursor())
       for (const assignment of snapshot.assignments) {
         const isNew = !this.options.state.hasAssignment(assignment.assignmentId)
@@ -240,6 +252,17 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       // reassigned during node replacement must not remain actionable locally.
       this.options.state.reconcileAssignments(snapshot.assignments.map((assignment) => assignment.assignmentId))
       this.options.state.setCursor(snapshot.cursor)
+      if (!receiptFailure) {
+        try {
+          // New packages add NODE_STORED evidence during this poll. Submit it
+          // in the same online turn, but never delete a record before its ACK.
+          await this.flushPendingReceipts(port)
+        } catch (error) {
+          receiptFailure = error
+          this.recordPortFailure(error)
+        }
+      }
+      if (receiptFailure) return { ok: false, code: this.portFailureCode(receiptFailure) }
       this.state = {
         configured: true,
         state: 'READY',
@@ -270,7 +293,13 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       return { ok: false, code: 'HUB_ASSIGNMENT_NOT_READY' }
     }
     const opened = this.options.state.markOpened(assignmentId, this.now())
-    if (!before.openedAt) this.enqueueReceipt('USER_OPENED', opened, credentials)
+    if (!before.openedAt) {
+      this.enqueueReceipt('USER_OPENED', opened, credentials)
+      // Opening is immediately durable even when offline. An online Worker
+      // starts a best-effort upload without making the local open wait on the
+      // network; refresh remains the authoritative reconciliation action.
+      this.requestReceiptFlush(credentials)
+    }
     return { ok: true, value: opened }
   }
 
@@ -293,6 +322,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       const detail = await this.options.createPort(credentials).submitDecision(assignmentId, decision)
       this.options.state.upsertAssignment(detail)
       this.enqueueReceipt(decision === 'ACCEPT' ? 'DIRECT_ACCEPTED' : 'DIRECT_REJECTED', detail, credentials)
+      this.requestReceiptFlush(credentials)
       return { ok: true, value: this.options.state.requireAssignment(assignmentId) }
     } catch (error) {
       this.recordPortFailure(error)
@@ -396,6 +426,38 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     this.options.state.enqueueReceipt(receipt, this.now())
   }
 
+  private requestReceiptFlush(credentials: HubTaskWorkerCredentialBundleV1): void {
+    void this.flushPendingReceipts(this.options.createPort(credentials)).catch((error) => {
+      // The signed record remains durable. Do not turn a local open/decision
+      // into a failed user action merely because the Hub is temporarily away.
+      this.recordPortFailure(error)
+    })
+  }
+
+  private flushPendingReceipts(port: XiaoguiHubTaskWorkerPortV1): Promise<void> {
+    if (this.receiptFlush) return this.receiptFlush
+
+    const work = this.flushPendingReceiptsSerial(port)
+    this.receiptFlush = work
+    void work.finally(() => {
+      if (this.receiptFlush === work) this.receiptFlush = null
+    }).catch(() => undefined)
+    return work
+  }
+
+  private async flushPendingReceiptsSerial(port: XiaoguiHubTaskWorkerPortV1): Promise<void> {
+    // Sequence order is part of the Hub anti-replay contract. Stop at the
+    // first non-ACKed item so a later receipt never leaps over it.
+    for (;;) {
+      const pending = this.options.state.pendingReceipts()[0]
+      if (!pending) return
+      const ack = await port.submitReceipt(pending.receipt)
+      if (!this.options.state.acknowledgeReceipt(ack)) {
+        throw new HubTaskWorkerReceiptAckError()
+      }
+    }
+  }
+
   private now(): string {
     return this.options.now?.() ?? new Date().toISOString()
   }
@@ -406,9 +468,11 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
 
   private recordPortFailure(error: unknown): void {
     if (isStateConflict(error)) {
-      // A 409 proves that the Hub is reachable and the current node
-      // credential was accepted. Keep both credentials and local packages;
-      // callers refresh the authoritative snapshot instead of re-pairing.
+      // A 409 is returned only after the Hub accepted the current node
+      // credential, but it may describe a task-state or receipt conflict
+      // (for example a replay or mismatched event payload). Keep the signed
+      // evidence and local packages; callers refresh instead of re-pairing or
+      // silently dropping the event.
       this.state = { ...this.state, configured: true, state: 'READY' }
       return
     }
@@ -442,6 +506,14 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     if (state === 'NODE_REVOKED') return 'HUB_WORKER_NODE_REVOKED'
     if (state === 'AUTHENTICATION_FAILED') return 'HUB_WORKER_AUTHENTICATION_FAILED'
     return 'HUB_WORKER_CONNECTION_FAILED'
+  }
+}
+
+class HubTaskWorkerReceiptAckError extends Error {
+  readonly code = 'RECEIPT_ACK_INVALID'
+
+  constructor() {
+    super('Hub receipt ACK was not valid for the pending local event')
   }
 }
 
