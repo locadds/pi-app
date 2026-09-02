@@ -133,6 +133,20 @@ describe('HttpXiaoguiHubTaskWorkerPortV1', () => {
     )
   })
 
+  it('keeps a normal task-state conflict distinct from a replaced node', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response({ error: { code: 'CONFLICT', message: 'decision already changed' } }, 409))
+    const port = createHttpXiaoguiHubTaskWorkerPortV1({
+      endpoint: 'http://hub.intranet:3000',
+      accessToken: 'account-jwt',
+      node: { deviceToken: 'node-token' },
+      fetchImpl,
+    })
+
+    await expect(port.pollAssignments(null)).rejects.toEqual(
+      expect.objectContaining<Partial<HubTaskWorkerHttpErrorV1>>({ code: 'STATE_CONFLICT' }),
+    )
+  })
+
   it('uses the narrow worker detail DTO and does not infer missing identities', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(response({
       data: {

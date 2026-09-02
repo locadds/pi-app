@@ -70,6 +70,7 @@ export type HubTaskWorkerServiceErrorCodeV1 =
   | 'HUB_WORKER_UNCONFIGURED'
   | 'HUB_WORKER_AUTHENTICATION_FAILED'
   | 'HUB_WORKER_NODE_REVOKED'
+  | 'HUB_WORKER_STATE_CONFLICT'
   | 'HUB_WORKER_CONNECTION_FAILED'
   | 'HUB_WORKER_CREDENTIAL_STORAGE_UNAVAILABLE'
   | 'HUB_ASSIGNMENT_NOT_READY'
@@ -404,6 +405,13 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   }
 
   private recordPortFailure(error: unknown): void {
+    if (isStateConflict(error)) {
+      // A 409 proves that the Hub is reachable and the current node
+      // credential was accepted. Keep both credentials and local packages;
+      // callers refresh the authoritative snapshot instead of re-pairing.
+      this.state = { ...this.state, configured: true, state: 'READY' }
+      return
+    }
     const nextState = unavailableStateFor(error)
     if (nextState === 'NODE_REVOKED' || nextState === 'AUTHENTICATION_FAILED') {
       // A stale worker must not keep acting on cached task packages. Drop the
@@ -429,6 +437,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   }
 
   private portFailureCode(error: unknown): HubTaskWorkerServiceErrorCodeV1 {
+    if (isStateConflict(error)) return 'HUB_WORKER_STATE_CONFLICT'
     const state = unavailableStateFor(error)
     if (state === 'NODE_REVOKED') return 'HUB_WORKER_NODE_REVOKED'
     if (state === 'AUTHENTICATION_FAILED') return 'HUB_WORKER_AUTHENTICATION_FAILED'
@@ -492,4 +501,13 @@ function unavailableStateFor(error: unknown): HubTaskWorkerPublicStatusV1['state
   if (code === 'AUTHENTICATION_FAILED') return 'AUTHENTICATION_FAILED'
   if (code === 'NODE_REVOKED') return 'NODE_REVOKED'
   return 'OFFLINE'
+}
+
+function isStateConflict(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'STATE_CONFLICT',
+  )
 }

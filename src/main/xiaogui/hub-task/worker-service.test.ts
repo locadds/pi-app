@@ -292,4 +292,31 @@ describe('HubTaskWorkerServiceV1', () => {
     service.close()
     },
   )
+
+  it('keeps credentials and cached work when a reachable Hub reports a task-state conflict', async () => {
+    const state = createInMemoryHubTaskWorkerStateStoreV1()
+    const credentials = createInMemoryHubTaskWorkerCredentialsV1()
+    const hubPort = port()
+    const service = createHubTaskWorkerServiceV1({
+      state,
+      credentials,
+      createPort: () => hubPort,
+      application: { perform: vi.fn() },
+    })
+
+    await service.connect({
+      endpoint: 'http://hub.intranet:3000',
+      accessToken: 'hub-access-token-which-never-reaches-renderer',
+      installationIdDigest: `sha256:${'b'.repeat(64)}`,
+    })
+    expect(state.listAssignments()).toHaveLength(1)
+
+    ;(hubPort.pollAssignments as ReturnType<typeof vi.fn>).mockRejectedValue({ code: 'STATE_CONFLICT' })
+    await expect(service.refresh()).resolves.toEqual({ ok: false, code: 'HUB_WORKER_STATE_CONFLICT' })
+
+    expect(service.status()).toEqual(expect.objectContaining({ configured: true, state: 'READY' }))
+    expect(credentials.snapshot()).not.toBeNull()
+    expect(service.listInbox()).toHaveLength(1)
+    service.close()
+  })
 })

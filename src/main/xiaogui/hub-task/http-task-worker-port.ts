@@ -16,6 +16,7 @@ const WORKER_NODE_TOKEN_HEADER = 'x-xiaogui-node-token'
 export type HubTaskWorkerHttpErrorCodeV1 =
   | 'AUTHENTICATION_FAILED'
   | 'NODE_REVOKED'
+  | 'STATE_CONFLICT'
   | 'REQUEST_FAILED'
   | 'RESPONSE_INVALID'
 
@@ -172,7 +173,11 @@ class HttpXiaoguiHubTaskWorkerPortV1 implements XiaoguiHubTaskWorkerPortV1 {
     }
     if (!response.ok) {
       if (response.status === 401) throw new HubTaskWorkerHttpErrorV1('AUTHENTICATION_FAILED')
-      if (response.status === 403 || response.status === 409) throw new HubTaskWorkerHttpErrorV1('NODE_REVOKED')
+      // 403 is reserved by the Hub Worker contract for an old/revoked node.
+      // 409 instead means the task state changed (for example a duplicate
+      // decision); it must never trigger local credential destruction.
+      if (response.status === 403) throw new HubTaskWorkerHttpErrorV1('NODE_REVOKED')
+      if (response.status === 409) throw new HubTaskWorkerHttpErrorV1('STATE_CONFLICT')
       throw new HubTaskWorkerHttpErrorV1('REQUEST_FAILED')
     }
     try {

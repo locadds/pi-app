@@ -149,4 +149,26 @@ describe('HubTaskInboxSection', () => {
     expect(screen.getByText('这台小规已被新设备替换，已锁定本地任务内容。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '登录并配对此小规' })).toBeInTheDocument()
   })
+
+  it('keeps the existing inbox visible when Hub reports only a task-state conflict', async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'ipc:xiaogui.hubTask.status') {
+        return { ok: true, value: { configured: true, state: 'READY', lastSyncedAt: null, pendingReceiptCount: 0 } }
+      }
+      if (channel === 'ipc:xiaogui.hubTask.inbox.list') return { ok: true, value: [item()] }
+      if (channel === 'ipc:xiaogui.hubTask.refresh') return { ok: false, code: 'HUB_WORKER_STATE_CONFLICT' }
+      throw new Error(`unexpected IPC: ${channel}`)
+    })
+    window.piDesktop = { invoke } as unknown as Window['piDesktop']
+    const user = userEvent.setup()
+    render(<HubTaskInboxSection address={ADDRESS} onPlanDraftCreated={vi.fn()} />)
+
+    expect(await screen.findByText('整理院内资料')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '同步' }))
+
+    await waitFor(() => expect(screen.getByText('任务状态已发生变化，本机连接和收件箱已保留；请同步后再操作。')).toBeInTheDocument())
+    expect(screen.getByText('整理院内资料')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '同步' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '登录并配对此小规' })).toBeNull()
+  })
 })
