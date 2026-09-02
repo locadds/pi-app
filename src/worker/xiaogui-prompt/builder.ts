@@ -26,10 +26,24 @@ const LEGACY_DESIGN_END = '<!-- XIAOGUI:DESIGN:END -->'
 export const XIAOGUI_RUNTIME_FACTS_MAX_CHARACTERS_V1 = 600 as const
 export const XIAOGUI_PRODUCT_PROMPT_MAX_CHARACTERS_V1 = 7_000 as const
 
+export interface XiaoguiRuntimePromptSharedRuleV1 {
+  readonly id: string
+  readonly content: string
+}
+
 export interface XiaoguiRuntimePromptToolV1 {
   readonly name: string
   readonly promptSnippet?: string
   readonly promptGuidelines?: readonly string[]
+  readonly sharedRules?: readonly XiaoguiRuntimePromptSharedRuleV1[]
+  readonly usage?: {
+    readonly when: readonly string[]
+    readonly whenNot: readonly string[]
+  }
+  readonly protocol?: {
+    readonly sequence: readonly string[]
+    readonly output: readonly string[]
+  }
 }
 
 export interface BuildEffectiveXiaoguiPromptInputV1 {
@@ -38,6 +52,8 @@ export interface BuildEffectiveXiaoguiPromptInputV1 {
   readonly piSystemPrompt: string
   readonly piCustomSystem?: boolean
   readonly runtimeTools?: readonly XiaoguiRuntimePromptToolV1[]
+  /** Pi-only merged guidelines whose original Tool ownership is unavailable. */
+  readonly runtimeCompatibilityGuidelines?: readonly string[]
   readonly generatedAt?: string
 }
 
@@ -98,24 +114,69 @@ function manifestLayer(layer: XiaoguiPromptLayerV1): EffectivePromptLayerManifes
   }
 }
 
-function runtimeToolLayer(tools: readonly XiaoguiRuntimePromptToolV1[]): XiaoguiPromptLayerV1 | null {
+function runtimeToolLayer(
+  tools: readonly XiaoguiRuntimePromptToolV1[],
+  compatibilityGuidelines: readonly string[] = [],
+): XiaoguiPromptLayerV1 | null {
   const ordered = [...tools]
     .filter((tool) => tool.name.trim())
     .sort((a, b) => a.name.localeCompare(b.name))
-  const snippets = ordered
-    .map((tool) => ({ name: tool.name.trim(), snippet: normalize(tool.promptSnippet ?? '') }))
-    .filter((row) => row.snippet)
-    .map((row) => `- ${row.name}: ${row.snippet}`)
-  const guidelines = [...new Set(
-    ordered.flatMap((tool) => tool.promptGuidelines ?? []).map(normalize).filter(Boolean),
-  )]
-  if (snippets.length === 0 && guidelines.length === 0) return null
+  const sharedRules = new Map<string, string>()
+  for (const tool of ordered) {
+    for (const rule of tool.sharedRules ?? []) {
+      const id = rule.id.trim()
+      const content = normalize(rule.content)
+      if (!id || !content) continue
+      const existing = sharedRules.get(id)
+      if (existing && existing !== content) fail('XIAOGUI_PROMPT_SHARED_RULE_CONFLICT')
+      sharedRules.set(id, content)
+    }
+  }
+  const toolSections = ordered.flatMap((tool) => {
+    const snippet = normalize(tool.promptSnippet ?? '')
+    const usageRows = [
+      ...(tool.usage?.when ?? []),
+      ...(tool.usage?.whenNot ?? []),
+    ].map(normalize).filter(Boolean)
+    const protocolRows = [
+      ...(tool.protocol?.sequence ?? []),
+      ...(tool.protocol?.output ?? []),
+    ].map(normalize).filter(Boolean)
+    const structuredRows = new Set([
+      ...usageRows,
+      ...protocolRows,
+      ...(tool.sharedRules ?? []).map((rule) => normalize(rule.content)).filter(Boolean),
+    ])
+    const legacyRows = [...new Set(
+      (tool.promptGuidelines ?? [])
+        .map(normalize)
+        .filter((row) => row && !structuredRows.has(row)),
+    )]
+    const effectiveProtocolRows = [...protocolRows, ...legacyRows]
+    if (!snippet && usageRows.length === 0 && effectiveProtocolRows.length === 0) return []
+    const section = [`## ${tool.name.trim()}`]
+    if (snippet) section.push(`- 工具摘要：${snippet}`)
+    if (usageRows.length > 0) {
+      section.push(`### 何时调用/不调用\n${usageRows.map((row) => `- ${row}`).join('\n')}`)
+    }
+    if (effectiveProtocolRows.length > 0) {
+      section.push(`### 调用协议\n${effectiveProtocolRows.map((row) => `- ${row}`).join('\n')}`)
+    }
+    return [section.join('\n\n')]
+  })
+  const compatibilityRows = [...new Set(compatibilityGuidelines.map(normalize).filter(Boolean))]
+  if (toolSections.length === 0 && sharedRules.size === 0 && compatibilityRows.length === 0) return null
   const parts = ['# 当前可用工具说明（Pi custom SYSTEM 兼容层）']
-  if (snippets.length > 0) parts.push(`## Available Tools\n${snippets.join('\n')}`)
-  if (guidelines.length > 0) parts.push(`## Tool Guidelines\n${guidelines.map((row) => `- ${row}`).join('\n')}`)
+  if (sharedRules.size > 0) {
+    parts.push(`## 共享规则\n${[...sharedRules.values()].map((row) => `- ${row}`).join('\n')}`)
+  }
+  if (compatibilityRows.length > 0) {
+    parts.push(`## Pi 兼容规则\n${compatibilityRows.map((row) => `- ${row}`).join('\n')}`)
+  }
+  parts.push(...toolSections)
   return {
     id: 'pi.custom-system-tool-guidelines',
-    version: '0.84.1-compat.1',
+    version: '0.84.1-compat.2',
     kind: 'RUNTIME',
     required: true,
     content: parts.join('\n\n'),
@@ -125,7 +186,6 @@ function runtimeToolLayer(tools: readonly XiaoguiRuntimePromptToolV1[]): Xiaogui
 function runtimeFactsLayer(
   context: XiaoguiPromptContextV1,
   effectiveCapabilityIds: readonly string[],
-  actualToolCount: number,
 ): XiaoguiPromptLayerV1 {
   const content = normalize(`# 运行事实
 
@@ -134,14 +194,13 @@ function runtimeFactsLayer(
 - 工作区：${context.workspaceAvailable ? '可用' : '不可用'}
 - 项目信任：${context.projectTrusted ? '已信任' : '未信任'}
 - 本轮可用产品能力：${effectiveCapabilityIds.length > 0 ? effectiveCapabilityIds.join('、') : '无'}
-- Runtime 实际加载工具：${actualToolCount} 个
 - 约束：只能使用实际加载且符合当前阶段的工具；未列入可用产品能力的工作不得宣称已完成。`)
   if (content.length > XIAOGUI_RUNTIME_FACTS_MAX_CHARACTERS_V1) {
     fail('XIAOGUI_PROMPT_RUNTIME_FACTS_BUDGET_EXCEEDED')
   }
   return {
     id: 'xiaogui.runtime.facts',
-    version: '1.0.0',
+    version: '1.1.0',
     kind: 'RUNTIME',
     required: true,
     content,
@@ -234,12 +293,14 @@ export function createXiaoguiPromptBuilderV1(
         content: withoutLegacy.content,
       }
       const compatibilityLayer = input.piCustomSystem
-        ? runtimeToolLayer(input.runtimeTools ?? [])
+        ? runtimeToolLayer(
+            input.runtimeTools ?? [],
+            input.runtimeCompatibilityGuidelines ?? [],
+          )
         : null
       const factsLayer = runtimeFactsLayer(
         context,
         capabilities.map((capability) => capability.id),
-        toolNames.length,
       )
       const productLayers = [...selected, factsLayer]
       const effectiveLayers = [piLayer, ...productLayers, ...(compatibilityLayer ? [compatibilityLayer] : [])]

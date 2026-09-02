@@ -3,6 +3,7 @@ import {
   XIAOGUI_CAPABILITY_REGISTRY_ID_V1,
   XIAOGUI_CAPABILITY_REGISTRY_VERSION_V1,
   XIAOGUI_CAPABILITY_REGISTRY_V1,
+  XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1,
   XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
 } from '@shared/xiaogui-prompt-capabilities'
 
@@ -58,21 +59,41 @@ function capabilityRegistryMarkdown(): string {
 }
 
 function toolGuidelinesMarkdown(): string {
-  const sections = Object.values(XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1).map((tool) => [
-    `## ${tool.label}`,
-    '',
-    `- 工具名：\`${tool.name}\``,
-    `- 说明：${tool.description}`,
-    `- Prompt 摘要：${tool.promptSnippet}`,
-    '',
-    '使用准则：',
-    ...tool.promptGuidelines.map((guideline) => `- ${guideline}`),
-  ].join('\n'))
+  const sharedRules = Object.values(XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1)
+    .map((rule) => `- \`${rule.id}\`：${rule.content}`)
+  const sections = Object.values(XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1).map((tool) => {
+    const usage = [
+      ...(tool.usage?.when ?? []),
+      ...(tool.usage?.whenNot ?? []),
+    ]
+    const protocol = [
+      ...(tool.protocol?.sequence ?? []),
+      ...(tool.protocol?.output ?? []),
+    ]
+    return [
+      `## ${tool.name}`,
+      '',
+      `- 名称：${tool.label}`,
+      `- 说明：${tool.description}`,
+      `- Prompt 摘要：${tool.promptSnippet}`,
+      `- 共享规则引用：${tool.sharedRuleIds?.map((id) => `\`${id}\``).join('、') || '无'}`,
+      '',
+      '### 何时调用/不调用',
+      ...usage.map((guideline) => `- ${guideline}`),
+      '',
+      '### 调用协议',
+      ...protocol.map((guideline) => `- ${guideline}`),
+    ].join('\n')
+  })
 
   return [
     '# 小规 Tool Guidelines',
     '',
     '这是小规代码内置的只读工具使用准则视图。实际会话仍以运行时注册结果和 Effective Prompt Manifest 为准。',
+    '',
+    '## 共享规则',
+    '',
+    ...sharedRules,
     '',
     ...sections,
   ].join('\n\n')

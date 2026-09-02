@@ -1,4 +1,4 @@
-/** WORK 正式模板到高级 Word 成品的版本化契约。 */
+/** WORK 正式模板到高级成品文档的版本化契约。 */
 export const ADVANCED_GENERATION_VERSION_V1 = 1 as const
 
 export type AdvancedGenerationStatusV1 = 'SELECTED' | 'PREPARED' | 'PUBLISHED' | 'CANCELLED' | 'STALE'

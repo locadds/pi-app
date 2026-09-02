@@ -1,5 +1,41 @@
 # 小规开发阶段状态
 
+## 2026-09-02｜Prompt 分层优化 B1/B2/B3/B5：规则归组、术语、Builder 去噪与 DOC 错误拆分
+
+### 阶段状态
+
+- 状态：实现、TDD、聚焦回归、全套件复验、typecheck、生产构建、Prompt 预算/SHA 与文档同步均已完成；本分支为阶段候选。
+- 当前分支：`codex/coding-work-integration-v1`。
+- 起点：`d02f62ffc9e6d6eb206ae0a2e09590dcdc4663b1`（A3 已推送候选）。
+- 本地工作树：`D:\CodexWorktrees\xiaogui-coding-work-integration-v1`。
+- 验收边界：本条提交完成 B1/B2/B3/B5 及追加的 DOC 错误码拆分；B4 默认角色 Prompt 与兼容迁移使用下一条独立提交。全部仍未进入主线或正式发布。
+
+### 已完成内容
+
+1. Capability Registry 升至 `1.1.0`；受影响的四个 WORK Capability 与 Prompt Layer 升至 `1.1.0`，Runtime Tool 兼容层升至 `0.84.1-compat.2`，Runtime Facts 升至 `1.1.0`。
+2. Tool Prompt 定义新增共享规则引用、`usage.when/whenNot` 与 `protocol.sequence/output`；Pi 继续消费同源派生的扁平 `promptGuidelines`，没有改变工具注册接口。
+3. “系统选择器代替索要路径”“不泄漏内部运行细节”“成果另存且不覆盖来源”按稳定 ID 登记；Runtime 与 Prompt Catalog 各只渲染一次共享正文，并按工具名输出“何时调用/不调用”和“调用协议”。
+4. 标准报告工具加入 schema 合法的最小 PREPARE 示例；模板 Word 工具只示范先 `SELECT_TEMPLATE`，再原样使用返回的真实 `fieldId`，不提供伪字段编号。
+5. WORK 文档术语收敛为“普通成品文档、模板整理、模板整理报告、候选内容、正式模板、成品文档”；“只读/已确认”只表示报告状态。首页入口标题“整理普通文档”和选择器既有同义词保持不变。
+6. Runtime Facts 删除实际 Tool 数量，不改为工具名列表；Manifest 继续保存真实 `toolNames`，完整 Prompt 字符数和 SHA-256 仍从真实正文生成。
+7. intake 新增 `TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE`：Renderer 的 `LEGACY_DOC_CONVERSION_UNAVAILABLE` 映射到“运行时未安装或未装配”，`LEGACY_DOC_CONVERSION_FAILED` 保持映射为“组件已可用但本次转换失败”。转换器、模板状态机和 DOCX 降级路径未改。
+8. `doc/architecture/xiaogui-prompt-inventory.md` 与 `xiaogui-prompt-phase-gates.md` 已同步版本、术语、规则归组、Runtime Facts 和 DOC 错误边界。
+
+### 红绿证据与自动验证
+
+- 公开契约、Builder、Session Extension、Prompt Catalog、工具输出、intake Service 与 Host adapter 均先建立稳定红灯，再做最小实现；最终聚焦回归 9 个文件、97 项测试全部通过。
+- 默认并发全套件：400 个文件通过、2 个跳过；5 个既有 WorkerManager/TaskHub Git-SQLite 文件中的 7 项测试因 5 秒超时并伴随 Windows `EBUSY` 失败。相关 5 文件单 worker 隔离复跑 `71/71` 通过，未修改 TaskHub。
+- `npm run typecheck`：通过。
+- `npx electron-vite build`：通过；只有既有动态导入提示，无构建错误。
+- `git diff --check`：通过；仅有 Windows LF → CRLF 提示，无空白错误。
+- Builder 回归继续保证产品 Prompt 不超过 7000 字、Runtime Facts 不超过 600 字、Manifest 保留真实工具名且 SHA 与完整正文一致。
+
+### 未完成与人工验收门
+
+- 本阶段候选等待与 B4 一起完成人工验收；尚未进入主线或正式发布。
+- 本条提交不含 B4 默认角色 Prompt 与兼容迁移；后者必须验证全新数据库、精确旧 digest 迁移、用户修改保留、幂等、resetDefault 与新旧 Attempt 快照隔离。
+- 未修改 Prompt 六层组装顺序、Base Layer 原文、模板领域状态机、Office/Univer、TaskHub、IPC 安全门、数据库表结构、主线分支或 Agent 可见 Tool 集合。
+
 ## 2026-09-02｜Prompt 分层优化 A3：封闭式 sticky 确认语法
 
 ### 阶段状态

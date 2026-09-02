@@ -78,7 +78,7 @@ describe('xiaogui WORK DOCX template-data Pi tool', () => {
       },
       expect.any(AbortSignal),
     )
-    expect(outcome.content[0]?.text).toContain('这是一份成品文档，需要先整理成模板')
+    expect(outcome.content[0]?.text).toContain('这是一份普通成品文档，需要先完成模板整理')
     expect(outcome.content[0]?.text).toContain('没有选择保存位置')
     expect(outcome.content[0]?.text).not.toContain('aaaaaaaa')
     expect(outcome.content[0]?.text).not.toMatch(/[A-Z]:[\\/]/)

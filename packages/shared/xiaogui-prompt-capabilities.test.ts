@@ -15,6 +15,7 @@ import {
   XIAOGUI_CAPABILITY_REGISTRY_ID_V1,
   XIAOGUI_CAPABILITY_REGISTRY_VERSION_V1,
   XIAOGUI_CAPABILITY_REGISTRY_V1,
+  XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1,
   XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1,
   XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
 } from './xiaogui-prompt-capabilities'
@@ -32,12 +33,72 @@ const reportContext = (): XiaoguiPromptContextV1 => ({
 describe('Xiaogui Prompt Capability Registry V1', () => {
   it('is versioned and covers every Capability exactly once', () => {
     expect(XIAOGUI_CAPABILITY_REGISTRY_ID_V1).toBe('xiaogui.capability-registry.v1')
-    expect(XIAOGUI_CAPABILITY_REGISTRY_VERSION_V1).toBe('1.0.0')
+    expect(XIAOGUI_CAPABILITY_REGISTRY_VERSION_V1).toBe('1.1.0')
     expect(Object.keys(XIAOGUI_CAPABILITY_REGISTRY_V1).sort())
       .toEqual([...XIAOGUI_CAPABILITY_IDS_V1].sort())
     expect(Object.entries(XIAOGUI_CAPABILITY_REGISTRY_V1).every(
       ([id, capability]) => capability.id === id && capability.promptLayer.kind === 'CAPABILITY',
     )).toBe(true)
+    for (const id of [
+      'work.file-organize',
+      'work.report-docx',
+      'work.template-intake',
+      'work.template-generation',
+    ] as const) {
+      expect(XIAOGUI_CAPABILITY_REGISTRY_V1[id].version).toBe('1.1.0')
+      expect(XIAOGUI_CAPABILITY_REGISTRY_V1[id].promptLayer.version).toBe('1.1.0')
+    }
+  })
+
+  it('publishes structured usage and protocol groups while deriving the legacy flat guidelines', () => {
+    const report = XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1.xiaogui_work_report_docx
+
+    expect(Object.keys(XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1)).toEqual([
+      'system-selector-no-path',
+      'no-internal-runtime-details',
+      'save-as-new-no-overwrite',
+    ])
+    expect(report.sharedRuleIds).toEqual([
+      'system-selector-no-path',
+      'no-internal-runtime-details',
+      'save-as-new-no-overwrite',
+    ])
+    expect(report.usage.when.join('\n')).toContain('明确要求')
+    expect(report.usage.whenNot.join('\n')).toContain('自有模板')
+    expect(report.protocol.sequence.join('\n')).toContain('PREPARE')
+    expect(report.protocol.output.join('\n')).toContain('草稿全文')
+    for (const ruleId of report.sharedRuleIds) {
+      expect(report.promptGuidelines).toContain(
+        XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1[ruleId].content,
+      )
+    }
+  })
+
+  it('structures every Runtime tool without dropping the Pi flat guideline contract', () => {
+    for (const tool of Object.values(XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1)) {
+      expect(tool.usage, tool.name).toEqual({
+        when: expect.any(Array),
+        whenNot: expect.any(Array),
+      })
+      expect(tool.protocol, tool.name).toEqual({
+        sequence: expect.any(Array),
+        output: expect.any(Array),
+      })
+      expect([
+        ...(tool.usage?.when ?? []),
+        ...(tool.usage?.whenNot ?? []),
+        ...(tool.protocol?.sequence ?? []),
+        ...(tool.protocol?.output ?? []),
+      ].length, tool.name).toBeGreaterThan(0)
+      for (const guideline of [
+        ...(tool.usage?.when ?? []),
+        ...(tool.usage?.whenNot ?? []),
+        ...(tool.protocol?.sequence ?? []),
+        ...(tool.protocol?.output ?? []),
+      ]) {
+        expect(tool.promptGuidelines, `${tool.name}: ${guideline}`).toContain(guideline)
+      }
+    }
   })
 
   it('does not claim a Capability when one of its required Runtime tools is absent', () => {

@@ -115,16 +115,62 @@ describe('Xiaogui effective Prompt Builder V1', () => {
 
     expect(custom.prompt).toContain('USER SYSTEM')
     expect(custom.prompt).toContain('<project_context>project facts</project_context>')
-    expect(custom.prompt).toContain('read: 读取文件')
+    expect(custom.prompt).toContain('## read')
+    expect(custom.prompt).toContain('工具摘要：读取文件')
     expect(custom.prompt).toContain('- 不让用户输入路径')
     expect(custom.productPrompt).not.toContain('USER SYSTEM')
     expect(custom.productPrompt).not.toContain('<project_context>')
-    expect(custom.productPrompt).not.toContain('read: 读取文件')
+    expect(custom.productPrompt).not.toContain('工具摘要：读取文件')
     expect(custom.diagnostics.manifest.layers.map((layer) => layer.id))
       .toContain('pi.custom-system-tool-guidelines')
-    expect(defaultHarness.prompt).not.toContain('read: 读取文件')
+    expect(defaultHarness.prompt).not.toContain('工具摘要：读取文件')
     expect(defaultHarness.diagnostics.manifest.layers.map((layer) => layer.id))
       .not.toContain('pi.custom-system-tool-guidelines')
+  })
+
+  it('renders shared rules once while keeping structured guidance under each tool name', () => {
+    const sharedRule = '生成成果必须另存为新文件。'
+    const result = xiaoguiPromptBuilderV1.build({
+      context: { ...context(), enabledCapabilities: [] },
+      piSystemPrompt: 'USER SYSTEM',
+      piCustomSystem: true,
+      runtimeTools: [
+        {
+          name: 'external_alpha',
+          promptSnippet: '执行甲类任务',
+          sharedRules: [{ id: 'save-as-new', content: sharedRule }],
+          usage: { when: ['用户要求甲类任务时调用。'], whenNot: ['乙类任务时不调用。'] },
+          protocol: { sequence: ['先执行甲步骤。'], output: ['只返回甲结果。'] },
+        },
+        {
+          name: 'external_beta',
+          promptSnippet: '执行乙类任务',
+          sharedRules: [{ id: 'save-as-new', content: sharedRule }],
+          usage: { when: ['用户要求乙类任务时调用。'], whenNot: ['甲类任务时不调用。'] },
+          protocol: { sequence: ['先执行乙步骤。'], output: ['只返回乙结果。'] },
+        },
+      ],
+      generatedAt: '2026-09-02T00:00:00.000Z',
+    })
+
+    const alpha = result.prompt.slice(
+      result.prompt.indexOf('## external_alpha'),
+      result.prompt.indexOf('## external_beta'),
+    )
+    const beta = result.prompt.slice(result.prompt.indexOf('## external_beta'))
+
+    expect(result.prompt).toContain('## 共享规则')
+    expect(result.prompt.split(sharedRule)).toHaveLength(2)
+    expect(alpha).toContain('### 何时调用/不调用')
+    expect(alpha).toContain('用户要求甲类任务时调用。')
+    expect(alpha).toContain('### 调用协议')
+    expect(alpha).toContain('先执行甲步骤。')
+    expect(alpha).not.toContain('用户要求乙类任务时调用。')
+    expect(beta).toContain('用户要求乙类任务时调用。')
+    expect(result.diagnostics.manifest.layers).toContainEqual(expect.objectContaining({
+      id: 'pi.custom-system-tool-guidelines',
+      version: '0.84.1-compat.2',
+    }))
   })
 
   it('deduplicates the legacy DESIGN marker in memory without dropping surrounding project context', () => {
@@ -237,9 +283,21 @@ describe('Xiaogui effective Prompt Builder V1', () => {
     const runtimeManifest = result.diagnostics.manifest.layers
       .find((layer) => layer.id === 'xiaogui.runtime.facts')
 
+    expect(runtimeManifest?.version).toBe('1.1.0')
     expect(runtimeManifest?.characterCount).toBeLessThanOrEqual(
       XIAOGUI_RUNTIME_FACTS_MAX_CHARACTERS_V1,
     )
+    expect(result.productPrompt).not.toContain('Runtime 实际加载工具')
+    expect(result.diagnostics.manifest.toolNames).toEqual([
+      'read',
+      'xiaogui_read_pdf',
+      'xiaogui_work_docx',
+      'xiaogui_work_docx_advanced_generation',
+      'xiaogui_work_docx_template_intake',
+      'xiaogui_work_docx_template_materialize',
+      'xiaogui_work_read_materials',
+      'xiaogui_work_report_docx',
+    ])
     expect(result.productPrompt.length).toBeLessThanOrEqual(
       XIAOGUI_PRODUCT_PROMPT_MAX_CHARACTERS_V1,
     )

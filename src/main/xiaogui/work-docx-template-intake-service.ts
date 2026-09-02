@@ -235,12 +235,19 @@ async function readPrivateSource(
       throw error
     }
     if (normalizeDoc) {
-      if (!renderer) throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_CONVERSION_FAILED')
+      if (!renderer) throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE')
       preparedReview = await renderer.prepare(content, 'DOC', signal)
       normalizedDocx = renderer.readNormalizedDocx(preparedReview.manifestId) ?? undefined
       if (!normalizedDocx) {
         renderer.release(preparedReview.manifestId)
-        throw new TemplateIntakeServiceErrorV1('TEMPLATE_INTAKE_CONVERSION_FAILED')
+        const unavailable = preparedReview.render.warnings.some(
+          (warning) => warning.code === 'LEGACY_DOC_CONVERSION_UNAVAILABLE',
+        )
+        throw new TemplateIntakeServiceErrorV1(
+          unavailable
+            ? 'TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE'
+            : 'TEMPLATE_INTAKE_CONVERSION_FAILED',
+        )
       }
     }
   }
@@ -1292,7 +1299,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
         ...record.report,
         warnings: [
           ...record.report.warnings,
-          { code: 'SOURCE_CHANGED', message: '源 Word 已变化，原整理报告失效，必须重新分析' },
+          { code: 'SOURCE_CHANGED', message: '源 Word 已变化，原模板整理报告失效，必须重新分析' },
         ],
       }
       this.options.store.save(record)
@@ -1462,7 +1469,7 @@ export class WorkDocxTemplateIntakeServiceV1 {
         ...record.report,
         warnings: [
           ...record.report.warnings,
-          { code: 'SOURCE_CHANGED', message: '源 Word 已变化，原整理报告失效，必须重新分析' },
+          { code: 'SOURCE_CHANGED', message: '源 Word 已变化，原模板整理报告失效，必须重新分析' },
         ],
       }
       this.options.store.save(record)

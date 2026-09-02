@@ -43,6 +43,10 @@ describe('xiaogui WORK DOCX Pi tool', () => {
     expect(tool?.promptGuidelines?.join('\n')).toContain('不得在 PREPARE 的同一轮调用')
     expect(tool?.promptGuidelines?.join('\n')).toContain('请单独回复“确认”')
     expect(tool?.promptGuidelines?.join('\n')).toContain('不要让用户输入路径')
+    expect(XIAOGUI_LEGACY_WORK_DOCX_TOOL_PROMPT_DEFINITION_V1.usage.when.join('\n'))
+      .toContain('明确要求')
+    expect(XIAOGUI_LEGACY_WORK_DOCX_TOOL_PROMPT_DEFINITION_V1.protocol.sequence.join('\n'))
+      .toContain('PREPARE')
   })
 
   it('prepares through the existing host bridge and returns only a safe user summary', async () => {

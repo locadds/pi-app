@@ -4,10 +4,13 @@
 
 - 契约：`xiaogui.prompt-contract.v1` / `1.0.0`
 - 矩阵：`xiaogui.prompt-matrix.v1` / `1.0.0`
+- Capability Registry：`xiaogui.capability-registry.v1` / `1.1.0`
 - 本轮能力选择器：`xiaogui.turn-capability-selector.v1` / `1.1.0`
 - 模板整理子任务 Prompt：`template-intake-analysis` / `1.2.0`
+- Runtime Tool 兼容层：`0.84.1-compat.2`
+- Runtime Facts Layer：`1.1.0`
 - 日期：2026-09-02
-- 状态：PR1—PR5 功能候选；阶段线与正式发布仍需独立批准
+- 状态：A1/A2/A3 已关闭；B1/B2/B3/B5 与 DOC 错误码拆分已实现为分支候选，B4 另行提交；未进入主线或正式发布
 
 ## 一、唯一组装链
 
@@ -28,6 +31,8 @@ Pi 最终 System Context
   └─ Runtime Facts Layer
 
 + custom SYSTEM 兼容层（仅在 Pi 未自动加入实际 Tool Guidelines 时）
+  ├─ 共享规则（每个规则 ID 只渲染一次）
+  └─ 按工具名归组的“何时调用/不调用”与“调用协议”
 
 → 最终 Prompt
 → 完整字符数与 SHA-256 Manifest
@@ -50,6 +55,13 @@ Pi 最终 System Context
 | 专用 Subtask Prompts | 如 `template-intake-analysis` | 只进入对应临时模型调用 | 产品代码只读 |
 
 代码内置只读项使用 `xiaogui://` 虚拟资源，不伪装为本地文件，也不能保存。
+
+Tool Prompt 定义以 `sharedRuleIds`、`usage.when/whenNot`、`protocol.sequence/output`
+为结构化真值；Pi 0.84.1 仍消费由同一结构派生的扁平 `promptGuidelines`，工具注册接口没有
+变化。共享规则当前固定为“系统选择器代替索要路径”“不泄漏内部运行细节”“成果另存且不
+覆盖来源”三类。Runtime 与 Prompt Catalog 使用同一归组方式；标准报告工具登记 schema
+合法的最小 PREPARE 示例，模板 Word 工具只示范先 `SELECT_TEMPLATE`、再原样使用返回的
+真实 `fieldId`，不提供可被照抄的伪字段编号。
 
 ### 专用模板整理子任务
 
@@ -104,7 +116,19 @@ WORK 首页“整理普通文档”快捷入口使用以下固定消息，其中
 
 该顺序保证长中文 `.doc` 文件名不会占用本地选择规则的触发跨度。选择器 `1.1.0` 继续保留既有最多 24 字跨度和用户同义词，不通过放宽正则增加误命中；长 `.docx` 由扩展名规则继续作为非回归路径。Renderer 只取得显示文件名，绝对路径仍留在 Main 私有交接中。
 
-## 四、Runtime Facts
+## 四、WORK 文档术语
+
+- **普通成品文档**：尚未整理为小规正式模板的 DOC/DOCX 来源。
+- **模板整理**：只读识别候选项并交给人工复核的过程。
+- **模板整理报告**：模板整理的唯一中间成果名称；“只读”“已确认”只描述状态。
+- **候选内容**：模板整理报告内部的条目，不作为报告名称。
+- **正式模板**：由已确认模板整理报告生成并另存的模板。
+- **成品文档**：按正式模板生成的最终输出。
+
+WORK 首页入口标题继续使用“整理普通文档”，本地能力选择器继续接受既有用户同义词；这两处
+面向用户的兼容表达不产生第二套领域对象名称。
+
+## 五、Runtime Facts
 
 每轮产品 Prompt 都包含独立的 Runtime Facts Layer，最多 600 字，至少说明：
 
@@ -112,12 +136,13 @@ WORK 首页“整理普通文档”快捷入口使用以下固定消息，其中
 - 工作区是否可用；
 - 项目是否可信；
 - 本轮有效 Capability；
-- Runtime 实际加载 Tool 数量；
 - 未具备能力时不得伪造成功。
 
-小规产品层总预算为 7000 字。预算由离线测试固定，UI 截断不影响完整 SHA-256。
+Runtime Facts 不重复工具数量或工具名；真实 `toolNames` 和数量信息继续保存在 Effective
+Prompt Manifest。小规产品层总预算为 7000 字。预算由离线测试固定，UI 截断不影响完整
+SHA-256。
 
-## 五、Session 绑定与一致性
+## 六、Session 绑定与一致性
 
 - Context 在 Main 解析后传给 Worker，并在一个 Turn 内冻结。
 - 忙碌、等待 Tool 确认或直接确认时禁止切换 Mode/Phase。
@@ -128,7 +153,7 @@ WORK 首页“整理普通文档”快捷入口使用以下固定消息，其中
 - 短确认按 `NFKC → 去首尾空白 → 合并空格 → 去末尾句号/问号/感叹号` 规范化，规范化后最多 24 字，并完整匹配：`看起来可以`、`可以`、`可以生成`、`可以生成了`、`确认`、`确认生成`、`生成吧`、`继续`、`没问题`、`就这样`、`保存`、`开始复核`、`复核`、`打开复核卡`。`好`／`好的` 只允许作为通过逗号或空格分隔的礼貌前缀；否定、暂缓、附加修改和其他新意图不能消费 sticky。
 - PREPARE 类工具成功后统一引导“如确认继续，请单独回复‘确认’”；模板整理 START 成功后引导单独回复“复核”或“打开复核卡”。正式模板物化仍以小规内置预览按钮和主进程私有确认令牌为主，聊天确认只保留为后备路径。
 
-## 六、轻量模式建议（当前停用）
+## 七、轻量模式建议（当前停用）
 
 - 2026-09-01 产品决定：当前版本不做意图识别或模式推荐，模式只由用户显式选择。
 - 推荐算法与既有回归测试暂时保留为研究证据，但生产构建没有环境变量入口，界面不会展示推荐或自动切换。
@@ -140,11 +165,11 @@ WORK 首页“整理普通文档”快捷入口使用以下固定消息，其中
 - 用户拒绝后，同一草稿不重复提示；草稿变化后才重新评估。
 - `XIAOGUI_MODE_RECOMMENDATION_ENABLED` 固定为 `false`；如未来重启研究，必须另立工作包并重新验收。
 
-## 七、旧 DESIGN Prompt 迁移
+## 八、旧 DESIGN Prompt 迁移
 
 旧项目中 `<!-- XIAOGUI:DESIGN:BEGIN -->` 标记段不被本包删除。Builder 在内存中去重，并通过 `LEGACY_DESIGN_PROMPT_RUNTIME_DEDUPED` 告知用户“仅运行时去重，未修改项目文件”。以后若需要物理清理，必须另立可预览、可回滚的迁移工作包。
 
-## 八、离线验证集
+## 九、离线验证集
 
 - P01—P06：WORK 解释、模板整理/生成确认门和纯文本任务。
 - P07—P08：CODING / WORK 高置信模式建议。
@@ -154,11 +179,15 @@ WORK 首页“整理普通文档”快捷入口使用以下固定消息，其中
 - P16：复用 Worker 从 WORK 切到 CODING 后，Prompt 与 Tool Facts 同时更新。
 - Golden、预算、Manifest 哈希和产品层泄漏边界均有聚焦测试。
 
-## 九、后续 B 类工作包（未开始）
+## 十、旧版 DOC 转换错误边界
 
-- 在既定 B1/B2/B3/B5 Prompt 一致性与 Builder 去噪工作中，追加旧版 DOC 转换错误码拆分：当前 Renderer 已能区分 `LEGACY_DOC_CONVERSION_UNAVAILABLE` 与 `LEGACY_DOC_CONVERSION_FAILED`，但 intake 仍统一折叠为 `TEMPLATE_INTAKE_CONVERSION_FAILED`。B 包需要把“运行时未安装/未装配”和“转换器已运行但转换失败”保留到 intake 公开错误码、用户文案和聚焦测试；不在 A3 修改模板状态机或转换链。
+Renderer 的 `LEGACY_DOC_CONVERSION_UNAVAILABLE` 与 `LEGACY_DOC_CONVERSION_FAILED` 现在分别
+映射为 intake 公开错误码 `TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE` 与
+`TEMPLATE_INTAKE_CONVERSION_FAILED`。前者明确表示转换运行时未安装或未装配；后者表示组件
+已可用、但当前文档转换失败。两类用户文案和 Service/Host 公共接缝均有聚焦回归。转换器、
+模板状态机和 DOCX 降级路径未修改。
 
-## 十、禁止项
+## 十一、禁止项
 
 - 不把 Prompt 当作安全边界替代 Host Gate。
 - 不把完整 Prompt、用户 System、项目正文、绝对路径、凭据或令牌发送到 Main/Renderer 诊断界面。

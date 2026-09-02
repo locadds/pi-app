@@ -59,7 +59,12 @@ describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
     } as BeforeAgentStartEvent, extensionContext) as { systemPrompt: string }
 
     expect(result.systemPrompt).toContain('# 当前模式：WORK｜工作')
-    expect(result.systemPrompt).toContain('read: 读取文件')
+    expect(result.systemPrompt).toContain('## read')
+    expect(result.systemPrompt).toContain('工具摘要：读取文件')
+    expect(result.systemPrompt).toContain('## xiaogui_work_read_materials')
+    expect(result.systemPrompt).toContain('### 何时调用/不调用')
+    expect(result.systemPrompt).toContain('用户要求整理整个文件夹或读取一组普通资料时')
+    expect(result.systemPrompt).toContain('## Pi 兼容规则')
     expect(result.systemPrompt).toContain('<project_context>facts</project_context>')
     expect(resolved).toHaveBeenCalledWith(expect.objectContaining({
       context: expect.objectContaining({

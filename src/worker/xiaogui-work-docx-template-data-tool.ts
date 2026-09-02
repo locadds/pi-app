@@ -115,7 +115,7 @@ function successText(result: XiaoguiWorkDocxTemplateDataResultV1): string {
     case 'XIAOGUI_WORK_DOCX_SELECTION_CANCELLED':
       return '已取消选择模板，没有生成或写入文档。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_PREPARATION_REQUIRED':
-      return `“${result.templateDisplayName}”这是一份成品文档，需要先整理成模板。已识别的结构摘要：${profileText(result)}。没有选择保存位置，也没有创建待发布文档。`
+      return `“${result.templateDisplayName}”这是一份普通成品文档，需要先完成模板整理。已识别的结构摘要：${profileText(result)}。没有选择保存位置，也没有创建待发布文档。`
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_SELECTED':
       return `已读取模板“${result.templateDisplayName}”。字段清单：${result.fields.map((field) => `${field.name}${field.required ? '' : '（选填）'}`).join('、')}。结构摘要：${profileText(result)}。请按返回的稳定字段编号整理当前对话，只追问缺失的必填字段。`
     case 'XIAOGUI_WORK_DOCX_INPUT_REQUIRED':

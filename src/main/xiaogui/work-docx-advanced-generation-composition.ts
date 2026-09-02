@@ -15,7 +15,7 @@ async function chooseTemplate(): Promise<string | null> {
 }
 
 async function chooseNewTarget(suggestedName: string): Promise<string | null> {
-  const options: SaveDialogOptions = { title: '另存为 Word 成品', defaultPath: suggestedName, filters: [{ name: 'Word 文档', extensions: ['docx'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] }
+  const options: SaveDialogOptions = { title: '另存为成品文档', defaultPath: suggestedName, filters: [{ name: 'Word 文档', extensions: ['docx'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] }
   const window = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
   const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options)
   return result.canceled ? null : (result.filePath ?? null)

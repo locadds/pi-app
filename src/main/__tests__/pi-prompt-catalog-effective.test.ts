@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1 } from '@shared/xiaogui-prompt-capabilities'
 
 vi.mock('../pi-skill-overrides', () => ({
   readGlobalSettingsJson: () => ({}),
@@ -99,6 +100,23 @@ describe('Pi Prompt catalog Effective Prompt entry', () => {
       .toContain('template-intake-analysis@1.2.0')
     expect(readCodeOwnedPromptCatalogResourceV1(subtask?.path || '')?.content)
       .toContain('其他 OTHER')
+
+    const capability = entries.find((entry) => entry.id === 'builtin:capability-registry')
+    const capabilityContent = readCodeOwnedPromptCatalogResourceV1(capability?.path || '')?.content || ''
+    expect(capabilityContent).toContain('# xiaogui.capability-registry.v1@1.1.0')
+    expect(capabilityContent).toContain('## work.template-intake@1.1.0')
+    expect(capabilityContent).toContain('Prompt Layer：xiaogui.capability.work.template-intake@1.1.0')
+
+    const guidelines = entries.find((entry) => entry.id === 'builtin:tool-guidelines')
+    const guidelineContent = readCodeOwnedPromptCatalogResourceV1(guidelines?.path || '')?.content || ''
+    const sharedRule = XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1['no-internal-runtime-details'].content
+    expect(guidelineContent).toContain('## 共享规则')
+    expect(guidelineContent.split(sharedRule)).toHaveLength(2)
+    expect(guidelineContent).toContain('## xiaogui_work_report_docx')
+    expect(guidelineContent).toContain('### 何时调用/不调用')
+    expect(guidelineContent).toContain('### 调用协议')
+    expect(guidelineContent).toContain('最小 PREPARE 示例')
+    expect(guidelineContent).toContain('真实 fieldId')
   })
 
 })

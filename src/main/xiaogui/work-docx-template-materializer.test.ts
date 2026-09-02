@@ -183,7 +183,7 @@ function decisionFor(report: TemplateIntakeReportV1): TemplateIntakeDecisionV1 {
   }
 }
 
-describe('WORK 已确认整理报告物化', () => {
+describe('WORK 已确认模板整理报告物化', () => {
   it('整项替换、结构标记和高风险媒体移除可同时完成且结果可重复生成', async () => {
     const source = await makeSource()
     const sourceHash = createHash('sha256').update(source).digest('hex')

@@ -9,6 +9,10 @@ import type {
   XiaoguiEffectivePromptDiagnosticsV1,
   XiaoguiPromptContextV1,
 } from '@shared/xiaogui-prompt-contract'
+import {
+  XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1,
+  XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
+} from '@shared/xiaogui-prompt-capabilities'
 
 import {
   xiaoguiPromptBuilderV1,
@@ -40,26 +44,54 @@ export type XiaoguiPromptContextSourceV1 =
 
 type PiToolFacts = Pick<BuildSystemPromptOptions, 'selectedTools' | 'toolSnippets' | 'promptGuidelines'>
 
-function normalizeToolsFromPromptOptions(options: PiToolFacts): XiaoguiRuntimePromptToolV1[] {
-  const selected = [...new Set(options.selectedTools ?? [])]
-  const sharedGuidelines = options.promptGuidelines ?? []
-  return selected.map((name) => ({
+interface NormalizedRuntimePromptToolsV1 {
+  readonly tools: readonly XiaoguiRuntimePromptToolV1[]
+  readonly compatibilityGuidelines: readonly string[]
+}
+
+function normalizeTool(
+  name: string,
+  promptSnippet?: string,
+  promptGuidelines?: readonly string[],
+): XiaoguiRuntimePromptToolV1 {
+  const known = name in XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1
+    ? XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1[
+        name as keyof typeof XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1
+      ]
+    : undefined
+  if (!known) return { name, promptSnippet, promptGuidelines }
+  return {
     name,
-    promptSnippet: options.toolSnippets?.[name],
-    // Pi exposes the merged active guideline list at this seam. Attach it once
-    // so Builder can deduplicate while preserving the exact current set.
-    promptGuidelines: name === selected[0] ? sharedGuidelines : [],
+    promptSnippet: promptSnippet ?? known.promptSnippet,
+    promptGuidelines: known.promptGuidelines,
+    sharedRules: (known.sharedRuleIds ?? []).map((id) => XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1[id]),
+    usage: known.usage,
+    protocol: known.protocol,
+  }
+}
+
+function normalizeToolsFromPromptOptions(options: PiToolFacts): NormalizedRuntimePromptToolsV1 {
+  const selected = [...new Set(options.selectedTools ?? [])]
+  const knownGuidelines = new Set(selected.flatMap((name) => {
+    if (!(name in XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1)) return []
+    return XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1[
+      name as keyof typeof XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1
+    ].promptGuidelines
   }))
+  return {
+    tools: selected.map((name) => normalizeTool(name, options.toolSnippets?.[name])),
+    // Pi 0.84.1 merges these rows and no longer exposes Tool ownership here.
+    // Known small-rule rows are reconstructed above; the remainder stays in a
+    // clearly labelled compatibility group instead of being assigned wrongly.
+    compatibilityGuidelines: (options.promptGuidelines ?? [])
+      .filter((guideline) => !knownGuidelines.has(guideline)),
+  }
 }
 
 function normalizeToolsFromSession(session: AgentSession): XiaoguiRuntimePromptToolV1[] {
   return session.getActiveToolNames().map((name) => {
     const definition = session.getToolDefinition(name)
-    return {
-      name,
-      promptSnippet: definition?.promptSnippet,
-      promptGuidelines: definition?.promptGuidelines,
-    }
+    return normalizeTool(name, definition?.promptSnippet, definition?.promptGuidelines)
   })
 }
 
@@ -82,12 +114,14 @@ function build(
   piCustomSystem: boolean,
   tools: readonly XiaoguiRuntimePromptToolV1[],
   projectTrusted: boolean,
+  compatibilityGuidelines: readonly string[] = [],
 ): BuiltEffectiveXiaoguiPromptV1 {
   return xiaoguiPromptBuilderV1.build({
     context: withActualTools(context, tools, projectTrusted),
     piSystemPrompt: systemPrompt,
     piCustomSystem,
     runtimeTools: tools,
+    runtimeCompatibilityGuidelines: compatibilityGuidelines,
   })
 }
 
@@ -113,13 +147,14 @@ export function createXiaoguiPromptSessionExtensionV1(
           // The Worker freezes this snapshot before it changes active tools.
           // A queued/streaming turn continues to observe the same object.
           const context = readContext()
-          const tools = normalizeToolsFromPromptOptions(event.systemPromptOptions)
+          const normalizedTools = normalizeToolsFromPromptOptions(event.systemPromptOptions)
           const result = build(
             context,
             event.systemPrompt,
             !!event.systemPromptOptions.customPrompt,
-            tools,
+            normalizedTools.tools,
             extensionContext.isProjectTrusted(),
+            normalizedTools.compatibilityGuidelines,
           )
           onState({
             prompt: result.prompt,

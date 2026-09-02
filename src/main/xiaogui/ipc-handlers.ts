@@ -135,7 +135,7 @@ function directReviewFailure(code: string): { ok: false; code: string; message: 
   const message = code === 'TEMPLATE_INTAKE_SOURCE_CHANGED'
     ? '源文档已经变化，请重新分析后再复核'
     : code === 'TEMPLATE_INTAKE_REPORT_NOT_FOUND'
-      ? '这份候选报告已不是当前报告，请刷新会话后重试'
+      ? '这份模板整理报告已不是当前报告，请刷新会话后重试'
       : code === 'TEMPLATE_INTAKE_OPERATION_ACTIVE'
         ? '当前报告正在复核，请先完成或关闭现有复核界面'
         : '暂时无法打开文档复核，请稍后重试'

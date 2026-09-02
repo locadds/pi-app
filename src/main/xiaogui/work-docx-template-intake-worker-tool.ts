@@ -231,13 +231,15 @@ function messageForError(code: TemplateIntakeErrorCodeV1): string {
     case 'TEMPLATE_INTAKE_INPUT_INVALID':
       return '整理操作参数或所选文档不符合要求，请检查后重试'
     case 'TEMPLATE_INTAKE_INPUT_TOO_LARGE':
-      return '文档、提取内容或整理报告超过安全上限，未进行静默截断'
+      return '文档、提取内容或模板整理报告超过安全上限，未进行静默截断'
     case 'TEMPLATE_INTAKE_UNSAFE_DOCX':
       return '所选文档未通过本地安全检查，请更换文档'
     case 'TEMPLATE_INTAKE_UNSAFE_DOC':
       return '所选旧版 DOC 结构异常、加密或包含不支持的对象，请更换文档'
+    case 'TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE':
+      return '旧版 DOC 转换组件尚未安装或装配，当前无法生成模板整理报告；请完成小规文档转换运行时装配后重试'
     case 'TEMPLATE_INTAKE_CONVERSION_FAILED':
-      return '旧版 DOC 暂时无法转换为内部 DOCX，请确认小规文档渲染组件可用后重试'
+      return '旧版 DOC 转换组件已可用，但本次文档转换失败；请检查文档是否受损或改用 DOCX 后重试'
     case 'TEMPLATE_INTAKE_OPERATION_ACTIVE':
       return '当前会话已有一份文档正在分析，请等待完成或先取消'
     case 'TEMPLATE_INTAKE_REPORT_NOT_FOUND':
@@ -247,7 +249,7 @@ function messageForError(code: TemplateIntakeErrorCodeV1): string {
     case 'TEMPLATE_INTAKE_SOURCE_MISSING':
       return '源文档已丢失，且没有重新选择摘要相同的文件'
     case 'TEMPLATE_INTAKE_SOURCE_CHANGED':
-      return '源文档已变化，原整理报告已失效，必须重新分析'
+      return '源文档已变化，原模板整理报告已失效，必须重新分析'
     case 'TEMPLATE_INTAKE_PARSER_FAILED':
       return '文档解析失败或超时，没有创建不完整报告'
     case 'TEMPLATE_INTAKE_REPORT_NOT_CONFIRMABLE':
@@ -259,7 +261,7 @@ function messageForError(code: TemplateIntakeErrorCodeV1): string {
     case 'TEMPLATE_INTAKE_DELETE_CONFIRMATION_REQUIRED':
       return '删除历史报告前需要用户明确确认'
     case 'TEMPLATE_INTAKE_STORAGE_FAILED':
-      return '整理报告的本地私有存储失败，请稍后重试'
+      return '模板整理报告的本地私有存储失败，请稍后重试'
     case 'TEMPLATE_INTAKE_ABORTED':
       return '模板整理已取消，没有修改文档'
   }

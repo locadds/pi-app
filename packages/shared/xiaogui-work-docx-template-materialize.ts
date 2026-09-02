@@ -4,7 +4,7 @@ import type {
 } from './xiaogui-work-docx-template-intake'
 import type { TemplateReviewDocumentV3 } from './xiaogui-work-template-review'
 
-/** WORK 已确认整理报告到正式 Word 模板的物化契约。 */
+/** WORK 已确认模板整理报告到正式 Word 模板的物化契约。 */
 export const TEMPLATE_MATERIALIZE_VERSION_V1 = 1 as const
 
 export type TemplateMaterializeActionV1 =

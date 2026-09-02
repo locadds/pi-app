@@ -51,7 +51,7 @@ function messageForError(code: AdvancedGenerationErrorCodeV1): string {
     case 'ADVANCED_GENERATION_INPUT_REQUIRED': return '仍有普通字段、重复块槽位或条件决定没有解决，请补齐后再生成'
     case 'ADVANCED_GENERATION_DATA_INVALID': return '成品数据不符合模板结构，请按结构摘要重新整理'
     case 'ADVANCED_GENERATION_TARGET_EXISTS': return '目标文件已存在，小规不会覆盖；请选择新文件名'
-    case 'ADVANCED_GENERATION_TARGET_INVALID': return '保存位置无效；成品只能另存为全新的 DOCX 文件'
+    case 'ADVANCED_GENERATION_TARGET_INVALID': return '保存位置无效；成品文档只能另存为全新的 DOCX 文件'
     case 'ADVANCED_GENERATION_PREVIEW_OPEN_FAILED': return '预览已生成，但系统未能打开 Word；可稍后恢复'
     case 'ADVANCED_GENERATION_NO_PUBLISHED_OUTPUT': return '没有可打开的已发布成品，或文件已移动或变化'
     case 'ADVANCED_GENERATION_ABORTED': return '高级 Word 生成已取消'

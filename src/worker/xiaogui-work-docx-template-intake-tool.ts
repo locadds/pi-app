@@ -673,9 +673,9 @@ function buildTemplateReviewRequestV2(
 function publicText(result: SafeToolDetails): string {
   switch (result.kind) {
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_SELECTION_CANCELLED':
-      return '已取消选择文档，没有创建整理报告，也没有修改文档。'
+      return '已取消选择文档，没有创建模板整理报告，也没有修改文档。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REPORT_READY':
-      return `${reportText(result.report, '已生成只读模板整理报告：')} 如需开始人工复核，请单独回复“复核”或“打开复核卡”。`
+      return `${reportText(result.report, '已生成模板整理报告（只读）：')} 如需开始人工复核，请单独回复“复核”或“打开复核卡”。`
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_UPDATED':
       return `${reportText(result.report, '已按你的要求逐项更新整理草稿：')} ${draftDecisionText(result.draftDecisions)}`
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_REQUIRED':
@@ -683,9 +683,9 @@ function publicText(result: SafeToolDetails): string {
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CONFIRMED':
       return `已保存人工确认记录，共 ${result.decision.decisions.length} 项。没有修改文档，也没有生成正式模板。`
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_RESUMED':
-      return reportText(result.report, result.decision ? '已恢复已确认的整理报告：' : '已恢复未完成的整理报告：')
+      return reportText(result.report, result.decision ? '已恢复已确认的模板整理报告：' : '已恢复未完成的模板整理报告：')
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_DELETED':
-      return '已按明确要求删除这份历史整理报告。'
+      return '已按明确要求删除这份历史模板整理报告。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_CANCELLED':
       return '已取消当前模板整理处理；没有修改文档。'
     case 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_REVIEW_CANCELLED':

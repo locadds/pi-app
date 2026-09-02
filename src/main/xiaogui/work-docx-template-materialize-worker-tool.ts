@@ -68,7 +68,7 @@ function messageForError(code: TemplateMaterializeErrorCodeV1): string {
     case 'TEMPLATE_MATERIALIZE_CONFIRMATION_REQUIRED':
       return '请先查看模板预览，再在下一条消息中明确确认另存正式模板'
     case 'TEMPLATE_MATERIALIZE_SOURCE_MISSING':
-      return '原 Word 已找不到，请先恢复对应整理报告并重新选择同摘要文件'
+      return '原 Word 已找不到，请先恢复对应模板整理报告并重新选择同摘要文件'
     case 'TEMPLATE_MATERIALIZE_SOURCE_CHANGED':
       return '原 Word 已发生变化，必须重新整理和确认后才能生成模板'
     case 'TEMPLATE_MATERIALIZE_DECISION_CHANGED':

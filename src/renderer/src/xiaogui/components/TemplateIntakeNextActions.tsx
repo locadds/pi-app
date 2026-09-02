@@ -77,7 +77,7 @@ export function hasConfirmedTemplateIntake(blocks: readonly TimelineDisplayItem[
   )
 }
 
-/** 候选报告已就绪但尚未形成确认记录时，提供进入复核的提示词。 */
+/** 模板整理报告已就绪但尚未形成确认记录时，提供进入复核的提示词。 */
 export function hasReviewableTemplateIntake(blocks: readonly TimelineDisplayItem[]): boolean {
   return blocks.some((block) =>
     block.kind === 'tool-group'

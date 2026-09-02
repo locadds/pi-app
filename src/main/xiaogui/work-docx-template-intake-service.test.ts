@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import JSZip from 'jszip'
+import * as CFB from 'cfb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { TemplateIntakeFinalDecisionItemV1 } from '@shared/xiaogui-work-docx-template-intake'
@@ -11,7 +12,10 @@ import type { SessionAddressV1, SessionScopeLookupV1 } from '@shared/xiaogui-ses
 import { DocxSafetyErrorV1 } from './docx-safety'
 import { buildTemplateFieldGraphV2 } from './template-intelligence/template-field-graph-builder-v2'
 import { parseTemplateIntakeSourceV1 } from './work-docx-template-intake-parser'
-import { WorkDocxTemplateIntakeServiceV1 } from './work-docx-template-intake-service'
+import {
+  WorkDocxTemplateIntakeServiceV1,
+  type WorkDocxTemplateIntakeServiceOptionsV1,
+} from './work-docx-template-intake-service'
 import { WorkDocxTemplateIntakeStoreV1 } from './work-docx-template-intake-store'
 
 const ADDRESS = {
@@ -67,6 +71,37 @@ async function makeParagraphDocx(paragraphs: readonly string[]): Promise<Buffer>
   return zip.generateAsync({ type: 'nodebuffer' })
 }
 
+function makeLegacyDoc(): Buffer {
+  const container = CFB.utils.cfb_new()
+  const fib = Buffer.alloc(32)
+  fib.writeUInt16LE(0xa5ec, 0)
+  fib.writeUInt16LE(0x00c1, 2)
+  CFB.utils.cfb_add(container, 'WordDocument', fib)
+  CFB.utils.cfb_add(container, '1Table', Buffer.alloc(16))
+  return Buffer.from(CFB.write(container, { type: 'buffer', fileType: 'cfb' }))
+}
+
+function failedLegacyDocRenderer(
+  warningCode: 'LEGACY_DOC_CONVERSION_UNAVAILABLE' | 'LEGACY_DOC_CONVERSION_FAILED',
+): NonNullable<WorkDocxTemplateIntakeServiceOptionsV1['reviewRenderer']> {
+  return {
+    prepare: vi.fn(async () => ({
+      manifestId: `manifest-${warningCode}`,
+      sourceSha256: 'a'.repeat(64),
+      normalizedDocxAvailable: false,
+      render: {
+        mode: 'STRUCTURED_FALLBACK' as const,
+        paginationBasis: 'UNKNOWN' as const,
+        approximatePageCount: null,
+        warnings: [{ code: warningCode, message: 'test warning' }],
+      },
+      projections: [],
+    })),
+    readNormalizedDocx: vi.fn(() => null),
+    release: vi.fn(() => true),
+  }
+}
+
 function lookup(): SessionScopeLookupV1 {
   return {
     lookup: vi.fn(async (address: SessionAddressV1) => ({
@@ -77,6 +112,35 @@ function lookup(): SessionScopeLookupV1 {
 }
 
 describe('WORK 普通成品 Word 整理最小闭环', () => {
+  it.each([
+    ['未装配 renderer', undefined, 'TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE'],
+    ['转换组件不可用', 'LEGACY_DOC_CONVERSION_UNAVAILABLE', 'TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE'],
+    ['转换执行失败', 'LEGACY_DOC_CONVERSION_FAILED', 'TEMPLATE_INTAKE_CONVERSION_FAILED'],
+  ] as const)('区分旧版 DOC 的%s与真实转换失败', async (_label, warningCode, expectedCode) => {
+    const root = await fixtureRoot()
+    const sourcePath = join(root, '旧版成品.doc')
+    await writeFile(sourcePath, makeLegacyDoc())
+    const store = new WorkDocxTemplateIntakeStoreV1(join(root, 'private', 'legacy-doc.sqlite'))
+    const reviewRenderer = warningCode ? failedLegacyDocRenderer(warningCode) : undefined
+    const service = new WorkDocxTemplateIntakeServiceV1({
+      lookup: lookup(),
+      dialogs: { chooseSource: vi.fn(async () => sourcePath) },
+      handoffs: { consumeTemplateIntakeHandoff: vi.fn(() => null) },
+      store,
+      ...(reviewRenderer ? { reviewRenderer } : {}),
+    })
+
+    try {
+      await expect(service.execute(ADDRESS, { action: 'START', ...COMMON })).resolves.toEqual({
+        ok: false,
+        error: { code: expectedCode },
+      })
+      if (reviewRenderer) expect(reviewRenderer.release).toHaveBeenCalledOnce()
+    } finally {
+      service.close()
+    }
+  })
+
   it('把模型引用的段内原文拆成多个局部候选，而不是把整段设为变量', async () => {
     const root = await fixtureRoot()
     const sourcePath = join(root, '局部字段.docx')

@@ -243,7 +243,7 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
   it('is a hidden natural-language intake ending at a read-only report', () => {
     const tool = loadTool()
 
-    expect(tool?.label).toBe('整理普通文档模板')
+    expect(tool?.label).toBe('整理普通成品文档模板')
     expect(tool?.promptGuidelines?.join('\n')).toContain('必须先询问是否整理')
     expect(tool?.promptGuidelines?.join('\n')).toContain('不得声称已经写入原文档')
   })
@@ -340,6 +340,8 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     expect(published).not.toContain('signed-fragment-1')
     expect(published).not.toMatch(/[A-Z]:[\\/]/)
     expect(result.content[0]?.text).toContain('没有修改文档')
+    expect(result.content[0]?.text).toContain('已生成模板整理报告（只读）')
+    expect(result.content[0]?.text).not.toContain('只读模板整理报告')
     expect(result.content[0]?.text)
       .toContain('如需开始人工复核，请单独回复“复核”或“打开复核卡”。')
   })

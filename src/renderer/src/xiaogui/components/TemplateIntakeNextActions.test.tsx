@@ -72,7 +72,7 @@ describe('TemplateIntakeNextActions', () => {
     ).toBe(false)
   })
 
-  it('识别可开始复核的候选报告，但不把已确认恢复记录当成待复核', () => {
+  it('识别可开始复核的模板整理报告，但不把已确认恢复记录当成待复核', () => {
     const block = (toolDetails: Record<string, unknown>) => ({
       kind: 'single' as const,
       item: {

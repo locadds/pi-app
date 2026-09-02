@@ -174,7 +174,7 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
         ]),
       },
       xiaogui_work_docx_template_intake: {
-        promptSnippet: '用自然语言开始、调整、复核、继续、删除或取消普通文档的只读模板整理',
+        promptSnippet: '用自然语言开始、调整、复核、继续、删除或取消普通成品文档的模板整理',
         promptGuidelines: expect.arrayContaining([
           expect.stringContaining('必须先询问是否整理'),
           expect.stringContaining('请单独回复“复核”或“打开复核卡”'),
@@ -185,15 +185,15 @@ describe('current Xiaogui Worker Tool Guidelines baseline', () => {
         promptSnippet: '从已确认的模板整理报告生成预览、保存模板库、另存一份、恢复、取消或打开正式模板',
         promptGuidelines: expect.arrayContaining([
           expect.stringContaining('模型不得自行构造该令牌'),
-          expect.stringContaining('正式模板只能保存为新的 DOCX'),
+          expect.stringContaining('必须另存为不存在的新文件'),
         ]),
       },
       xiaogui_work_docx_advanced_generation: {
-        promptSnippet: '自然语言选择正式模板、补齐普通字段和结构槽位、预览、确认另存、恢复或取消',
+        promptSnippet: '自然语言选择正式模板、补齐普通字段和结构槽位、预览、确认另存、恢复或取消成品文档',
         promptGuidelines: expect.arrayContaining([
           expect.stringContaining('标为 UNRESOLVED'),
           expect.stringContaining('请单独回复“确认”'),
-          expect.stringContaining('成品只能另存为不存在的新 DOCX'),
+          expect.stringContaining('必须另存为不存在的新文件'),
         ]),
       },
     })
