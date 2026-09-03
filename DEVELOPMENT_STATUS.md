@@ -1,5 +1,56 @@
 # 小规开发阶段状态
 
+## 2026-09-03｜RUNTIME-R4 P1D-A 复用调查文档门补录（待人工复验）
+
+### 本阶段目标与状态
+
+- 目标：关闭人工 Standards 复验指出的唯一强制文档门，把 P1D-A 对 Pi 原生、已装 Skill、pi.dev Extension/Package、OMP 本体和院内既有接缝的调查写成可复核账目。
+- 状态：功能与 Spec 已人工通过；文档证据已补齐，正式验收仍暂缓，等待人工复验；不得进入 P1D-B。
+- 代码基线：`f1034ac5ee944ded4f63518e536ee602a636d128`；首个文档补录提交 `1c63e996d573b7e9871200bb28d9e57f872c90fb` 中不充分的候选口径已在本轮纠正。
+- 隔离边界：未修改源码、测试、依赖或构建配置；未触碰 WORK、主线、默认 Runtime、模型或 Portable。
+
+### 实际修改文件
+
+- `doc/runtime-r4/OMP-ACP-P1D-A-QA.md`
+- `doc/runtime-r4/OMP-ACP-P1D-A-REVIEW.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 明确定义本次复用门真正要满足的契约：外部 OMP ACP 进程在 Windows native `require` 前完成回执绑定、父环境隔离和完整树复验，并在启动后证明实际模块来源。
+2. 补齐 `@earendil-works/pi-coding-agent@0.84.1`、两个已装 Skills、`pi-package-manager@0.2.1`、`pi-sandbox@0.6.6`、固定 OMP 18.1.2 和小规既有 Transport/TaskHub 接缝的来源、版本或 commit、许可证、能力与缺口。
+3. 完成当前 Pi 的 Skill 发现冒烟：两项 Skills 均被发现，诊断数 `0`。
+4. 在 D 盘固定下载 `pi-package-manager@0.2.1`，核对实际源码并完成“只加载、不执行命令”的 Extension 冒烟：`1` 个 Extension、`2` 个命令、`0` 个错误。
+5. 移除把 HTTP `200` 当成功能冒烟、把无关候选堆成清单和引用未批准新版本的错误口径；本阶段仍只固定 OMP `18.1.2`。
+6. 登记人工复验的两项 LOW：bundle 模块职责集中、七项受控环境目录存在 Data Clumps；遵照审查建议不在 P1D-A 扩大重构。
+
+### 未完成内容
+
+- 人工尚未对补录后的文档差异正式放行；P1D-A 不能进入 P1D-B。
+- P1D-B、主线合并、默认 Runtime、发布和 Portable 均未授权、未开始。
+
+### 与规格文档存在的偏差
+
+- 无产品或架构偏差。补录证明最终实现仍是复用 OMP、Pi、TaskHub 与现有 Process Transport，只扩展必须的受信启动接缝。
+- `pi-package-manager` 的内部 loader 冒烟只用于判断候选能力，没有把非公开 loader 路径写入生产代码。
+- `pi-sandbox` 的官方平台矩阵不含 Windows，因此按平台门拒绝，没有为了凑测试数量执行无意义安装。
+
+### 测试命令和测试结果
+
+- 本轮没有源码变化，按人工复验意见不重复运行 802 MB D 盘真实门、46 项聚焦回归、typecheck、模型或 Electron。
+- 候选冒烟结果：当前 Pi Skill 发现 `2` 项、诊断 `0`；`pi-package-manager@0.2.1` 加载为 `1` 个 Extension、注册 `packages` 与 `packages-stop`、加载错误 `0`。
+- 文档差异、SHA/分支/工作树已核对；`git diff --check` 退出码 `0`（仅 Windows LF/CRLF 提示）。文档专项复审结论为 `APPROVE`。
+
+### 已知风险
+
+1. `omp-runtime-bundle.ts` 的职责集中和受控环境目录字段聚集继续作为 LOW 维护风险保留；当前无证据支持为此拆模块。
+2. 候选 Package 的版本与上游页面可能变化；本记录只对表中精确版本、commit 和 SRI 有效。
+3. 正式验收仍以人工复验为准，不能把本次文档提交视为 P1D-A 已放行。
+
+### 下一阶段计划
+
+提交并推送这三份文档后停止，等待人工复验。没有 P1D-B 施工授权。
+
 ## 2026-09-03｜RUNTIME-R4 OMP ACP Runtime P1D-A 人工拒绝项复修候选
 
 ### 本阶段目标与状态
@@ -77,11 +128,11 @@ git diff --check
 
 ### 审查结果
 
-- Spec 复审：`APPROVE`，当前代码阻断数 `0`。
-- Standards 复审：`APPROVE`，当前代码无 Standards 阻断。
+- 人工 Spec 复验：`APPROVE`，当前功能阻断数 `0`。
+- 人工 Standards 复验：`REQUEST_CHANGES`；唯一强制项是复用调查记录不够具体，现已补录并等待再次复验。
 - 独立代码质量复审：`CLEAR / APPROVE`，无 CRITICAL、HIGH 或 MEDIUM 项。
-- 两项 LOW 观察已记录：极端锁释放失败会 reject；旧活动版本的 native cache 损坏后当前只 fail-closed，不自动修复。二者不阻断 P1D-A，用户可见修复入口留给 P1D-B。
-- 最终阶段门禁：`APPROVE`，确认 13 个暂存文件、暂存外差异为 `0`，没有 WORK、P1D-B、默认 Runtime、发布或 Portable 扩围。
+- 人工复验的两项 LOW 已记录：bundle 模块职责集中；七项受控环境目录存在 Data Clumps。本轮不为其扩大重构。
+- 先前内部最终阶段门禁的 `APPROVE` 只证明代码候选可提交，不能替代后续人工正式验收。
 
 ### 已知风险
 

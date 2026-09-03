@@ -54,24 +54,48 @@
 
 ## Pi 原生、Skill 与插件优先门
 
-本轮重新按根 `AGENTS.md` 和 ADR 实查，而不是只读名称或 README：
+本次复用调查针对的是一个窄而明确的契约：**在外部 OMP ACP 子进程执行其 Windows native `require` 之前，完成活动回执绑定、父环境隔离、完整依赖树复验，并在启动后证明实际加载模块来自同一受信缓存**。普通 Skill 发现、Pi Package 安装或命令沙箱不能被当作这一契约已经满足。
 
-1. **Pi/小规原生接缝**：现有 `AcpProcessTransportFactoryV1` 已负责进程启动，`preSpawn` 已负责启动前受信检查，TaskHub 已负责 Attempt、权限、工作树、结果对账和恢复。本轮直接复用这些接缝，只把 `preSpawn` 扩展为可等待的校验，并增加“不继承父环境”的可选项；没有新建 Agent Loop、安装状态机或权限系统。
-2. **Pi Skill 只读调查对象**：仓库内置 Skills、`pi-list-skills`、`pi-skillful` 与 `pi-skill-shiori`。
-   - 来源：根 `AGENTS.md` 的优先门、`https://pi.dev/packages/pi-list-skills`、`https://pi.dev/packages/pi-skillful`、`https://pi.dev/packages/pi-skill-shiori`。
-   - 版本/commit：Skill 目录与 pi.dev 页面未公开固定 commit；仅 `pi-list-skills@1.0.3`、`pi-skillful` 页面和 `pi-skill-shiori` 页面可确认当前发布状态，不能把页面说明当作受信装配证据。
-   - license：`pi-list-skills` 对应 npm 元数据为 MIT；`pi-skillful`、`pi-skill-shiori` 页面未单列 license，但本轮只读核对到的 npm 组件均为 MIT，仍不能替代 native 闭包验收。
-   - 能做什么：列出/整理已加载 Skills、改进 Skill 发现与触发、减少技能目录噪声。
-   - 为什么仍不足：这些能力都发生在 Pi Worker / 会话层，不能在 OMP native `require` 之前约束 Windows 子进程环境，也不能校验二进制摘要、模块加载路径或受信闭包缓存。
-   - 最小只读冒烟：`curl.exe -I -L https://pi.dev/packages/pi-list-skills`、`curl.exe -I -L https://pi.dev/packages/pi-skillful`、`curl.exe -I -L https://pi.dev/packages/pi-skill-shiori`，三者均返回 `200`。
-3. **Pi 插件/Extension/Package 只读调查对象**：`pi-web-access`、`pi-extension-toolkit`、`pi-subagents`、`pi-spine`，以及 `@oh-my-pi/pi-coding-agent@18.1.5`。
-   - 来源：`https://pi.dev/packages/pi-web-access`、`https://pi.dev/packages/pi-extension-toolkit`、`https://pi.dev/packages/pi-subagents`、`https://pi.dev/packages/pi-spine`，以及 npm 官方元数据 `npm view @oh-my-pi/pi-coding-agent version dist.integrity description --json`。
-   - 版本/commit：`@oh-my-pi/pi-coding-agent` 当前 npm 元数据为 `18.1.5`，`dist.integrity` 为 `sha512-ChIajiBfblgXnrzsrvFi52b8CKKh7IeVnfekWAR/7AoCYvcKKWkCbq+N+ePQykst7vh2pO5cOlG0jhEjShj0Yg==`；pi.dev 页面未公开独立 commit，仅能固定页面 URL 和当下版本说明。
-   - license：上述 npm 组件均为 MIT；pi.dev 页面仅作为发现入口，不把页面陈述当作装配签收。
-   - 能做什么：`pi-web-access` 提供 web 搜索、URL 抓取、GitHub clone、PDF/视频分析；`pi-extension-toolkit` 用于 scaffold / retrofit / verify 扩展；`pi-subagents` 提供单代理委派与脚本化多代理工作流；`pi-spine` 提供长任务编排脊柱。
-   - 为什么仍不足：这些包或页面都不能替代 OMP 自身的 Windows native 受信加载闭包。它们要么在网络/工具层，要么在扩展开发层，要么在协作编排层，不能给上游 `loader-state.js` 加上 activation receipt 绑定、不能阻止 `%USERPROFILE%\.omp` 的全局缓存优先级，也不能保证实际加载模块来自回执绑定缓存。
-   - 最小只读冒烟：`curl.exe -I -L https://pi.dev/packages/pi-web-access`、`curl.exe -I -L https://pi.dev/packages/pi-extension-toolkit`、`curl.exe -I -L https://pi.dev/packages/pi-subagents`、`curl.exe -I -L https://pi.dev/packages/pi-spine`，四者均返回 `200`；`npm view @oh-my-pi/pi-coding-agent version dist.integrity description --json` 返回 `18.1.5` 与上述 integrity。
-4. **真实验证**：封闭环境用真实子进程证明父进程敌意 sentinel 不会继承；固定 OMP 18.1.2 用真实 ACP 进程模块表证明加载文件来自回执绑定缓存。该证据直接验证了上述能力缺口与最小适配。
+### 实际候选、来源与验证结论
+
+| 优先级 | 实际检索对象与固定来源 | 实际验证 | 采用或拒绝结论 |
+|---|---|---|---|
+| Pi 原生 | `@earendil-works/pi-coding-agent@0.84.1`；Git revision `53fa77ccd8a279eb87e92294ef3687b03ff80112`；MIT；npm SRI `sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/KWvsZDVNa5XGsdZ7fkC7w7A==`。实查了 `DefaultResourceLoader.additionalSkillPaths`、`loadSkills`、Extension/Package loader 与 Bash `spawnHook`；能力说明以 [Pi Extensions](https://pi.dev/docs/latest/extensions)、[Pi Packages](https://pi.dev/docs/latest/packages) 和 [Pi Security](https://pi.dev/docs/latest/security) 为准。 | 当前锁定包直接执行 `loadSkills`，发现 `internal-comms`、`xiaogui-work-documents`，`diagnosticCount=0`。类型与实现核对表明 `spawnHook` 只属于 Pi 自身 Bash Tool 的进程入口。 | **复用** Resource Loader、Agent Loop、Extension/Package 机制；**不用于** OMP 启动信任门。OMP 是 TaskHub 经 `AcpProcessTransportFactoryV1` 启动的外部 ACP Runtime，不是模型调用 Bash Tool 产生的命令；把它改走 Bash Tool 会绕开既有 Attempt/Runtime 绑定，也仍不能证明完整树和实际 native 模块。 |
+| 已安装/可引入 Skill | `xiaogui-work-documents`：小规第一方 Skill，以代码基线 `f1034ac5ee944ded4f63518e536ee602a636d128` 固定；`internal-comms`：`anthropics/skills@53048666b05b4799081517d00e09e0a2dd688678`，Apache-2.0。来源与边界见 `doc/architecture/xiaogui-bundled-pi-skills.md`。 | 既有真实 Electron Catalog 证据为两项均 `enabled/effective=true`、`diagnostics=[]`；本轮又用当前 `0.84.1` Resource Loader 做只读发现冒烟，两项均成功且无诊断。 | **保留并复用**，但二者都是会话启动后的 Prompt/流程说明。前者只指导 WORK 文档工具选择，后者只指导内部沟通写作；均没有外部进程、文件树摘要、Windows 模块表或启动前环境控制能力。未找到能关闭本次受信闭包缺口的已装 Skill。 |
+| pi.dev Extension/Package | 最接近“安装/管理固定包”的候选是 [`pi-package-manager@0.2.1`](https://pi.dev/packages/pi-package-manager)；Git revision `903e14ec2f52871cd8baf83f3104e894d69a04f7`；MIT；npm SRI `sha512-AoVjV3TJKIkhwPOuiLAwahNyDGER4W2yztM+jlgh3J4YLd0Dj8ThnFO3NE+LkpDjZ8aFOzJTNrLdtXVyIszhsg==`；Node `>=18`；Pi peer dependency `>=0.74.0`。 | 在 D 盘缓存执行 `npm pack`：tarball `25,049` 字节、解包 `103,750` 字节、9 项文件。实查 `extensions/index.ts` 与 `src/server.mjs` 后，用当前 Pi Extension loader 加载：`extensionCount=1`、命令为 `packages`/`packages-stop`、`errorCount=0`；未调用安装、浏览器或网络命令。 | **不采用为 P1D 装配器**。它通过本地面板调用 `pi install/remove` 管理 Pi Package source；不接收 OMP 完整树清单，不签发小规 activation receipt，不约束 OMP loader 的 Windows native 缓存，也不核对已加载模块路径。把它套在 OMP 外面仍需重写相同的受信闭包逻辑。 |
+| pi.dev 安全候选 | [`pi-sandbox@0.6.6`](https://pi.dev/packages/pi-sandbox)；`carderne/pi-sandbox`；MIT；npm SRI `sha512-KHL+/JJ9eX0znStRLnZtzeSgp6MdM1gvg+aB8EQDlqZZuFn4n3vLDzW+1xR1M9aSa7C+mP6JMAG9MA05sRfeaQ==`。 | 官方候选页明确使用 macOS `sandbox-exec` 或 Linux `bubblewrap`；当前目标是 Windows x64，因此在平台门即拒绝，没有执行不适用的安装冒烟。 | **不采用**。即使未来有 Windows 后端，命令隔离也不等于供应链证明：它不会固定 24,230 项 OMP 闭包、签发/核对回执或证明 `pi_natives.*.node` 的实际来源。 |
+| 已批准成熟开源 Runtime | `@oh-my-pi/pi-coding-agent@18.1.2`；Git tag `v18.1.2`；revision `86bf72f52947f62ecaf9bd28e35572812e725a92`；MIT；npm SRI `sha512-azsUetojUyT2e+CyDPun2LgFrCts8FtnvBlbPrzYj6Y7UbRIkdebqhNZVhMrOrueNnRsLetqcrY8EPomxTlvCg==`；Bun `>=1.3.14`。 | P0/P1 已完成真实 ACP `initialize`；P1D-A 的 15 项 D 盘真实门进一步读取 Windows 进程模块表，证明加载的 `pi_natives.*.node` 精确来自回执绑定缓存，篡改后启动前拒绝。 | **采用 OMP 本体，不复制其实现**。上游 `loader-state.js` 会优先使用用户版本缓存，OMP 自身没有小规所需的活动回执、完整树、TaskHub Attempt 或 D 盘存储契约；因此只在宿主现有 Transport/`preSpawn` 增加最小信任接缝。未批准、未切换到其他 OMP 版本。 |
+| 院内既有能力 | 小规 `AcpProcessTransportFactoryV1`、`preSpawn`、TaskHub Attempt/权限/工作树/结果对账/恢复，代码基线 `f1034ac5ee944ded4f63518e536ee602a636d128`。 | 46 项聚焦回归和 15 项真实 D 盘门已覆盖启动前复验、封闭环境、实际加载路径、篡改拒绝和恢复；详见下节。 | **采用并最小扩展**：`preSpawn` 可等待验证，Transport 可选择不继承父环境；没有新增 Agent Loop、权限系统、Package 市场或第二套任务状态机。 |
+
+### 候选冒烟账
+
+1. 当前 Pi Skill 发现冒烟：输出 `skills=[internal-comms,xiaogui-work-documents]`、`diagnosticCount=0`。
+2. `pi-package-manager@0.2.1`：先按固定版本与 SRI下载到 `D:\CodexCache\xiaogui-p1d-a-reuse-candidates`，再做源码核对和只加载不执行的 Extension 冒烟；结果 `1` 个 Extension、`2` 个命令、`0` 个加载错误。包管理命令、浏览器和本地服务均未执行。
+3. 当前 Pi 包的根运行时导出不提供 `loadExtensions`；候选冒烟只借用该固定版本内部 loader 观察注册结果，不把内部路径变成产品接缝，也不新增对它的依赖。
+4. `pi-sandbox@0.6.6` 因官方平台矩阵不含 Windows，在平台门终止；这属于可验证的不适用结论，不以“网页可访问”冒充功能冒烟。
+5. OMP 真实进程证据沿用本阶段已经完成的 D 盘门，没有为文档补录重复复制 802 MB 或再次运行 46 项回归。
+
+实际执行命令如下；输出只保留能力结果，不把候选缓存绝对路径写进产品公开契约：
+
+```powershell
+npm view @earendil-works/pi-coding-agent@0.84.1 version gitHead license dist.integrity repository.url engines --json
+npm view pi-package-manager@0.2.1 version gitHead license dist.integrity repository.url engines peerDependencies dependencies --json
+npm view pi-sandbox@0.6.6 version license dist.integrity repository.url --json
+npm view @oh-my-pi/pi-coding-agent@18.1.2 version license dist.integrity repository.url engines --json
+
+node --input-type=module -e "import { loadSkills } from '@earendil-works/pi-coding-agent'; const r=loadSkills({cwd:process.cwd(),agentDir:'D:/CodexCache/xiaogui-p1d-a-pi-candidate-smoke/agent',skillPaths:['resources/pi-skills'],includeDefaults:false}); console.log(JSON.stringify({skills:r.skills.map(s=>s.name).sort(),diagnosticCount:r.diagnostics.length},null,2)); if(r.diagnostics.length!==0) process.exit(1);"
+
+$env:npm_config_cache='D:\CodexCache\npm-p1d-a-reuse-candidates'
+npm pack pi-package-manager@0.2.1 --json --pack-destination D:\CodexCache\xiaogui-p1d-a-reuse-candidates
+
+node --input-type=module -e "import { pathToFileURL } from 'node:url'; const m=await import(pathToFileURL(process.cwd()+'/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js')); const p='D:/CodexCache/xiaogui-p1d-a-reuse-candidates/pi-package-manager-0.2.1/package/extensions/index.ts'; const r=await m.loadExtensions([p],process.cwd()); const commands=r.extensions.flatMap(e=>[...e.commands.keys()]).sort(); console.log(JSON.stringify({extensionCount:r.extensions.length,commands,errorCount:r.errors.length},null,2)); if(r.errors.length) process.exit(1);"
+```
+
+### 缺口与最小框架例外
+
+复用调查后的缺口不是“没有 Package Manager”，而是没有候选能够在**既有 TaskHub Runtime 调度与外部 ACP spawn 之间**同时提供：固定 OMP 完整树、活动回执、Windows 用户缓存隔离、启动前逐次复验和启动后实际模块路径证明。Skill 编排发生得太晚；Pi Package 管理的对象和回执契约不同；非 Windows sandbox 不适用；OMP 本体则正是被复用但需要受控启动的对象。
+
+因此最小例外限定为既有 `AcpProcessTransportFactoryV1` 的 `preSpawn` 与环境装配，以及 P1D-A 的受信 bundle/receipt 检查；TaskHub、Pi Agent Loop、Extension/Skill 发现和 OMP 本体均保持原权威。两项 LOW 观察——`omp-runtime-bundle.ts` 的职责集中、七项受控环境目录字段聚集——登记为后续维护风险，本阶段不为它们扩大重构。
 
 ## 测试证据
 
@@ -123,4 +147,4 @@ npm run test:unit -- src/main/xiaogui/agent-runtime/omp-runtime-bundle.test.ts
 
 ## 下一步
 
-独立 Standards、Spec、代码质量复审及最终只读阶段门禁均已无阻断。提交并推送当前独立分支后停在人工验收门；人工明确放行前不得进入 P1D-B。
+P1D-A 功能与 Spec 已通过人工复验；人工 Standards 指出的复用调查文档门已按上表补齐，现等待再次复验。提交并推送当前独立分支后停在人工验收门；人工明确放行前不得进入 P1D-B。
