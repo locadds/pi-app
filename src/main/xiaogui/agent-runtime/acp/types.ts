@@ -3,6 +3,7 @@ export interface AcpInitializeParamsV1 {
   clientCapabilities: {
     fs: { readTextFile: true; writeTextFile: boolean }
     terminal: boolean
+    elicitation?: { form: Readonly<Record<string, never>> }
   }
   clientInfo: { name: string; version: string }
 }
@@ -58,6 +59,17 @@ export interface AcpRequestPermissionResultV1 {
   outcome: { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' }
 }
 
+export interface AcpElicitationCreateParamsV1 {
+  mode?: string
+  sessionId?: string
+  message?: string
+  requestedSchema?: unknown
+}
+
+export type AcpElicitationCreateResultV1 =
+  | { action: 'accept'; content: { value: string } }
+  | { action: 'cancel' }
+
 export type AcpClientRequestHandlerV1 = (params: unknown) => Promise<unknown> | unknown
 
 export interface AcpTransportStartOptionsV1 {
@@ -73,6 +85,8 @@ export interface AcpTransportV1 {
   start(options: AcpTransportStartOptionsV1): Promise<AcpInitializeResultV1>
   newSession(cwd: string): Promise<{ sessionId: string }>
   loadSession(sessionId: string, cwd: string): Promise<void>
+  /** Optional native ACP configuration seam. Runtimes that need a frozen selector require it explicitly. */
+  setConfigOption?(sessionId: string, configId: string, value: string): Promise<void>
   prompt(sessionId: string, prompt: AcpContentBlockV1[]): Promise<{ stopReason?: string }>
   cancel(sessionId: string): Promise<void> | void
   dispose(): Promise<void> | void

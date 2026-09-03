@@ -4,6 +4,7 @@ import { OMP_ACP_APPROVED_VERSION_V1 } from './omp-acp-adapter'
 
 export interface OmpPrivateLayoutV1 {
   readonly rootDir: string
+  readonly runtimeRoot: string
   readonly packageRoot: string
   readonly stateDir: string
   readonly receiptPath: string
@@ -15,10 +16,12 @@ export function resolveOmpPrivateLayoutV1(userDataDir: string): OmpPrivateLayout
     throw new Error('OMP_USER_DATA_DIR_INVALID')
   }
   const rootDir = join(resolve(userDataDir), 'xiaogui', 'agent-runtime', `omp-v${OMP_ACP_APPROVED_VERSION_V1}`)
+  const runtimeRoot = join(rootDir, 'install')
   return Object.freeze({
     rootDir,
-    packageRoot: join(rootDir, 'install', 'package'),
+    runtimeRoot,
+    packageRoot: join(runtimeRoot, 'node_modules', '@oh-my-pi', 'pi-coding-agent'),
     stateDir: join(rootDir, 'state'),
-    receiptPath: join(rootDir, 'install', 'receipt-v1.json'),
+    receiptPath: join(runtimeRoot, 'receipt-v1.json'),
   })
 }

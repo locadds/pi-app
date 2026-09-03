@@ -179,7 +179,7 @@ class FakeProbe {
     return {
       available: true as const,
       command: 'omp',
-      args: ['--approval-mode', 'always-ask', '--no-skills', '--no-rules', 'acp'],
+      args: ['--approval-mode', 'always-ask', '--no-extensions', '--no-skills', '--no-rules', 'acp'],
       version: this.version,
     }
   }
@@ -273,7 +273,7 @@ describe('Oh My Pi ACP runtime adapter test gate', () => {
       expect(launch).toMatchObject({
         available: true,
         command: process.execPath,
-        args: ['--approval-mode', 'always-ask', '--no-skills', '--no-rules', 'acp'],
+        args: ['--approval-mode', 'always-ask', '--no-extensions', '--no-skills', '--no-rules', 'acp'],
       })
     } finally {
       if (previous === undefined) delete process.env.OMP_CLI_PATH
@@ -300,6 +300,7 @@ describe('Oh My Pi ACP runtime adapter test gate', () => {
         OMP_ACP_APPROVED_PACKAGE_V1,
         '--approval-mode',
         'always-ask',
+        '--no-extensions',
         '--no-skills',
         '--no-rules',
         'acp',
@@ -311,7 +312,11 @@ describe('Oh My Pi ACP runtime adapter test gate', () => {
         cwd: root,
         initialize: {
           protocolVersion: 1,
-          clientCapabilities: { fs: { readTextFile: true, writeTextFile: false }, terminal: false },
+          clientCapabilities: {
+            fs: { readTextFile: true, writeTextFile: false },
+            terminal: false,
+            elicitation: { form: {} },
+          },
           clientInfo: { name: 'xiaogui-omp-acp-real-smoke', version: '0.1.0' },
         },
         requestHandlers: new Map(),
@@ -399,7 +404,7 @@ describe('Oh My Pi ACP runtime adapter test gate', () => {
     expect(outcome).toMatchObject({ state: 'READY' })
     expect(factory.createCalls).toEqual([{
       command: 'omp',
-      args: ['--approval-mode', 'always-ask', '--no-skills', '--no-rules', 'acp'],
+      args: ['--approval-mode', 'always-ask', '--no-extensions', '--no-skills', '--no-rules', 'acp'],
       cwd: root,
       env: { PI_CODING_AGENT_DIR: root },
     }])

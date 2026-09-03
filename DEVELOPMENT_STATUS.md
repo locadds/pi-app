@@ -1,5 +1,110 @@
 # 小规开发阶段状态
 
+## 2026-09-03｜RUNTIME-R4 OMP ACP Runtime P1C 真实 Coding、结果对账与恢复
+
+### 本阶段目标与状态
+
+- P1B 人工验收：用户已于 2026-09-03 明确放行 `agent/runtime-r4-omp-acp-p1-v1@a9ee7bc4b18ce8ded6f5fc7fd00d393374cd9589`。
+- P1C 目标：让固定 OMP 运行时通过 TaskHub 权限门修改独立 Attempt 工作树；用真实工作树摘要完成 RuntimeOutcomeMonitor、ChangeSet、Delivery 对账；持久化并恢复同一 Attempt、Runtime、vendor session 和工作树；生产启动必须先消费受信安装回执。
+- 状态：实现、聚焦测试、真实 OMP 18.1.2 模型旅程、Node/Web 类型检查与双重只读审查已完成；当前为 P1C 阶段候选，等待人工验收。
+- 工作树：`D:\CodexWorktrees\xiaogui-omp-acp-p1-v1`；分支：`agent/runtime-r4-omp-acp-p1-v1`；基线：已验收 P1B `a9ee7bc4b18ce8ded6f5fc7fd00d393374cd9589`。
+- 隔离边界：未触碰 WORK 工作树或产品主线；未切换默认 Runtime，未合并、发布或制作 Portable；未修改 `package.json`、README 或现有 Kimi 默认生产路径。
+
+### 实际修改文件
+
+- `packages/shared/xiaogui-agent-runtime.ts`
+- `src/main/xiaogui/coding-extensions/role-profile-module.ts`
+- `src/main/xiaogui/agent-runtime/acp/types.ts`
+- `src/main/xiaogui/agent-runtime/acp/process-transport.ts`
+- `src/main/xiaogui/agent-runtime/omp-private-layout.ts`
+- `src/main/xiaogui/agent-runtime/omp-private-layout.test.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-adapter.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-adapter.test.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-production.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-production.test.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-taskhub-integration.test.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.test.ts`
+- `src/main/xiaogui/task-hub/task-candidate-audit.ts`
+- `src/main/xiaogui/task-hub/task-candidate-audit.test.ts`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+- `doc/runtime-r4/OMP-ACP-P1C-QA.md`
+- `doc/runtime-r4/OMP-ACP-P1C-REAL-SMOKE.md`
+- `doc/runtime-r4/OMP-ACP-P1C-REVIEW.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 新增显式 `ompProductionEnabled` 生产候选接缝。省略该选项时 OMP 仍保持原测试能力和 `OMP_PRODUCTION_DISABLED`；桌面现有调用方没有开启它，默认 Runtime 与 Kimi 路由不变。
+2. 生产启动只接受 `OmpTrustedInstallationModuleV1` 回执派生的固定入口，并固定 `always-ask`、禁用扩展、Skills 和 Rules。生产路径不调用 OMP PATH 探针；固定包或回执缺失、漂移及入口版本不符均停止。
+3. OMP 18.1.2 对普通 `edit/write` 的实际 ACP 顺序是先发 `elicitation/create`，批准后才发结构化 `tool_call`。适配层优先保留 ACP 原生结构化权限请求；对该上游缺口只接受一个版本化、精确、单目标的 18.1.2 approval envelope。歧义、多行路径、多目标、截断、错误 schema、错误会话或未知工具全部取消，不做自然语言猜测。
+4. 所有允许决定仍由 TaskHub 产生。适配层只把受控的相对目标送入既有权限事件；绝对路径不进入公开事件。命令和数据外传没有权威白名单，继续保持未核验/拒绝。
+5. Attempt 启动时把角色模型快照转换为安全 `provider/model` selector，并通过 ACP `session/set_config_option` 固定到 OMP 会话；恢复继续使用持久化请求中的同一 selector，不读取新的全局偏好。
+6. 新增 SQLite OMP 恢复存储：绑定公共 Runtime session、私有 vendor session、Attempt、Runtime selection、工作树绑定与安装回执摘要；Outcome 在对外发布成功事件前先持久化。未结算恢复返回 `OUTCOME_UNKNOWN`，不会重复 prompt 或重新派发。
+7. `candidateDigest` 改为 TaskHub 捕获的真实 Attempt 结果树摘要。RuntimeOutcomeMonitor、恢复记录、TaskCandidateAudit、TaskChangeSet 和 Delivery 使用同一摘要；Runtime 自报与主机结果不一致时拒绝形成候选。
+8. 真实模型旅程已在完整固定 OMP 18.1.2 私有依赖图上通过：只批准 `src/feature.ts`，独立工作树由 `value = 1` 改为 `value = 2`，源项目不变，`git diff --check` 为空，最终 result tree 与 Runtime candidateDigest 一致。
+9. 生产装配测试证明：显式开启候选接缝时先消费 trusted-installation inspection、建立持久恢复库且不调用 OMP PATH probe；既有默认装配仍不启用该路径。
+
+### 未完成内容
+
+- P1C 只是独立分支上的生产候选，仍需人工验收；没有进入 WORK 主线、阶段线或正式主线，也没有成为默认 Runtime。
+- 完整 OMP 依赖图目前只存在于 D 盘测试缓存。正式安装/升级装配、发布包资源和离线包不在本阶段；仅有主包子树但缺少 `pi_natives` 等依赖时会安全启动失败，不算有效安装。
+- TaskHub 尚无命令与数据外传的权威预批准规则，因此三档中相关操作仍不会自动放行。
+- 未增加 Renderer UI，也未重复跑 Electron 窗口旅程；本阶段用真实 OMP ACP 子进程加真实 Git/SQLite/TaskHub/Delivery 旅程验证运行时接缝。
+- 未运行 OMP 上游全量测试、仓库无关全量测试、WORK/Office 测试或构建 Portable。
+
+### 与规格和冻结决策的偏差
+
+- 无架构偏差：继续复用 OMP/Pi ACP、TaskHub Attempt/权限/工作树/验证/交付和既有 Extension UI；未新增 Agent Loop、权限数据库、模型注册表或任务状态机。
+- 上游协议存在已记录的兼容差距：OMP 18.1.2 普通文件工具的结构化 `tool_call` 晚于审批。不能按 toolCallId 先绑定，因此使用与固定版本、固定源码 revision 和 capability digest 绑定的窄解析器；升级 OMP 前必须重新 Spike，不匹配即 fail-closed。
+- P1C 的旅程证据有意拆成两段：真实 OMP 子进程证明权限、实际工作树修改、Diff、主机结果摘要和恢复绑定；同一生产接缝的确定性集成测试再证明该摘要进入 CandidateAudit、ChangeSet 与 Delivery。没有把后一段伪称为同一个真实模型进程持续运行到 Delivery。
+- 最小验证与原施工卡中的“Electron 可见旅程”有一处有意缩减：P1C 没有 UI 修改，按用户“非必要不要做那么多测试”的要求，以真实 ACP 进程旅程代替重复窗口测试；未把该项伪装为已执行。
+
+### 测试命令和测试结果
+
+聚焦 P1C 回归：
+
+```powershell
+npm run test:unit -- packages/shared/xiaogui-agent-runtime.test.ts src/main/xiaogui/coding-extensions/role-profile-module.test.ts src/main/xiaogui/agent-runtime/omp-acp-adapter.test.ts src/main/xiaogui/agent-runtime/omp-acp-production.test.ts src/main/xiaogui/agent-runtime/omp-acp-taskhub-integration.test.ts src/main/xiaogui/agent-runtime/omp-private-layout.test.ts src/main/xiaogui/agent-runtime/omp-trusted-installation.test.ts src/main/xiaogui/task-hub/task-candidate-audit.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts
+```
+
+结果：`9 test files passed`，`50 tests passed`，`3 tests skipped`。跳过项均是必须显式提供 D 盘完整安装图或其它外部真实条件的门控用例；没有静默跳过本节所述真实旅程。
+
+真实 OMP 18.1.2 旅程（私有模型配置路径不写入仓库）：
+
+```powershell
+$env:XIAOGUI_OMP_P1C_REAL_SMOKE='1'
+$env:XIAOGUI_OMP_P1C_REAL_PACKAGE_ROOT='<D盘固定18.1.2完整依赖图中的主包目录>'
+$env:XIAOGUI_OMP_P1C_MODELS_JSON='<本机私有模型配置>'
+npm run test:unit -- src/main/xiaogui/agent-runtime/omp-acp-production.test.ts
+```
+
+结果：`1 test file passed`，`4 tests passed`，退出码 `0`，耗时约 38 秒。相同命令在最终收紧 approval envelope 后复跑通过。
+
+类型和差异检查：
+
+```powershell
+npm run typecheck
+git diff --check
+```
+
+结果：Node/Web 类型检查退出码均为 `0`；差异检查退出码 `0`，只有 Windows LF/CRLF 提示。
+
+详细旅程、原始真实输出、审查结论及环境差异见 `doc/runtime-r4/OMP-ACP-P1C-QA.md`、`doc/runtime-r4/OMP-ACP-P1C-REAL-SMOKE.md` 与 `doc/runtime-r4/OMP-ACP-P1C-REVIEW.md`。
+
+### 已知风险
+
+1. OMP 18.1.2 的普通文件审批不是结构化 toolCall-first 协议。当前窄适配器能 fail-closed，但上游任何消息形状变化都会拒绝写入；升级版本必须重新核对固定源码和真实旅程。
+2. 受信回执核验主包固定树；运行还需要同一私有安装根下的完整依赖闭包。缺依赖会在初始化阶段失败，正式装配需要固定并验证完整依赖图，不能把散落的单独 package 目录当安装成果。
+3. D 盘完整测试图约 802 MB、约 2.4 万文件，为复验暂时保留；人工验收前不清理。发布装配时应继续放 D 盘缓存并单独记录体积。
+4. `supportsResultReconcile: true` 只存在于显式生产候选 selection；尚无产品入口开启该选项，人工验收前不得切为默认。
+5. `createOrResume` 当前先确认受信启动可用性，再读取进程内幂等缓存；正常重启由持久恢复库接管。广泛生产启用前仍应复核瞬时安装不可用时的同请求回放语义。
+6. 固定 OMP `write` 审批在公开权限事件中按写入型 `edit` 展示；安全策略一致，但未来若 UI 需要区分“创建”和“编辑”，应通过安全枚举扩展，不能暴露原始审批文字。
+
+### 下一阶段计划
+
+等待人工验收 P1C。通过后再单独决定：把完整依赖闭包纳入受信安装/升级装配，并在一个受控集成分支启用 OMP 候选供单机试用。未经新的明确批准，不合并主线、不切默认 Runtime、不制作发布包。
+
 ## 2026-09-02｜RUNTIME-R4 OMP ACP Runtime P1B 受信清单、私有模型与三档权限 UI
 
 ### 本阶段目标与状态

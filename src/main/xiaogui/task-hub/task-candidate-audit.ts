@@ -26,6 +26,16 @@ export interface RuntimeTaskCandidateSignalV1 {
   readonly candidateDigest: string
 }
 
+export interface RuntimeTaskCandidateReconcilePortV1 {
+  verify(input: {
+    readonly attemptId: AttemptId
+    readonly runtimeSessionId: string
+    readonly runtimeCandidateDigest: string
+    readonly hostResultTreeHash: Sha256Digest
+    readonly hostCandidateDigest: Sha256Digest
+  }): Promise<boolean>
+}
+
 export interface CaptureTaskCandidateInputV1 {
   readonly flowId: FlowId
   readonly taskRunId: TaskRunId
@@ -59,6 +69,7 @@ export interface TaskCandidateAuditResultV1 {
 export type TaskCandidateAuditReasonCodeV1 =
   | 'CANDIDATE_IDENTITY_INVALID'
   | 'CANDIDATE_TIMESTAMP_INVALID'
+  | 'CANDIDATE_RUNTIME_RESULT_MISMATCH'
   | 'CANDIDATE_VERIFICATION_CONTROL_FORBIDDEN'
 
 export class TaskCandidateAuditErrorV1 extends Error {
@@ -69,7 +80,10 @@ export class TaskCandidateAuditErrorV1 extends Error {
 }
 
 export class TaskCandidateAuditServiceV1 {
-  constructor(private readonly workspace: AttemptTaskPatchCapturePortV1) {}
+  constructor(
+    private readonly workspace: AttemptTaskPatchCapturePortV1,
+    private readonly runtimeReconcile?: RuntimeTaskCandidateReconcilePortV1,
+  ) {}
 
   async captureTaskCandidate(input: CaptureTaskCandidateInputV1): Promise<TaskCandidateAuditResultV1> {
     assertIdentity(input)
@@ -115,6 +129,21 @@ export class TaskCandidateAuditServiceV1 {
     const candidate: ChangeSetCandidateV1 = {
       ...candidateWithoutDigest,
       candidateDigest: taskCandidateDigestV1(candidateWithoutDigest),
+    }
+    if (this.runtimeReconcile) {
+      let reconciled = false
+      try {
+        reconciled = await this.runtimeReconcile.verify({
+          attemptId: input.attemptId,
+          runtimeSessionId: input.runtimeSignal.runtimeSessionId,
+          runtimeCandidateDigest: input.runtimeSignal.candidateDigest,
+          hostResultTreeHash: resultTreeHash,
+          hostCandidateDigest: candidate.candidateDigest,
+        })
+      } catch {
+        reconciled = false
+      }
+      if (!reconciled) throw new TaskCandidateAuditErrorV1('CANDIDATE_RUNTIME_RESULT_MISMATCH')
     }
     const runtimeCandidateBindingDigest = digestJson({
       kind: 'RUNTIME_TASK_CANDIDATE_BINDING_V1',

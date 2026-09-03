@@ -4,7 +4,10 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 
 import {
+  isSafeRuntimeModelSelectorV1,
   isRuntimeContractTestSelectionAllowed,
+  isRuntimeSelectionAllowed,
+  runtimeSelectionKey,
   validateRuntimeContractTestCreateRequestShapeV1,
   validateRuntimeProductionCreateRequestShapeV1,
 } from '@shared/xiaogui-agent-runtime'
@@ -12,6 +15,7 @@ import type {
   AdapterIdV1,
   AgentRuntimeAdapterV1,
   AgentRuntimeContractTestAdapterV1,
+  RuntimeAdapterSelectionV1,
   RuntimeCapabilityV1,
   RuntimeCapabilityV2,
   RuntimeContractTestCreateOrResumeRequestV1,
@@ -21,6 +25,7 @@ import type {
   RuntimeInterruptRequestV1,
   RuntimeOutcomeV1,
   RuntimePermissionDecisionV1,
+  RuntimeRouteFailureReasonV1,
   RuntimeSendRequestV1,
   RuntimeTestAdapterSelectionV1,
   TrustedRuntimePayloadResolverV1,
@@ -29,6 +34,8 @@ import type {
 import { AcpProcessTransportFactoryV1 } from './acp/process-transport'
 import { digestSafeText, isSafeAcpOpaqueId, localRuntimeSurrogate } from './acp/redaction'
 import type {
+  AcpElicitationCreateParamsV1,
+  AcpElicitationCreateResultV1,
   AcpRequestPermissionParamsV1,
   AcpRequestPermissionResultV1,
   AcpSessionUpdateParamsV1,
@@ -46,11 +53,13 @@ export const OMP_ACP_ADAPTER_ID_V1 = 'oh-my-pi-acp' as AdapterIdV1
 export const OMP_ACP_APPROVED_VERSION_V1 = '18.1.2'
 export const OMP_ACP_SOURCE_REVISION_V1 = '86bf72f52947f62ecaf9bd28e35572812e725a92'
 export const OMP_ACP_APPROVED_PACKAGE_V1 = `@oh-my-pi/pi-coding-agent@${OMP_ACP_APPROVED_VERSION_V1}`
+export const OMP_ACP_APPROVAL_ENVELOPE_V1 = 'omp-18.1.2-v1'
 
 const CLIENT_INFO = { name: 'xiaogui-oh-my-pi-acp-adapter', version: '0.1.0' }
-const OMP_ACP_SAFE_ARGS_V1 = Object.freeze([
+export const OMP_ACP_SAFE_ARGS_V1 = Object.freeze([
   '--approval-mode',
   'always-ask',
+  '--no-extensions',
   '--no-skills',
   '--no-rules',
   'acp',
@@ -76,7 +85,64 @@ export interface OmpAcpWorkspaceResolutionV1 {
 }
 
 export interface OmpAcpWorkspaceResolverV1 {
-  resolve(request: RuntimeContractTestCreateOrResumeRequestV1): Promise<OmpAcpWorkspaceResolutionV1>
+  resolve(
+    request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1,
+  ): Promise<OmpAcpWorkspaceResolutionV1>
+}
+
+export interface OmpAcpTrustedLaunchV1 extends OmpAcpLaunchV1 {
+  readonly version: typeof OMP_ACP_APPROVED_VERSION_V1
+  readonly installationReceiptDigest: string
+}
+
+export interface OmpAcpTrustedLaunchPortV1 {
+  inspectLaunch(): Promise<
+    | ({ readonly available: true } & OmpAcpTrustedLaunchV1)
+    | { readonly available: false; readonly reasonCode: string }
+  >
+}
+
+export interface OmpAcpCandidateInspectorV1 {
+  inspect(input: {
+    readonly attemptId: string
+    readonly allowNoApprovedChanges: boolean
+  }): Promise<{ readonly candidateDigest: string }>
+}
+
+export interface OmpAcpRecoveryBindingV1 {
+  readonly publicRuntimeSessionId: string
+  readonly vendorSessionId: string
+  readonly request: RuntimeCreateOrResumeRequestV1
+  readonly installationReceiptDigest: string
+  readonly outcome: Exclude<RuntimeOutcomeV1, { state: 'OUTCOME_UNKNOWN' }> | null
+}
+
+export interface OmpAcpRecoveryStoreV1 {
+  /** True only when bindings and settled outcomes survive a process restart. */
+  readonly durable: boolean
+  bind(binding: Omit<OmpAcpRecoveryBindingV1, 'outcome'>): Promise<void>
+  settle(
+    publicRuntimeSessionId: string,
+    outcome: Exclude<RuntimeOutcomeV1, { state: 'OUTCOME_UNKNOWN' }>,
+  ): Promise<void>
+  read(publicRuntimeSessionId: string): Promise<OmpAcpRecoveryBindingV1 | null>
+  close(): void | Promise<void>
+}
+
+export type OmpAcpProductionGateV1 =
+  | { readonly enabled: false }
+  | {
+      readonly enabled: true
+      readonly selection: RuntimeAdapterSelectionV1
+      readonly trustedLaunch: OmpAcpTrustedLaunchPortV1
+      readonly recoveryStore: OmpAcpRecoveryStoreV1
+      readonly candidateInspector: OmpAcpCandidateInspectorV1
+    }
+
+interface OmpProductionSessionContextV1 {
+  readonly installationReceiptDigest: string
+  readonly recoveryStore: OmpAcpRecoveryStoreV1
+  readonly candidateInspector: OmpAcpCandidateInspectorV1
 }
 
 export interface OmpAcpRuntimeAdapterOptionsV1 {
@@ -86,6 +152,7 @@ export interface OmpAcpRuntimeAdapterOptionsV1 {
   runtimeStateDir: string
   probe?: OmpAcpProbeV1
   transportFactory?: AcpTransportFactoryV1
+  productionGate?: OmpAcpProductionGateV1
 }
 
 interface PendingPermissionV1 {
@@ -104,7 +171,7 @@ interface PermissionDecisionRecordV1 {
 interface RuntimeSessionStateV1 {
   publicRuntimeSessionId: string
   vendorSessionId: string
-  request: RuntimeContractTestCreateOrResumeRequestV1
+  request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1
   transport: AcpTransportV1
   workspaceRoot: string
   workspacePolicy: PreparedKimiAcpWorkspacePolicyV1
@@ -116,7 +183,9 @@ interface RuntimeSessionStateV1 {
   disconnected: boolean
   cancellationRequested: boolean
   promptInFlight: boolean
+  settlementInFlight: boolean
   promptQueue: string[]
+  production?: OmpProductionSessionContextV1
   release: () => Promise<void>
 }
 
@@ -136,9 +205,8 @@ export function createOmpAcpRuntimeAdapterV1(options: OmpAcpRuntimeAdapterOption
 }
 
 /**
- * Test-approved ACP adapter for Oh My Pi. It is intentionally registered behind
- * the same AgentRuntime interface as other runtimes, while production execution
- * remains fail-closed until workspace and result-reconciliation gates are proven.
+ * ACP adapter for the pinned Oh My Pi runtime. Production remains behind an
+ * explicit composition gate and the trusted-install/result-reconciliation seams.
  */
 export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRuntimeContractTestAdapterV1 {
   private readonly probe: OmpAcpProbeV1
@@ -172,27 +240,49 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
     request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1,
   ): Promise<RuntimeCreateOrResumeOutcomeV1> {
     if (this.closed) return failed('runtime-unbound', 'OMP_ADAPTER_CLOSED')
-    if (!isContractTestRequest(request)) {
+    let launch: OmpAcpLaunchV1
+    let production: OmpProductionSessionContextV1 | undefined
+    if (isContractTestRequest(request)) {
+      const shape = validateRuntimeContractTestCreateRequestShapeV1(request)
+      if (!shape.ok) return failed('runtime-unbound', shape.reasonCode)
+      const allowed = isRuntimeContractTestSelectionAllowed(request.selection, request.contractTestPolicy)
+      if (!allowed.ok) return failed('runtime-unbound', allowed.reasonCode)
+
+      const candidate = await this.probe.findExecutable()
+      if (!candidate.available) return failed('runtime-unbound', candidate.reasonCode)
+      if (candidate.version !== OMP_ACP_APPROVED_VERSION_V1) {
+        return failed('runtime-unbound', 'OMP_VERSION_UNAPPROVED')
+      }
+      if (!isApprovedOmpLaunchArgs(candidate.args)) {
+        return failed('runtime-unbound', 'OMP_LAUNCH_ARGUMENTS_UNAPPROVED')
+      }
+      if (!selectionMatchesTestCandidate(request.selection, ompAcpCapabilityDigestForVersionV1(candidate.version))) {
+        return failed('runtime-unbound', 'RUNTIME_SELECTION_NOT_OMP_ACP_TEST')
+      }
+      launch = candidate
+    } else {
       const shape = validateRuntimeProductionCreateRequestShapeV1(request)
       if (!shape.ok) return failed('runtime-unbound', shape.reasonCode)
-      return failed('runtime-unbound', 'OMP_PRODUCTION_DISABLED')
-    }
-
-    const shape = validateRuntimeContractTestCreateRequestShapeV1(request)
-    if (!shape.ok) return failed('runtime-unbound', shape.reasonCode)
-    const allowed = isRuntimeContractTestSelectionAllowed(request.selection, request.contractTestPolicy)
-    if (!allowed.ok) return failed('runtime-unbound', allowed.reasonCode)
-
-    const launch = await this.probe.findExecutable()
-    if (!launch.available) return failed('runtime-unbound', launch.reasonCode)
-    if (launch.version !== OMP_ACP_APPROVED_VERSION_V1) {
-      return failed('runtime-unbound', 'OMP_VERSION_UNAPPROVED')
-    }
-    if (!isApprovedOmpLaunchArgs(launch.args)) {
-      return failed('runtime-unbound', 'OMP_LAUNCH_ARGUMENTS_UNAPPROVED')
-    }
-    if (!selectionMatchesCandidate(request.selection, ompAcpCapabilityDigestForVersionV1(launch.version))) {
-      return failed('runtime-unbound', 'RUNTIME_SELECTION_NOT_OMP_ACP_TEST')
+      const gate = this.options.productionGate
+      if (!gate?.enabled) return failed('runtime-unbound', 'OMP_PRODUCTION_DISABLED')
+      const lifecycleBlock = this.productionLifecycleBlockReason()
+      if (lifecycleBlock) return failed('runtime-unbound', lifecycleBlock)
+      const allowed = isRuntimeSelectionAllowed(request.selection, request.productionPolicy)
+      if (!allowed.ok) return failed('runtime-unbound', allowed.reasonCode)
+      if (!selectionMatchesProductionCandidate(request.selection, gate.selection)) {
+        return failed('runtime-unbound', 'OMP_PRODUCTION_SELECTION_MISMATCH')
+      }
+      const trusted = await gate.trustedLaunch.inspectLaunch()
+      if (!trusted.available) return failed('runtime-unbound', trusted.reasonCode)
+      if (!isApprovedProductionLaunch(trusted)) {
+        return failed('runtime-unbound', 'OMP_TRUSTED_LAUNCH_INVALID')
+      }
+      launch = trusted
+      production = {
+        installationReceiptDigest: trusted.installationReceiptDigest,
+        recoveryStore: gate.recoveryStore,
+        candidateInspector: gate.candidateInspector,
+      }
     }
 
     const requestDigest = digestJson(request)
@@ -231,17 +321,22 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
       return failed('runtime-unbound', reasonCodeFromError(error, 'OMP_RUNTIME_PREPARATION_FAILED'))
     }
     this.transports.add(transport)
-    const outcome = await this.startSession(request, workspace, workspacePolicy, prompt, transport)
+    const outcome = await this.startSession(request, workspace, workspacePolicy, prompt, transport, production)
     this.idempotency.set(request.requestId, { requestDigest, outcome })
     return outcome
   }
 
   private async startSession(
-    request: RuntimeContractTestCreateOrResumeRequestV1,
+    request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1,
     workspace: OmpAcpWorkspaceResolutionV1,
     workspacePolicy: PreparedKimiAcpWorkspacePolicyV1,
     prompt: string,
     transport: AcpTransportV1,
+    production?: OmpProductionSessionContextV1,
+    recovery?: {
+      readonly publicRuntimeSessionId: string
+      readonly persistedOutcome: Exclude<RuntimeOutcomeV1, { state: 'OUTCOME_UNKNOWN' }> | null
+    },
   ): Promise<RuntimeCreateOrResumeOutcomeV1> {
     let state: RuntimeSessionStateV1 | null = null
     const requestHandlers = new Map<string, (params: unknown) => Promise<unknown> | unknown>()
@@ -249,6 +344,11 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
       const read = workspacePolicy.readTextFile(extractPath(params))
       return { content: read.content }
     })
+    requestHandlers.set('elicitation/create', (params) => (
+      state && !this.closed && !state.cancellationRequested
+        ? this.handleElicitationRequest(state, params as AcpElicitationCreateParamsV1)
+        : { action: 'cancel' }
+    ))
     for (const method of [
       'fs/write_text_file',
       'terminal/create',
@@ -267,7 +367,11 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
         cwd: workspace.rootPath,
         initialize: {
           protocolVersion: 1,
-          clientCapabilities: { fs: { readTextFile: true, writeTextFile: false }, terminal: false },
+          clientCapabilities: {
+            fs: { readTextFile: true, writeTextFile: false },
+            terminal: false,
+            elicitation: { form: {} },
+          },
           clientInfo: CLIENT_INFO,
         },
         requestHandlers,
@@ -304,11 +408,29 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
         }
         await transport.loadSession(vendorSessionId, workspace.rootPath)
       }
+      const modelBindingFailure = await bindFrozenModelSelector(transport, vendorSessionId, request)
+      if (modelBindingFailure) {
+        await this.disposeTransport(transport)
+        return failed('runtime-unbound', modelBindingFailure)
+      }
 
-      const publicRuntimeSessionId = localRuntimeSurrogate(
+      const publicRuntimeSessionId = recovery?.publicRuntimeSessionId ?? localRuntimeSurrogate(
         vendorSessionId,
         digestJson({ scope: request.scope, workspace: request.workspace, adapterId: OMP_ACP_ADAPTER_ID_V1 }),
       )
+      if (production && !recovery) {
+        try {
+          await production.recoveryStore.bind({
+            publicRuntimeSessionId,
+            vendorSessionId,
+            request: request as RuntimeCreateOrResumeRequestV1,
+            installationReceiptDigest: production.installationReceiptDigest,
+          })
+        } catch {
+          await this.disposeTransport(transport)
+          return failed('runtime-unbound', 'OMP_RECOVERY_BINDING_FAILED')
+        }
+      }
       state = {
         publicRuntimeSessionId,
         vendorSessionId,
@@ -324,16 +446,96 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
         disconnected: false,
         cancellationRequested: false,
         promptInFlight: false,
+        settlementInFlight: false,
         promptQueue: [],
+        ...(production ? { production } : {}),
         release: () => this.disposeTransport(transport),
       }
       this.sessions.set(publicRuntimeSessionId, state)
       pushEvent(state, { type: 'SESSION_READY', runtimeSessionId: publicRuntimeSessionId })
-      enqueuePrompt(state, prompt)
+      if (recovery) {
+        if (recovery.persistedOutcome) markOutcome(state, recovery.persistedOutcome)
+        else markUnknown(state, 'OMP_RESTORED_OUTCOME_UNSETTLED')
+      } else {
+        enqueuePrompt(state, prompt)
+      }
       return { state: 'READY', runtimeSessionId: publicRuntimeSessionId }
     } catch (error) {
       await this.disposeTransport(transport)
       return failed('runtime-unbound', reasonCodeFromError(error, 'OMP_ACP_SESSION_START_FAILED'))
+    }
+  }
+
+  async restoreRuntimeSession(runtimeSessionId: string): Promise<
+    { ok: true } | { ok: false; reasonCode: RuntimeRouteFailureReasonV1 }
+  > {
+    if (this.closed) return { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
+    if (this.sessions.has(runtimeSessionId)) return { ok: true }
+    const gate = this.options.productionGate
+    if (!gate?.enabled || this.productionLifecycleBlockReason()) {
+      return { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
+    }
+
+    try {
+      const binding = await gate.recoveryStore.read(runtimeSessionId)
+      if (!binding || binding.publicRuntimeSessionId !== runtimeSessionId) {
+        return { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
+      }
+      const shape = validateRuntimeProductionCreateRequestShapeV1(binding.request)
+      if (!shape.ok) {
+        return { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
+      }
+      if (!selectionMatchesProductionCandidate(binding.request.selection, gate.selection)) {
+        return { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
+      }
+      const trusted = await gate.trustedLaunch.inspectLaunch()
+      if (
+        !trusted.available ||
+        !isApprovedProductionLaunch(trusted) ||
+        trusted.installationReceiptDigest !== binding.installationReceiptDigest
+      ) {
+        return { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
+      }
+      const workspace = await this.options.workspaceResolver.resolve(binding.request)
+      const workspacePolicy = prepareKimiAcpWorkspacePolicy(workspace.rootPath, workspace.allowedFiles)
+      if (!isAbsolute(this.options.runtimeStateDir)) {
+        return { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
+      }
+      mkdirSync(this.options.runtimeStateDir, { recursive: true })
+      if (binding.outcome?.state === 'SUCCEEDED') {
+        const inspected = await gate.candidateInspector.inspect({
+          attemptId: binding.request.scope.attemptId,
+          allowNoApprovedChanges: isReadOnlyRole(binding.request),
+        })
+        if (inspected.candidateDigest !== binding.outcome.candidateDigest) {
+          return { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
+        }
+      }
+      const transport = this.transportFactory.create(trusted.command, trusted.args, workspace.rootPath, {
+        env: { PI_CODING_AGENT_DIR: this.options.runtimeStateDir },
+      })
+      this.transports.add(transport)
+      const restored = await this.startSession(
+        binding.request,
+        { ...workspace, resumeSessionId: binding.vendorSessionId },
+        workspacePolicy,
+        '',
+        transport,
+        {
+          installationReceiptDigest: binding.installationReceiptDigest,
+          recoveryStore: gate.recoveryStore,
+          candidateInspector: gate.candidateInspector,
+        },
+        {
+          publicRuntimeSessionId: runtimeSessionId,
+          persistedOutcome: binding.outcome,
+        },
+      )
+      return restored.state === 'READY'
+        ? { ok: true }
+        : { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
+    } catch {
+      return { ok: false, reasonCode: 'RUNTIME_SESSION_RESTORE_UNAVAILABLE' }
     }
   }
 
@@ -434,7 +636,7 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
     clearPendingPermissions(state)
     try {
       await state.transport.cancel(state.vendorSessionId)
-      markOutcome(state, {
+      await commitOutcome(state, {
         state: 'INTERRUPTED',
         runtimeSessionId: state.publicRuntimeSessionId,
         receiptDigest: digestJson({ requestId: request.requestId, reason: request.reason }),
@@ -470,9 +672,24 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
     this.closed = true
     for (const state of this.sessions.values()) clearPendingPermissions(state)
     await Promise.all([...this.transports].map((transport) => this.disposeTransport(transport)))
+    if (this.options.productionGate?.enabled) {
+      await this.options.productionGate.recoveryStore.close()
+    }
   }
 
   private async capability(): Promise<RuntimeCapabilityV1> {
+    const gate = this.options.productionGate
+    if (gate?.enabled) {
+      const lifecycleBlock = this.productionLifecycleBlockReason()
+      if (lifecycleBlock) return unavailableCapability(lifecycleBlock)
+      const trusted = await gate.trustedLaunch.inspectLaunch()
+      if (!trusted.available) return unavailableCapability(trusted.reasonCode)
+      if (!isApprovedProductionLaunch(trusted)) return unavailableCapability('OMP_TRUSTED_LAUNCH_INVALID')
+      if (!selectionMatchesProductionCandidate(gate.selection, ompAcpProductionSelectionV1())) {
+        return unavailableCapability('OMP_PRODUCTION_SELECTION_MISMATCH')
+      }
+      return availableProductionCapability(trusted.version)
+    }
     const launch = await this.probe.findExecutable()
     if (!launch.available) return unavailableCapability(launch.reasonCode)
     if (launch.version !== OMP_ACP_APPROVED_VERSION_V1) {
@@ -482,6 +699,21 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
       return unavailableCapability('OMP_LAUNCH_ARGUMENTS_UNAPPROVED', launch.version)
     }
     return availableCapability(launch.version)
+  }
+
+  private productionLifecycleBlockReason(): string | undefined {
+    const gate = this.options.productionGate
+    if (!gate?.enabled) return 'OMP_PRODUCTION_DISABLED'
+    if (
+      gate.recoveryStore.durable !== true ||
+      typeof gate.recoveryStore.bind !== 'function' ||
+      typeof gate.recoveryStore.read !== 'function' ||
+      typeof gate.recoveryStore.settle !== 'function'
+    ) return 'OMP_DURABLE_RECOVERY_UNAVAILABLE'
+    if (typeof gate.candidateInspector.inspect !== 'function') {
+      return 'OMP_RESULT_RECONCILE_UNAVAILABLE'
+    }
+    return undefined
   }
 
   private handlePermissionRequest(
@@ -536,6 +768,32 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
         resolve: resolvePermission,
       })
     })
+  }
+
+  private async handleElicitationRequest(
+    state: RuntimeSessionStateV1,
+    params: AcpElicitationCreateParamsV1,
+  ): Promise<AcpElicitationCreateResultV1> {
+    if (params.sessionId !== state.vendorSessionId || !isOmpApprovalElicitation(params)) {
+      return { action: 'cancel' }
+    }
+    const toolCall = decodePinnedOmpApprovalMessageV1(params.message)
+    if (!toolCall) return { action: 'cancel' }
+    const decision = await this.handlePermissionRequest(state, {
+      sessionId: state.vendorSessionId,
+      toolCall,
+      options: [
+        { optionId: 'omp-elicitation-approve', kind: 'allow_once' },
+        { optionId: 'omp-elicitation-deny', kind: 'reject_once' },
+      ],
+    })
+    if (decision.outcome.outcome !== 'selected') return { action: 'cancel' }
+    return {
+      action: 'accept',
+      content: {
+        value: decision.outcome.optionId === 'omp-elicitation-approve' ? 'Approve' : 'Deny',
+      },
+    }
   }
 
   private async disposeTransport(transport: AcpTransportV1): Promise<void> {
@@ -594,7 +852,42 @@ export function ompAcpCapabilityDigestForVersionV1(version: string | undefined):
     clientFsWrite: 'denied',
     clientTerminal: 'denied',
     permission: 'host-mediated-allow-once',
+    approvalEnvelope: OMP_ACP_APPROVAL_ENVELOPE_V1,
     production: 'disabled',
+  })
+}
+
+export function ompAcpProductionCapabilityDigestV1(): string {
+  return digestJson({
+    adapterId: OMP_ACP_ADAPTER_ID_V1,
+    protocol: 'ACP',
+    sourceRevision: OMP_ACP_SOURCE_REVISION_V1,
+    approvedVersion: OMP_ACP_APPROVED_VERSION_V1,
+    approvalMode: 'always-ask',
+    skillDiscovery: 'disabled',
+    ruleDiscovery: 'disabled',
+    clientFsWrite: 'denied',
+    clientTerminal: 'denied',
+    permission: 'taskhub-host-mediated',
+    approvalEnvelope: OMP_ACP_APPROVAL_ENVELOPE_V1,
+    trustedInstallation: 'receipt-v1',
+    candidateDigest: 'task-result-tree-v1',
+    recovery: 'durable-v1',
+    production: 'explicit-gate-v1',
+  })
+}
+
+export function ompAcpProductionSelectionV1(): RuntimeAdapterSelectionV1 {
+  return Object.freeze({
+    adapterId: OMP_ACP_ADAPTER_ID_V1,
+    runtimeKind: 'OTHER',
+    protocol: 'ACP',
+    capabilityDigest: ompAcpProductionCapabilityDigestV1(),
+    approvalStatus: 'APPROVED_FOR_PRODUCTION',
+    diagnosticOnly: false,
+    stream: 'POLL',
+    interrupt: 'BEST_EFFORT',
+    inspect: 'RECONCILE',
   })
 }
 
@@ -628,6 +921,35 @@ function availableCapability(version: string): RuntimeCapabilityV2 {
   }
 }
 
+function availableProductionCapability(version: string): RuntimeCapabilityV2 {
+  return {
+    adapterId: OMP_ACP_ADAPTER_ID_V1,
+    runtimeKind: 'OTHER',
+    protocol: 'ACP',
+    capabilityDigest: ompAcpProductionCapabilityDigestV1(),
+    approvalStatus: 'APPROVED_FOR_PRODUCTION',
+    health: 'AVAILABLE',
+    canCreateSession: true,
+    canResumeSession: true,
+    stream: 'POLL',
+    interrupt: 'BEST_EFFORT',
+    inspect: 'RECONCILE',
+    interactivePermission: 'HOST_MEDIATED',
+    diagnosticOnly: false,
+    version: 2,
+    runtimeVersion: version,
+    capabilitySummary: '小规 CODING 任务的 Oh My Pi ACP 受控运行时',
+    workModes: ['CODING'],
+    taskCapabilities: ['CODING.GIT.CHANGESET', 'CODING.TYPESCRIPT', 'EXECUTION.EXTERNAL_ALLOWED'],
+    executionLocation: 'EXTERNAL',
+    requiresDataEgress: true,
+    supportsResume: true,
+    supportsEventStream: true,
+    supportsInterrupt: true,
+    supportsResultReconcile: true,
+  }
+}
+
 function unavailableCapability(reasonCode: string, version?: string): RuntimeCapabilityV1 {
   return {
     adapterId: OMP_ACP_ADAPTER_ID_V1,
@@ -647,7 +969,7 @@ function unavailableCapability(reasonCode: string, version?: string): RuntimeCap
   }
 }
 
-function selectionMatchesCandidate(selection: RuntimeTestAdapterSelectionV1, digest: string): boolean {
+function selectionMatchesTestCandidate(selection: RuntimeTestAdapterSelectionV1, digest: string): boolean {
   return (
     selection.adapterId === OMP_ACP_ADAPTER_ID_V1 &&
     selection.runtimeKind === 'OTHER' &&
@@ -658,6 +980,17 @@ function selectionMatchesCandidate(selection: RuntimeTestAdapterSelectionV1, dig
     selection.stream === 'POLL' &&
     selection.interrupt === 'BEST_EFFORT' &&
     selection.inspect === 'SNAPSHOT'
+  )
+}
+
+function selectionMatchesProductionCandidate(
+  selection: RuntimeAdapterSelectionV1,
+  expected: RuntimeAdapterSelectionV1,
+): boolean {
+  return (
+    selection.capabilityDigest === ompAcpProductionCapabilityDigestV1() &&
+    expected.capabilityDigest === ompAcpProductionCapabilityDigestV1() &&
+    runtimeSelectionKey(selection) === runtimeSelectionKey(expected)
   )
 }
 
@@ -712,7 +1045,7 @@ function drainPromptQueue(state: RuntimeSessionStateV1): void {
     (result) => {
       state.promptInFlight = false
       if (result.stopReason === 'cancelled') {
-        markOutcome(state, {
+        void commitOutcome(state, {
           state: 'INTERRUPTED',
           runtimeSessionId: state.publicRuntimeSessionId,
           receiptDigest: digestJson({ stopReason: result.stopReason }),
@@ -722,6 +1055,8 @@ function drainPromptQueue(state: RuntimeSessionStateV1): void {
         markUnknown(state, 'ACP_STOP_REASON_UNKNOWN')
       } else if (state.promptQueue.length) {
         drainPromptQueue(state)
+      } else if (state.production) {
+        void completeProductionSuccess(state, result.stopReason)
       } else if (!state.evidenceDigests.length) {
         markUnknown(state, 'OMP_CONTRACT_EVIDENCE_NOT_PRODUCED')
       } else {
@@ -747,6 +1082,78 @@ function drainPromptQueue(state: RuntimeSessionStateV1): void {
       markUnknown(state, 'PROCESS_DISCONNECTED')
     },
   )
+}
+
+async function completeProductionSuccess(state: RuntimeSessionStateV1, stopReason: string | undefined): Promise<void> {
+  if (!state.production || state.outcome || state.settlementInFlight) return
+  state.settlementInFlight = true
+  try {
+    const candidate = await state.production.candidateInspector.inspect({
+      attemptId: state.request.scope.attemptId,
+      allowNoApprovedChanges: !isContractTestRequest(state.request) && isReadOnlyRole(state.request),
+    })
+    if (!/^sha256:[0-9a-f]{64}$/.test(candidate.candidateDigest)) {
+      markUnknown(state, 'OMP_CANDIDATE_DIGEST_INVALID')
+      return
+    }
+    await commitOutcome(state, {
+      state: 'SUCCEEDED',
+      runtimeSessionId: state.publicRuntimeSessionId,
+      receiptDigest: digestJson({
+        domain: 'xiaogui.omp-acp.production-outcome.v1',
+        candidateDigest: candidate.candidateDigest,
+        installationReceiptDigest: state.production.installationReceiptDigest,
+        stopReason,
+      }),
+      candidateDigest: candidate.candidateDigest,
+    }, () => {
+      pushEvent(state, {
+        type: 'CANDIDATE_PRODUCED',
+        runtimeSessionId: state.publicRuntimeSessionId,
+        candidateDigest: candidate.candidateDigest,
+      })
+    })
+  } catch {
+    markUnknown(state, 'OMP_CANDIDATE_RECONCILE_FAILED')
+  } finally {
+    state.settlementInFlight = false
+  }
+}
+
+async function commitOutcome(
+  state: RuntimeSessionStateV1,
+  outcome: Exclude<RuntimeOutcomeV1, { state: 'OUTCOME_UNKNOWN' }>,
+  beforeMark?: () => void,
+): Promise<void> {
+  if (state.outcome) return
+  if (state.production) {
+    try {
+      await state.production.recoveryStore.settle(state.publicRuntimeSessionId, outcome)
+    } catch {
+      markUnknown(state, 'OMP_OUTCOME_PERSIST_FAILED')
+      return
+    }
+  }
+  beforeMark?.()
+  markOutcome(state, outcome)
+}
+
+async function bindFrozenModelSelector(
+  transport: AcpTransportV1,
+  vendorSessionId: string,
+  request: RuntimeCreateOrResumeRequestV1 | RuntimeContractTestCreateOrResumeRequestV1,
+): Promise<string | undefined> {
+  if (isContractTestRequest(request)) return undefined
+  const selector = request.codingRole?.modelSelector
+  if (!selector || selector === 'inherit') return undefined
+  if (!isSafeRuntimeModelSelectorV1(selector)) return 'OMP_ACP_MODEL_SELECTOR_INVALID'
+  if (!transport.setConfigOption) return 'OMP_ACP_MODEL_BINDING_UNAVAILABLE'
+  try {
+    await transport.setConfigOption(vendorSessionId, 'model', selector)
+    return undefined
+  } catch {
+    return 'OMP_ACP_MODEL_BINDING_FAILED'
+  }
 }
 
 function pushEvent(state: RuntimeSessionStateV1, event: RuntimeEventDraftV1): void {
@@ -793,8 +1200,70 @@ function clearPendingPermissions(state: RuntimeSessionStateV1): void {
   state.pendingPermissions.clear()
 }
 
+function isOmpApprovalElicitation(params: AcpElicitationCreateParamsV1): boolean {
+  if (params.mode !== 'form' || !isPlainObject(params.requestedSchema)) return false
+  const schema = params.requestedSchema
+  if (schema.type !== 'object' || !isPlainObject(schema.properties)) return false
+  const value = schema.properties.value
+  if (!isPlainObject(value) || value.type !== 'string') return false
+  if (!Array.isArray(value.enum) || value.enum.length !== 2 || value.enum[0] !== 'Approve' || value.enum[1] !== 'Deny') {
+    return false
+  }
+  return Array.isArray(schema.required) && schema.required.length === 1 && schema.required[0] === 'value'
+}
+
+function decodePinnedOmpApprovalMessageV1(
+  message: string | undefined,
+): NonNullable<AcpRequestPermissionParamsV1['toolCall']> | null {
+  if (typeof message !== 'string' || !message.length || message.length > 8192) return null
+  const normalized = message.replace(/\r\n/g, '\n')
+  if (normalized.includes('\r')) return null
+  const lines = normalized.split('\n')
+  const header = /^Allow tool: ([A-Za-z0-9._-]{1,40})$/.exec(lines[0] ?? '')
+  if (!header) return null
+  const toolName = header[1]
+  if (toolName !== 'edit' && toolName !== 'write') return null
+
+  // OMP 18.1.2 asks for ordinary edit/write approval through a form
+  // elicitation before it publishes the structured tool_call event. This
+  // decoder therefore accepts only that pinned upstream envelope. It is
+  // intentionally narrower than a generic prompt parser: ambiguous,
+  // truncated, multiline-path, multi-target, or future-version shapes cancel.
+  const body = lines.slice(1)
+  if (body[0]?.startsWith('Reason: ')) body.shift()
+  let paths: string[]
+  if (toolName === 'edit') {
+    if (body.length !== 1 || !body[0]?.startsWith('File: ')) return null
+    paths = [body[0].slice('File: '.length)]
+  } else {
+    if (body.length < 2 || !body[0]?.startsWith('Path: ') || body[1] !== 'Content:') return null
+    if (body.slice(2).some((line) => line === 'Content:' || line.startsWith('Path: '))) return null
+    paths = [body[0].slice('Path: '.length)]
+  }
+  if (paths.some((path) => (
+    !path ||
+    path !== path.trim() ||
+    /[\u0000-\u001f\u007f]/.test(path) ||
+    path === '(unknown)' ||
+    path === '(missing)' ||
+    path.includes('ch elided')
+  ))) return null
+  return {
+    toolCallId: `omp-elicitation-${digestJson({ message }).slice(7, 23)}`,
+    title: `OMP ${safeToolName(toolName)}`,
+    kind: 'edit',
+    status: 'pending',
+    locations: paths.map((path) => ({ path })),
+    rawInput: { approvalEnvelope: OMP_ACP_APPROVAL_ENVELOPE_V1 },
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function isActive(state: RuntimeSessionStateV1): boolean {
-  return !state.disconnected && !state.cancellationRequested && !state.outcome
+  return !state.disconnected && !state.cancellationRequested && !state.outcome && !state.settlementInFlight
 }
 
 function inactiveReason(state: RuntimeSessionStateV1): string {
@@ -902,6 +1371,21 @@ function isApprovedOmpLaunchArgs(args: readonly string[]): boolean {
   const direct = OMP_ACP_SAFE_ARGS_V1
   const bunx = ['--bun', OMP_ACP_APPROVED_PACKAGE_V1, ...OMP_ACP_SAFE_ARGS_V1]
   return arraysEqual(args, direct) || arraysEqual(args, bunx)
+}
+
+function isApprovedProductionLaunch(launch: OmpAcpTrustedLaunchV1): boolean {
+  return (
+    launch.version === OMP_ACP_APPROVED_VERSION_V1 &&
+    isAbsolute(launch.command) &&
+    /^sha256:[0-9a-f]{64}$/.test(launch.installationReceiptDigest) &&
+    launch.args.length === OMP_ACP_SAFE_ARGS_V1.length + 1 &&
+    isAbsolute(launch.args[0]) &&
+    arraysEqual(launch.args.slice(1), OMP_ACP_SAFE_ARGS_V1)
+  )
+}
+
+function isReadOnlyRole(request: RuntimeCreateOrResumeRequestV1): boolean {
+  return request.codingRole?.role === 'RESEARCH' || request.codingRole?.role === 'REVIEW'
 }
 
 function arraysEqual(left: readonly string[], right: readonly string[]): boolean {

@@ -181,6 +181,16 @@ export interface RuntimeCodingRoleBindingV1 {
   snapshotDigest: RuntimeDigestV1 | string
 }
 
+/** Shared validation for the frozen model selector passed from a role snapshot to a runtime. */
+export function isSafeRuntimeModelSelectorV1(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[a-z0-9][a-z0-9._:/-]{0,127}$/i.test(value) &&
+    !value.includes('..') &&
+    !value.includes('//')
+  )
+}
+
 export interface RuntimeMessageEnvelopeRefV1 {
   refId: RuntimeRefIdV1 | string
   digest: RuntimeDigestV1 | string
@@ -574,7 +584,7 @@ function isOptionalRuntimeCodingRoleBindingShape(value: unknown): value is Runti
     value.schemaVersion !== 1 ||
     !isNonEmptyString(value.profileId) ||
     (role !== 'RESEARCH' && role !== 'IMPLEMENT' && role !== 'REVIEW') ||
-    !isNonEmptyString(value.modelSelector) ||
+    !isSafeRuntimeModelSelectorV1(value.modelSelector) ||
     !isNonEmptyString(value.runtimePolicyId) ||
     !Array.isArray(tools) ||
     tools.some((tool) => !isNonEmptyString(tool)) ||

@@ -30,8 +30,20 @@ import { KIMI_PRODUCTION_CONFIG_CONTENT_V1 } from '../agent-runtime/kimi-product
 import type { KimiAcpProbeV1 } from '../agent-runtime/kimi-adapter'
 import {
   OMP_ACP_APPROVED_VERSION_V1,
+  OMP_ACP_SOURCE_REVISION_V1,
   type OmpAcpProbeV1,
 } from '../agent-runtime/omp-acp-adapter'
+import {
+  SystemOmpBunRuntimeProbeV1,
+} from '../agent-runtime/omp-acp-production'
+import {
+  OMP_ACP_APPROVED_ARCHIVE_URL_V1,
+  OMP_ACP_APPROVED_NPM_INTEGRITY_V1,
+  OMP_ACP_APPROVED_PACKAGE_NAME_V1,
+  OMP_ACP_ENTRY_RELATIVE_PATH_V1,
+  OmpTrustedInstallationModuleV1,
+} from '../agent-runtime/omp-trusted-installation'
+import { resolveOmpPrivateLayoutV1 } from '../agent-runtime/omp-private-layout'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
 import { digestJson } from './digest'
@@ -67,6 +79,7 @@ afterEach(async () => {
     }
   }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  vi.restoreAllMocks()
 })
 
 describe('Xiaogui runtime composition v1', () => {
@@ -337,6 +350,106 @@ describe('Xiaogui runtime composition v1', () => {
     expect(ompTransportFactory.create).not.toHaveBeenCalled()
   })
 
+  it('assembles the explicit OMP production seam from the trusted receipt instead of the PATH probe', async () => {
+    const userDataDir = tempUserData()
+    const layout = resolveOmpPrivateLayoutV1(userDataDir)
+    mkdirSync(join(layout.packageRoot, 'dist'), { recursive: true })
+    writeFileSync(
+      join(layout.packageRoot, OMP_ACP_ENTRY_RELATIVE_PATH_V1),
+      `process.stdout.write('${OMP_ACP_APPROVED_VERSION_V1}\\n')\n`,
+      'utf8',
+    )
+    const installationInspect = vi.spyOn(OmpTrustedInstallationModuleV1.prototype, 'inspect')
+      .mockReturnValue({
+        ok: true,
+        receipt: {
+          schemaVersion: 1,
+          packageName: OMP_ACP_APPROVED_PACKAGE_NAME_V1,
+          version: OMP_ACP_APPROVED_VERSION_V1,
+          sourceRevision: OMP_ACP_SOURCE_REVISION_V1,
+          npmIntegrity: OMP_ACP_APPROVED_NPM_INTEGRITY_V1,
+          packageArchiveUrl: OMP_ACP_APPROVED_ARCHIVE_URL_V1,
+          entryRelativePath: OMP_ACP_ENTRY_RELATIVE_PATH_V1,
+          packageJsonDigest: `sha256:${'1'.repeat(64)}`,
+          entryDigest: `sha256:${'2'.repeat(64)}`,
+          treeDigest: `sha256:${'3'.repeat(64)}`,
+          packageFileCount: 3_136,
+          packageByteLength: 48_326_575,
+          privateStateDirDigest: `sha256:${'4'.repeat(64)}`,
+          recordedAt: '2026-09-03T00:00:00.000Z',
+          receiptDigest: `sha256:${'5'.repeat(64)}`,
+        },
+      })
+    vi.spyOn(SystemOmpBunRuntimeProbeV1.prototype, 'findExecutable').mockResolvedValue({
+      available: true,
+      command: process.execPath,
+      version: '1.3.14',
+    })
+    const pathProbe = fakeOmpProbe()
+    const transportFactory = rejectingTransportFactory()
+    const resolveProjectRoot = vi.fn(async () => {
+      throw new Error('STOP_BEFORE_GIT')
+    })
+    const composition = track(createXiaoguiRuntimeCompositionV1({
+      userDataDir,
+      productionEnabled: false,
+      ompProductionEnabled: true,
+      lookup: lookup('CODING'),
+      projectResolver: { resolveProjectRoot },
+      ompProbe: pathProbe,
+      ompTransportFactory: transportFactory,
+    }))
+
+    const start = await composition.application.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'omp-production-start',
+      intent: { type: 'flow.start.with_draft', draft: draft() },
+    })
+    if (!start.ok || !start.value.flowId || !start.value.revisionId) throw new Error('start failed')
+    const projection = await composition.application.observe(ADDRESS)
+    if (!projection.ok || !projection.value.activeRevision) throw new Error('draft missing')
+    await composition.application.execute({
+      contractVersion: 'm2a.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-user' },
+      requestId: 'omp-production-approve',
+      expectedSessionVersion: projection.value.sessionVersion,
+      intent: {
+        type: 'plan.revision.submit',
+        flowId: start.value.flowId,
+        baseRevisionId: start.value.revisionId,
+        draft: projection.value.activeRevision.draft,
+      },
+    })
+    const approved = await composition.application.observeM2B(ADDRESS)
+    await expect(composition.application.executeSystem({
+      contractVersion: 'm2b.v1',
+      address: ADDRESS,
+      trustedActor: { kind: 'main-process-system' },
+      requestId: 'omp-production-schedule',
+      expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
+      intent: {
+        type: 'system.schedule',
+        flowId: start.value.flowId,
+        authorizationScope: authorizationScope('omp-production'),
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: 'BASELINE_UNAVAILABLE',
+        safeArgs: { reason: 'BASELINE_PROVIDER_ERROR' },
+      },
+    })
+
+    expect(installationInspect).toHaveBeenCalled()
+    expect(pathProbe.findExecutable).not.toHaveBeenCalled()
+    expect(resolveProjectRoot).toHaveBeenCalledWith(ADDRESS.projectId)
+    expect(transportFactory.create).not.toHaveBeenCalled()
+    expect(existsSync(join(userDataDir, 'xiaogui', 'task-hub', 'omp-acp-recovery-v1.sqlite'))).toBe(true)
+  })
+
   it('accepts an additional adapter and an explicit deterministic routing policy', async () => {
     const adapter = new ScriptedAgentRuntimeAdapterV1({ capabilities: [localCapability()] })
     const health = vi.spyOn(adapter, 'health')
@@ -433,7 +546,7 @@ function fakeOmpProbe(): OmpAcpProbeV1 & { findExecutable: ReturnType<typeof vi.
     findExecutable: vi.fn(async () => ({
       available: true as const,
       command: 'never-spawn-omp',
-      args: ['--approval-mode', 'always-ask', '--no-skills', '--no-rules', 'acp'],
+      args: ['--approval-mode', 'always-ask', '--no-extensions', '--no-skills', '--no-rules', 'acp'],
       version: OMP_ACP_APPROVED_VERSION_V1,
     })),
   }

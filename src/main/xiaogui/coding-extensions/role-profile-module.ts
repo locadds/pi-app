@@ -5,6 +5,7 @@ import type {
   CodingRoleKindV1,
   CodingRoleProfileV1,
 } from '@shared/xiaogui-coding-extension-pack'
+import { isSafeRuntimeModelSelectorV1 } from '@shared/xiaogui-agent-runtime'
 
 const KNOWN_TOOL_ORDER = Object.freeze(['read', 'bash', 'edit', 'write'] as const)
 const KNOWN_TOOLS = new Set<string>(KNOWN_TOOL_ORDER)
@@ -561,7 +562,10 @@ function canonicalDraft(raw: CodingRoleProfileDraftV1): CodingRoleProfileDraftV1
   const name = boundedText(raw.name, 1, 80, 'CODING_ROLE_NAME_INVALID')
   const description = boundedText(raw.description, 1, 500, 'CODING_ROLE_DESCRIPTION_INVALID')
   const systemPrompt = boundedText(raw.systemPrompt, 1, 20_000, 'CODING_ROLE_SYSTEM_PROMPT_INVALID')
-  const modelSelector = selector(raw.modelSelector, 'CODING_ROLE_MODEL_SELECTOR_INVALID')
+  if (!isSafeRuntimeModelSelectorV1(raw.modelSelector)) {
+    throw new Error('CODING_ROLE_MODEL_SELECTOR_INVALID')
+  }
+  const modelSelector = raw.modelSelector
   const runtimePolicyId = selector(raw.runtimePolicyId, 'CODING_ROLE_RUNTIME_POLICY_INVALID')
   if (!Array.isArray(raw.toolAllowlist) || raw.toolAllowlist.length > KNOWN_TOOL_ORDER.length * 2) {
     throw new Error('CODING_ROLE_TOOL_ALLOWLIST_INVALID')

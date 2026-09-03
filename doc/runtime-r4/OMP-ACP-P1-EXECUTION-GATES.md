@@ -38,9 +38,9 @@
 
 现有小规 `pi-models-json.ts` 和模型设置页已能管理 Pi 兼容的 `models.json`。P1B 应把经过现有校验的配置写入 OMP 私有 `PI_CODING_AGENT_DIR`，而不是把 API Key、路径或原始配置放入 TaskHub 公共 DTO。
 
-## P1B：受信安装、私有模型设置与三档 UI
+## P1B：受信安装、私有模型设置与三档 UI（已验收）
 
-P1A 已人工验收，P1B 当前为实现候选，等待人工验收：
+P1B 已于 2026-09-03 由用户人工验收，固定提交为 `a9ee7bc4b18ce8ded6f5fc7fd00d393374cd9589`：
 
 1. 受信安装流程生成固定版本、包完整性、入口摘要和私有状态目录摘要；PATH 上仅版本相同但来源不明的程序不得通过生产门。
 2. 设置页复用现有模型配置表单与校验，只增加 OMP Runtime 目标；凭据和原始配置继续留在主进程私有目录。
@@ -54,17 +54,26 @@ P1A 已人工验收，P1B 当前为实现候选，等待人工验收：
 - 模型设置页已复用既有表单和 Pi SDK 校验器增加 OMP 私有目标；公开 UI 只显示安全标签，TaskHub 不接收配置、凭据或绝对路径。
 - Composer 三档选择已接入。TaskHub 在调度前取样，在真实 Attempt 返回后不可变绑定；恢复时同时校验 Saga 快照与绑定摘要。
 - 文件边界可由 Attempt manifest 核验；命令和外传尚无权威白名单，因此明确为 `UNVERIFIED` 并拒绝，三档 UI 不会扩大该边界。
-- OMP 仍为测试专用；受信回执尚未成为禁用 Adapter 的生产启动源，必须在 P1C 真实旅程前接通。PATH 同版本仍不构成生产信任。
+- P1B 提交中的 OMP 仍为测试专用；受信回执消费、真实结果对账和生产候选接缝由 P1C 完成。PATH 同版本不构成生产信任。
 - 聚焦结果：12 个测试文件、96 项通过、1 项按设计跳过；真实 D 盘固定包门 9 项通过；Node/Web 类型检查、Electron 构建和真实设置页/Composer 窗口检查通过。完整命令和截图路径见根 `DEVELOPMENT_STATUS.md`。
 
 ## P1C：真实 Coding、结果对账与恢复验收
 
-本阶段只有在 P1B 人工验收后开始：
+P1B 人工验收后已开始 P1C；当前实现、真实旅程和聚焦验证完成，作为独立分支阶段候选等待人工验收：
 
 1. 用真实模型完成“权限申请 → 修改独立工作树 → 聚焦验证 → 真实 Diff”。
 2. 从 TaskHub 工作树生成 `candidateDigest` 并通过现有 `RuntimeOutcomeMonitorV1`、ChangeSet 和 Delivery 接缝对账；模型文字不能替代证据。
 3. 断开并恢复后核对同一 Attempt、同一 Runtime selection、同一 vendor session 和同一工作树；结果未知时不重复派发。
 4. 只有真实旅程、恢复和受信安装均通过，才提出 `supportsResultReconcile: true` 与生产批准变更；仍需人工验收，不自动切换默认 Runtime。
+
+### P1C 当前证据与边界
+
+- 显式生产候选接缝先消费固定安装回执和固定入口；缺回执时即使 PATH 上存在同版本 OMP 也不会使用。
+- OMP 18.1.2 普通文件工具实测在结构化 `tool_call` 前先请求 form elicitation。适配器保留结构化权限通道，并对该固定版本增加精确、单目标、fail-closed 的兼容 envelope；任何歧义、截断或未来形状均取消。
+- 真实 OMP 模型只修改 Attempt 工作树中的一个授权文件，源项目不变；真实结果树摘要贯穿 RuntimeOutcomeMonitor、CandidateAudit、ChangeSet 和 Delivery。
+- SQLite 绑定保证恢复同一 Attempt、Runtime selection、vendor session 和工作树；已结算结果回放，未结算结果返回 UNKNOWN 且不重新 prompt。
+- `supportsResultReconcile: true` 只存在于显式 `ompProductionEnabled` 候选路径；当前桌面调用方没有开启，默认 Runtime 未改变。
+- 完整测试证据、环境差异和未执行项见 `OMP-ACP-P1C-QA.md`；审查结论见 `OMP-ACP-P1C-REVIEW.md`。
 
 ## 六个未完成门映射
 

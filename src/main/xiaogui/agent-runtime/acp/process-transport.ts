@@ -74,6 +74,10 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
     await this.call('session/load', { sessionId, cwd, mcpServers: [] }, 30000)
   }
 
+  async setConfigOption(sessionId: string, configId: string, value: string): Promise<void> {
+    await this.call('session/set_config_option', { sessionId, configId, value }, 30000)
+  }
+
   prompt(sessionId: string, prompt: Array<{ type: string; text?: string }>): Promise<{ stopReason?: string }> {
     return this.call('session/prompt', { sessionId, prompt }, 600000)
   }

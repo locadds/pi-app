@@ -108,7 +108,7 @@ describe('Oh My Pi ACP to TaskHub permission seam', () => {
           return {
             available: true as const,
             command: 'omp',
-            args: ['--approval-mode', 'always-ask', '--no-skills', '--no-rules', 'acp'],
+            args: ['--approval-mode', 'always-ask', '--no-extensions', '--no-skills', '--no-rules', 'acp'],
             version: OMP_ACP_APPROVED_VERSION_V1,
           }
         },

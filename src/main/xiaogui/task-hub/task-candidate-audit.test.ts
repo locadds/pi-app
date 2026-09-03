@@ -108,6 +108,56 @@ describe('TaskCandidateAuditServiceV1', () => {
     expect(first.candidate.patchArtifactId).toBe(second.candidate.patchArtifactId)
   })
 
+  it('accepts a production runtime candidate only when it reconciles to the authoritative result tree', async () => {
+    const capture = capturedPatch()
+    const verify = vi.fn().mockResolvedValue(true)
+    const service = new TaskCandidateAuditServiceV1(
+      { captureTaskPatch: vi.fn().mockResolvedValue(capture) },
+      { verify },
+    )
+
+    await expect(service.captureTaskCandidate({
+      flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID,
+      createdAt: FIXED_TIME,
+      runtimeSignal: {
+        runtimeSessionId: 'xhr_omp_production',
+        receiptDigest: `sha256:${'a'.repeat(64)}`,
+        candidateDigest: capture.resultTreeHash,
+      },
+    })).resolves.toMatchObject({
+      candidate: { resultTreeHash: capture.resultTreeHash },
+    })
+    expect(verify).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: ATTEMPT_ID,
+      runtimeSessionId: 'xhr_omp_production',
+      runtimeCandidateDigest: capture.resultTreeHash,
+      hostResultTreeHash: capture.resultTreeHash,
+      hostCandidateDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+    }))
+  })
+
+  it('fails closed when the production runtime candidate does not reconcile to the authoritative result tree', async () => {
+    const capture = capturedPatch()
+    const service = new TaskCandidateAuditServiceV1(
+      { captureTaskPatch: vi.fn().mockResolvedValue(capture) },
+      { verify: vi.fn().mockResolvedValue(false) },
+    )
+
+    await expect(service.captureTaskCandidate({
+      flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID,
+      createdAt: FIXED_TIME,
+      runtimeSignal: {
+        runtimeSessionId: 'xhr_omp_production',
+        receiptDigest: `sha256:${'a'.repeat(64)}`,
+        candidateDigest: `sha256:${'9'.repeat(64)}`,
+      },
+    })).rejects.toMatchObject({ reasonCode: 'CANDIDATE_RUNTIME_RESULT_MISMATCH' })
+  })
+
   it('rejects an unapproved workspace diff before producing any candidate or artifact', async () => {
     const captureTaskPatch = vi
       .fn<AttemptTaskPatchCapturePortV1['captureTaskPatch']>()
