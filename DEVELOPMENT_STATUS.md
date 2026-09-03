@@ -2,7 +2,7 @@
 
 更新时间：2026-09-03
 阶段：`TASKHUB-H1-4C/C3-A` — 集成基线审计与合同冻结
-状态：阶段 A 根据独立审查的 REQUEST CHANGES 完成合同修订，等待重新独立审查与人工验收；本阶段仅写入审计、合同、夹具和聚焦验证器，没有 H1-4C/C3 产品代码、迁移、路由或前端实现。未合并正式主线、未发布。
+状态：阶段 A 根据第二轮独立审查的 REQUEST CHANGES 完成机器合同、夹具和验证器修订，等待重新独立审查与人工验收；本阶段仅写入审计、合同、夹具和聚焦验证器，没有 H1-4C/C3 产品代码、迁移、路由或前端实现。未合并正式主线、未发布。
 
 ## 阶段 A 目标
 
@@ -14,20 +14,21 @@
 | --- | --- |
 | 集成基线、合同与迁移审计 | `doc/H1-4C-C3-INTEGRATION-BASELINE-AUDIT.md` |
 | 前端与后端共用的合同夹具 | `doc/H1-4C-C3-CONTRACT-FIXTURES.json` |
+| 唯一版本化机器合同 | `doc/H1-4C-C3-CONTRACT-V1.openapi.json` |
 | 阶段状态记录 | `DEVELOPMENT_STATUS.md` |
 
 ### REQUEST CHANGES 修订新增文件
 
 | 范围 | 文件 |
 | --- | --- |
-| 共享版本化合同 | doc/H1-4C-C3-CONTRACT-SPEC.md |
-| 无依赖聚焦合同验证器 | doc/validate-h1-4c-c3-contract-fixtures.mjs |
+| 人类可读合同说明 | doc/H1-4C-C3-CONTRACT-SPEC.md |
+| 无依赖 OpenAPI/夹具聚焦验证器 | doc/validate-h1-4c-c3-contract-fixtures.mjs |
 
 ## 阶段 A 已完成内容
 
 - 确认桌面 H1-LAN、WORK、CODING 都以 `agent/stage-integration-v1@0d2deece4c35851363b918313cb27d2848207c73` 为共同祖先；其中 `WORK@8c8728c` 是 `CODING@52432ef` 的祖先。H1 仍与其共享入口分叉，后续 H1-4C 不吸收 WORK/CODING。
 - 确认 Hub H1-4B `770c0a7` 与 C2 阶段线 `48e3cf5` 从 `1fe28cc` 分叉；实际三方 merge-tree 已列出 OpenAPI、Drizzle、应用注册、schema、制品路由、测试和文档冲突，不能静默合并。
-- 冻结仅供后续实现的结果/Intake/投影合同与契约夹具；夹具明确标为 `CONTRACT_ONLY`，不得作为真实联调证据。
+- 冻结仅供后续实现的结果/Intake/投影机器合同与契约夹具；夹具明确标为 `CONTRACT_ONLY`，不得作为真实联调证据。
 - 明确后续前端必须拆为桌面 H1-4C Renderer 与 Hub C3 网页两个独立工作树、两个工作包；当前尚未派发。
 
 ### REQUEST CHANGES 修订完成
@@ -36,6 +37,15 @@
 - C3 保留既有 DemandIntakeReceiptV1；三 ID 映射改为内部 DemandTaskMappingV1。幂等键严格是 demandId + demandVersion，规范化内容摘要仅做同键一致性校验。
 - C3 Outbox→TaskHub Intake 与 TaskHub→C3 internal projection Writer 均已有调用主体、认证头、存储、重试/死信和只读网页路径的冻结合同。
 - 夹具新增旧 receipt 终态拒绝、结果冲突、时间线、认证失败、同键同内容/异内容、projection 写入与版本冲突等正常/失败样例。
+
+### 第二轮 REQUEST CHANGES 修订完成
+
+- 新增 `H1-4C-C3-CONTRACT-V1.openapi.json` 作为唯一版本化机器合同源，严格覆盖新增 Result、ResultAck、Worker/发布者 Timeline、发布者结果详情、DemandTaskMapping、Projection Writer/ACK、路径、错误响应和认证组合；说明文档不再重新定义传输 DTO。
+- 验证器现在从 OpenAPI 读取路径、认证、请求/响应 schema 与 C2 错误闭集，逐一校验夹具；不再把 JSON 能解析当成合同正确。
+- H1 夹具补齐 `RESULT_READY`、`EXECUTION_FAILED`、`OUTCOME_UNKNOWN`、幂等 `duplicate:true` ACK、发布者受控结果详情，以及非空第一页到第二页的严格 cursor 闭环。
+- C3 夹具补齐同键同内容的原回执/不新建映射、严格未知 `agentId` 拒绝、集成认证失败、五次重试后死信、projection 同版本异摘要和低版本冲突请求。
+- fixture `keyId` 已按现有 Hub 公钥 SHA-256 截断发行规则派生；所有测试 receipt 以对应私钥的单次签名验证，仓库仅保存测试公钥。
+- 负例覆盖错误路由、匿名成功、非法 timeline eventType、缺失 ResultAck 字段、断裂 fixture 引用和跳跃 cursor，确保上述改坏方式必须验证失败。
 
 ## 阶段 A 未完成内容
 
@@ -58,7 +68,7 @@
 | `git merge-base 770c0a7 48e3cf5` | 共同祖先为 `1fe28cc0cb336916440fc597d51cb44a9c44cefe`，Hub 两线不是祖先关系。 |
 | `git merge-tree 1fe28cc 770c0a7 48e3cf5` | 已识别真实冲突清单；详见审计文档，不执行工作树 merge。 |
 | `git diff --check` | 通过：审计、夹具与状态记录无空白或冲突标记；不跑与文档审计无关的构建或全量测试。 |
-| `node -e "JSON.parse(...)"` | 通过：`doc/H1-4C-C3-CONTRACT-FIXTURES.json` 为有效 JSON。 |
+| `node -e "JSON.parse(...)"` | 通过：OpenAPI 机器合同与夹具均为有效 JSON。 |
 
 ### REQUEST CHANGES 验证门与文档阶段豁免
 
@@ -66,7 +76,7 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| node doc/validate-h1-4c-c3-contract-fixtures.mjs | 通过：验签完整 13 字段 receipt，复算结果、Demand、projection 摘要，校验 DTO、C2 错误闭集、messageKey/traceId、同键冲突、timeline 排序和私密字段不泄露。 |
+| node doc/validate-h1-4c-c3-contract-fixtures.mjs | 通过：从 OpenAPI 校验路由/方法/认证/状态码/严格 DTO，验签完整 13 字段 receipt 与派生 keyId，复算结果、Demand、projection 摘要，校验三终态、幂等 ACK、发布者结果详情、同键冲突、两页 cursor、C3 五次重试入死信与投影冲突；并确认错误路由、匿名成功、非法 eventType、缺失 ACK、未知字段、断裂引用和 cursor 跳跃均被拒绝。 |
  | git diff --check | 通过：本次修订无空白或冲突标记；它只检查文档差异卫生，不能替代语义校验。 |
 
 ## 阶段 A 已知风险
@@ -77,7 +87,7 @@
 
 ## 阶段 A 下一步
 
-1. 复跑差异检查、提交并推送本次合同修订；再请独立审查复核 V1 兼容、错误闭集、签名、认证/重试、timeline 和投影写入接缝。
+1. 复跑机器合同/负例与差异检查、提交并推送本次合同修订；再请独立审查复核唯一机器合同、V1 兼容、错误闭集、签名/keyId、认证/重试、结果详情、timeline 和投影写入接缝。
 2. 通过后才建立 Hub H1-4C/C3 受控整合基线，先处理迁移与合同冲突，再实施 H1-4C 后端。
 3. H1-4C 合同在后端验证夹具通过后，分别派发桌面 Renderer 前端小包和 Hub C3 网页投影小包；不跨仓库混写。
 

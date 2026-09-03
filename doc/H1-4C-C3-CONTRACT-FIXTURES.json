@@ -1,73 +1,26 @@
 {
-  "fixtureVersion": "2",
+  "fixtureVersion": "3",
   "classification": "CONTRACT_ONLY_NOT_REAL_INTEGRATION",
-  "usage": "Only focused contract validation and future Renderer/Web interaction tests may use these fixtures. They are not evidence that a Hub, Worker, C3 Outbox, or C3 Web integration is running.",
-  "errorEnvelope": {
-    "allowedCodes": [
-      "UNAUTHENTICATED",
-      "FORBIDDEN",
-      "NOT_FOUND",
-      "VALIDATION_FAILED",
-      "IDEMPOTENCY_CONFLICT",
-      "VERSION_CONFLICT",
-      "RELEASE_NOT_APPROVED",
-      "INTENT_EXPIRED",
-      "INTENT_ALREADY_CLAIMED",
-      "DOWNSTREAM_UNAVAILABLE"
-    ],
-    "requiredFields": [
-      "code",
-      "messageKey",
-      "message",
-      "traceId"
-    ]
-  },
-  "routes": {
-    "h1SubmitResult": {
-      "method": "POST",
-      "path": "/api/v2/taskhub/worker/results",
-      "auth": "worker-user-jwt-plus-x-xiaogui-node-token"
-    },
-    "h1LegacyReceipt": {
-      "method": "POST",
-      "path": "/api/v2/taskhub/worker/receipts",
-      "auth": "worker-user-jwt-plus-x-xiaogui-node-token"
-    },
-    "h1WorkerTimeline": {
-      "method": "GET",
-      "path": "/api/v2/taskhub/worker/assignments/:assignmentId/timeline?afterSequence=0&limit=50",
-      "auth": "worker-user-jwt-plus-x-xiaogui-node-token"
-    },
-    "h1PublisherTimeline": {
-      "method": "GET",
-      "path": "/api/v2/taskhub/offers/:taskId/timeline?afterSequence=0&limit=50",
-      "auth": "publisher-user-jwt"
-    },
-    "c3Intake": {
-      "method": "POST",
-      "path": "/api/v2/taskhub/intakes",
-      "auth": "opaque-c3-outbox-integration-token"
-    },
-    "c3ProjectionWrite": {
-      "method": "PUT",
-      "path": "/api/v2/community/internal/demand-projections/:demandId",
-      "auth": "opaque-taskhub-projection-integration-token"
-    },
-    "c3ProjectionRead": {
-      "method": "GET",
-      "path": "/api/v2/demands/:demandId/taskhub-projection",
-      "auth": "community-user-session-and-demand-visibility"
-    }
+  "usage": "Only the focused machine-contract validator and later fixed-fixture Renderer/Web interaction tests may use this file. It is not evidence that a Hub, Worker, C3 Outbox, C3 Web, database or network integration is running.",
+  "contract": {
+    "id": "xiaogui.taskhub-h1-4c-c3.v1",
+    "version": "1.2.0-candidate",
+    "source": "H1-4C-C3-CONTRACT-V1.openapi.json"
   },
   "fixtureBinding": {
-    "purpose": "Test-only Ed25519 public key for verification; no private key is stored in this repository.",
+    "purpose": "Test-only Ed25519 public key for verification; the private key is not stored in this repository.",
     "subjectId": "subject-contract-worker-001",
     "nodeId": "xgh_node_contract_worker_001",
-    "keyId": "ed25519:contract-fixture-001",
-    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoE5fBa9utM3xMVx8Zo6qq7iYUGN1wflyw1Nsz4Z2jTk=\n-----END PUBLIC KEY-----\n"
+    "keyId": "ed25519:3b62aa849f0926fe03b7ba8fb89016c0",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA8rhqts/55cXu2G1HfEjGBm7hQ1pFRbN34GV2vDOcnL0=\n-----END PUBLIC KEY-----\n"
   },
   "h1": {
     "resultReady": {
+      "call": {
+        "operationId": "submitTaskResult",
+        "authProfile": "WORKER_USER_AND_NODE",
+        "httpStatus": 200
+      },
       "request": {
         "result": {
           "schemaVersion": "xiaogui.task-result.v1",
@@ -97,13 +50,13 @@
           "taskId": "xgh_task_contract_001",
           "subjectId": "subject-contract-worker-001",
           "nodeId": "xgh_node_contract_worker_001",
-          "keyId": "ed25519:contract-fixture-001",
+          "keyId": "ed25519:3b62aa849f0926fe03b7ba8fb89016c0",
           "eventType": "RESULT_READY",
           "packageSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "occurredAt": "2026-09-03T01:00:00.000Z",
           "sequence": 7,
           "resultSha256": "sha256:2dbdcfac5b58ea095c2009ea3641efc5a494d5214e0eba49dff57338f8c6af61",
-          "signature": "GgmwUGsBkNU7h4+TL1DTPRYQ+tl8OlX+SINoNozyp93vz+cHGiL0AA+pt67KMzus2IFljV+QI4pnDK9j+bi6Dg=="
+          "signature": "kqRoKnIqwdfxLAL59lDeCqLnWXuuGtpo6RB3n/neNavBQQXri/jfojofmQsWdweH9/KJfbEa6c+XuJfffzh8BQ=="
         }
       },
       "response": {
@@ -118,9 +71,133 @@
         }
       }
     },
+    "resultReadyDuplicate": {
+      "call": {
+        "operationId": "submitTaskResult",
+        "authProfile": "WORKER_USER_AND_NODE",
+        "httpStatus": 200
+      },
+      "requestRef": "h1.resultReady.request",
+      "response": {
+        "data": {
+          "resultId": "xgh_result_contract_ready_001",
+          "eventId": "xgh_event_contract_ready_001",
+          "verified": true,
+          "duplicate": true,
+          "executionState": "RESULT_READY",
+          "occurredAt": "2026-09-03T01:00:00.000Z",
+          "receivedAt": "2026-09-03T01:00:04.000Z"
+        }
+      }
+    },
+    "executionFailed": {
+      "call": {
+        "operationId": "submitTaskResult",
+        "authProfile": "WORKER_USER_AND_NODE",
+        "httpStatus": 200
+      },
+      "request": {
+        "result": {
+          "schemaVersion": "xiaogui.task-result.v1",
+          "resultId": "xgh_result_contract_failed_002",
+          "assignmentId": "xgh_assignment_contract_002",
+          "taskId": "xgh_task_contract_002",
+          "outcome": "EXECUTION_FAILED",
+          "resultSummary": "执行未产生可交付结果，等待人工诊断。",
+          "artifactRefs": [],
+          "verification": {
+            "verdict": "FAIL",
+            "summary": "受控验证未通过。"
+          },
+          "occurredAt": "2026-09-03T01:01:00.000Z",
+          "resultSha256": "sha256:773141652a4eac01fdfc6108fbf115a64524320627edeb226e87f3a26d0a21eb"
+        },
+        "receipt": {
+          "schemaVersion": "xiaogui.task-receipt.v1",
+          "eventId": "xgh_event_contract_failed_002",
+          "assignmentId": "xgh_assignment_contract_002",
+          "taskId": "xgh_task_contract_002",
+          "subjectId": "subject-contract-worker-001",
+          "nodeId": "xgh_node_contract_worker_001",
+          "keyId": "ed25519:3b62aa849f0926fe03b7ba8fb89016c0",
+          "eventType": "EXECUTION_FAILED",
+          "packageSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "occurredAt": "2026-09-03T01:01:00.000Z",
+          "sequence": 8,
+          "resultSha256": "sha256:773141652a4eac01fdfc6108fbf115a64524320627edeb226e87f3a26d0a21eb",
+          "signature": "JShPfNfow5afyxEto+eXQ6xAWVeIzSnvoaGtzfF9xJpSsU1eWTgTcz5fRF/VGBMdBbeUlikFY0zZvtx/pbzvDw=="
+        }
+      },
+      "response": {
+        "data": {
+          "resultId": "xgh_result_contract_failed_002",
+          "eventId": "xgh_event_contract_failed_002",
+          "verified": true,
+          "duplicate": false,
+          "executionState": "FAILED",
+          "occurredAt": "2026-09-03T01:01:00.000Z",
+          "receivedAt": "2026-09-03T01:01:03.000Z"
+        }
+      }
+    },
+    "outcomeUnknown": {
+      "call": {
+        "operationId": "submitTaskResult",
+        "authProfile": "WORKER_USER_AND_NODE",
+        "httpStatus": 200
+      },
+      "request": {
+        "result": {
+          "schemaVersion": "xiaogui.task-result.v1",
+          "resultId": "xgh_result_contract_unknown_003",
+          "assignmentId": "xgh_assignment_contract_003",
+          "taskId": "xgh_task_contract_003",
+          "outcome": "OUTCOME_UNKNOWN",
+          "resultSummary": "节点更换后执行结果无法确定。",
+          "artifactRefs": [],
+          "verification": {
+            "verdict": "OUTCOME_UNKNOWN",
+            "summary": "无法确认既有执行结果。"
+          },
+          "occurredAt": "2026-09-03T01:02:00.000Z",
+          "resultSha256": "sha256:f468a5d72b58eaf6e556ec61aafdd7cbf2d04157595fa17d478ffecc33f69868"
+        },
+        "receipt": {
+          "schemaVersion": "xiaogui.task-receipt.v1",
+          "eventId": "xgh_event_contract_unknown_003",
+          "assignmentId": "xgh_assignment_contract_003",
+          "taskId": "xgh_task_contract_003",
+          "subjectId": "subject-contract-worker-001",
+          "nodeId": "xgh_node_contract_worker_001",
+          "keyId": "ed25519:3b62aa849f0926fe03b7ba8fb89016c0",
+          "eventType": "OUTCOME_UNKNOWN",
+          "packageSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "occurredAt": "2026-09-03T01:02:00.000Z",
+          "sequence": 9,
+          "resultSha256": "sha256:f468a5d72b58eaf6e556ec61aafdd7cbf2d04157595fa17d478ffecc33f69868",
+          "signature": "AgFNvmzQf3uHBfA+Hm5RyMo7kvhm+tEmcKgQFp+dxwzepSD+YSJQ4tMKNEfKYRzWMRK5aVC5NmTJsZgXU8MfAQ=="
+        }
+      },
+      "response": {
+        "data": {
+          "resultId": "xgh_result_contract_unknown_003",
+          "eventId": "xgh_event_contract_unknown_003",
+          "verified": true,
+          "duplicate": false,
+          "executionState": "OUTCOME_UNKNOWN",
+          "occurredAt": "2026-09-03T01:02:00.000Z",
+          "receivedAt": "2026-09-03T01:02:03.000Z"
+        }
+      }
+    },
     "resultIdempotencyConflict": {
-      "firstSubmissionRef": "h1.resultReady",
-      "conflictingSubmission": {
+      "call": {
+        "operationId": "submitTaskResult",
+        "authProfile": "WORKER_USER_AND_NODE",
+        "httpStatus": 409
+      },
+      "firstSubmissionRef": "h1.resultReady.request",
+      "request": {
         "result": {
           "schemaVersion": "xiaogui.task-result.v1",
           "resultId": "xgh_result_contract_ready_001",
@@ -144,21 +221,20 @@
         },
         "receipt": {
           "schemaVersion": "xiaogui.task-receipt.v1",
-          "eventId": "xgh_event_contract_conflict_002",
+          "eventId": "xgh_event_contract_conflict_004",
           "assignmentId": "xgh_assignment_contract_001",
           "taskId": "xgh_task_contract_001",
           "subjectId": "subject-contract-worker-001",
           "nodeId": "xgh_node_contract_worker_001",
-          "keyId": "ed25519:contract-fixture-001",
+          "keyId": "ed25519:3b62aa849f0926fe03b7ba8fb89016c0",
           "eventType": "RESULT_READY",
           "packageSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "occurredAt": "2026-09-03T01:00:00.000Z",
-          "sequence": 8,
+          "sequence": 10,
           "resultSha256": "sha256:248a2099dfddcd59cae79ce84dd51aed0015f82edbefbebbdbfa11d585bd601a",
-          "signature": "mPP6kSllko9+wy4lTBHsNIb8EyNBvESreOSMoMMFuJ12E76ChpAefaZzw3jtdiQLMzAMv4opOJud8QCvN5qbDA=="
+          "signature": "YUEh65IwRO+pzUAFS8cLRqgtVHrqIZtJxwiaLktEXeQlYGylut+VnEIpys0VAM+5Q+rX+qM1bLO4FWpNSqv/AQ=="
         }
       },
-      "httpStatus": 409,
       "response": {
         "error": {
           "code": "IDEMPOTENCY_CONFLICT",
@@ -166,26 +242,29 @@
           "message": "同一结果标识对应的内容摘要不一致。",
           "traceId": "trace-contract-h1-result-conflict-001"
         }
-      },
-      "expectedClientRecovery": "Retain local credentials, inbox, receipt and result submission; refresh the authoritative snapshot without rerunning the Agent."
+      }
     },
     "legacyTerminalReceiptRejected": {
+      "call": {
+        "operationId": "submitTaskDeliveryReceipt",
+        "authProfile": "WORKER_USER_AND_NODE",
+        "httpStatus": 400
+      },
       "request": {
         "schemaVersion": "xiaogui.task-receipt.v1",
-        "eventId": "xgh_event_contract_legacy_003",
+        "eventId": "xgh_event_contract_legacy_005",
         "assignmentId": "xgh_assignment_contract_001",
         "taskId": "xgh_task_contract_001",
         "subjectId": "subject-contract-worker-001",
         "nodeId": "xgh_node_contract_worker_001",
-        "keyId": "ed25519:contract-fixture-001",
+        "keyId": "ed25519:3b62aa849f0926fe03b7ba8fb89016c0",
         "eventType": "RESULT_READY",
         "packageSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "occurredAt": "2026-09-03T01:00:00.000Z",
-        "sequence": 9,
+        "sequence": 11,
         "resultSha256": "sha256:2dbdcfac5b58ea095c2009ea3641efc5a494d5214e0eba49dff57338f8c6af61",
-        "signature": "8gB90pdfg1dHDKAz88TLNs/E/WQF/yQLJ50vzb30p8UQnvF2t9PN1l95T5+U2xWXI7RHAPrcpUY51aXLkzxqAQ=="
+        "signature": "FB14XR0CUS9Utb39ndMmOM7uEnoWpiEiHuvQ8X4b0dk2fpkTghxYNShYZ52L7wREOvEygm9JCikLEXUk7x7YAg=="
       },
-      "httpStatus": 400,
       "response": {
         "error": {
           "code": "VALIDATION_FAILED",
@@ -195,56 +274,187 @@
         }
       }
     },
+    "resultAnonymousAuthFailure": {
+      "call": {
+        "operationId": "submitTaskResult",
+        "authProfile": "ANONYMOUS",
+        "httpStatus": 401
+      },
+      "requestRef": "h1.resultReady.request",
+      "response": {
+        "error": {
+          "code": "UNAUTHENTICATED",
+          "messageKey": "taskhub.worker_unauthenticated",
+          "message": "Worker 用户或节点凭据不可用。",
+          "traceId": "trace-contract-h1-result-anonymous-001"
+        }
+      }
+    },
+    "workerRevoked": {
+      "call": {
+        "operationId": "submitTaskResult",
+        "authProfile": "WORKER_USER_AND_NODE",
+        "httpStatus": 403
+      },
+      "requestRef": "h1.resultReady.request",
+      "response": {
+        "error": {
+          "code": "FORBIDDEN",
+          "messageKey": "taskhub.node_revoked",
+          "message": "当前小规节点已被替换或吊销。",
+          "traceId": "trace-contract-h1-node-revoked-001"
+        }
+      }
+    },
     "workerTimeline": {
+      "firstPage": {
+        "call": {
+          "operationId": "getWorkerAssignmentTimeline",
+          "authProfile": "WORKER_USER_AND_NODE",
+          "httpStatus": 200,
+          "query": {
+            "afterSequence": 0,
+            "limit": 2
+          }
+        },
+        "response": {
+          "data": {
+            "items": [
+              {
+                "timelineSequence": 1,
+                "eventType": "USER_OPENED",
+                "occurredAt": "2026-09-03T00:58:00.000Z",
+                "recordedAt": "2026-09-03T00:58:01.000Z",
+                "deliveryState": "OPENED",
+                "executionState": "NOT_STARTED",
+                "displaySummary": "收件人已打开任务。"
+              },
+              {
+                "timelineSequence": 2,
+                "eventType": "EXECUTION_STARTED",
+                "occurredAt": "2026-09-03T00:59:00.000Z",
+                "recordedAt": "2026-09-03T00:59:01.000Z",
+                "deliveryState": "OPENED",
+                "executionState": "RUNNING",
+                "displaySummary": "已在本机开始受控执行。"
+              }
+            ],
+            "nextAfterSequence": 2
+          }
+        }
+      },
+      "secondPage": {
+        "previousPageRef": "h1.workerTimeline.firstPage",
+        "call": {
+          "operationId": "getWorkerAssignmentTimeline",
+          "authProfile": "WORKER_USER_AND_NODE",
+          "httpStatus": 200,
+          "query": {
+            "afterSequence": 2,
+            "limit": 2
+          }
+        },
+        "response": {
+          "data": {
+            "items": [
+              {
+                "timelineSequence": 3,
+                "eventType": "RESULT_READY",
+                "occurredAt": "2026-09-03T01:00:00.000Z",
+                "recordedAt": "2026-09-03T01:00:04.000Z",
+                "deliveryState": "OPENED",
+                "executionState": "RESULT_READY",
+                "displaySummary": "结果已就绪，等待人工验收。",
+                "result": {
+                  "resultId": "xgh_result_contract_ready_001",
+                  "outcome": "RESULT_READY",
+                  "resultSummary": "已形成可审阅的受控结果摘要。",
+                  "artifactRefs": [
+                    {
+                      "artifactId": "xgh_artifact_contract_001",
+                      "mediaType": "application/vnd.xiaogui.delivery-summary+json",
+                      "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                  ],
+                  "verification": {
+                    "verdict": "PASS",
+                    "summary": "受控验证通过。"
+                  }
+                }
+              }
+            ],
+            "nextAfterSequence": null
+          }
+        }
+      }
+    },
+    "publisherTimeline": {
+      "firstPage": {
+        "call": {
+          "operationId": "getPublisherTaskTimeline",
+          "authProfile": "PUBLISHER_USER",
+          "httpStatus": 200,
+          "query": {
+            "afterSequence": 0,
+            "limit": 2
+          }
+        },
+        "responseRef": "h1.workerTimeline.firstPage.response"
+      },
+      "secondPage": {
+        "previousPageRef": "h1.publisherTimeline.firstPage",
+        "call": {
+          "operationId": "getPublisherTaskTimeline",
+          "authProfile": "PUBLISHER_USER",
+          "httpStatus": 200,
+          "query": {
+            "afterSequence": 2,
+            "limit": 2
+          }
+        },
+        "responseRef": "h1.workerTimeline.secondPage.response"
+      }
+    },
+    "publisherResultDetail": {
+      "call": {
+        "operationId": "getPublisherTaskResult",
+        "authProfile": "PUBLISHER_USER",
+        "httpStatus": 200
+      },
       "response": {
         "data": {
-          "items": [
+          "resultId": "xgh_result_contract_ready_001",
+          "assignmentId": "xgh_assignment_contract_001",
+          "taskId": "xgh_task_contract_001",
+          "outcome": "RESULT_READY",
+          "resultSummary": "已形成可审阅的受控结果摘要。",
+          "artifactRefs": [
             {
-              "timelineSequence": 1,
-              "eventType": "USER_OPENED",
-              "occurredAt": "2026-09-03T00:58:00.000Z",
-              "recordedAt": "2026-09-03T00:58:01.000Z",
-              "deliveryState": "OPENED",
-              "executionState": "NOT_STARTED",
-              "displaySummary": "收件人已打开任务。"
-            },
-            {
-              "timelineSequence": 2,
-              "eventType": "EXECUTION_STARTED",
-              "occurredAt": "2026-09-03T00:59:00.000Z",
-              "recordedAt": "2026-09-03T00:59:01.000Z",
-              "deliveryState": "OPENED",
-              "executionState": "RUNNING",
-              "displaySummary": "已在本机开始受控执行。"
-            },
-            {
-              "timelineSequence": 3,
-              "eventType": "RESULT_READY",
-              "occurredAt": "2026-09-03T01:00:00.000Z",
-              "recordedAt": "2026-09-03T01:00:04.000Z",
-              "deliveryState": "OPENED",
-              "executionState": "RESULT_READY",
-              "displaySummary": "结果已就绪，等待人工验收。",
-              "result": {
-                "resultId": "xgh_result_contract_ready_001",
-                "verificationVerdict": "PASS"
-              }
+              "artifactId": "xgh_artifact_contract_001",
+              "mediaType": "application/vnd.xiaogui.delivery-summary+json",
+              "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             }
           ],
-          "nextAfterSequence": null
+          "verification": {
+            "verdict": "PASS",
+            "summary": "受控验证通过。"
+          },
+          "occurredAt": "2026-09-03T01:00:00.000Z",
+          "recordedAt": "2026-09-03T01:00:04.000Z",
+          "resultSha256": "sha256:2dbdcfac5b58ea095c2009ea3641efc5a494d5214e0eba49dff57338f8c6af61"
         }
       }
     },
-    "publisherTimelineEmpty": {
-      "response": {
-        "data": {
-          "items": [],
-          "nextAfterSequence": null
+    "publisherTimelineNotFound": {
+      "call": {
+        "operationId": "getPublisherTaskTimeline",
+        "authProfile": "PUBLISHER_USER",
+        "httpStatus": 404,
+        "query": {
+          "afterSequence": 0,
+          "limit": 50
         }
-      }
-    },
-    "timelineAuthFailure": {
-      "httpStatus": 404,
+      },
       "response": {
         "error": {
           "code": "NOT_FOUND",
@@ -254,21 +464,33 @@
         }
       }
     },
-    "workerRevoked": {
-      "httpStatus": 403,
-      "response": {
-        "error": {
-          "code": "FORBIDDEN",
-          "messageKey": "taskhub.node_revoked",
-          "message": "当前小规节点已被替换或吊销。",
-          "traceId": "trace-contract-h1-node-revoked-001"
+    "publisherTimelineAnonymous": {
+      "call": {
+        "operationId": "getPublisherTaskTimeline",
+        "authProfile": "ANONYMOUS",
+        "httpStatus": 401,
+        "query": {
+          "afterSequence": 0,
+          "limit": 50
         }
       },
-      "expectedClientRecovery": "Clear only the revoked node credentials and stop polling; do not claim the result was uploaded."
+      "response": {
+        "error": {
+          "code": "UNAUTHENTICATED",
+          "messageKey": "taskhub.publisher_unauthenticated",
+          "message": "发布者身份不可用。",
+          "traceId": "trace-contract-h1-timeline-anonymous-001"
+        }
+      }
     }
   },
   "c3": {
     "intakeAccepted": {
+      "call": {
+        "operationId": "submitDemandIntake",
+        "authProfile": "C3_OUTBOX_INTEGRATION",
+        "httpStatus": 200
+      },
       "outboxMessageId": "outbox-contract-001",
       "request": {
         "demandId": "demand-contract-001",
@@ -308,14 +530,24 @@
       }
     },
     "intakeSameKeySameContent": {
+      "call": {
+        "operationId": "submitDemandIntake",
+        "authProfile": "C3_OUTBOX_INTEGRATION",
+        "httpStatus": 200
+      },
       "outboxMessageId": "outbox-contract-001-retry",
       "requestRef": "c3.intakeAccepted.request",
-      "expectedResponseRef": "c3.intakeAccepted.response",
-      "expectedRecovery": "Return the same DemandIntakeReceiptV1; do not create a second mapping or TaskHub task."
+      "responseRef": "c3.intakeAccepted.response",
+      "mappingCreated": false
     },
     "intakeSameKeyDifferentContent": {
+      "call": {
+        "operationId": "submitDemandIntake",
+        "authProfile": "C3_OUTBOX_INTEGRATION",
+        "httpStatus": 409
+      },
       "firstRequestRef": "c3.intakeAccepted.request",
-      "conflictingRequest": {
+      "request": {
         "demandId": "demand-contract-001",
         "demandVersion": 1,
         "title": "同版本但不同正文",
@@ -331,8 +563,7 @@
         ],
         "visibility": "INSTITUTE"
       },
-      "conflictingContentSha256": "sha256:be3dae1f550f5b32d1ec94ec4ef69294b2cb1ff9b4e4dc570de233d0e999acae",
-      "httpStatus": 409,
+      "demandContentSha256": "sha256:be3dae1f550f5b32d1ec94ec4ef69294b2cb1ff9b4e4dc570de233d0e999acae",
       "response": {
         "error": {
           "code": "IDEMPOTENCY_CONFLICT",
@@ -340,11 +571,43 @@
           "message": "同一 demandId 与 demandVersion 的内容摘要不一致。",
           "traceId": "trace-contract-c3-intake-conflict-001"
         }
+      }
+    },
+    "intakeExtraFieldRejected": {
+      "call": {
+        "operationId": "submitDemandIntake",
+        "authProfile": "C3_OUTBOX_INTEGRATION",
+        "httpStatus": 400
       },
-      "expectedWorkerRecovery": "Move the event to dead letter. Content changes require a newer demandVersion; retrying this conflicting body with the original key cannot change the result."
+      "invalidRequest": {
+        "demandId": "demand-contract-001",
+        "demandVersion": 2,
+        "title": "未知字段必须拒绝",
+        "problemStatement": "验证严格 DemandSubmittedV1。",
+        "expectedOutcome": "不得接受 agentId。",
+        "constraints": [],
+        "attachmentRefs": [],
+        "capabilityHints": [],
+        "acceptanceHints": [],
+        "visibility": "INSTITUTE",
+        "agentId": "must-not-be-accepted"
+      },
+      "response": {
+        "error": {
+          "code": "VALIDATION_FAILED",
+          "messageKey": "taskhub.intake_payload_invalid",
+          "message": "DemandSubmittedV1 不接受未知字段。",
+          "traceId": "trace-contract-c3-intake-extra-field-001"
+        }
+      }
     },
     "intakeAuthenticationFailure": {
-      "httpStatus": 401,
+      "call": {
+        "operationId": "submitDemandIntake",
+        "authProfile": "ANONYMOUS",
+        "httpStatus": 401
+      },
+      "requestRef": "c3.intakeAccepted.request",
       "response": {
         "error": {
           "code": "UNAUTHENTICATED",
@@ -354,7 +617,87 @@
         }
       }
     },
+    "intakeRetryUntilDeadLetter": {
+      "call": {
+        "operationId": "submitDemandIntake",
+        "authProfile": "C3_OUTBOX_INTEGRATION"
+      },
+      "requestRef": "c3.intakeAccepted.request",
+      "attempts": [
+        {
+          "attempt": 1,
+          "httpStatus": 503,
+          "nextDelaySeconds": 60,
+          "response": {
+            "error": {
+              "code": "DOWNSTREAM_UNAVAILABLE",
+              "messageKey": "c3.taskhub_unavailable",
+              "message": "TaskHub 暂不可用。",
+              "traceId": "trace-contract-c3-retry-001"
+            }
+          }
+        },
+        {
+          "attempt": 2,
+          "httpStatus": 503,
+          "nextDelaySeconds": 300,
+          "response": {
+            "error": {
+              "code": "DOWNSTREAM_UNAVAILABLE",
+              "messageKey": "c3.taskhub_unavailable",
+              "message": "TaskHub 暂不可用。",
+              "traceId": "trace-contract-c3-retry-002"
+            }
+          }
+        },
+        {
+          "attempt": 3,
+          "httpStatus": 503,
+          "nextDelaySeconds": 1800,
+          "response": {
+            "error": {
+              "code": "DOWNSTREAM_UNAVAILABLE",
+              "messageKey": "c3.taskhub_unavailable",
+              "message": "TaskHub 暂不可用。",
+              "traceId": "trace-contract-c3-retry-003"
+            }
+          }
+        },
+        {
+          "attempt": 4,
+          "httpStatus": 503,
+          "nextDelaySeconds": 7200,
+          "response": {
+            "error": {
+              "code": "DOWNSTREAM_UNAVAILABLE",
+              "messageKey": "c3.taskhub_unavailable",
+              "message": "TaskHub 暂不可用。",
+              "traceId": "trace-contract-c3-retry-004"
+            }
+          }
+        },
+        {
+          "attempt": 5,
+          "httpStatus": 503,
+          "nextDelaySeconds": null,
+          "terminalAction": "DEAD_LETTER",
+          "response": {
+            "error": {
+              "code": "DOWNSTREAM_UNAVAILABLE",
+              "messageKey": "c3.taskhub_unavailable",
+              "message": "TaskHub 暂不可用。",
+              "traceId": "trace-contract-c3-retry-005"
+            }
+          }
+        }
+      ]
+    },
     "projectionWriteAccepted": {
+      "call": {
+        "operationId": "writeDemandTaskHubProjection",
+        "authProfile": "TASKHUB_PROJECTION_INTEGRATION",
+        "httpStatus": 200
+      },
       "request": {
         "schemaVersion": "xiaogui.taskhub-projection-update.v1",
         "demandId": "demand-contract-001",
@@ -379,19 +722,105 @@
         }
       }
     },
-    "projectionVersionConflict": {
-      "httpStatus": 409,
+    "projectionWriteDuplicate": {
+      "call": {
+        "operationId": "writeDemandTaskHubProjection",
+        "authProfile": "TASKHUB_PROJECTION_INTEGRATION",
+        "httpStatus": 200
+      },
+      "requestRef": "c3.projectionWriteAccepted.request",
+      "response": {
+        "data": {
+          "demandId": "demand-contract-001",
+          "intakeId": "xgh_intake_contract_001",
+          "projectionVersion": 3,
+          "duplicate": true,
+          "receivedAt": "2026-09-03T01:03:01.000Z"
+        }
+      }
+    },
+    "projectionSameVersionConflict": {
+      "call": {
+        "operationId": "writeDemandTaskHubProjection",
+        "authProfile": "TASKHUB_PROJECTION_INTEGRATION",
+        "httpStatus": 409
+      },
+      "firstRequestRef": "c3.projectionWriteAccepted.request",
+      "request": {
+        "schemaVersion": "xiaogui.taskhub-projection-update.v1",
+        "demandId": "demand-contract-001",
+        "intakeId": "xgh_intake_contract_001",
+        "projection": {
+          "projectionVersion": 3,
+          "demandId": "demand-contract-001",
+          "intakeId": "xgh_intake_contract_001",
+          "stage": "AWAITING_ACCEPTANCE",
+          "displaySummary": "同版本但不同受控展示摘要。",
+          "updatedAt": "2026-09-03T01:03:00.000Z"
+        },
+        "projectionSha256": "sha256:32e7676db824e77418b409322a5f0cfd0854e5c06e52b80415aa320a57083a5e"
+      },
+      "response": {
+        "error": {
+          "code": "VERSION_CONFLICT",
+          "messageKey": "c3.projection_version_conflict",
+          "message": "同一投影版本的摘要不一致。",
+          "traceId": "trace-contract-c3-projection-same-version-001"
+        }
+      }
+    },
+    "projectionLowerVersionConflict": {
+      "call": {
+        "operationId": "writeDemandTaskHubProjection",
+        "authProfile": "TASKHUB_PROJECTION_INTEGRATION",
+        "httpStatus": 409
+      },
+      "firstRequestRef": "c3.projectionWriteAccepted.request",
+      "request": {
+        "schemaVersion": "xiaogui.taskhub-projection-update.v1",
+        "demandId": "demand-contract-001",
+        "intakeId": "xgh_intake_contract_001",
+        "projection": {
+          "projectionVersion": 2,
+          "demandId": "demand-contract-001",
+          "intakeId": "xgh_intake_contract_001",
+          "stage": "EXECUTING",
+          "displaySummary": "旧版本投影。",
+          "updatedAt": "2026-09-03T01:02:30.000Z"
+        },
+        "projectionSha256": "sha256:f8a1321a10673b7490a8271ca855c92dc694462d2e18f21aa9b5a26a7c797d51"
+      },
       "response": {
         "error": {
           "code": "VERSION_CONFLICT",
           "messageKey": "c3.projection_version_conflict",
           "message": "投影版本不是可接受的单调更新。",
-          "traceId": "trace-contract-c3-projection-conflict-001"
+          "traceId": "trace-contract-c3-projection-lower-version-001"
         }
+      }
+    },
+    "projectionAuthenticationFailure": {
+      "call": {
+        "operationId": "writeDemandTaskHubProjection",
+        "authProfile": "ANONYMOUS",
+        "httpStatus": 401
       },
-      "expectedWriterRecovery": "Keep the TaskHub projection-outbox record and reconcile the authoritative C3 projection before any retry."
+      "requestRef": "c3.projectionWriteAccepted.request",
+      "response": {
+        "error": {
+          "code": "UNAUTHENTICATED",
+          "messageKey": "c3.projection_writer_unauthenticated",
+          "message": "TaskHub 投影写入凭据不可用。",
+          "traceId": "trace-contract-c3-projection-anonymous-001"
+        }
+      }
     },
     "readOnlyProjection": {
+      "call": {
+        "operationId": "readDemandTaskHubProjection",
+        "authProfile": "COMMUNITY_USER_SESSION",
+        "httpStatus": 200
+      },
       "response": {
         "data": {
           "projectionVersion": 3,
@@ -403,6 +832,71 @@
         }
       },
       "readOnly": true
+    }
+  },
+  "negativeCases": {
+    "wrongRouteRejected": {
+      "call": {
+        "operationId": "submitDemandIntake",
+        "authProfile": "WORKER_USER_AND_NODE",
+        "httpStatus": 200
+      },
+      "requestRef": "h1.resultReady.request",
+      "expectedFailure": "The TaskResultSubmissionV1 request is not valid for the C3 Intake route or its auth profile."
+    },
+    "anonymousSuccessRejected": {
+      "call": {
+        "operationId": "submitTaskResult",
+        "authProfile": "ANONYMOUS",
+        "httpStatus": 200
+      },
+      "requestRef": "h1.resultReady.request",
+      "responseRef": "h1.resultReady.response",
+      "expectedFailure": "A success response cannot be paired with anonymous access to the double-authenticated Worker route."
+    },
+    "illegalTimelineEventTypeRejected": {
+      "schema": "TaskHubTimelineEntryV1",
+      "value": {
+        "timelineSequence": 4,
+        "eventType": "RESULT_ACCEPTED",
+        "occurredAt": "2026-09-03T01:04:00.000Z",
+        "recordedAt": "2026-09-03T01:04:01.000Z",
+        "deliveryState": "OPENED",
+        "executionState": "RESULT_READY",
+        "displaySummary": "不存在的事件类型。"
+      }
+    },
+    "missingResultAckFieldRejected": {
+      "schema": "ResultAckResponseV1",
+      "value": {
+        "data": {
+          "resultId": "xgh_result_contract_ready_001",
+          "eventId": "xgh_event_contract_ready_001",
+          "verified": true,
+          "duplicate": false,
+          "executionState": "RESULT_READY",
+          "occurredAt": "2026-09-03T01:00:00.000Z"
+        }
+      }
+    },
+    "demandUnexpectedFieldRejected": {
+      "schema": "DemandSubmittedV1",
+      "valueRef": "c3.intakeExtraFieldRejected.invalidRequest"
+    },
+    "brokenFixtureReferenceRejected": {
+      "reference": "h1.this_fixture_does_not_exist"
+    },
+    "paginationCursorJumpRejected": {
+      "previousPageRef": "h1.workerTimeline.firstPage",
+      "nextPageCall": {
+        "operationId": "getWorkerAssignmentTimeline",
+        "authProfile": "WORKER_USER_AND_NODE",
+        "httpStatus": 200,
+        "query": {
+          "afterSequence": 99,
+          "limit": 2
+        }
+      }
     }
   }
 }

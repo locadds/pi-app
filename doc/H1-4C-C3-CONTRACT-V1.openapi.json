@@ -1,0 +1,1542 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Xiaogui TaskHub H1-4C / C3 candidate contract",
+    "version": "1.2.0-candidate",
+    "description": "Stage-A-only machine contract. It is normative for the candidate H1-4C result, timeline, C3 intake, mapping and projection interfaces; it does not claim any route is implemented."
+  },
+  "x-contract-id": "xiaogui.taskhub-h1-4c-c3.v1",
+  "x-contract-status": "STAGE_A_CANDIDATE_NOT_IMPLEMENTED",
+  "x-closed-error-codes": [
+    "UNAUTHENTICATED",
+    "FORBIDDEN",
+    "NOT_FOUND",
+    "VALIDATION_FAILED",
+    "IDEMPOTENCY_CONFLICT",
+    "VERSION_CONFLICT",
+    "RELEASE_NOT_APPROVED",
+    "INTENT_EXPIRED",
+    "INTENT_ALREADY_CLAIMED",
+    "DOWNSTREAM_UNAVAILABLE"
+  ],
+  "x-canonicalizations": {
+    "taskResultSha256": {
+      "algorithm": "SHA-256",
+      "prefix": "sha256:",
+      "orderedFields": [
+        "schemaVersion",
+        "resultId",
+        "assignmentId",
+        "taskId",
+        "outcome",
+        "resultSummary",
+        "artifactRefs:[artifactId,mediaType,sha256]",
+        "verification:[verdict,summary]",
+        "occurredAt"
+      ]
+    },
+    "taskDeliveryReceiptSignature": {
+      "algorithm": "Ed25519",
+      "encoding": "base64",
+      "orderedFields": [
+        "schemaVersion",
+        "eventId",
+        "assignmentId",
+        "taskId",
+        "subjectId",
+        "nodeId",
+        "keyId",
+        "eventType",
+        "packageSha256",
+        "occurredAt",
+        "sequence",
+        "resultSha256"
+      ]
+    },
+    "demandContentSha256": {
+      "algorithm": "SHA-256",
+      "prefix": "sha256:",
+      "orderedFields": [
+        "demandId",
+        "demandVersion",
+        "title",
+        "problemStatement",
+        "expectedOutcome",
+        "backgroundSummary??null",
+        "constraints",
+        "attachmentRefs:[ref,sha256,dataClassification]",
+        "requestedDeadline??null",
+        "capabilityHints",
+        "acceptanceHints",
+        "visibility"
+      ]
+    },
+    "taskHubProjectionSha256": {
+      "algorithm": "SHA-256",
+      "prefix": "sha256:",
+      "orderedFields": [
+        "schemaVersion",
+        "demandId",
+        "intakeId",
+        "projection:[projectionVersion,demandId,intakeId,stage,displaySummary,updatedAt,deliveryRef??null]"
+      ]
+    }
+  },
+  "paths": {
+    "/api/v2/taskhub/worker/results": {
+      "post": {
+        "operationId": "submitTaskResult",
+        "x-auth-profile": "WORKER_USER_AND_NODE",
+        "x-idempotency": {
+          "key": "result.resultId",
+          "samePayload": "RETURN_ORIGINAL_ACK",
+          "differentPayload": "IDEMPOTENCY_CONFLICT"
+        },
+        "security": [
+          {
+            "workerUserJwt": [],
+            "xiaoguiNodeToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskResultSubmissionV1"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ResultAckResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          }
+        }
+      }
+    },
+    "/api/v2/taskhub/worker/receipts": {
+      "post": {
+        "operationId": "submitTaskDeliveryReceipt",
+        "x-auth-profile": "WORKER_USER_AND_NODE",
+        "x-terminal-event-policy": "REJECT_WITH_taskhub.result_envelope_required",
+        "security": [
+          {
+            "workerUserJwt": [],
+            "xiaoguiNodeToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDeliveryReceiptV1"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ReceiptAckResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          }
+        }
+      }
+    },
+    "/api/v2/taskhub/worker/assignments/{assignmentId}/timeline": {
+      "get": {
+        "operationId": "getWorkerAssignmentTimeline",
+        "x-auth-profile": "WORKER_USER_AND_NODE",
+        "x-visibility": "OWN_ASSIGNMENT_ONLY",
+        "security": [
+          {
+            "workerUserJwt": [],
+            "xiaoguiNodeToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AssignmentId"
+          },
+          {
+            "$ref": "#/components/parameters/AfterSequence"
+          },
+          {
+            "$ref": "#/components/parameters/TimelineLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/TimelinePageResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          }
+        }
+      }
+    },
+    "/api/v2/taskhub/offers/{taskId}/timeline": {
+      "get": {
+        "operationId": "getPublisherTaskTimeline",
+        "x-auth-profile": "PUBLISHER_USER",
+        "x-visibility": "PUBLISHER_OF_TASK_ONLY",
+        "security": [
+          {
+            "publisherUserJwt": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TaskId"
+          },
+          {
+            "$ref": "#/components/parameters/AfterSequence"
+          },
+          {
+            "$ref": "#/components/parameters/TimelineLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/TimelinePageResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          }
+        }
+      }
+    },
+    "/api/v2/taskhub/offers/{taskId}/results/{resultId}": {
+      "get": {
+        "operationId": "getPublisherTaskResult",
+        "x-auth-profile": "PUBLISHER_USER",
+        "x-visibility": "PUBLISHER_OF_TASK_ONLY",
+        "security": [
+          {
+            "publisherUserJwt": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TaskId"
+          },
+          {
+            "$ref": "#/components/parameters/ResultId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/TaskResultViewResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          }
+        }
+      }
+    },
+    "/api/v2/taskhub/intakes": {
+      "post": {
+        "operationId": "submitDemandIntake",
+        "x-auth-profile": "C3_OUTBOX_INTEGRATION",
+        "x-idempotency": {
+          "keyFields": [
+            "demandId",
+            "demandVersion"
+          ],
+          "contentDigest": "demandContentSha256",
+          "sameKeySameDigest": "RETURN_ORIGINAL_RECEIPT_AND_MAPPING",
+          "sameKeyDifferentDigest": "IDEMPOTENCY_CONFLICT",
+          "payloadConflictRecovery": "REQUIRES_NEW_DEMAND_VERSION"
+        },
+        "x-retry-policy": {
+          "totalAttempts": 5,
+          "retryAfterSeconds": [
+            60,
+            300,
+            1800,
+            7200
+          ],
+          "retryableFailures": [
+            "NETWORK_CONNECT_ERROR",
+            "NETWORK_TIMEOUT",
+            "HTTP_5XX",
+            "DOWNSTREAM_UNAVAILABLE"
+          ],
+          "terminalHttpStatuses": [
+            400,
+            401,
+            403,
+            409
+          ],
+          "afterFifthFailure": "DEAD_LETTER",
+          "credentialRecovery": "MANUAL_REQUEUE_ORIGINAL_PACKET",
+          "contentConflictRecovery": "REQUIRES_NEW_DEMAND_VERSION"
+        },
+        "security": [
+          {
+            "c3OutboxIntegrationToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DemandSubmittedV1"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/DemandIntakeReceiptResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          }
+        }
+      }
+    },
+    "/api/v2/community/internal/demand-projections/{demandId}": {
+      "put": {
+        "operationId": "writeDemandTaskHubProjection",
+        "x-auth-profile": "TASKHUB_PROJECTION_INTEGRATION",
+        "x-ownership": "WRITE_PROJECTION_ONLY",
+        "security": [
+          {
+            "taskHubProjectionIntegrationToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DemandId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskHubProjectionUpdateV1"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/TaskHubProjectionAckResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          }
+        }
+      }
+    },
+    "/api/v2/demands/{demandId}/taskhub-projection": {
+      "get": {
+        "operationId": "readDemandTaskHubProjection",
+        "x-auth-profile": "COMMUNITY_USER_SESSION",
+        "x-ownership": "READ_ONLY_PROJECTION",
+        "security": [
+          {
+            "communityUserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DemandId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/DemandProgressProjectionResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorEnvelopeResponse"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "workerUserJwt": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "publisherUserJwt": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "xiaoguiNodeToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-xiaogui-node-token"
+      },
+      "c3OutboxIntegrationToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Opaque token; server maps it to c3-outbox-worker and taskhub:intake:write."
+      },
+      "taskHubProjectionIntegrationToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Opaque token; server maps it to taskhub-projection-writer and community:projection:write."
+      },
+      "communityUserSession": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "parameters": {
+      "AssignmentId": {
+        "name": "assignmentId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Identifier"
+        }
+      },
+      "TaskId": {
+        "name": "taskId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Identifier"
+        }
+      },
+      "ResultId": {
+        "name": "resultId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Identifier"
+        }
+      },
+      "DemandId": {
+        "name": "demandId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Identifier"
+        }
+      },
+      "AfterSequence": {
+        "name": "afterSequence",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      },
+      "TimelineLimit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        }
+      }
+    },
+    "responses": {
+      "ErrorEnvelopeResponse": {
+        "description": "Frozen C2-closure error envelope",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelopeV1"
+            }
+          }
+        }
+      },
+      "ResultAckResponse": {
+        "description": "Verified result acknowledgement",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ResultAckResponseV1"
+            }
+          }
+        }
+      },
+      "ReceiptAckResponse": {
+        "description": "Existing non-terminal receipt acknowledgement",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ReceiptAckResponseV1"
+            }
+          }
+        }
+      },
+      "TimelinePageResponse": {
+        "description": "Ordered, cursor-paginated, controlled timeline",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/TimelinePageResponseV1"
+            }
+          }
+        }
+      },
+      "TaskResultViewResponse": {
+        "description": "Publisher-visible controlled result detail",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/TaskResultViewResponseV1"
+            }
+          }
+        }
+      },
+      "DemandIntakeReceiptResponse": {
+        "description": "Unchanged strict C2 DemandIntakeReceiptV1",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/DemandIntakeReceiptResponseV1"
+            }
+          }
+        }
+      },
+      "TaskHubProjectionAckResponse": {
+        "description": "Projection write acknowledgement",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/TaskHubProjectionAckResponseV1"
+            }
+          }
+        }
+      },
+      "DemandProgressProjectionResponse": {
+        "description": "Community-visible read-only projection",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/DemandProgressProjectionResponseV1"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Identifier": {
+        "type": "string",
+        "minLength": 1
+      },
+      "UtcTimestamp": {
+        "type": "string",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$"
+      },
+      "Sha256Digest": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "ErrorCodeV1": {
+        "type": "string",
+        "enum": [
+          "UNAUTHENTICATED",
+          "FORBIDDEN",
+          "NOT_FOUND",
+          "VALIDATION_FAILED",
+          "IDEMPOTENCY_CONFLICT",
+          "VERSION_CONFLICT",
+          "RELEASE_NOT_APPROVED",
+          "INTENT_EXPIRED",
+          "INTENT_ALREADY_CLAIMED",
+          "DOWNSTREAM_UNAVAILABLE"
+        ]
+      },
+      "ErrorEnvelopeV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "messageKey",
+              "message",
+              "traceId"
+            ],
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/ErrorCodeV1"
+              },
+              "messageKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              },
+              "traceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "params": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        }
+      },
+      "TaskResultOutcomeV1": {
+        "type": "string",
+        "enum": [
+          "RESULT_READY",
+          "EXECUTION_FAILED",
+          "OUTCOME_UNKNOWN"
+        ]
+      },
+      "VerificationVerdictV1": {
+        "type": "string",
+        "enum": [
+          "PASS",
+          "FAIL",
+          "NOT_RUN",
+          "OUTCOME_UNKNOWN"
+        ]
+      },
+      "TaskResultArtifactRefV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifactId",
+          "mediaType",
+          "sha256"
+        ],
+        "properties": {
+          "artifactId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "mediaType": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          }
+        }
+      },
+      "VerificationSummaryV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "verdict",
+          "summary"
+        ],
+        "properties": {
+          "verdict": {
+            "$ref": "#/components/schemas/VerificationVerdictV1"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "TaskResultEnvelopeV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "resultId",
+          "assignmentId",
+          "taskId",
+          "outcome",
+          "resultSummary",
+          "artifactRefs",
+          "verification",
+          "occurredAt",
+          "resultSha256"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "xiaogui.task-result.v1"
+          },
+          "resultId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "assignmentId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/TaskResultOutcomeV1"
+          },
+          "resultSummary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskResultArtifactRefV1"
+            }
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationSummaryV1"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "resultSha256": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          }
+        }
+      },
+      "TaskDeliveryEventTypeV1": {
+        "type": "string",
+        "enum": [
+          "NODE_STORED",
+          "USER_OPENED",
+          "DIRECT_ACCEPTED",
+          "DIRECT_REJECTED",
+          "EXECUTION_STARTED",
+          "RESULT_READY",
+          "EXECUTION_FAILED",
+          "OUTCOME_UNKNOWN"
+        ]
+      },
+      "TaskDeliveryReceiptV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "eventId",
+          "assignmentId",
+          "taskId",
+          "subjectId",
+          "nodeId",
+          "keyId",
+          "eventType",
+          "packageSha256",
+          "occurredAt",
+          "sequence",
+          "resultSha256",
+          "signature"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "xiaogui.task-receipt.v1"
+          },
+          "eventId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "assignmentId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "subjectId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "nodeId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "keyId": {
+            "type": "string",
+            "pattern": "^ed25519:[0-9a-f]{32}$"
+          },
+          "eventType": {
+            "$ref": "#/components/schemas/TaskDeliveryEventTypeV1"
+          },
+          "packageSha256": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "resultSha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "signature": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "TaskResultReceiptV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "eventId",
+          "assignmentId",
+          "taskId",
+          "subjectId",
+          "nodeId",
+          "keyId",
+          "eventType",
+          "packageSha256",
+          "occurredAt",
+          "sequence",
+          "resultSha256",
+          "signature"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "xiaogui.task-receipt.v1"
+          },
+          "eventId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "assignmentId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "subjectId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "nodeId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "keyId": {
+            "type": "string",
+            "pattern": "^ed25519:[0-9a-f]{32}$"
+          },
+          "eventType": {
+            "$ref": "#/components/schemas/TaskResultOutcomeV1"
+          },
+          "packageSha256": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "resultSha256": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          },
+          "signature": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "TaskResultSubmissionV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "result",
+          "receipt"
+        ],
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/TaskResultEnvelopeV1"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/TaskResultReceiptV1"
+          }
+        }
+      },
+      "ResultAckV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "resultId",
+          "eventId",
+          "verified",
+          "duplicate",
+          "executionState",
+          "occurredAt",
+          "receivedAt"
+        ],
+        "properties": {
+          "resultId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "eventId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "verified": {
+            "type": "boolean",
+            "const": true
+          },
+          "duplicate": {
+            "type": "boolean"
+          },
+          "executionState": {
+            "type": "string",
+            "enum": [
+              "RESULT_READY",
+              "FAILED",
+              "OUTCOME_UNKNOWN"
+            ]
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "receivedAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          }
+        }
+      },
+      "ReceiptAckV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "receiptId",
+          "eventId",
+          "verified",
+          "duplicate",
+          "occurredAt",
+          "receivedAt"
+        ],
+        "properties": {
+          "receiptId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "eventId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "verified": {
+            "type": "boolean",
+            "const": true
+          },
+          "duplicate": {
+            "type": "boolean"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "receivedAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          }
+        }
+      },
+      "TimelineResultSummaryV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "resultId",
+          "outcome",
+          "resultSummary",
+          "artifactRefs",
+          "verification"
+        ],
+        "properties": {
+          "resultId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/TaskResultOutcomeV1"
+          },
+          "resultSummary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskResultArtifactRefV1"
+            }
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationSummaryV1"
+          }
+        }
+      },
+      "TaskHubTimelineEntryV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "timelineSequence",
+          "eventType",
+          "occurredAt",
+          "recordedAt",
+          "deliveryState",
+          "executionState",
+          "displaySummary"
+        ],
+        "properties": {
+          "timelineSequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "eventType": {
+            "$ref": "#/components/schemas/TaskDeliveryEventTypeV1"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "recordedAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "deliveryState": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "NODE_STORED",
+              "OPENED"
+            ]
+          },
+          "executionState": {
+            "type": "string",
+            "enum": [
+              "NOT_STARTED",
+              "RUNNING",
+              "RESULT_READY",
+              "COMPLETED",
+              "FAILED",
+              "OUTCOME_UNKNOWN"
+            ]
+          },
+          "displaySummary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "$ref": "#/components/schemas/TimelineResultSummaryV1"
+          }
+        }
+      },
+      "TaskHubTimelinePageV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "nextAfterSequence"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskHubTimelineEntryV1"
+            }
+          },
+          "nextAfterSequence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          }
+        }
+      },
+      "TaskResultViewV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "resultId",
+          "assignmentId",
+          "taskId",
+          "outcome",
+          "resultSummary",
+          "artifactRefs",
+          "verification",
+          "occurredAt",
+          "recordedAt",
+          "resultSha256"
+        ],
+        "properties": {
+          "resultId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "assignmentId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/TaskResultOutcomeV1"
+          },
+          "resultSummary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskResultArtifactRefV1"
+            }
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationSummaryV1"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "recordedAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "resultSha256": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          }
+        }
+      },
+      "DemandAttachmentRefV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "sha256",
+          "dataClassification"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "dataClassification": {
+            "type": "string",
+            "enum": [
+              "INTERNAL",
+              "SENSITIVE",
+              "RESTRICTED"
+            ]
+          }
+        }
+      },
+      "DemandSubmittedV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "demandId",
+          "demandVersion",
+          "title",
+          "problemStatement",
+          "expectedOutcome",
+          "constraints",
+          "attachmentRefs",
+          "capabilityHints",
+          "acceptanceHints",
+          "visibility"
+        ],
+        "properties": {
+          "demandId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "demandVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "problemStatement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedOutcome": {
+            "type": "string",
+            "minLength": 1
+          },
+          "backgroundSummary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "constraints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "attachmentRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DemandAttachmentRefV1"
+            }
+          },
+          "requestedDeadline": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "capabilityHints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "acceptanceHints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "PRIVATE",
+              "ORG_UNIT",
+              "INSTITUTE"
+            ]
+          }
+        }
+      },
+      "DemandIntakeReceiptV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "intakeId",
+          "demandId",
+          "demandVersion",
+          "state",
+          "receivedAt",
+          "displayMessage"
+        ],
+        "properties": {
+          "intakeId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "demandId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "demandVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "RECEIVED",
+              "NEEDS_CLARIFICATION",
+              "ACCEPTED_FOR_PLANNING",
+              "REJECTED"
+            ]
+          },
+          "receivedAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "displayMessage": {
+            "type": "string"
+          }
+        }
+      },
+      "DemandTaskMappingV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "intakeId",
+          "demandId",
+          "demandVersion",
+          "demandContentSha256",
+          "taskId",
+          "createdAt"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "xiaogui.demand-task-mapping.v1"
+          },
+          "intakeId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "demandId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "demandVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "demandContentSha256": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          }
+        }
+      },
+      "DemandProgressProjectionV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "projectionVersion",
+          "demandId",
+          "intakeId",
+          "stage",
+          "displaySummary",
+          "updatedAt"
+        ],
+        "properties": {
+          "projectionVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "demandId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "intakeId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "CLARIFYING",
+              "PLANNING",
+              "AWAITING_APPROVAL",
+              "EXECUTING",
+              "AWAITING_ACCEPTANCE",
+              "DELIVERED",
+              "CLOSED"
+            ]
+          },
+          "displaySummary": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "deliveryRef": {
+            "type": "string"
+          }
+        }
+      },
+      "TaskHubProjectionUpdateV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "demandId",
+          "intakeId",
+          "projection",
+          "projectionSha256"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "xiaogui.taskhub-projection-update.v1"
+          },
+          "demandId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "intakeId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/DemandProgressProjectionV1"
+          },
+          "projectionSha256": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          }
+        }
+      },
+      "TaskHubProjectionAckV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "demandId",
+          "intakeId",
+          "projectionVersion",
+          "duplicate",
+          "receivedAt"
+        ],
+        "properties": {
+          "demandId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "intakeId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "projectionVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "duplicate": {
+            "type": "boolean"
+          },
+          "receivedAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          }
+        }
+      },
+      "ResultAckResponseV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ResultAckV1"
+          }
+        }
+      },
+      "ReceiptAckResponseV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ReceiptAckV1"
+          }
+        }
+      },
+      "TimelinePageResponseV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TaskHubTimelinePageV1"
+          }
+        }
+      },
+      "TaskResultViewResponseV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TaskResultViewV1"
+          }
+        }
+      },
+      "DemandIntakeReceiptResponseV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/DemandIntakeReceiptV1"
+          }
+        }
+      },
+      "TaskHubProjectionAckResponseV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TaskHubProjectionAckV1"
+          }
+        }
+      },
+      "DemandProgressProjectionResponseV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/DemandProgressProjectionV1"
+          }
+        }
+      }
+    }
+  }
+}

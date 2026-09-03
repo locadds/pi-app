@@ -6,7 +6,7 @@
 
 范围：只读审计、共享合同、夹具和聚焦合同校验；不含产品代码、数据库迁移、路由、Renderer/Web 实现、合并或发布。
 
-> 合同正文以 H1-4C-C3-CONTRACT-SPEC.md 为唯一来源；本文件只记录基线、冲突、迁移顺序与验收门。夹具由 H1-4C-C3-CONTRACT-FIXTURES.json 和其验证器共同冻结。
+> `H1-4C-C3-CONTRACT-V1.openapi.json` 是唯一版本化机器合同源；`H1-4C-C3-CONTRACT-SPEC.md` 只解释产品边界。本文件只记录基线、冲突、迁移顺序与验收门；夹具只由机器合同和验证器校验。
 
 ## 1. 已核对的基线
 
@@ -47,11 +47,11 @@ Hub H1-4B 与 C2 的共同祖先是 1fe28cc0cb336916440fc597d51cb44a9c44cefe；7
 ## 4. 本次修订后冻结的边界
 
 - H1-4C 的终态结果通过原子结果提交进入既有 TaskHub Delivery/Evidence，不建立第二套执行状态机；artifact_receipt 不复用。
-- H1 结果摘要、13 字段签名 receipt、12 项签名数组、时间线 DTO、分页/排序、路径和错误信封均在共享合同中明确。
+- H1 结果摘要、13 字段签名 receipt、12 项签名数组、三种终态、结果幂等 ACK、双时间线、受控发布者结果详情、分页/排序、路径和错误信封均在机器合同中明确。
 - C2 的十项顶层错误码闭集保持有效。细分语义只写入 messageKey，每个失败夹具都有 messageKey 与 traceId。
 - DemandIntakeReceiptV1 不被静默扩展；demandId、intakeId、taskId 映射为独立的 DemandTaskMappingV1。
 - Intake 的幂等键严格保持 (demandId, demandVersion)；规范化内容摘要只是同键一致性校验，绝不升格为三元组键。
-- C3 Outbox→TaskHub Intake 与 TaskHub→C3 投影写入各有调用主体、认证头、超时/重试/死信及存储接缝；社区网页仍只有只读 GET。
+- C3 Outbox→TaskHub Intake 与 TaskHub→C3 投影写入各有调用主体、认证头、五次超时/重试/死信、同键同内容/异内容、projection 幂等/版本冲突及存储接缝；社区网页仍只有只读 GET。
 
 ## 5. 聚焦合同验证与文档阶段豁免
 
@@ -64,7 +64,7 @@ node doc/validate-h1-4c-c3-contract-fixtures.mjs
 git diff --check
 ~~~
 
-验证器以 Node 内置 crypto 检查：固定 DTO、C2 错误码闭集、完整 messageKey/traceId、结果有序摘要、真实 Ed25519 fixture 签名、13 字段 receipt、同键不同内容的 Demand 冲突、时间线排序/隐私字段、投影摘要与版本冲突。它不需要安装依赖，也不是对真实 Hub 联调的替代。
+验证器以 Node 内置能力直接读取 OpenAPI 机器合同，检查：所有路径/方法/双鉴权或集成鉴权、严格 DTO、C2 错误码闭集、完整 messageKey/traceId、结果有序摘要、真实 Ed25519 fixture 签名与公钥派生 keyId、三种终态、结果幂等 ACK、两页 cursor 链、发布者结果详情、Demand 同键与未知字段、五次重试入死信、投影摘要与版本冲突。它还断言错误路由、匿名成功、非法 timeline 事件、缺失 ACK 字段、断裂引用和 cursor 跳跃必须失败。它不需要安装依赖，也不是对真实 Hub 联调的替代。
 
 ## 6. 前端包与验收门
 
@@ -77,6 +77,6 @@ git diff --check
 
 ## 7. 阶段 A 重新验收门
 
-审查需确认：基线关系准确；Hub 合并冲突没有被隐瞒；迁移顺序不复用冲突编号；结果、送达、Intake、映射与投影的边界清楚；C2 artifact_receipt 未被复用；夹具不含路径、凭据、私钥或真实任务内容；并且上述聚焦验证实际通过。
+审查需确认：基线关系准确；Hub 合并冲突没有被隐瞒；迁移顺序不复用冲突编号；OpenAPI 是唯一机器合同源且其严格 schema 覆盖 Result、Timeline、Mapping、Projection Writer；结果、送达、Intake、映射与投影的边界清楚；C2 artifact_receipt 未被复用；夹具不含路径、凭据、私钥或真实任务内容；并且上述聚焦验证实际通过。
 
 批准前不得开始阶段 B、C、D 产品实现或派发前端代码任务。
