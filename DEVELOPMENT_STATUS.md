@@ -2,11 +2,11 @@
 
 更新时间：2026-09-03
 阶段：`TASKHUB-H1-4C/C3-A` — 集成基线审计与合同冻结
-状态：阶段 A 候选完成，等待独立审查与人工验收；本阶段仅写入审计和合同夹具，没有 H1-4C/C3 产品代码、迁移、路由或前端实现。未合并正式主线、未发布。
+状态：阶段 A 根据独立审查的 REQUEST CHANGES 完成合同修订，等待重新独立审查与人工验收；本阶段仅写入审计、合同、夹具和聚焦验证器，没有 H1-4C/C3 产品代码、迁移、路由或前端实现。未合并正式主线、未发布。
 
 ## 阶段 A 目标
 
-只读核对 H1、C2、WORK 与 CODING 的提交关系、冲突面和迁移顺序，选择后续独立工作树基线；冻结 H1-4C 结果回传和 C3 Demand Intake/只读投影的 DTO、状态语义、错误码、接口路径与正常/失败夹具。阶段 A 不建立统一产品基线、不写产品代码。
+只读核对 H1、C2、WORK 与 CODING 的提交关系、冲突面和迁移顺序，选择后续独立工作树基线；冻结 H1-4C 结果回传和 C3 Demand Intake/只读投影的 DTO、状态语义、错误码、接口路径与正常/失败夹具，并对夹具执行摘要、签名和错误信封的聚焦合同校验。阶段 A 不建立统一产品基线、不写产品代码。
 
 ## 阶段 A 实际修改文件
 
@@ -16,12 +16,26 @@
 | 前端与后端共用的合同夹具 | `doc/H1-4C-C3-CONTRACT-FIXTURES.json` |
 | 阶段状态记录 | `DEVELOPMENT_STATUS.md` |
 
+### REQUEST CHANGES 修订新增文件
+
+| 范围 | 文件 |
+| --- | --- |
+| 共享版本化合同 | doc/H1-4C-C3-CONTRACT-SPEC.md |
+| 无依赖聚焦合同验证器 | doc/validate-h1-4c-c3-contract-fixtures.mjs |
+
 ## 阶段 A 已完成内容
 
-- 确认桌面 H1-LAN、WORK、CODING 都以 `agent/stage-integration-v1@0d2deece4c35851363b918313cb27d2848207c73` 为共同祖先，但没有互相合并；后续 H1-4C 不吸收 WORK/CODING。
+- 确认桌面 H1-LAN、WORK、CODING 都以 `agent/stage-integration-v1@0d2deece4c35851363b918313cb27d2848207c73` 为共同祖先；其中 `WORK@8c8728c` 是 `CODING@52432ef` 的祖先。H1 仍与其共享入口分叉，后续 H1-4C 不吸收 WORK/CODING。
 - 确认 Hub H1-4B `770c0a7` 与 C2 阶段线 `48e3cf5` 从 `1fe28cc` 分叉；实际三方 merge-tree 已列出 OpenAPI、Drizzle、应用注册、schema、制品路由、测试和文档冲突，不能静默合并。
 - 冻结仅供后续实现的结果/Intake/投影合同与契约夹具；夹具明确标为 `CONTRACT_ONLY`，不得作为真实联调证据。
 - 明确后续前端必须拆为桌面 H1-4C Renderer 与 Hub C3 网页两个独立工作树、两个工作包；当前尚未派发。
+
+### REQUEST CHANGES 修订完成
+
+- H1 合同现在冻结结果有序摘要、完整 13 字段 Ed25519 receipt、原子结果提交、双时间线 DTO 和 C2 闭集错误信封；夹具使用真正可验签的测试公钥和签名，不存测试私钥。
+- C3 保留既有 DemandIntakeReceiptV1；三 ID 映射改为内部 DemandTaskMappingV1。幂等键严格是 demandId + demandVersion，规范化内容摘要仅做同键一致性校验。
+- C3 Outbox→TaskHub Intake 与 TaskHub→C3 internal projection Writer 均已有调用主体、认证头、存储、重试/死信和只读网页路径的冻结合同。
+- 夹具新增旧 receipt 终态拒绝、结果冲突、时间线、认证失败、同键同内容/异内容、projection 写入与版本冲突等正常/失败样例。
 
 ## 阶段 A 未完成内容
 
@@ -46,6 +60,15 @@
 | `git diff --check` | 通过：审计、夹具与状态记录无空白或冲突标记；不跑与文档审计无关的构建或全量测试。 |
 | `node -e "JSON.parse(...)"` | 通过：`doc/H1-4C-C3-CONTRACT-FIXTURES.json` 为有效 JSON。 |
 
+### REQUEST CHANGES 验证门与文档阶段豁免
+
+本阶段没有可构建的产品实现，所以豁免 Electron/E2E、构建、类型检查和全量测试；它们不能证明本阶段的签名、摘要、错误信封或幂等语义。豁免只适用于阶段 A，不传递到 H1-4C/C3 实现阶段。
+
+| 检查 | 结果 |
+| --- | --- |
+| node doc/validate-h1-4c-c3-contract-fixtures.mjs | 通过：验签完整 13 字段 receipt，复算结果、Demand、projection 摘要，校验 DTO、C2 错误闭集、messageKey/traceId、同键冲突、timeline 排序和私密字段不泄露。 |
+ | git diff --check | 通过：本次修订无空白或冲突标记；它只检查文档差异卫生，不能替代语义校验。 |
+
 ## 阶段 A 已知风险
 
 - Hub Drizzle 的 `0016` 编号、snapshot 和 journal 均碰撞；不先制定目标数据库升级路径就开始 H1-4C/C3 会损坏迁移语义。
@@ -54,7 +77,7 @@
 
 ## 阶段 A 下一步
 
-1. 对本审计与冻结夹具进行独立只读审查，并等待人工验收。
+1. 复跑差异检查、提交并推送本次合同修订；再请独立审查复核 V1 兼容、错误闭集、签名、认证/重试、timeline 和投影写入接缝。
 2. 通过后才建立 Hub H1-4C/C3 受控整合基线，先处理迁移与合同冲突，再实施 H1-4C 后端。
 3. H1-4C 合同在后端验证夹具通过后，分别派发桌面 Renderer 前端小包和 Hub C3 网页投影小包；不跨仓库混写。
 
