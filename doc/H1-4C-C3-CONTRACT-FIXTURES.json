@@ -1,0 +1,103 @@
+{
+  "fixtureVersion": "1",
+  "classification": "CONTRACT_ONLY_NOT_REAL_INTEGRATION",
+  "usage": "Only parser, Renderer/Web interaction, and focused contract tests may use these fixtures. They are not evidence that a Hub, Worker, or C3 integration is running.",
+  "h1ResultReady": {
+    "request": {
+      "result": {
+        "schemaVersion": "xiaogui.task-result.v1",
+        "resultId": "xgh_result_contract_ready_001",
+        "assignmentId": "xgh_assignment_contract_001",
+        "taskId": "xgh_task_contract_001",
+        "outcome": "RESULT_READY",
+        "resultSummary": "已形成可审阅的受控结果摘要。",
+        "artifactRefs": [
+          {
+            "artifactId": "xgh_artifact_contract_001",
+            "mediaType": "application/vnd.xiaogui.delivery-summary+json",
+            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "verification": {
+          "verdict": "PASS",
+          "summary": "受控验证通过。"
+        },
+        "occurredAt": "2026-09-03T01:00:00.000Z",
+        "resultSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "receipt": {
+        "eventType": "RESULT_READY",
+        "resultSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "response": {
+      "data": {
+        "resultId": "xgh_result_contract_ready_001",
+        "eventId": "xgh_event_contract_ready_001",
+        "verified": true,
+        "duplicate": false,
+        "executionState": "RESULT_READY",
+        "occurredAt": "2026-09-03T01:00:00.000Z",
+        "receivedAt": "2026-09-03T01:00:04.000Z"
+      }
+    }
+  },
+  "h1ResultConflict": {
+    "httpStatus": 409,
+    "response": {
+      "error": {
+        "code": "RESULT_IDEMPOTENCY_CONFLICT",
+        "message": "同一结果标识对应的内容摘要不一致。"
+      }
+    },
+    "expectedClientRecovery": "Retain local credentials, inbox, receipt and result submission; refresh the authoritative snapshot."
+  },
+  "c3IntakeAccepted": {
+    "request": {
+      "demandId": "demand-contract-001",
+      "demandVersion": 1,
+      "title": "合同夹具需求",
+      "problemStatement": "用于验证 Intake 合同。",
+      "expectedOutcome": "生成受控 TaskHub 规划。",
+      "constraints": ["不自动执行"],
+      "attachmentRefs": [],
+      "capabilityHints": [],
+      "acceptanceHints": ["人工确认"],
+      "visibility": "INSTITUTE"
+    },
+    "response": {
+      "data": {
+        "intakeId": "xgh_intake_contract_001",
+        "demandId": "demand-contract-001",
+        "demandVersion": 1,
+        "taskId": "xgh_task_contract_001",
+        "state": "ACCEPTED_FOR_PLANNING",
+        "receivedAt": "2026-09-03T01:02:00.000Z",
+        "displayMessage": "需求已进入受控规划。"
+      }
+    }
+  },
+  "c3IntakeConflict": {
+    "httpStatus": 409,
+    "response": {
+      "error": {
+        "code": "INTAKE_IDEMPOTENCY_CONFLICT",
+        "message": "同一 demandId 与 demandVersion 的内容摘要不一致。"
+      }
+    },
+    "expectedWorkerRecovery": "Move the event to dead letter without automatic retry; a human must publish a newer demandVersion or explicitly resolve the conflict."
+  },
+  "c3ReadOnlyProjection": {
+    "response": {
+      "data": {
+        "projectionVersion": 3,
+        "demandId": "demand-contract-001",
+        "intakeId": "xgh_intake_contract_001",
+        "stage": "AWAITING_ACCEPTANCE",
+        "displaySummary": "结果已就绪，等待人工验收。",
+        "updatedAt": "2026-09-03T01:03:00.000Z"
+      }
+    },
+    "readOnly": true
+  }
+}
