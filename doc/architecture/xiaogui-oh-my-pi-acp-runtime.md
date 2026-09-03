@@ -4,11 +4,11 @@
 
 `can1357/oh-my-pi` 通过标准 ACP stdio 接缝接入小规现有 `AgentRuntimeRegistryV1`，不替换 Pi Worker、TaskHub、Attempt、工作树、权限、验证或交付状态机。
 
-`RUNTIME-R4-OMP-ACP-ADAPTER-01 / P0` 已于 2026-09-02 通过人工验收，固定提交为 `607618f952b102b889bc12f5ab101f802ab6b401`；P1A、P1B、P1C 已依次通过人工验收，P1C 固定提交为 `9728eafdb67d0aea8a2f9e52fd6f315f4e4e7692`。P1D-A 当前在独立分支上形成完整依赖闭包装配候选，但尚未经过人工验收、未接入产品入口，也不会被默认生产路由选中。
+`RUNTIME-R4-OMP-ACP-ADAPTER-01 / P0` 已于 2026-09-02 通过人工验收，固定提交为 `607618f952b102b889bc12f5ab101f802ab6b401`；P1A、P1B、P1C 已依次通过人工验收，P1C 固定提交为 `9728eafdb67d0aea8a2f9e52fd6f315f4e4e7692`。P1D-A 首次候选 `a9377a22e531cc55e06b40917e103217c6e71c93` 已被人工拒绝；当前只在独立分支修复受信 native、版本冲突和 junction 等阻断，尚未重新验收、未接入产品入口，也不会被默认生产路由选中。
 
 P1 的三批任务与六项生产门映射见 `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`。P1 不把 OMP 改为 `write` 或 `yolo`；OMP 继续以 `always-ask` 作为内层审批基础，由 TaskHub 在硬边界核验后应用用户选择的三档权限策略。
 
-P1B 已增加受信完整性回执、OMP 私有模型设置和三档权限 UI。P1C 已接通固定入口、真实工作树结果对账和同 Attempt/Runtime/vendor session/worktree 恢复。P1D-A 进一步把信任边界扩展到完整依赖闭包：固定 lock、全树总账和关键 native 摘要，采用用户选择的大体积目录、双重完整性校验及原子活动指针。以上能力仍受显式候选门控制，不因底层装配通过而提前批准默认 Runtime。
+P1B 已增加受信完整性回执、OMP 私有模型设置和三档权限 UI。P1C 已接通固定入口、真实工作树结果对账和同 Attempt/Runtime/vendor session/worktree 恢复。P1D-A 进一步把信任边界扩展到完整依赖闭包：固定 lock、全树总账和关键 native 摘要，采用用户选择的大体积目录、双重完整性校验及原子活动指针。Windows native 还必须复制到 activation receipt 绑定的同盘缓存，以封闭环境固定 `XDG_DATA_HOME`，在版本探测和正式 ACP spawn 前复验源与缓存摘要；不得继承用户全局 `%USERPROFILE%\.omp` native 缓存。每次真实 spawn 前重新验证完整 24,230 文件树、活动 pointer/receipt、源与缓存 native 及所有受控目录；所有目录逐级写前检查实路径，同一 storage root 由 SQLite 排他事务串行装配，失败只清理本事务取得所有权的资源。以上能力仍受显式候选门控制，不因底层装配通过而提前批准默认 Runtime。
 
 ## 固定来源
 
@@ -26,7 +26,7 @@ P0 仍保留显式的固定包测试入口：仅当 `XIAOGUI_OMP_ACP_BUNX_TEST_E
 
 ## 现有接缝复用
 
-1. `NdjsonAcpProcessTransportV1`：标准 JSON-RPC/stdio、`initialize`、`session/new`、`session/load`、`session/prompt`、`session/cancel` 和 `session/request_permission`。
+1. `NdjsonAcpProcessTransportV1`：标准 JSON-RPC/stdio、`initialize`、`session/new`、`session/load`、`session/prompt`、`session/cancel` 和 `session/request_permission`；OMP 生产候选复用其 `preSpawn` 和封闭环境选项，不另建进程层。
 2. `AgentRuntimeRegistryV1`：发现、健康、路由、会话绑定、事件、权限、打断和结果检查。
 3. TaskHub Attempt 工作树：ACP 会话只绑定已准备且摘要匹配的独立工作树。
 4. TaskHub 权限：OMP 只可提出 `allow_once` 请求；绝对路径不进入公开事件，越出 Attempt 工作树的目标直接拒绝。
@@ -62,7 +62,7 @@ omp --approval-mode always-ask --no-extensions --no-skills --no-rules acp
 
 P1C 已完成人工验收，但 P1D-A 尚未成为用户可见产品入口。以下事项未通过前，不得把 OMP 切为默认 Runtime 或宣称完成发布装配：
 
-1. P1D-A 需完成只读审查与人工验收；当前只在独立候选分支，不得自动进入集成线。
+1. P1D-A 人工拒绝项复修需完成新的只读审查与人工验收；当前只在独立候选分支，不得自动进入集成线。
 2. P1D-B 需提供主进程目录选择、动态空间/进度/失败提示和受控单机试用入口；Renderer 不得取得私有绝对路径或伪造安装状态。
 3. 旧活动版本的清理必须单独展示空间影响并取得人工确认；不得为节省空间静默删除可恢复版本。
 4. 自动下载、离线资源、Portable 和发布包尚未实现；当前装配输入是已经准备并固定校验的完整闭包目录。

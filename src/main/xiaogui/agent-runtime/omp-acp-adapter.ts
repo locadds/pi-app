@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import {
   isSafeRuntimeModelSelectorV1,
@@ -54,6 +54,31 @@ export const OMP_ACP_APPROVED_VERSION_V1 = '18.1.2'
 export const OMP_ACP_SOURCE_REVISION_V1 = '86bf72f52947f62ecaf9bd28e35572812e725a92'
 export const OMP_ACP_APPROVED_PACKAGE_V1 = `@oh-my-pi/pi-coding-agent@${OMP_ACP_APPROVED_VERSION_V1}`
 export const OMP_ACP_APPROVAL_ENVELOPE_V1 = 'omp-18.1.2-v1'
+export const OMP_ACP_NATIVE_VARIANT_V1 = 'baseline'
+export const OMP_ACP_NATIVE_FILE_V1 = 'pi_natives.win32-x64-baseline.node'
+export const OMP_ACP_NATIVE_DIGEST_V1 = 'sha256:bdfdc8abaebd2feede9d9756059da7d50ec4e2bba4b82cc91310ab22444f895e'
+export const OMP_ACP_PROCESS_ENV_KEYS_V1 = Object.freeze([
+  'APPDATA',
+  'COLORTERM',
+  'ComSpec',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'LOCALAPPDATA',
+  'NO_COLOR',
+  'NUMBER_OF_PROCESSORS',
+  'PATH',
+  'PATHEXT',
+  'PI_NATIVE_VARIANT',
+  'PROCESSOR_ARCHITECTURE',
+  'SystemRoot',
+  'TEMP',
+  'TERM',
+  'TMP',
+  'USERPROFILE',
+  'WINDIR',
+  'XDG_DATA_HOME',
+] as const)
 
 const CLIENT_INFO = { name: 'xiaogui-oh-my-pi-acp-adapter', version: '0.1.0' }
 export const OMP_ACP_SAFE_ARGS_V1 = Object.freeze([
@@ -93,6 +118,10 @@ export interface OmpAcpWorkspaceResolverV1 {
 export interface OmpAcpTrustedLaunchV1 extends OmpAcpLaunchV1 {
   readonly version: typeof OMP_ACP_APPROVED_VERSION_V1
   readonly installationReceiptDigest: string
+  readonly environment: Readonly<Record<string, string>>
+  readonly nativeAddonPath: string
+  readonly nativeAddonDigest: string
+  verifyBeforeSpawn(): Promise<void>
 }
 
 export interface OmpAcpTrustedLaunchPortV1 {
@@ -242,6 +271,7 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
   ): Promise<RuntimeCreateOrResumeOutcomeV1> {
     if (this.closed) return failed('runtime-unbound', 'OMP_ADAPTER_CLOSED')
     let launch: OmpAcpLaunchV1
+    let productionLaunch: OmpAcpTrustedLaunchV1 | undefined
     let production: OmpProductionSessionContextV1 | undefined
     let requestDigest: string
     if (isContractTestRequest(request)) {
@@ -313,6 +343,7 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
         return failed('runtime-unbound', 'OMP_TRUSTED_LAUNCH_INVALID')
       }
       launch = trusted
+      productionLaunch = trusted
       production = {
         installationReceiptDigest: trusted.installationReceiptDigest,
         recoveryStore: gate.recoveryStore,
@@ -341,9 +372,18 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
         return failed('runtime-unbound', 'OMP_RUNTIME_STATE_DIR_INVALID')
       }
       mkdirSync(this.options.runtimeStateDir, { recursive: true })
-      transport = this.transportFactory.create(launch.command, launch.args, workspace.rootPath, {
-        env: { PI_CODING_AGENT_DIR: this.options.runtimeStateDir },
-      })
+      transport = this.transportFactory.create(
+        launch.command,
+        launch.args,
+        workspace.rootPath,
+        productionLaunch
+          ? {
+              env: { ...productionLaunch.environment, PI_CODING_AGENT_DIR: this.options.runtimeStateDir },
+              inheritParentEnvironment: false,
+              preSpawn: productionLaunch.verifyBeforeSpawn,
+            }
+          : { env: { PI_CODING_AGENT_DIR: this.options.runtimeStateDir } },
+      )
     } catch (error) {
       return failed('runtime-unbound', reasonCodeFromError(error, 'OMP_RUNTIME_PREPARATION_FAILED'))
     }
@@ -539,7 +579,9 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
         }
       }
       const transport = this.transportFactory.create(trusted.command, trusted.args, workspace.rootPath, {
-        env: { PI_CODING_AGENT_DIR: this.options.runtimeStateDir },
+        env: { ...trusted.environment, PI_CODING_AGENT_DIR: this.options.runtimeStateDir },
+        inheritParentEnvironment: false,
+        preSpawn: trusted.verifyBeforeSpawn,
       })
       this.transports.add(transport)
       const restored = await this.startSession(
@@ -1456,14 +1498,62 @@ function isApprovedOmpLaunchArgs(args: readonly string[]): boolean {
 }
 
 function isApprovedProductionLaunch(launch: OmpAcpTrustedLaunchV1): boolean {
+  const environment = launch.environment
+  const allowedKeys = new Set<string>(OMP_ACP_PROCESS_ENV_KEYS_V1)
+  const environmentKeysApproved = Object.entries(environment).every(([key, value]) =>
+    allowedKeys.has(key) && typeof value === 'string' && value.length > 0,
+  )
+  const controlledDirectories = [
+    environment.XDG_DATA_HOME,
+    environment.USERPROFILE,
+    environment.HOME,
+    environment.LOCALAPPDATA,
+    environment.APPDATA,
+    environment.TEMP,
+    environment.TMP,
+  ]
+  const expectedNativePath = typeof environment.XDG_DATA_HOME === 'string'
+    ? join(
+        environment.XDG_DATA_HOME,
+        'omp',
+        'natives',
+        OMP_ACP_APPROVED_VERSION_V1,
+        OMP_ACP_NATIVE_FILE_V1,
+      )
+    : ''
+  const nativeCacheRoot = typeof environment.XDG_DATA_HOME === 'string'
+    ? dirname(resolve(environment.XDG_DATA_HOME))
+    : ''
+  const controlledPathsMatch = nativeCacheRoot.length > 0 &&
+    sameResolvedPath(environment.USERPROFILE, join(nativeCacheRoot, 'home')) &&
+    sameResolvedPath(environment.HOME, join(nativeCacheRoot, 'home')) &&
+    sameResolvedPath(environment.LOCALAPPDATA, join(nativeCacheRoot, 'local-app-data')) &&
+    sameResolvedPath(environment.APPDATA, join(nativeCacheRoot, 'app-data')) &&
+    sameResolvedPath(environment.TEMP, join(nativeCacheRoot, 'temp')) &&
+    sameResolvedPath(environment.TMP, join(nativeCacheRoot, 'temp'))
   return (
     launch.version === OMP_ACP_APPROVED_VERSION_V1 &&
     isAbsolute(launch.command) &&
     /^sha256:[0-9a-f]{64}$/.test(launch.installationReceiptDigest) &&
+    launch.nativeAddonDigest === OMP_ACP_NATIVE_DIGEST_V1 &&
+    typeof launch.verifyBeforeSpawn === 'function' &&
+    environmentKeysApproved &&
+    environment.PI_NATIVE_VARIANT === OMP_ACP_NATIVE_VARIANT_V1 &&
+    controlledDirectories.every((value) => typeof value === 'string' && isAbsolute(value)) &&
+    controlledPathsMatch &&
+    sameResolvedPath(launch.nativeAddonPath, expectedNativePath) &&
     launch.args.length === OMP_ACP_SAFE_ARGS_V1.length + 1 &&
     isAbsolute(launch.args[0]) &&
     arraysEqual(launch.args.slice(1), OMP_ACP_SAFE_ARGS_V1)
   )
+}
+
+function sameResolvedPath(left: unknown, right: string): boolean {
+  if (typeof left !== 'string' || !isAbsolute(left)) return false
+  const normalize = (value: string): string => process.platform === 'win32'
+    ? resolve(value).toLowerCase()
+    : resolve(value)
+  return normalize(left) === normalize(right)
 }
 
 function isReadOnlyRole(request: RuntimeCreateOrResumeRequestV1): boolean {

@@ -5,6 +5,7 @@ import {
   copyFile,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   realpath,
@@ -14,10 +15,14 @@ import {
   statfs,
   writeFile,
 } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import {
   OMP_ACP_APPROVED_VERSION_V1,
+  OMP_ACP_NATIVE_DIGEST_V1,
+  OMP_ACP_NATIVE_FILE_V1,
+  OMP_ACP_NATIVE_VARIANT_V1,
   OMP_ACP_SAFE_ARGS_V1,
   OMP_ACP_SOURCE_REVISION_V1,
 } from './omp-acp-adapter'
@@ -30,6 +35,8 @@ import {
 
 const ACTIVATION_POINTER_FILE = 'active-v1.json'
 const BUNDLE_RECEIPT_FILE = 'bundle-receipt-v1.json'
+const NATIVE_CACHE_DIRECTORY = 'native-cache-v1'
+const INSTALL_LOCK_DATABASE = '.omp-runtime-install-lock-v1.sqlite'
 const MAX_BUNDLE_FILES = 50_000
 const MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
 const BUNDLE_DIRECTORY = /^bundle-[0-9a-f]{32}$/
@@ -39,6 +46,13 @@ export interface OmpRuntimeBundleCriticalFileV1 {
   readonly relativePath: string
   readonly byteLength: number
   readonly digest: string
+}
+
+export interface OmpRuntimeBundleNativeAddonV1 {
+  readonly platformTag: 'win32-x64'
+  readonly variant: 'baseline'
+  readonly relativePath: string
+  readonly fileName: string
 }
 
 export interface OmpRuntimeBundleManifestV1 {
@@ -57,6 +71,7 @@ export interface OmpRuntimeBundleManifestV1 {
   readonly directoryCount: number
   readonly byteLength: number
   readonly criticalFiles: readonly OmpRuntimeBundleCriticalFileV1[]
+  readonly nativeAddon: OmpRuntimeBundleNativeAddonV1
   readonly manifestDigest: string
 }
 
@@ -114,9 +129,15 @@ const OMP_RUNTIME_BUNDLE_MANIFEST_UNSIGNED_V1 = Object.freeze({
     Object.freeze({
       relativePath: 'node_modules/@oh-my-pi/pi-natives-win32-x64/pi_natives.win32-x64-baseline.node',
       byteLength: 175_602_176,
-      digest: 'sha256:bdfdc8abaebd2feede9d9756059da7d50ec4e2bba4b82cc91310ab22444f895e',
+      digest: OMP_ACP_NATIVE_DIGEST_V1,
     }),
   ]),
+  nativeAddon: Object.freeze({
+    platformTag: 'win32-x64' as const,
+    variant: OMP_ACP_NATIVE_VARIANT_V1,
+    relativePath: 'node_modules/@oh-my-pi/pi-natives-win32-x64/pi_natives.win32-x64-baseline.node',
+    fileName: OMP_ACP_NATIVE_FILE_V1,
+  }),
 })
 
 export const OMP_RUNTIME_BUNDLE_MANIFEST_V1: OmpRuntimeBundleManifestV1 = Object.freeze({
@@ -149,7 +170,15 @@ export interface OmpRuntimeBundleStorageLayoutV1 {
   readonly selectedStorageDirectory: string
   readonly rootDir: string
   readonly versionsDir: string
+  readonly nativeCacheDir: string
   readonly activePointerPath: string
+}
+
+export interface OmpTrustedNativeRuntimeV1 {
+  readonly environment: Readonly<Record<string, string>>
+  readonly addonPath: string
+  readonly addonDigest: string
+  verifyBeforeSpawn(): Promise<void>
 }
 
 export interface OmpRuntimeBundleActivationReceiptV1 {
@@ -187,6 +216,7 @@ export type OmpActivatedRuntimeBundleInspectionV1 =
       readonly runtimeRoot: string
       readonly packageRoot: string
       readonly receipt: OmpRuntimeBundleActivationReceiptV1
+      readonly nativeRuntime: OmpTrustedNativeRuntimeV1
     }
   | { readonly ok: false; readonly reasonCode: string }
 
@@ -201,6 +231,7 @@ export type OmpRuntimeBundleAssemblyResultV1 =
       readonly activationReceiptDigest: string
       readonly manifestDigest: string
       readonly bundleByteLength: number
+      readonly nativeCacheByteLength: number
       readonly retainedPreviousActivation: boolean
     }
   | {
@@ -220,6 +251,7 @@ export function resolveOmpRuntimeBundleStorageLayoutV1(
     selectedStorageDirectory: selected,
     rootDir,
     versionsDir: join(rootDir, 'versions'),
+    nativeCacheDir: join(rootDir, NATIVE_CACHE_DIRECTORY),
     activePointerPath: join(rootDir, ACTIVATION_POINTER_FILE),
   })
 }
@@ -270,12 +302,24 @@ export class OmpRuntimeBundleActivationTransactionV1 {
     const source = exactAbsolutePath(sourceRuntimeRoot, 'OMP_RUNTIME_BUNDLE_SOURCE_INVALID')
     let stagingRoot: string | undefined
     let activatedRoot: string | undefined
+    let createdNativeCacheRoot: string | undefined
+    let releaseInstallLock: (() => Promise<void>) | undefined
     let pointerCommitted = false
     try {
-      assertNonOverlappingRoots(source, this.layout.rootDir)
+      await assertNonOverlappingRoots(source, this.layout.rootDir)
       if (await pathExists(join(source, BUNDLE_RECEIPT_FILE))) {
         return { ok: false, reasonCode: 'OMP_RUNTIME_BUNDLE_SOURCE_NOT_PRISTINE' }
       }
+
+      await ensureTrustedDirectoryTree(this.layout.versionsDir, 'OMP_RUNTIME_STORAGE_LAYOUT_INVALID')
+      await assertNonOverlappingRoots(source, this.layout.versionsDir)
+      await assertTrustedChildDirectory(
+        this.layout.rootDir,
+        this.layout.versionsDir,
+        'OMP_RUNTIME_STORAGE_LAYOUT_INVALID',
+      )
+      await ensureTrustedDirectoryTree(this.privateStateDir, 'OMP_PRIVATE_STATE_DIR_INVALID')
+      releaseInstallLock = await acquireInstallLock(this.layout.rootDir)
 
       const current = await this.inspector().inspect({ fresh: true })
       if (
@@ -289,6 +333,7 @@ export class OmpRuntimeBundleActivationTransactionV1 {
           activationReceiptDigest: current.receipt.receiptDigest,
           manifestDigest: current.receipt.manifestDigest,
           bundleByteLength: current.receipt.byteLength,
+          nativeCacheByteLength: nativeAddonFile(this.options.manifest).byteLength,
           retainedPreviousActivation: false,
         }
       }
@@ -300,11 +345,14 @@ export class OmpRuntimeBundleActivationTransactionV1 {
       const sourceVerification = await this.options.verifier.verify(source)
       if (!sourceVerification.ok) return sourceVerification
 
-      await mkdir(this.layout.versionsDir, { recursive: true })
       const storageStats = await statfs(this.layout.versionsDir)
       const blockSize = Number(storageStats.bsize)
       const availableBytes = safeFsProduct(storageStats.bavail, storageStats.bsize)
-      const requiredBytes = requiredStagingBytes(sourceVerification.measurement, blockSize)
+      const requiredBytes = requiredStagingBytes(
+        sourceVerification.measurement,
+        nativeAddonFile(this.options.manifest).byteLength,
+        blockSize,
+      )
       if (availableBytes < requiredBytes) {
         return {
           ok: false,
@@ -313,6 +361,13 @@ export class OmpRuntimeBundleActivationTransactionV1 {
           availableBytes,
         }
       }
+
+      await assertNonOverlappingRoots(source, this.layout.versionsDir)
+      await assertTrustedChildDirectory(
+        this.layout.rootDir,
+        this.layout.versionsDir,
+        'OMP_RUNTIME_STORAGE_LAYOUT_INVALID',
+      )
 
       stagingRoot = join(
         this.layout.versionsDir,
@@ -325,7 +380,6 @@ export class OmpRuntimeBundleActivationTransactionV1 {
         return { ok: false, reasonCode: 'OMP_RUNTIME_BUNDLE_COPY_MISMATCH' }
       }
 
-      await mkdir(this.privateStateDir, { recursive: true })
       const receipt = await recordActivationReceipt(
         stagingRoot,
         this.privateStateDir,
@@ -334,11 +388,19 @@ export class OmpRuntimeBundleActivationTransactionV1 {
         this.now,
       )
       const runtimeDirectoryName = `bundle-${receipt.receiptDigest.slice('sha256:'.length, 'sha256:'.length + 32)}`
-      activatedRoot = join(this.layout.versionsDir, runtimeDirectoryName)
-      if (await pathExists(activatedRoot)) {
+      const candidateRoot = join(this.layout.versionsDir, runtimeDirectoryName)
+      if (await pathExists(candidateRoot)) {
         return { ok: false, reasonCode: 'OMP_RUNTIME_BUNDLE_VERSION_CONFLICT' }
       }
-      await rename(stagingRoot, activatedRoot)
+      const nativeCache = await prepareTrustedNativeCache(
+        this.layout,
+        stagingRoot,
+        receipt,
+        this.options.manifest,
+      )
+      if (nativeCache.created) createdNativeCacheRoot = nativeCache.cacheRoot
+      await rename(stagingRoot, candidateRoot)
+      activatedRoot = candidateRoot
       stagingRoot = undefined
 
       const pointer = activationPointer(this.options.manifest, runtimeDirectoryName, receipt, this.now())
@@ -366,6 +428,7 @@ export class OmpRuntimeBundleActivationTransactionV1 {
         activationReceiptDigest: receipt.receiptDigest,
         manifestDigest: receipt.manifestDigest,
         bundleByteLength: receipt.byteLength,
+        nativeCacheByteLength: nativeAddonFile(this.options.manifest).byteLength,
         retainedPreviousActivation: current.ok,
       }
     } catch (error) {
@@ -375,6 +438,10 @@ export class OmpRuntimeBundleActivationTransactionV1 {
       if (activatedRoot && !pointerCommitted) {
         await rm(activatedRoot, { recursive: true, force: true }).catch(() => undefined)
       }
+      if (createdNativeCacheRoot && !pointerCommitted) {
+        await rm(createdNativeCacheRoot, { recursive: true, force: true }).catch(() => undefined)
+      }
+      await releaseInstallLock?.()
     }
   }
 
@@ -412,7 +479,7 @@ export class OmpRuntimeBundleAssemblerV1 {
   }
 }
 
-/** Production inspection caches one successful full-tree verification per process. */
+/** Production inspection re-verifies the complete activated tree before every launch. */
 export class OmpActivatedRuntimeBundleModuleV1 implements OmpActivatedRuntimeBundleInspectionPortV1 {
   private readonly inspector: OmpRuntimeBundleActivationInspectorV1
 
@@ -431,8 +498,6 @@ export class OmpActivatedRuntimeBundleModuleV1 implements OmpActivatedRuntimeBun
 }
 
 export class OmpRuntimeBundleActivationInspectorV1 implements OmpActivatedRuntimeBundleInspectionPortV1 {
-  private inspection?: Promise<OmpActivatedRuntimeBundleInspectionV1>
-
   constructor(private readonly options: {
     readonly layout: OmpRuntimeBundleStorageLayoutV1
     readonly privateStateDir: string
@@ -440,23 +505,8 @@ export class OmpRuntimeBundleActivationInspectorV1 implements OmpActivatedRuntim
     readonly verifier: OmpRuntimeBundleVerificationPortV1
   }) {}
 
-  async inspect(options?: { readonly fresh?: boolean }): Promise<OmpActivatedRuntimeBundleInspectionV1> {
-    if (options?.fresh) this.inspection = undefined
-    if (this.inspection) {
-      const cached = await this.inspection
-      if (cached.ok) {
-        const guarded = await this.guardCachedInspection(cached)
-        if (guarded) {
-          if (!guarded.ok) this.inspection = undefined
-          return guarded
-        }
-      }
-      this.inspection = undefined
-    }
-    this.inspection ??= this.inspectFresh()
-    const result = await this.inspection
-    if (!result.ok) this.inspection = undefined
-    return result
+  inspect(_options?: { readonly fresh?: boolean }): Promise<OmpActivatedRuntimeBundleInspectionV1> {
+    return this.inspectFresh()
   }
 
   private async inspectFresh(): Promise<OmpActivatedRuntimeBundleInspectionV1> {
@@ -472,23 +522,23 @@ export class OmpRuntimeBundleActivationInspectorV1 implements OmpActivatedRuntim
         'node_modules/@oh-my-pi/pi-coding-agent',
         'OMP_RUNTIME_BUNDLE_PACKAGE_INVALID',
       )
-      return { ok: true, runtimeRoot, packageRoot, receipt }
-    } catch (error) {
-      return { ok: false, reasonCode: reasonCode(error, 'OMP_RUNTIME_BUNDLE_ACTIVATION_INVALID') }
-    }
-  }
-
-  private async guardCachedInspection(
-    cached: Extract<OmpActivatedRuntimeBundleInspectionV1, { readonly ok: true }>,
-  ): Promise<OmpActivatedRuntimeBundleInspectionV1 | null> {
-    try {
-      const current = await this.readActivationEnvelope()
-      if (
-        pathKey(current.runtimeRoot) !== pathKey(cached.runtimeRoot) ||
-        current.receipt.receiptDigest !== cached.receipt.receiptDigest
-      ) return null
-      const critical = await verifyCriticalFilesLive(current.runtimeRoot, this.options.manifest.criticalFiles)
-      return critical.ok ? cached : critical
+      const nativeRuntime = await inspectTrustedNativeRuntime(
+        this.options.layout,
+        runtimeRoot,
+        receipt,
+        this.options.manifest,
+        async () => {
+          await this.assertActivationBinding(runtimeRoot, receipt.receiptDigest)
+          const currentVerification = await this.options.verifier.verify(runtimeRoot)
+          if (!currentVerification.ok) throw new Error(currentVerification.reasonCode)
+          if (!sameMeasurement(currentVerification.measurement, receipt)) {
+            throw new Error('OMP_RUNTIME_BUNDLE_ACTIVATION_INVALID')
+          }
+          await this.assertActivationBinding(runtimeRoot, receipt.receiptDigest)
+        },
+        () => this.assertActivationBinding(runtimeRoot, receipt.receiptDigest),
+      )
+      return { ok: true, runtimeRoot, packageRoot, receipt, nativeRuntime }
     } catch (error) {
       return { ok: false, reasonCode: reasonCode(error, 'OMP_RUNTIME_BUNDLE_ACTIVATION_INVALID') }
     }
@@ -517,46 +567,13 @@ export class OmpRuntimeBundleActivationInspectorV1 implements OmpActivatedRuntim
     ) throw new Error('OMP_RUNTIME_BUNDLE_ACTIVATION_INVALID')
     return Object.freeze({ runtimeRoot, receipt })
   }
-}
 
-async function verifyCriticalFilesLive(
-  runtimeRoot: string,
-  criticalFiles: readonly OmpRuntimeBundleCriticalFileV1[],
-): Promise<{ readonly ok: true } | { readonly ok: false; readonly reasonCode: string }> {
-  try {
-    const root = await exactRealDirectory(runtimeRoot, 'OMP_RUNTIME_BUNDLE_ROOT_INVALID')
-    const prefix = `${pathKey(root)}${sep}`
-    const measured = await mapConcurrent(
-      criticalFiles,
-      Math.max(1, Math.min(availableParallelism(), 8)),
-      async (expected) => {
-        const absolutePath = resolve(root, ...expected.relativePath.split('/'))
-        const info = await lstat(absolutePath)
-        const actualPath = await realpath(absolutePath)
-        if (
-          !pathKey(absolutePath).startsWith(prefix) ||
-          info.isSymbolicLink() ||
-          !info.isFile() ||
-          pathKey(actualPath) !== pathKey(absolutePath) ||
-          info.size !== expected.byteLength
-        ) throw new Error('OMP_RUNTIME_BUNDLE_CRITICAL_DEPENDENCY_INVALID')
-        return {
-          relativePath: expected.relativePath,
-          byteLength: info.size,
-          digest: await digestFile(absolutePath, info.size),
-        }
-      },
-    )
-    return measured.every((file, index) => {
-      const expected = criticalFiles[index]
-      return file.relativePath === expected?.relativePath &&
-        file.byteLength === expected.byteLength &&
-        file.digest === expected.digest
-    })
-      ? { ok: true }
-      : { ok: false, reasonCode: 'OMP_RUNTIME_BUNDLE_CRITICAL_DEPENDENCY_INVALID' }
-  } catch {
-    return { ok: false, reasonCode: 'OMP_RUNTIME_BUNDLE_CRITICAL_DEPENDENCY_INVALID' }
+  private async assertActivationBinding(runtimeRoot: string, receiptDigest: string): Promise<void> {
+    const current = await this.readActivationEnvelope()
+    if (
+      pathKey(current.runtimeRoot) !== pathKey(runtimeRoot) ||
+      current.receipt.receiptDigest !== receiptDigest
+    ) throw new Error('OMP_RUNTIME_NATIVE_ACTIVATION_CHANGED')
   }
 }
 
@@ -821,10 +838,14 @@ function criticalFilesMatch(
   })
 }
 
-function requiredStagingBytes(measurement: OmpRuntimeBundleMeasurementV1, blockSize: number): number {
+function requiredStagingBytes(
+  measurement: OmpRuntimeBundleMeasurementV1,
+  nativeCacheByteLength: number,
+  blockSize: number,
+): number {
   if (!Number.isSafeInteger(blockSize) || blockSize <= 0) throw new Error('OMP_RUNTIME_STORAGE_STATS_INVALID')
   const metadataEntries = measurement.fileCount + measurement.directoryCount + 1
-  const value = measurement.byteLength + metadataEntries * blockSize
+  const value = measurement.byteLength + nativeCacheByteLength + (metadataEntries + 8) * blockSize
   if (!Number.isSafeInteger(value) || value <= 0) throw new Error('OMP_RUNTIME_STORAGE_STATS_INVALID')
   return value
 }
@@ -835,14 +856,291 @@ function safeFsProduct(left: bigint | number, right: bigint | number): number {
   return value
 }
 
-function assertNonOverlappingRoots(source: string, target: string): void {
-  const sourceKey = pathKey(resolve(source))
-  const targetKey = pathKey(resolve(target))
+async function assertNonOverlappingRoots(source: string, target: string): Promise<void> {
+  const sourceKey = pathKey(await physicalPath(source))
+  const targetKey = pathKey(await physicalPath(target))
   if (
     sourceKey === targetKey ||
     sourceKey.startsWith(`${targetKey}${sep}`) ||
     targetKey.startsWith(`${sourceKey}${sep}`)
   ) throw new Error('OMP_RUNTIME_BUNDLE_ROOT_OVERLAP')
+}
+
+async function assertTrustedChildDirectory(parent: string, child: string, code: string): Promise<void> {
+  const actualParent = await exactRealDirectory(parent, code)
+  const actualChild = await exactRealDirectory(child, code)
+  if (pathKey(dirname(actualChild)) !== pathKey(actualParent)) throw new Error(code)
+}
+
+async function ensureTrustedDirectoryTree(target: string, code: string): Promise<string> {
+  let cursor = exactAbsolutePath(target, code)
+  const missing: string[] = []
+  while (!await pathExists(cursor)) {
+    const parent = dirname(cursor)
+    if (parent === cursor) throw new Error(code)
+    missing.unshift(basename(cursor))
+    cursor = parent
+  }
+  let trustedParent = await exactRealDirectory(cursor, code)
+  for (const segment of missing) {
+    const child = join(cursor, segment)
+    try {
+      await mkdir(child)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+    const trustedChild = await exactRealDirectory(child, code)
+    if (pathKey(dirname(trustedChild)) !== pathKey(trustedParent)) throw new Error(code)
+    cursor = child
+    trustedParent = trustedChild
+  }
+  return trustedParent
+}
+
+async function acquireInstallLock(rootDir: string): Promise<() => Promise<void>> {
+  const actualRoot = await exactRealDirectory(rootDir, 'OMP_RUNTIME_STORAGE_LAYOUT_INVALID')
+  const lockPath = join(actualRoot, INSTALL_LOCK_DATABASE)
+  await ensureTrustedLockDatabase(actualRoot, lockPath)
+  let database: DatabaseSync | undefined
+  try {
+    database = new DatabaseSync(lockPath)
+    database.exec('PRAGMA busy_timeout = 0')
+    database.exec('BEGIN EXCLUSIVE')
+  } catch (error) {
+    try { database?.close() } catch { /* the original lock error remains authoritative */ }
+    if (isSqliteLockBusy(error)) throw new Error('OMP_RUNTIME_BUNDLE_INSTALL_IN_PROGRESS')
+    throw new Error(reasonCode(error, 'OMP_RUNTIME_BUNDLE_INSTALL_LOCK_INVALID'))
+  }
+  let released = false
+  return async () => {
+    if (released) return
+    let releaseError: unknown
+    try {
+      database?.exec('COMMIT')
+    } catch (error) {
+      releaseError = error
+    } finally {
+      try {
+        database?.close()
+      } catch (error) {
+        releaseError ??= error
+      }
+      released = true
+    }
+    if (releaseError) throw new Error(reasonCode(releaseError, 'OMP_RUNTIME_BUNDLE_INSTALL_LOCK_RELEASE_FAILED'))
+  }
+}
+
+async function ensureTrustedLockDatabase(parent: string, lockPath: string): Promise<void> {
+  try {
+    const handle = await open(lockPath, 'wx')
+    await handle.close()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+  const info = await lstat(lockPath)
+  const actual = await realpath(lockPath)
+  if (
+    info.isSymbolicLink() ||
+    !info.isFile() ||
+    pathKey(dirname(actual)) !== pathKey(parent) ||
+    pathKey(actual) !== pathKey(resolve(lockPath))
+  ) throw new Error('OMP_RUNTIME_BUNDLE_INSTALL_LOCK_INVALID')
+}
+
+function isSqliteLockBusy(error: unknown): boolean {
+  const sqlite = error as { readonly errcode?: unknown; readonly errstr?: unknown; readonly message?: unknown }
+  return sqlite.errcode === 5 || sqlite.errcode === 6 || sqlite.errstr === 'database is locked' ||
+    (typeof sqlite.message === 'string' && /database is (?:locked|busy)/i.test(sqlite.message))
+}
+
+async function physicalPath(path: string): Promise<string> {
+  let cursor = resolve(path)
+  const missing: string[] = []
+  while (!await pathExists(cursor)) {
+    const parent = dirname(cursor)
+    if (parent === cursor) throw new Error('OMP_RUNTIME_BUNDLE_ROOT_INVALID')
+    missing.unshift(relative(parent, cursor))
+    cursor = parent
+  }
+  return resolve(await realpath(cursor), ...missing)
+}
+
+function nativeAddonFile(manifest: OmpRuntimeBundleManifestV1): OmpRuntimeBundleCriticalFileV1 {
+  const expected = manifest.criticalFiles.find((file) => file.relativePath === manifest.nativeAddon.relativePath)
+  if (
+    !expected ||
+    basename(expected.relativePath) !== manifest.nativeAddon.fileName ||
+    !SHA256.test(expected.digest) ||
+    !Number.isSafeInteger(expected.byteLength) ||
+    expected.byteLength <= 0
+  ) throw new Error('OMP_RUNTIME_NATIVE_MANIFEST_INVALID')
+  return expected
+}
+
+async function prepareTrustedNativeCache(
+  layout: OmpRuntimeBundleStorageLayoutV1,
+  verifiedRuntimeRoot: string,
+  receipt: OmpRuntimeBundleActivationReceiptV1,
+  manifest: OmpRuntimeBundleManifestV1,
+): Promise<{ readonly cacheRoot: string; readonly created: boolean }> {
+  const cacheRoot = trustedNativeCacheRoot(layout, receipt)
+  if (await pathExists(cacheRoot)) {
+    await inspectTrustedNativeRuntime(layout, verifiedRuntimeRoot, receipt, manifest)
+    return Object.freeze({ cacheRoot, created: false })
+  }
+
+  await ensureTrustedDirectoryTree(layout.nativeCacheDir, 'OMP_RUNTIME_NATIVE_CACHE_INVALID')
+  const stagingRoot = join(
+    layout.nativeCacheDir,
+    `.staging-${process.pid}-${Date.now()}-${randomBytes(8).toString('hex')}`,
+  )
+  try {
+    const paths = trustedNativePaths(stagingRoot, manifest)
+    await Promise.all([
+      mkdir(dirname(paths.addonPath), { recursive: true }),
+      mkdir(paths.homeDir, { recursive: true }),
+      mkdir(paths.localAppDataDir, { recursive: true }),
+      mkdir(paths.appDataDir, { recursive: true }),
+      mkdir(paths.tempDir, { recursive: true }),
+    ])
+    const expected = nativeAddonFile(manifest)
+    const sourcePath = resolve(verifiedRuntimeRoot, ...expected.relativePath.split('/'))
+    await assertTrustedFile(
+      verifiedRuntimeRoot,
+      sourcePath,
+      expected,
+      'OMP_RUNTIME_NATIVE_SOURCE_INVALID',
+    )
+    await copyFile(sourcePath, paths.addonPath)
+    await assertTrustedFile(
+      stagingRoot,
+      paths.addonPath,
+      expected,
+      'OMP_RUNTIME_NATIVE_CACHE_INVALID',
+    )
+    try {
+      await rename(stagingRoot, cacheRoot)
+    } catch (error) {
+      if (!await pathExists(cacheRoot)) throw error
+      await inspectTrustedNativeRuntime(layout, verifiedRuntimeRoot, receipt, manifest)
+      return Object.freeze({ cacheRoot, created: false })
+    }
+    return Object.freeze({ cacheRoot, created: true })
+  } finally {
+    await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+async function inspectTrustedNativeRuntime(
+  layout: OmpRuntimeBundleStorageLayoutV1,
+  verifiedRuntimeRoot: string,
+  receipt: OmpRuntimeBundleActivationReceiptV1,
+  manifest: OmpRuntimeBundleManifestV1,
+  verifyActivatedTree?: () => Promise<void>,
+  verifyActivationBinding?: () => Promise<void>,
+): Promise<OmpTrustedNativeRuntimeV1> {
+  const cacheRoot = trustedNativeCacheRoot(layout, receipt)
+  const paths = trustedNativePaths(cacheRoot, manifest)
+  const expected = nativeAddonFile(manifest)
+  await verifyTrustedNativeRuntimeLayout(cacheRoot, paths, expected)
+  const environment = Object.freeze({
+    XDG_DATA_HOME: paths.xdgDataHome,
+    USERPROFILE: paths.homeDir,
+    HOME: paths.homeDir,
+    LOCALAPPDATA: paths.localAppDataDir,
+    APPDATA: paths.appDataDir,
+    TEMP: paths.tempDir,
+    TMP: paths.tempDir,
+    PI_NATIVE_VARIANT: manifest.nativeAddon.variant,
+  })
+  return Object.freeze({
+    environment,
+    addonPath: paths.addonPath,
+    addonDigest: expected.digest,
+    async verifyBeforeSpawn() {
+      await verifyActivatedTree?.()
+      await Promise.all([
+        verifyTrustedNativeRuntimeLayout(cacheRoot, paths, expected),
+        assertTrustedFile(
+          verifiedRuntimeRoot,
+          resolve(verifiedRuntimeRoot, ...expected.relativePath.split('/')),
+          expected,
+          'OMP_RUNTIME_NATIVE_SOURCE_INVALID',
+        ),
+      ])
+      await verifyActivationBinding?.()
+    },
+  })
+}
+
+async function verifyTrustedNativeRuntimeLayout(
+  cacheRoot: string,
+  paths: ReturnType<typeof trustedNativePaths>,
+  expected: OmpRuntimeBundleCriticalFileV1,
+): Promise<void> {
+  await exactRealDirectory(cacheRoot, 'OMP_RUNTIME_NATIVE_CACHE_INVALID')
+  await Promise.all([
+    exactRealDirectory(paths.xdgDataHome, 'OMP_RUNTIME_NATIVE_CACHE_INVALID'),
+    exactRealDirectory(paths.homeDir, 'OMP_RUNTIME_NATIVE_CACHE_INVALID'),
+    exactRealDirectory(paths.localAppDataDir, 'OMP_RUNTIME_NATIVE_CACHE_INVALID'),
+    exactRealDirectory(paths.appDataDir, 'OMP_RUNTIME_NATIVE_CACHE_INVALID'),
+    exactRealDirectory(paths.tempDir, 'OMP_RUNTIME_NATIVE_CACHE_INVALID'),
+    assertTrustedFile(cacheRoot, paths.addonPath, expected, 'OMP_RUNTIME_NATIVE_CACHE_INVALID'),
+  ])
+}
+
+function trustedNativeCacheRoot(
+  layout: OmpRuntimeBundleStorageLayoutV1,
+  receipt: OmpRuntimeBundleActivationReceiptV1,
+): string {
+  if (!SHA256.test(receipt.receiptDigest)) throw new Error('OMP_RUNTIME_NATIVE_RECEIPT_INVALID')
+  return join(layout.nativeCacheDir, `native-${receipt.receiptDigest.slice('sha256:'.length)}`)
+}
+
+function trustedNativePaths(cacheRoot: string, manifest: OmpRuntimeBundleManifestV1): {
+  readonly xdgDataHome: string
+  readonly homeDir: string
+  readonly localAppDataDir: string
+  readonly appDataDir: string
+  readonly tempDir: string
+  readonly addonPath: string
+} {
+  const xdgDataHome = join(cacheRoot, 'xdg')
+  return Object.freeze({
+    xdgDataHome,
+    homeDir: join(cacheRoot, 'home'),
+    localAppDataDir: join(cacheRoot, 'local-app-data'),
+    appDataDir: join(cacheRoot, 'app-data'),
+    tempDir: join(cacheRoot, 'temp'),
+    addonPath: join(
+      xdgDataHome,
+      'omp',
+      'natives',
+      manifest.version,
+      manifest.nativeAddon.fileName,
+    ),
+  })
+}
+
+async function assertTrustedFile(
+  root: string,
+  filePath: string,
+  expected: Pick<OmpRuntimeBundleCriticalFileV1, 'byteLength' | 'digest'>,
+  code: string,
+): Promise<void> {
+  const actualRoot = await exactRealDirectory(root, code)
+  const lexical = resolve(filePath)
+  if (!pathKey(lexical).startsWith(`${pathKey(actualRoot)}${sep}`)) throw new Error(code)
+  const info = await lstat(lexical)
+  const actual = await realpath(lexical)
+  if (
+    info.isSymbolicLink() ||
+    !info.isFile() ||
+    pathKey(actual) !== pathKey(lexical) ||
+    info.size !== expected.byteLength ||
+    await digestFile(lexical, info.size) !== expected.digest
+  ) throw new Error(code)
 }
 
 function exactObject(value: unknown, keys: readonly string[], code: string): Record<string, unknown> {

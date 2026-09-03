@@ -1,6 +1,99 @@
 # 小规开发阶段状态
 
-## 2026-09-03｜RUNTIME-R4 OMP ACP Runtime P1D-A 完整依赖闭包装配
+## 2026-09-03｜RUNTIME-R4 OMP ACP Runtime P1D-A 人工拒绝项复修候选
+
+### 本阶段目标与状态
+
+- 人工验收明确拒绝首次候选 `a9377a22e531cc55e06b40917e103217c6e71c93`，P1D-A 不得进入 P1D-B。
+- 本轮目标只覆盖被拒绝项及复审直接发现的同一安全边界：隔离并验证实际 native 加载位置、敌意全局缓存回归、版本冲突保留旧目录、完整树启动前复验、所有目录写前拒绝 junction、并发装配互斥、失败资源归属清理，以及新的 D 盘实际加载/篡改拒绝证据。
+- 状态：代码修复、红灯复现、最终聚焦回归、Node/Web 类型检查、最终 D 盘真实门、独立 Standards/Spec/代码质量复审及最终只读门禁均已完成；当前复修候选只允许提交并推送本独立分支，随后继续等待人工验收。
+- 工作树：`D:\CodexWorktrees\xiaogui-omp-acp-p1d-a-v1`；分支：`agent/runtime-r4-omp-acp-p1d-a-v1`；复修基线：被拒绝候选 `a9377a22e531cc55e06b40917e103217c6e71c93`。
+- 隔离边界：未触碰 WORK 工作树、集成线或正式主线；未进入 P1D-B，未切默认 Runtime，未运行模型、Electron、Portable 或无关全量测试。
+
+### 实际修改文件
+
+- `src/main/xiaogui/agent-runtime/acp/types.ts`
+- `src/main/xiaogui/agent-runtime/acp/process-transport.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-adapter.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-production.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-production.test.ts`
+- `src/main/xiaogui/agent-runtime/omp-runtime-bundle.ts`
+- `src/main/xiaogui/agent-runtime/omp-runtime-bundle.test.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.test.ts`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+- `doc/runtime-r4/OMP-ACP-P1D-A-QA.md`
+- `doc/runtime-r4/OMP-ACP-P1D-A-REVIEW.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 固定 manifest 增加 Windows x64 baseline native 文件名、相对来源、大小与固定 SHA-256；manifest digest 更新为 `sha256:d7240a13aa2ef236285d34112b253de19472591a888d78a8aa4cbca7c146c1f3`。
+2. 激活事务在用户选择的同一存储根内创建 activation receipt 绑定的 native 缓存。源、缓存、完整活动树、活动 pointer/receipt 和全部受控进程目录在固定入口版本探测及正式 ACP spawn 前都会再次核对；任一漂移均 fail-closed。
+3. OMP 生产子进程改用封闭 allowlist 环境，不再继承用户 `NODE_OPTIONS`、`NODE_PATH`、全局 OMP/Bun 缓存变量或其他父环境。固定 `XDG_DATA_HOME` 使上游 Windows loader 只使用回执绑定 native 缓存。
+4. 真实 Windows ACP 进程的模块表已证明实际加载文件等于 D 盘回执绑定缓存，并明确不等于 `%USERPROFILE%\.omp\natives\18.1.2` 全局候选。
+5. `activatedRoot` 只在本事务 rename 成功后取得清理所有权；`VERSION_CONFLICT` 不再删除既有活动版本。
+6. 删除完整树成功缓存；每次 production inspect 和每次真实 spawn 前都重算全部 24,230 个文件，非关键可执行依赖漂移也会拒绝。
+7. 存储根、`versions`、私有 state 和 native cache 改为逐级非递归安全创建：每层写入前后均核对实路径父子关系；junction/symlink 不再出现“写穿后才拒绝”。
+8. 同一 storage root 使用一个 SQLite `BEGIN EXCLUSIVE` 排他锁；不同 profile/state 也不能并行装配，进程崩溃由 SQLite/OS 自动释放。缓存只在锁内发布，晚期失败只清理本事务新建的 candidate/native cache。
+9. 重新完成 Pi 原生、Skill、插件/Package 候选实查并记录到 QA：复用既有 ACP Process Transport、`preSpawn`、TaskHub、Node SQLite 和 OMP package；Skill/Extension 无法在 native `require` 前提供进程环境和二进制回执门，因此只扩展既有最小接缝。
+
+### 未完成内容
+
+- 本轮复修尚待提交、推送与再次人工验收；当前不能进入 P1D-B。
+- P1D-B Renderer、目录选择、进度、空间提示、失败恢复和清理 UI 均未开始。
+- 自动下载、解包、升级、离线安装资源、Portable 和默认 Runtime 切换不在本轮。
+- 旧受信版本与旧 native 缓存继续保留；没有自动清理。
+
+### 与规格文档存在的偏差
+
+- 没有改变冻结架构：继续复用 OMP/Pi ACP、现有 Process Transport、TaskHub Attempt/权限/工作树/结果对账/恢复；没有新增 Agent Loop、权限系统或安装状态机。
+- 为修复实际 native 加载逃逸，新增约 175.6 MB 的回执绑定缓存。这是上游 Windows loader 固定行为要求的显式存储成本，已纳入空间预检和 D 盘总账。
+- 仍保留 P1B/P1C 的 `omp-trusted-installation` 兼容证据；本轮不为消除 LOW 级重复而扩大重构范围。
+- 真实门仅做 ACP initialize、模块路径和篡改拒绝，不发送模型 Prompt；P1C 已验收模型改文件旅程，本轮没有重复。
+
+### 测试命令和测试结果
+
+拒绝项 TDD 红灯：bundle 新增回归首次为 `3 failed / 3 passed / 1 skipped`；生产 Adapter native 环境用例首次返回 FAILED，分别实证旧版本误删、非关键漂移漏检、junction 绕过和仅传状态目录的问题。
+
+```powershell
+npm run test:unit -- src/main/xiaogui/agent-runtime/omp-runtime-bundle.test.ts src/main/xiaogui/agent-runtime/omp-acp-production.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts
+```
+
+最终结果：`5 test files passed`，`46 tests passed`，`3 tests skipped`。覆盖目录写前门、不同 state 的并发互斥、SQLite 锁释放、晚期失败资源清理、启动前完整树/受控目录复验、封闭父环境、Adapter 兼容及生产 composition。
+
+```powershell
+npm run typecheck
+git diff --check
+```
+
+结果：Web/Node 类型检查退出码 `0`；差异检查退出码 `0`，仅 Windows LF/CRLF 提示。
+
+最终 D 盘真实门使用 `D:\CodexCache\xiaogui-omp-p1d-a-resubmit` 与独立 state，结果 `1 test file passed / 15 tests passed`，退出码 `0`，耗时 `64.67s`。本轮在已激活真实闭包上重新执行最终代码的全树/受控目录门、ACP initialize、Windows 模块路径核对、排除用户全局缓存、缓存单字节篡改拒绝和恢复；活动 bundle 为 802,082,147 文件字节（含回执），native 缓存为 175,602,176 字节。没有模型调用。
+
+详细命令、摘要和能力复用调查见 `doc/runtime-r4/OMP-ACP-P1D-A-QA.md`。
+
+### 审查结果
+
+- Spec 复审：`APPROVE`，当前代码阻断数 `0`。
+- Standards 复审：`APPROVE`，当前代码无 Standards 阻断。
+- 独立代码质量复审：`CLEAR / APPROVE`，无 CRITICAL、HIGH 或 MEDIUM 项。
+- 两项 LOW 观察已记录：极端锁释放失败会 reject；旧活动版本的 native cache 损坏后当前只 fail-closed，不自动修复。二者不阻断 P1D-A，用户可见修复入口留给 P1D-B。
+- 最终阶段门禁：`APPROVE`，确认 13 个暂存文件、暂存外差异为 `0`，没有 WORK、P1D-B、默认 Runtime、发布或 Portable 扩围。
+
+### 已知风险
+
+1. 为消除完整树缓存绕过，每次生产启动都会完整重验约 802 MB/2.4 万文件；后续性能优化必须先给出等价不可变性证据，不能恢复只验少数 critical 文件。
+2. 源闭包、活动 bundle 与 native 缓存合计约 1.78 GB 文件字节；旧版本继续增加占用，P1D-B 必须展示空间影响并让用户确认清理。
+3. storage-root SQLite 锁是小体积私有元数据；它解决跨进程互斥与崩溃释放，但不宣称修复底层文件系统损坏。
+4. 原子 rename 和 pointer 回读恢复不宣称覆盖断电或底层文件系统损坏的全部情况。
+5. OMP 升级必须重新固定 loader 行为、native 路径/摘要、完整树与 approval envelope。
+
+### 下一阶段计划
+
+提交并推送当前独立分支后停止施工，等待人工复验 P1D-A。没有 P1D-B、合并、默认 Runtime 切换或发布授权。
+
+## 2026-09-03｜RUNTIME-R4 OMP ACP Runtime P1D-A 首次候选（已被人工拒绝，保留历史证据）
 
 ### 本阶段目标与状态
 

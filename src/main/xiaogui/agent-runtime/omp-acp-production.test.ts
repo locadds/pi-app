@@ -61,11 +61,13 @@ import type {
   AcpTransportStartOptionsV1,
   AcpTransportV1,
 } from './acp/types'
-import { AcpProcessTransportFactoryV1 } from './acp/process-transport'
+import { AcpProcessTransportFactoryV1, NdjsonAcpProcessTransportV1 } from './acp/process-transport'
 import { KimiAttemptWorkspaceResolverV1 } from './kimi-attempt-workspace'
 import {
   createOmpAcpRuntimeAdapterV1,
   OMP_ACP_APPROVED_VERSION_V1,
+  OMP_ACP_NATIVE_DIGEST_V1,
+  OMP_ACP_NATIVE_FILE_V1,
   OMP_ACP_SAFE_ARGS_V1,
   ompAcpProductionSelectionV1,
   type OmpAcpTrustedLaunchPortV1,
@@ -113,6 +115,14 @@ describe('Oh My Pi ACP P1C production seam', () => {
     const entry = join(root, 'dist', 'cli.js')
     mkdirSync(join(root, 'dist'), { recursive: true })
     writeFileSync(entry, `console.log('${OMP_ACP_APPROVED_VERSION_V1}')\n`, 'utf8')
+    const nativeEnvironment = trustedNativeEnvironment(runtimeRoot)
+    const nativeAddonPath = join(
+      nativeEnvironment.XDG_DATA_HOME,
+      'omp',
+      'natives',
+      OMP_ACP_APPROVED_VERSION_V1,
+      OMP_ACP_NATIVE_FILE_V1,
+    )
     const inspect = vi.fn(async () => ({
       ok: true as const,
       packageRoot: root,
@@ -121,6 +131,12 @@ describe('Oh My Pi ACP P1C production seam', () => {
         entryRelativePath: 'dist/cli.js',
         receiptDigest: RECEIPT_DIGEST,
       } as OmpRuntimeBundleActivationReceiptV1,
+      nativeRuntime: {
+        environment: nativeEnvironment,
+        addonPath: nativeAddonPath,
+        addonDigest: OMP_ACP_NATIVE_DIGEST_V1,
+        async verifyBeforeSpawn() {},
+      },
     }))
     const provider = new OmpTrustedAcpLaunchProviderV1({
       installation: { inspect },
@@ -131,12 +147,16 @@ describe('Oh My Pi ACP P1C production seam', () => {
       },
     })
 
-    await expect(provider.inspectLaunch()).resolves.toEqual({
+    await expect(provider.inspectLaunch()).resolves.toMatchObject({
       available: true,
       command: process.execPath,
       args: [entry, ...OMP_ACP_SAFE_ARGS_V1],
       version: OMP_ACP_APPROVED_VERSION_V1,
       installationReceiptDigest: RECEIPT_DIGEST,
+      environment: expect.objectContaining(nativeEnvironment),
+      nativeAddonPath,
+      nativeAddonDigest: OMP_ACP_NATIVE_DIGEST_V1,
+      verifyBeforeSpawn: expect.any(Function),
     })
     expect(inspect).toHaveBeenCalledOnce()
   })
@@ -179,6 +199,97 @@ describe('Oh My Pi ACP P1C production seam', () => {
     expect(resolveWorkspace).not.toHaveBeenCalled()
     expect(createTransport).not.toHaveBeenCalled()
     await adapter.close()
+  })
+
+  it('passes the trusted native environment to the ACP process instead of inheriting a hostile global cache', async () => {
+    const root = tempRoot('xiaogui-omp-native-env-')
+    const state = join(root, 'state')
+    const factory = new JourneyTransportFactory()
+    const launch = trustedLaunch(root)
+    writeFileSync(join(root, 'a.txt'), 'safe', 'utf8')
+    const adapter = createOmpAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver('change the file'),
+      workspaceResolver: {
+        async resolve() {
+          return {
+            rootPath: root,
+            allowedFiles: [{
+              relativePath: 'a.txt',
+              contentDigest: digestBytes(Buffer.from('safe', 'utf8')),
+            }],
+          }
+        },
+      },
+      runtimeStateDir: state,
+      transportFactory: factory,
+      productionGate: {
+        enabled: true,
+        selection: ompAcpProductionSelectionV1(),
+        trustedLaunch: launch,
+        recoveryStore: inertRecoveryStore(),
+        candidateInspector: { async inspect() { throw new Error('must not inspect') } },
+      },
+    })
+
+    const outcome = await adapter.createOrResume(syntheticRequest(root))
+    expect(outcome).toMatchObject({ state: 'READY' })
+    expect(factory.createEnvironments).toEqual([{
+      ...trustedNativeEnvironment(root),
+      PI_CODING_AGENT_DIR: state,
+    }])
+    expect(factory.createOptions[0]).toMatchObject({
+      inheritParentEnvironment: false,
+      preSpawn: expect.any(Function),
+    })
+    await adapter.close()
+  })
+
+  it('does not inherit a hostile parent native-cache environment in the real process transport', async () => {
+    const root = tempRoot('xiaogui-omp-native-env-process-')
+    const trusted = trustedNativeEnvironment(root)
+    const sentinelKey = 'XIAOGUI_OMP_HOSTILE_PARENT_SENTINEL'
+    const previousSentinel = process.env[sentinelKey]
+    process.env[sentinelKey] = 'must-not-cross-process-boundary'
+    const script = [
+      "let input = '';",
+      "process.stdin.on('data', (chunk) => {",
+      "  input += chunk.toString('utf8');",
+      "  const index = input.indexOf('\\n');",
+      "  if (index < 0) return;",
+      "  const message = JSON.parse(input.slice(0, index));",
+      "  const result = { protocolVersion: 1, agentInfo: {",
+      "    name: process.env.XDG_DATA_HOME,",
+      `    version: process.env.${sentinelKey} || 'not-inherited',`,
+      "  } };",
+      "  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n');",
+      "});",
+    ].join('')
+    const transport = new NdjsonAcpProcessTransportV1(
+      process.execPath,
+      ['-e', script],
+      process.cwd(),
+      { env: trusted, inheritParentEnvironment: false },
+    )
+    try {
+      await expect(transport.start({
+        cwd: process.cwd(),
+        initialize: {
+          protocolVersion: 1,
+          clientCapabilities: { fs: { readTextFile: true, writeTextFile: false }, terminal: false },
+          clientInfo: { name: 'xiaogui-closed-env-test', version: '0.1.0' },
+        },
+        requestHandlers: new Map(),
+        onSessionUpdate: () => undefined,
+        onPermissionRequest: async () => ({ outcome: { outcome: 'cancelled' } }),
+        onDisconnect: () => undefined,
+      })).resolves.toMatchObject({
+        agentInfo: { name: trusted.XDG_DATA_HOME, version: 'not-inherited' },
+      })
+    } finally {
+      if (previousSentinel === undefined) delete process.env[sentinelKey]
+      else process.env[sentinelKey] = previousSentinel
+      await transport.dispose()
+    }
   })
 
   it('replays settled and unsettled requests from durable recovery before inspecting a transiently unavailable install', async () => {
@@ -714,12 +825,25 @@ describe('Oh My Pi ACP P1C production seam', () => {
           installation: {
             async inspect() {
               const inspected = installation.inspect()
+              const nativeEnvironment = trustedNativeEnvironment(root)
               return inspected.ok
                 ? {
                     ok: true as const,
                     runtimeRoot: join(packageRoot, '..', '..', '..'),
                     packageRoot,
                     receipt: inspected.receipt as unknown as OmpRuntimeBundleActivationReceiptV1,
+                    nativeRuntime: {
+                      environment: nativeEnvironment,
+                      addonPath: join(
+                        nativeEnvironment.XDG_DATA_HOME,
+                        'omp',
+                        'natives',
+                        OMP_ACP_APPROVED_VERSION_V1,
+                        OMP_ACP_NATIVE_FILE_V1,
+                      ),
+                      addonDigest: OMP_ACP_NATIVE_DIGEST_V1,
+                      async verifyBeforeSpawn() {},
+                    },
                   }
                 : inspected
             },
@@ -844,9 +968,41 @@ function trustedLaunch(root: string, receiptDigest = RECEIPT_DIGEST): OmpAcpTrus
         args: [entry, ...OMP_ACP_SAFE_ARGS_V1],
         version: OMP_ACP_APPROVED_VERSION_V1,
         installationReceiptDigest: receiptDigest,
+        environment: trustedNativeEnvironment(root),
+        nativeAddonPath: join(
+          trustedNativeEnvironment(root).XDG_DATA_HOME,
+          'omp',
+          'natives',
+          OMP_ACP_APPROVED_VERSION_V1,
+          OMP_ACP_NATIVE_FILE_V1,
+        ),
+        nativeAddonDigest: OMP_ACP_NATIVE_DIGEST_V1,
+        async verifyBeforeSpawn() {},
       }
     },
   }
+}
+
+function trustedNativeEnvironment(root: string): Readonly<Record<string, string>> {
+  const nativeRoot = join(root, 'trusted-native-runtime')
+  const environment = Object.freeze({
+    XDG_DATA_HOME: join(nativeRoot, 'xdg'),
+    USERPROFILE: join(nativeRoot, 'home'),
+    HOME: join(nativeRoot, 'home'),
+    LOCALAPPDATA: join(nativeRoot, 'local-app-data'),
+    APPDATA: join(nativeRoot, 'app-data'),
+    TEMP: join(nativeRoot, 'temp'),
+    TMP: join(nativeRoot, 'temp'),
+    PI_NATIVE_VARIANT: 'baseline',
+  })
+  for (const directory of [
+    join(environment.XDG_DATA_HOME, 'omp'),
+    environment.USERPROFILE,
+    environment.LOCALAPPDATA,
+    environment.APPDATA,
+    environment.TEMP,
+  ]) mkdirSync(directory, { recursive: true })
+  return environment
 }
 
 function productionRequest(
@@ -1072,10 +1228,14 @@ function summarizeElicitationResult(result: unknown): string {
 
 class JourneyTransportFactory implements AcpTransportFactoryV1 {
   readonly transports: JourneyTransport[] = []
+  readonly createEnvironments: Array<Readonly<Record<string, string>> | undefined> = []
+  readonly createOptions: Array<AcpTransportCreateOptionsV1 | undefined> = []
 
   constructor(private readonly script?: (transport: JourneyTransport) => Promise<void>) {}
 
   create(_command: string, _args: readonly string[], _cwd: string, _options?: AcpTransportCreateOptionsV1) {
+    this.createEnvironments.push(_options?.env)
+    this.createOptions.push(_options)
     const transport = new JourneyTransport(this.script)
     this.transports.push(transport)
     return transport

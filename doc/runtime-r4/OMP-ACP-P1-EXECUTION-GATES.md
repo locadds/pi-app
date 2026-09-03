@@ -75,16 +75,21 @@ P1B 人工验收后已开始 P1C；当前实现、真实旅程和聚焦验证完
 - `supportsResultReconcile: true` 只存在于显式 `ompProductionEnabled` 候选路径；当前桌面调用方没有开启，默认 Runtime 未改变。
 - 完整测试证据、环境差异和未执行项见 `OMP-ACP-P1C-QA.md`；审查结论见 `OMP-ACP-P1C-REVIEW.md`。
 
-## P1D-A：完整依赖闭包受信装配（阶段候选）
+## P1D-A：完整依赖闭包受信装配（首次候选已拒绝，复修待验收）
 
-P1C 经用户人工验收后，P1D-A 从固定提交 `9728eafdb67d0aea8a2f9e52fd6f315f4e4e7692` 建立独立分支。当前实现与最小验证已完成，等待代码审查和人工验收：
+P1C 经用户人工验收后，P1D-A 从固定提交 `9728eafdb67d0aea8a2f9e52fd6f315f4e4e7692` 建立独立分支。首次候选 `a9377a22e531cc55e06b40917e103217c6e71c93` 因 native 加载逃逸、版本冲突误删、完整树缓存和 junction 绕过被人工拒绝。当前只修复这些阻断并重新送验：
 
 1. `OmpRuntimeBundleManifestV1` 固定 OMP 18.1.2 的 npm 信任根、上游 revision、启动入口、安全参数、依赖锁、完整依赖树总账及关键 native 摘要；不包含绝对路径。
 2. 装配器先核验源闭包，动态检查目标盘暂存空间，再复制到同文件系统暂存目录并做第二次完整树核验；只有完全匹配才产生不可变版本目录和活动指针。
-3. 替换失败保持旧活动指针与旧版本；残留暂存目录会清理。Runtime 只消费当前活动回执，不从 PATH 或网络寻找 OMP。
+3. 替换失败保持旧活动指针与旧版本；清理代码只处理本事务实际创建的目录。确定性版本冲突不得删除既有版本。残留暂存目录会清理。
 4. 用户选择的大体积目录由主进程私有配置保存，不进入 Renderer 通用设置或 TaskHub 契约。未提供目录时显式 fail-closed。
 5. `createOrResume` 在启动检查之前先读取持久 request 绑定：已结算结果回放，未结算结果返回 UNKNOWN；安装瞬时不可用不会触发重复派发。
-6. D 盘固定完整闭包实测为 24,230 文件、2,144 目录、802,081,247 字节；完成源/暂存/激活核验和一次 ACP initialize，未发送模型 Prompt。
+6. 每次 production inspect 都重算完整树，不缓存成功结果后只验少数文件；非关键可执行依赖漂移也必须在下一次启动前拒绝。
+7. Windows native 使用活动回执绑定的同盘缓存和封闭进程环境；固定入口版本探测与正式 ACP spawn 前均复验，实际进程模块路径必须等于该缓存并排除用户全局缓存。
+8. D 盘复修门实测 24,230 文件、2,144 目录、802,081,247 字节闭包及 175,602,176 字节 native 缓存；完成真实加载路径和单字节篡改拒绝，未发送模型 Prompt。
+9. `versions`、private state、native cache 和装配锁均逐级执行写前实路径校验；遇到 junction/symlink 时在外部落点收到任何文件前停止。
+10. 同一 storage root 以 SQLite `BEGIN EXCLUSIVE` 串行装配，不因 private state 不同而绕过；连接关闭或进程退出后由 SQLite/OS 释放锁。
+11. 版本目录、staging 和 native cache 只由实际创建它们的事务清理；版本冲突、pointer 提交失败或并发失败不得删除旧有效版本或其他事务资源。
 
 P1D-A 不包含 Renderer 目录选择、安装进度、清理 UI、自动下载、Portable 或默认 Runtime 切换。完整证据与风险见 `OMP-ACP-P1D-A-QA.md`。
 

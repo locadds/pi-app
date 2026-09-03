@@ -40,7 +40,7 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
     this.onPermissionRequest = options.onPermissionRequest
     this.onDisconnect = options.onDisconnect
     try {
-      this.createOptions.preSpawn?.()
+      await this.createOptions.preSpawn?.()
     } catch (error) {
       const reasonCode = reasonCodeFromError(error, 'PROCESS_PRESPAWN_FAILED')
       this.close(reasonCode)
@@ -53,7 +53,9 @@ export class NdjsonAcpProcessTransportV1 implements AcpTransportV1 {
     this.child = spawn(command, useShell ? [] : [...this.args], {
       cwd: this.cwd,
       shell: useShell,
-      env: { ...process.env, ...this.createOptions.env },
+      env: this.createOptions.inheritParentEnvironment === false
+        ? { ...this.createOptions.env }
+        : { ...process.env, ...this.createOptions.env },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.child.stdout?.on('data', (chunk: Buffer | string) => this.readStdout(chunk))

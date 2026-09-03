@@ -30,6 +30,8 @@ import { KIMI_PRODUCTION_CONFIG_CONTENT_V1 } from '../agent-runtime/kimi-product
 import type { KimiAcpProbeV1 } from '../agent-runtime/kimi-adapter'
 import {
   OMP_ACP_APPROVED_VERSION_V1,
+  OMP_ACP_NATIVE_DIGEST_V1,
+  OMP_ACP_NATIVE_FILE_V1,
   OMP_ACP_SOURCE_REVISION_V1,
   type OmpAcpProbeV1,
 } from '../agent-runtime/omp-acp-adapter'
@@ -353,6 +355,21 @@ describe('Xiaogui runtime composition v1', () => {
   it('assembles the explicit OMP production seam from the trusted receipt instead of the PATH probe', async () => {
     const userDataDir = tempUserData()
     const layout = resolveOmpPrivateLayoutV1(userDataDir)
+    const nativeRoot = join(userDataDir, 'trusted-native-runtime')
+    const nativeEnvironment = {
+      XDG_DATA_HOME: join(nativeRoot, 'xdg'),
+      USERPROFILE: join(nativeRoot, 'home'),
+      HOME: join(nativeRoot, 'home'),
+      LOCALAPPDATA: join(nativeRoot, 'local-app-data'),
+      APPDATA: join(nativeRoot, 'app-data'),
+      TEMP: join(nativeRoot, 'temp'),
+      TMP: join(nativeRoot, 'temp'),
+      PI_NATIVE_VARIANT: 'baseline',
+    }
+    for (const directory of Object.values(nativeEnvironment).filter((value) => value !== 'baseline')) {
+      mkdirSync(directory, { recursive: true })
+    }
+    mkdirSync(join(nativeEnvironment.XDG_DATA_HOME, 'omp'), { recursive: true })
     mkdirSync(join(layout.packageRoot, 'dist'), { recursive: true })
     writeFileSync(
       join(layout.packageRoot, OMP_ACP_ENTRY_RELATIVE_PATH_V1),
@@ -380,6 +397,18 @@ describe('Xiaogui runtime composition v1', () => {
           privateStateDirDigest: `sha256:${'4'.repeat(64)}`,
           recordedAt: '2026-09-03T00:00:00.000Z',
           receiptDigest: `sha256:${'5'.repeat(64)}`,
+        },
+        nativeRuntime: {
+          environment: nativeEnvironment,
+          addonPath: join(
+            nativeEnvironment.XDG_DATA_HOME,
+            'omp',
+            'natives',
+            OMP_ACP_APPROVED_VERSION_V1,
+            OMP_ACP_NATIVE_FILE_V1,
+          ),
+          addonDigest: OMP_ACP_NATIVE_DIGEST_V1,
+          async verifyBeforeSpawn() {},
         },
       })
     vi.spyOn(SystemOmpBunRuntimeProbeV1.prototype, 'findExecutable').mockResolvedValue({

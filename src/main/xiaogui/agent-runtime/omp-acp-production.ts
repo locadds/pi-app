@@ -14,6 +14,7 @@ import type { AttemptTaskPatchCapturePortV1 } from '../task-hub/attempt-workspac
 import { isSafeAcpOpaqueId } from './acp/redaction'
 import {
   OMP_ACP_APPROVED_VERSION_V1,
+  OMP_ACP_PROCESS_ENV_KEYS_V1,
   OMP_ACP_SAFE_ARGS_V1,
   type OmpAcpCandidateInspectorV1,
   type OmpAcpRecoveryBindingV1,
@@ -58,7 +59,9 @@ export class OmpTrustedAcpLaunchProviderV1 implements OmpAcpTrustedLaunchPortV1 
     if (!bun.available) return bun
     try {
       const entryPath = trustedEntryPath(inspection.packageRoot, inspection.receipt)
-      const version = await probeVersion(bun.command, [entryPath])
+      const environment = trustedOmpProcessEnvironment(inspection.nativeRuntime.environment)
+      await inspection.nativeRuntime.verifyBeforeSpawn()
+      const version = await probeVersion(bun.command, [entryPath], environment)
       if (version !== OMP_ACP_APPROVED_VERSION_V1) {
         return { available: false, reasonCode: 'OMP_TRUSTED_ENTRY_VERSION_MISMATCH' }
       }
@@ -68,6 +71,10 @@ export class OmpTrustedAcpLaunchProviderV1 implements OmpAcpTrustedLaunchPortV1 
         args: Object.freeze([entryPath, ...OMP_ACP_SAFE_ARGS_V1]),
         version: OMP_ACP_APPROVED_VERSION_V1,
         installationReceiptDigest: inspection.receipt.receiptDigest,
+        environment,
+        nativeAddonPath: inspection.nativeRuntime.addonPath,
+        nativeAddonDigest: inspection.nativeRuntime.addonDigest,
+        verifyBeforeSpawn: inspection.nativeRuntime.verifyBeforeSpawn,
       })
     } catch (error) {
       return {
@@ -549,9 +556,27 @@ async function findOnPath(command: string): Promise<string | undefined> {
   })
 }
 
-async function probeVersion(command: string, prefix: readonly string[]): Promise<string | undefined> {
+function trustedOmpProcessEnvironment(
+  trustedNativeEnvironment: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  const environment: Record<string, string> = {}
+  for (const key of OMP_ACP_PROCESS_ENV_KEYS_V1) {
+    const value = trustedNativeEnvironment[key] ?? process.env[key]
+    if (typeof value === 'string' && value.length > 0) environment[key] = value
+  }
+  return Object.freeze(environment)
+}
+
+async function probeVersion(
+  command: string,
+  prefix: readonly string[],
+  environment?: Readonly<Record<string, string>>,
+): Promise<string | undefined> {
   return await new Promise((resolveVersion) => {
-    const child = spawn(command, [...prefix, '--version'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const child = spawn(command, [...prefix, '--version'], {
+      env: environment ? { ...environment } : undefined,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
     let stdout = ''
     let completed = false
     const finish = (value: string | undefined): void => {

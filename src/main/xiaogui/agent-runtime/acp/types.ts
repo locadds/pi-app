@@ -98,5 +98,7 @@ export interface AcpTransportFactoryV1 {
 
 export interface AcpTransportCreateOptionsV1 {
   env?: Readonly<Record<string, string>>
-  preSpawn?: () => void
+  /** Defaults to true for existing runtimes; trusted runtimes can supply a closed environment. */
+  inheritParentEnvironment?: boolean
+  preSpawn?: () => void | Promise<void>
 }
