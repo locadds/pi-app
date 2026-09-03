@@ -257,70 +257,97 @@ function validateFixtureCall(caseInput, label) {
   return { entry, request, response }
 }
 
+function canonicalValueAtPath(context, path, label) {
+  assert(typeof path === 'string' && path.length > 0, `${label}.path is required`)
+  let current = context
+  for (const segment of path.split('.')) {
+    if (!isRecord(current) || !Object.prototype.hasOwnProperty.call(current, segment)) {
+      return { found: false }
+    }
+    current = current[segment]
+  }
+  return { found: true, value: current }
+}
+
+function materializeCanonicalItem(itemInput, context, label) {
+  const item = record(itemInput, label)
+  if (typeof item.path === 'string') {
+    const resolved = canonicalValueAtPath(context, item.path, label)
+    if (!resolved.found) {
+      assert(item.nullWhenAbsent === true, `${label} could not resolve ${item.path}`)
+      return null
+    }
+    assert(resolved.value !== undefined, `${label} cannot serialize undefined`)
+    return resolved.value
+  }
+  if (Array.isArray(item.array)) {
+    return item.array.map((entry, index) => materializeCanonicalItem(entry, context, `${label}.array[${index}]`))
+  }
+  if (isRecord(item.map)) {
+    const source = canonicalValueAtPath(context, item.map.path, `${label}.map`)
+    assert(source.found && Array.isArray(source.value), `${label}.map.path must resolve to an array`)
+    assert(Array.isArray(item.map.items), `${label}.map.items must be an ordered array`)
+    return source.value.map((value, sourceIndex) => item.map.items.map((entry, itemIndex) =>
+      materializeCanonicalItem(entry, { ...context, item: value }, `${label}.map[${sourceIndex}][${itemIndex}]`)))
+  }
+  throw new Error(`${label} must declare path, array or map`)
+}
+
+function validateCanonicalItemDefinition(itemInput, label) {
+  const item = record(itemInput, label)
+  const forms = [typeof item.path === 'string', Array.isArray(item.array), isRecord(item.map)].filter(Boolean)
+  assert(forms.length === 1, `${label} must declare exactly one of path, array or map`)
+  if (typeof item.path === 'string') {
+    assert(item.path.length > 0, `${label}.path is required`)
+    if (Object.prototype.hasOwnProperty.call(item, 'nullWhenAbsent')) assert(item.nullWhenAbsent === true, `${label}.nullWhenAbsent must be true when present`)
+    return
+  }
+  if (Array.isArray(item.array)) {
+    assert(item.array.length > 0, `${label}.array must not be empty`)
+    item.array.forEach((entry, index) => validateCanonicalItemDefinition(entry, `${label}.array[${index}]`))
+    return
+  }
+  assert(typeof item.map.path === 'string' && item.map.path.length > 0, `${label}.map.path is required`)
+  assert(Array.isArray(item.map.items) && item.map.items.length > 0, `${label}.map.items must be a non-empty ordered array`)
+  item.map.items.forEach((entry, index) => validateCanonicalItemDefinition(entry, `${label}.map.items[${index}]`))
+}
+
+function canonicalDefinition(name) {
+  const definitions = record(contract['x-canonicalizations'], 'contract.x-canonicalizations')
+  const definition = record(definitions[name], `contract.x-canonicalizations.${name}`)
+  const serialization = record(definition.serialization, `contract.x-canonicalizations.${name}.serialization`)
+  assert(serialization.function === 'ECMASCRIPT_JSON_STRINGIFY', `${name} must use ECMAScript JSON.stringify`)
+  assert(serialization.rootType === 'ORDERED_ARRAY', `${name} must serialize an ordered root array`)
+  assert(serialization.outputWhitespace === 'NONE', `${name} must not add JSON whitespace`)
+  assert(serialization.characterEncoding === 'UTF-8', `${name} must hash or sign UTF-8 bytes`)
+  assert(serialization.unicodeNormalization === 'NONE', `${name} must not normalize Unicode before JSON serialization`)
+  assert(serialization.arrayOrder === 'PRESERVE_SOURCE_ORDER', `${name} must preserve source array order`)
+  assert(serialization.missingValueRule === 'REJECT_UNLESS_NULL_WHEN_ABSENT_IS_TRUE', `${name} missing-value rule drifted`)
+  assert(serialization.nullRule === 'EMIT_JSON_NULL', `${name} null rule drifted`)
+  assert(Array.isArray(definition.items), `${name}.items must be an ordered array`)
+  definition.items.forEach((item, index) => validateCanonicalItemDefinition(item, `${name}.items[${index}]`))
+  return definition
+}
+
+function canonicalize(name, context) {
+  const definition = canonicalDefinition(name)
+  return JSON.stringify(definition.items.map((item, index) => materializeCanonicalItem(item, context, `${name}.items[${index}]`)))
+}
+
 function canonicalResult(result) {
-  return JSON.stringify([
-    result.schemaVersion,
-    result.resultId,
-    result.assignmentId,
-    result.taskId,
-    result.outcome,
-    result.resultSummary,
-    result.artifactRefs.map((ref) => [ref.artifactId, ref.mediaType, ref.sha256]),
-    [result.verification.verdict, result.verification.summary],
-    result.occurredAt,
-  ])
+  return canonicalize('taskResultSha256', { result })
 }
 
 function canonicalReceipt(receipt) {
-  return JSON.stringify([
-    receipt.schemaVersion,
-    receipt.eventId,
-    receipt.assignmentId,
-    receipt.taskId,
-    receipt.subjectId,
-    receipt.nodeId,
-    receipt.keyId,
-    receipt.eventType,
-    receipt.packageSha256,
-    receipt.occurredAt,
-    receipt.sequence,
-    receipt.resultSha256,
-  ])
+  return canonicalize('taskDeliveryReceiptSignature', { receipt })
 }
 
 function canonicalDemand(demand) {
-  return JSON.stringify([
-    demand.demandId,
-    demand.demandVersion,
-    demand.title,
-    demand.problemStatement,
-    demand.expectedOutcome,
-    demand.backgroundSummary ?? null,
-    demand.constraints,
-    demand.attachmentRefs.map((ref) => [ref.ref, ref.sha256, ref.dataClassification]),
-    demand.requestedDeadline ?? null,
-    demand.capabilityHints,
-    demand.acceptanceHints,
-    demand.visibility,
-  ])
+  return canonicalize('demandContentSha256', { demand })
 }
 
 function canonicalProjection(update) {
-  const { projection } = update
-  return JSON.stringify([
-    update.schemaVersion,
-    update.demandId,
-    update.intakeId,
-    [
-      projection.projectionVersion,
-      projection.demandId,
-      projection.intakeId,
-      projection.stage,
-      projection.displaySummary,
-      projection.updatedAt,
-      projection.deliveryRef ?? null,
-    ],
-  ])
+  return canonicalize('taskHubProjectionSha256', { update })
 }
 
 function assertHash(value, label) {
@@ -421,14 +448,16 @@ function assertContractStructure() {
   assert(fixture.contract.source === 'H1-4C-C3-CONTRACT-V1.openapi.json', 'fixture must identify the machine contract source')
   assert(sameJson(contract['x-closed-error-codes'], C2_ERROR_CODES), 'machine contract error closure drifted from C2')
   assert(sameJson(schemaByName('ErrorCodeV1').enum, C2_ERROR_CODES), 'ErrorCodeV1 must match the machine contract C2 closure')
-  assert(sameJson(contract['x-canonicalizations'].taskResultSha256.orderedFields, [
-    'schemaVersion', 'resultId', 'assignmentId', 'taskId', 'outcome', 'resultSummary',
-    'artifactRefs:[artifactId,mediaType,sha256]', 'verification:[verdict,summary]', 'occurredAt',
-  ]), 'TaskResult canonical ordering drifted')
-  assert(sameJson(contract['x-canonicalizations'].taskDeliveryReceiptSignature.orderedFields, [
-    'schemaVersion', 'eventId', 'assignmentId', 'taskId', 'subjectId', 'nodeId', 'keyId',
-    'eventType', 'packageSha256', 'occurredAt', 'sequence', 'resultSha256',
-  ]), 'TaskDeliveryReceipt canonical ordering drifted')
+  const canonicalizations = record(contract['x-canonicalizations'], 'contract.x-canonicalizations')
+  for (const name of ['taskResultSha256', 'taskDeliveryReceiptSignature', 'demandContentSha256', 'taskHubProjectionSha256']) {
+    canonicalDefinition(name)
+  }
+  for (const name of ['taskResultSha256', 'demandContentSha256', 'taskHubProjectionSha256']) {
+    const digest = record(canonicalizations[name].digest, `contract.x-canonicalizations.${name}.digest`)
+    assert(digest.algorithm === 'SHA-256' && digest.encoding === 'LOWERCASE_HEX' && digest.prefix === 'sha256:', `${name} digest contract drifted`)
+  }
+  const receiptSignature = record(canonicalizations.taskDeliveryReceiptSignature.signature, 'contract.x-canonicalizations.taskDeliveryReceiptSignature.signature')
+  assert(receiptSignature.algorithm === 'Ed25519' && receiptSignature.encoding === 'BASE64', 'TaskDeliveryReceipt signature contract drifted')
 
   const expectedOperations = [
     ['submitTaskResult', 'post', '/api/v2/taskhub/worker/results', 'WORKER_USER_AND_NODE', [200, 400, 401, 403, 409, 503]],
@@ -463,7 +492,13 @@ function assertContractStructure() {
   assert(demand.additionalProperties === false, 'DemandSubmittedV1 must remain strict')
   assert(intakeReceipt.additionalProperties === false && !Object.prototype.hasOwnProperty.call(intakeReceipt.properties, 'taskId'), 'DemandIntakeReceiptV1 must remain strict and V1-compatible')
   const retry = operationFor('submitDemandIntake', 'submitDemandIntake').operation['x-retry-policy']
+  assert(retry.requestTimeoutMs === 30000, 'C3 single-request timeout drifted')
   assert(retry.totalAttempts === 5 && sameJson(retry.retryAfterSeconds, [60, 300, 1800, 7200]) && retry.afterFifthFailure === 'DEAD_LETTER', 'C3 retry/dead-letter policy drifted')
+  assert(retry.deadLetterSchema === '#/components/schemas/DemandIntakeDeadLetterV1', 'C3 dead-letter schema reference drifted')
+  const deadLetter = resolveContractValue(schemaByName('DemandIntakeDeadLetterV1'), 'DemandIntakeDeadLetterV1')
+  for (const field of ['demandId', 'demandVersion', 'demandContentSha256', 'attemptCount', 'lastError', 'recoveryState']) {
+    assert(deadLetter.required.includes(field), `DemandIntakeDeadLetterV1 must require ${field}`)
+  }
 }
 
 function assertH1Fixtures() {
@@ -527,6 +562,7 @@ function assertC3Fixtures() {
   const retryPolicy = operationFor('submitDemandIntake', 'submitDemandIntake').operation['x-retry-policy']
   const retry = c3.intakeRetryUntilDeadLetter
   assert(resolveFixturePayload(retry, 'request', 'c3.intakeRetryUntilDeadLetter') === accepted.request, 'retry must preserve the original immutable Outbox packet')
+  assert(retry.requestTimeoutMs === retryPolicy.requestTimeoutMs, 'retry fixture single-request timeout drifted')
   assert(retry.attempts.length === retryPolicy.totalAttempts, 'retry fixture must exercise every permitted attempt')
   for (const [index, attempt] of retry.attempts.entries()) {
     assert(attempt.attempt === index + 1 && attempt.httpStatus === 503, `retry attempt ${index + 1} is malformed`)
@@ -537,6 +573,13 @@ function assertC3Fixtures() {
       assert(attempt.nextDelaySeconds === null && attempt.terminalAction === 'DEAD_LETTER', 'final retryable failure must dead-letter without a sixth attempt')
     }
   }
+  validateSchema(retry.deadLetterRecord, 'DemandIntakeDeadLetterV1', 'c3.intakeRetryUntilDeadLetter.deadLetterRecord')
+  assert(retry.deadLetterRecord.demandId === accepted.request.demandId, 'dead-letter demandId must preserve the original packet identity')
+  assert(retry.deadLetterRecord.demandVersion === accepted.request.demandVersion, 'dead-letter demandVersion must preserve the original packet identity')
+  assert(retry.deadLetterRecord.demandContentSha256 === c3.intakeAccepted.demandContentSha256, 'dead-letter content digest must preserve the original packet digest')
+  assert(retry.deadLetterRecord.attemptCount === retryPolicy.totalAttempts, 'dead-letter attemptCount must equal the exhausted retry policy')
+  assert(sameJson(retry.deadLetterRecord.lastError, retry.attempts.at(-1).response), 'dead-letter lastError must preserve the final failed response')
+  assert(retry.deadLetterRecord.recoveryState === 'PENDING_MANUAL_REVIEW', 'new dead letters must begin in manual-review recovery state')
 
   const projection = validateFixtureCall(c3.projectionWriteAccepted, 'c3.projectionWriteAccepted')
   assert(projection.request.projection.demandId === projection.request.demandId && projection.request.projection.intakeId === projection.request.intakeId, 'projection identity mismatch')
@@ -560,7 +603,13 @@ function assertC3Fixtures() {
 
 function assertNegativeFixtures() {
   const negative = record(fixture.negativeCases, 'fixture.negativeCases')
-  expectRejected('negativeCases.wrongRouteRejected', () => validateFixtureCall(negative.wrongRouteRejected, 'negativeCases.wrongRouteRejected'))
+  const wrongRouteEntry = validateCall(negative.wrongRouteRejected.call, 'negativeCases.wrongRouteRejected')
+  assert(negative.wrongRouteRejected.call.authProfile === wrongRouteEntry.operation['x-auth-profile'], 'wrong-route negative must use the valid C3 integration auth profile')
+  expectRejected('negativeCases.wrongRouteRejected.request', () => validateSchema(
+    resolveFixturePayload(negative.wrongRouteRejected, 'request', 'negativeCases.wrongRouteRejected'),
+    requestSchemaFor(wrongRouteEntry.operation, 'negativeCases.wrongRouteRejected'),
+    'negativeCases.wrongRouteRejected.request',
+  ))
   expectRejected('negativeCases.anonymousSuccessRejected', () => validateFixtureCall(negative.anonymousSuccessRejected, 'negativeCases.anonymousSuccessRejected'))
   expectRejected('negativeCases.illegalTimelineEventTypeRejected', () => validateSchema(negative.illegalTimelineEventTypeRejected.value, negative.illegalTimelineEventTypeRejected.schema, 'negativeCases.illegalTimelineEventTypeRejected.value'))
   expectRejected('negativeCases.missingResultAckFieldRejected', () => validateSchema(negative.missingResultAckFieldRejected.value, negative.missingResultAckFieldRejected.schema, 'negativeCases.missingResultAckFieldRejected.value'))
@@ -574,7 +623,7 @@ function assertNegativeFixtures() {
 }
 
 function main() {
-  assert(fixture.fixtureVersion === '3', 'fixtureVersion must be 3')
+  assert(fixture.fixtureVersion === '4', 'fixtureVersion must be 4')
   assert(fixture.classification === 'CONTRACT_ONLY_NOT_REAL_INTEGRATION', 'fixture must remain CONTRACT_ONLY')
   const serialisedFixture = JSON.stringify(fixture)
   assert(!/[A-Za-z]:[\\/]/.test(serialisedFixture), 'fixture must not contain local absolute paths')
@@ -584,7 +633,7 @@ function main() {
   assertH1Fixtures()
   assertC3Fixtures()
   assertNegativeFixtures()
-  console.log('H1-4C/C3 machine contract: valid (OpenAPI route/auth/DTO/error checks, Ed25519/keyId, terminal idempotency, pagination, C3 retry/dead-letter and projection checks passed)')
+  console.log('H1-4C/C3 machine contract: valid (OpenAPI route/auth/DTO/error checks, machine-defined canonical UTF-8 bytes, Ed25519/keyId, terminal idempotency, pagination, C3 timeout/dead-letter and projection checks passed)')
 }
 
 main()

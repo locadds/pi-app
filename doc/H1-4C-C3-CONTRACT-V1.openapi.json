@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Xiaogui TaskHub H1-4C / C3 candidate contract",
-    "version": "1.2.0-candidate",
+    "version": "1.3.0-candidate",
     "description": "Stage-A-only machine contract. It is normative for the candidate H1-4C result, timeline, C3 intake, mapping and projection interfaces; it does not claim any route is implemented."
   },
   "x-contract-id": "xiaogui.taskhub-h1-4c-c3.v1",
@@ -21,64 +21,148 @@
   ],
   "x-canonicalizations": {
     "taskResultSha256": {
-      "algorithm": "SHA-256",
-      "prefix": "sha256:",
-      "orderedFields": [
-        "schemaVersion",
-        "resultId",
-        "assignmentId",
-        "taskId",
-        "outcome",
-        "resultSummary",
-        "artifactRefs:[artifactId,mediaType,sha256]",
-        "verification:[verdict,summary]",
-        "occurredAt"
+      "serialization": {
+        "function": "ECMASCRIPT_JSON_STRINGIFY",
+        "rootType": "ORDERED_ARRAY",
+        "outputWhitespace": "NONE",
+        "characterEncoding": "UTF-8",
+        "unicodeNormalization": "NONE",
+        "arrayOrder": "PRESERVE_SOURCE_ORDER",
+        "missingValueRule": "REJECT_UNLESS_NULL_WHEN_ABSENT_IS_TRUE",
+        "nullRule": "EMIT_JSON_NULL"
+      },
+      "digest": {
+        "algorithm": "SHA-256",
+        "encoding": "LOWERCASE_HEX",
+        "prefix": "sha256:"
+      },
+      "items": [
+        { "path": "result.schemaVersion" },
+        { "path": "result.resultId" },
+        { "path": "result.assignmentId" },
+        { "path": "result.taskId" },
+        { "path": "result.outcome" },
+        { "path": "result.resultSummary" },
+        {
+          "map": {
+            "path": "result.artifactRefs",
+            "items": [
+              { "path": "item.artifactId" },
+              { "path": "item.mediaType" },
+              { "path": "item.sha256" }
+            ]
+          }
+        },
+        {
+          "array": [
+            { "path": "result.verification.verdict" },
+            { "path": "result.verification.summary" }
+          ]
+        },
+        { "path": "result.occurredAt" }
       ]
     },
     "taskDeliveryReceiptSignature": {
-      "algorithm": "Ed25519",
-      "encoding": "base64",
-      "orderedFields": [
-        "schemaVersion",
-        "eventId",
-        "assignmentId",
-        "taskId",
-        "subjectId",
-        "nodeId",
-        "keyId",
-        "eventType",
-        "packageSha256",
-        "occurredAt",
-        "sequence",
-        "resultSha256"
+      "serialization": {
+        "function": "ECMASCRIPT_JSON_STRINGIFY",
+        "rootType": "ORDERED_ARRAY",
+        "outputWhitespace": "NONE",
+        "characterEncoding": "UTF-8",
+        "unicodeNormalization": "NONE",
+        "arrayOrder": "PRESERVE_SOURCE_ORDER",
+        "missingValueRule": "REJECT_UNLESS_NULL_WHEN_ABSENT_IS_TRUE",
+        "nullRule": "EMIT_JSON_NULL"
+      },
+      "signature": {
+        "algorithm": "Ed25519",
+        "encoding": "BASE64"
+      },
+      "items": [
+        { "path": "receipt.schemaVersion" },
+        { "path": "receipt.eventId" },
+        { "path": "receipt.assignmentId" },
+        { "path": "receipt.taskId" },
+        { "path": "receipt.subjectId" },
+        { "path": "receipt.nodeId" },
+        { "path": "receipt.keyId" },
+        { "path": "receipt.eventType" },
+        { "path": "receipt.packageSha256" },
+        { "path": "receipt.occurredAt" },
+        { "path": "receipt.sequence" },
+        { "path": "receipt.resultSha256" }
       ]
     },
     "demandContentSha256": {
-      "algorithm": "SHA-256",
-      "prefix": "sha256:",
-      "orderedFields": [
-        "demandId",
-        "demandVersion",
-        "title",
-        "problemStatement",
-        "expectedOutcome",
-        "backgroundSummary??null",
-        "constraints",
-        "attachmentRefs:[ref,sha256,dataClassification]",
-        "requestedDeadline??null",
-        "capabilityHints",
-        "acceptanceHints",
-        "visibility"
+      "serialization": {
+        "function": "ECMASCRIPT_JSON_STRINGIFY",
+        "rootType": "ORDERED_ARRAY",
+        "outputWhitespace": "NONE",
+        "characterEncoding": "UTF-8",
+        "unicodeNormalization": "NONE",
+        "arrayOrder": "PRESERVE_SOURCE_ORDER",
+        "missingValueRule": "REJECT_UNLESS_NULL_WHEN_ABSENT_IS_TRUE",
+        "nullRule": "EMIT_JSON_NULL"
+      },
+      "digest": {
+        "algorithm": "SHA-256",
+        "encoding": "LOWERCASE_HEX",
+        "prefix": "sha256:"
+      },
+      "items": [
+        { "path": "demand.demandId" },
+        { "path": "demand.demandVersion" },
+        { "path": "demand.title" },
+        { "path": "demand.problemStatement" },
+        { "path": "demand.expectedOutcome" },
+        { "path": "demand.backgroundSummary", "nullWhenAbsent": true },
+        { "path": "demand.constraints" },
+        {
+          "map": {
+            "path": "demand.attachmentRefs",
+            "items": [
+              { "path": "item.ref" },
+              { "path": "item.sha256" },
+              { "path": "item.dataClassification" }
+            ]
+          }
+        },
+        { "path": "demand.requestedDeadline", "nullWhenAbsent": true },
+        { "path": "demand.capabilityHints" },
+        { "path": "demand.acceptanceHints" },
+        { "path": "demand.visibility" }
       ]
     },
     "taskHubProjectionSha256": {
-      "algorithm": "SHA-256",
-      "prefix": "sha256:",
-      "orderedFields": [
-        "schemaVersion",
-        "demandId",
-        "intakeId",
-        "projection:[projectionVersion,demandId,intakeId,stage,displaySummary,updatedAt,deliveryRef??null]"
+      "serialization": {
+        "function": "ECMASCRIPT_JSON_STRINGIFY",
+        "rootType": "ORDERED_ARRAY",
+        "outputWhitespace": "NONE",
+        "characterEncoding": "UTF-8",
+        "unicodeNormalization": "NONE",
+        "arrayOrder": "PRESERVE_SOURCE_ORDER",
+        "missingValueRule": "REJECT_UNLESS_NULL_WHEN_ABSENT_IS_TRUE",
+        "nullRule": "EMIT_JSON_NULL"
+      },
+      "digest": {
+        "algorithm": "SHA-256",
+        "encoding": "LOWERCASE_HEX",
+        "prefix": "sha256:"
+      },
+      "items": [
+        { "path": "update.schemaVersion" },
+        { "path": "update.demandId" },
+        { "path": "update.intakeId" },
+        {
+          "array": [
+            { "path": "update.projection.projectionVersion" },
+            { "path": "update.projection.demandId" },
+            { "path": "update.projection.intakeId" },
+            { "path": "update.projection.stage" },
+            { "path": "update.projection.displaySummary" },
+            { "path": "update.projection.updatedAt" },
+            { "path": "update.projection.deliveryRef", "nullWhenAbsent": true }
+          ]
+        }
       ]
     }
   },
@@ -291,6 +375,7 @@
           "payloadConflictRecovery": "REQUIRES_NEW_DEMAND_VERSION"
         },
         "x-retry-policy": {
+          "requestTimeoutMs": 30000,
           "totalAttempts": 5,
           "retryAfterSeconds": [
             60,
@@ -311,6 +396,7 @@
             409
           ],
           "afterFifthFailure": "DEAD_LETTER",
+          "deadLetterSchema": "#/components/schemas/DemandIntakeDeadLetterV1",
           "credentialRecovery": "MANUAL_REQUEUE_ORIGINAL_PACKET",
           "contentConflictRecovery": "REQUIRES_NEW_DEMAND_VERSION"
         },
@@ -1309,6 +1395,60 @@
           },
           "displayMessage": {
             "type": "string"
+          }
+        }
+      },
+      "DemandIntakeDeadLetterV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "deadLetterId",
+          "demandId",
+          "demandVersion",
+          "demandContentSha256",
+          "attemptCount",
+          "lastAttemptAt",
+          "lastError",
+          "recoveryState"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "xiaogui.demand-intake-dead-letter.v1"
+          },
+          "deadLetterId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "demandId": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "demandVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "demandContentSha256": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          },
+          "attemptCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "lastAttemptAt": {
+            "$ref": "#/components/schemas/UtcTimestamp"
+          },
+          "lastError": {
+            "$ref": "#/components/schemas/ErrorEnvelopeV1"
+          },
+          "recoveryState": {
+            "type": "string",
+            "enum": [
+              "PENDING_MANUAL_REVIEW",
+              "REQUEUED",
+              "REQUIRES_NEW_DEMAND_VERSION",
+              "RESOLVED"
+            ]
           }
         }
       },

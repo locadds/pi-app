@@ -1,6 +1,6 @@
 # TASKHUB H1-4C / C3 阶段 A：集成基线审计
 
-状态：修订候选，等待重新独立审查与人工验收
+状态：第三次修订候选，等待重新独立审查与人工验收
 
 日期：2026-09-03
 
@@ -47,11 +47,11 @@ Hub H1-4B 与 C2 的共同祖先是 1fe28cc0cb336916440fc597d51cb44a9c44cefe；7
 ## 4. 本次修订后冻结的边界
 
 - H1-4C 的终态结果通过原子结果提交进入既有 TaskHub Delivery/Evidence，不建立第二套执行状态机；artifact_receipt 不复用。
-- H1 结果摘要、13 字段签名 receipt、12 项签名数组、三种终态、结果幂等 ACK、双时间线、受控发布者结果详情、分页/排序、路径和错误信封均在机器合同中明确。
+- H1 结果摘要、13 字段签名 receipt、12 项签名数组、三种终态、结果幂等 ACK、双时间线、受控发布者结果详情、分页/排序、路径和错误信封均在机器合同中明确；规范化机器规则同时固定 JSON.stringify 有序/嵌套数组、UTF-8、Unicode 不规范化、源数组顺序和缺失可选值转 null。
 - C2 的十项顶层错误码闭集保持有效。细分语义只写入 messageKey，每个失败夹具都有 messageKey 与 traceId。
 - DemandIntakeReceiptV1 不被静默扩展；demandId、intakeId、taskId 映射为独立的 DemandTaskMappingV1。
 - Intake 的幂等键严格保持 (demandId, demandVersion)；规范化内容摘要只是同键一致性校验，绝不升格为三元组键。
-- C3 Outbox→TaskHub Intake 与 TaskHub→C3 投影写入各有调用主体、认证头、五次超时/重试/死信、同键同内容/异内容、projection 幂等/版本冲突及存储接缝；社区网页仍只有只读 GET。
+- C3 Outbox→TaskHub Intake 与 TaskHub→C3 投影写入各有调用主体和认证头；Intake 固定单次请求 30 秒超时、五次总尝试和 `DemandIntakeDeadLetterV1` 可恢复死信记录；同键同内容/异内容、projection 幂等/版本冲突及存储接缝已冻结，社区网页仍只有只读 GET。
 
 ## 5. 聚焦合同验证与文档阶段豁免
 
@@ -64,7 +64,7 @@ node doc/validate-h1-4c-c3-contract-fixtures.mjs
 git diff --check
 ~~~
 
-验证器以 Node 内置能力直接读取 OpenAPI 机器合同，检查：所有路径/方法/双鉴权或集成鉴权、严格 DTO、C2 错误码闭集、完整 messageKey/traceId、结果有序摘要、真实 Ed25519 fixture 签名与公钥派生 keyId、三种终态、结果幂等 ACK、两页 cursor 链、发布者结果详情、Demand 同键与未知字段、五次重试入死信、投影摘要与版本冲突。它还断言错误路由、匿名成功、非法 timeline 事件、缺失 ACK 字段、断裂引用和 cursor 跳跃必须失败。它不需要安装依赖，也不是对真实 Hub 联调的替代。
+验证器以 Node 内置能力直接读取 OpenAPI 机器合同，检查：所有路径/方法/双鉴权或集成鉴权、严格 DTO、C2 错误码闭集、完整 messageKey/traceId、由机器规则解释生成的规范化 UTF-8 字节、真实 Ed25519 fixture 签名与公钥派生 keyId、三种终态、结果幂等 ACK、两页 cursor 链、发布者结果详情、Demand 同键与未知字段、30 秒超时、五次重试及完整死信 DTO、投影摘要与版本冲突。错误路由负例先通过正确 C3 集成鉴权，再单独证明 Result 请求体被 Intake schema 拒绝；其余负例继续覆盖匿名成功、非法 timeline 事件、缺失 ACK 字段、断裂引用和 cursor 跳跃。它不需要安装依赖，也不是对真实 Hub 联调的替代。
 
 ## 6. 前端包与验收门
 

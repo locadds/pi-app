@@ -1,10 +1,10 @@
 {
-  "fixtureVersion": "3",
+  "fixtureVersion": "4",
   "classification": "CONTRACT_ONLY_NOT_REAL_INTEGRATION",
   "usage": "Only the focused machine-contract validator and later fixed-fixture Renderer/Web interaction tests may use this file. It is not evidence that a Hub, Worker, C3 Outbox, C3 Web, database or network integration is running.",
   "contract": {
     "id": "xiaogui.taskhub-h1-4c-c3.v1",
-    "version": "1.2.0-candidate",
+    "version": "1.3.0-candidate",
     "source": "H1-4C-C3-CONTRACT-V1.openapi.json"
   },
   "fixtureBinding": {
@@ -623,6 +623,7 @@
         "authProfile": "C3_OUTBOX_INTEGRATION"
       },
       "requestRef": "c3.intakeAccepted.request",
+      "requestTimeoutMs": 30000,
       "attempts": [
         {
           "attempt": 1,
@@ -690,7 +691,25 @@
             }
           }
         }
-      ]
+      ],
+      "deadLetterRecord": {
+        "schemaVersion": "xiaogui.demand-intake-dead-letter.v1",
+        "deadLetterId": "xgh_dead_letter_contract_001",
+        "demandId": "demand-contract-001",
+        "demandVersion": 1,
+        "demandContentSha256": "sha256:c0c12964c2dacf47770e5b23fb320e383fd62c5f5f730515e9830ac77fc6dc77",
+        "attemptCount": 5,
+        "lastAttemptAt": "2026-09-03T03:36:00.000Z",
+        "lastError": {
+          "error": {
+            "code": "DOWNSTREAM_UNAVAILABLE",
+            "messageKey": "c3.taskhub_unavailable",
+            "message": "TaskHub 暂不可用。",
+            "traceId": "trace-contract-c3-retry-005"
+          }
+        },
+        "recoveryState": "PENDING_MANUAL_REVIEW"
+      }
     },
     "projectionWriteAccepted": {
       "call": {
@@ -838,11 +857,11 @@
     "wrongRouteRejected": {
       "call": {
         "operationId": "submitDemandIntake",
-        "authProfile": "WORKER_USER_AND_NODE",
+        "authProfile": "C3_OUTBOX_INTEGRATION",
         "httpStatus": 200
       },
       "requestRef": "h1.resultReady.request",
-      "expectedFailure": "The TaskResultSubmissionV1 request is not valid for the C3 Intake route or its auth profile."
+      "expectedFailure": "The correctly authenticated C3 Intake route must reject a TaskResultSubmissionV1 body."
     },
     "anonymousSuccessRejected": {
       "call": {
