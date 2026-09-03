@@ -31,7 +31,7 @@ import {
   SqliteOmpAcpRecoveryStoreV1,
   TaskHubOmpCandidateInspectorV1,
 } from '../agent-runtime/omp-acp-production'
-import { OmpTrustedInstallationModuleV1 } from '../agent-runtime/omp-trusted-installation'
+import { OmpActivatedRuntimeBundleModuleV1 } from '../agent-runtime/omp-runtime-bundle'
 import { prepareKimiProductionHomeV1 } from '../agent-runtime/kimi-production-home'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { createAgentRuntimeRegistryV1 } from '../agent-runtime/runtime-registry'
@@ -82,6 +82,8 @@ export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly productionEnabled: boolean
   /** Explicit acceptance/production seam. Omission keeps OMP test-only and Kimi unchanged. */
   readonly ompProductionEnabled?: boolean
+  /** Main-process-private large-asset directory. It is never copied into TaskHub contracts. */
+  readonly ompRuntimeStorageDirectory?: string
   readonly lookup: SessionScopeLookupV1
   readonly projectResolver?: ProjectWorkspaceResolverV1
   readonly kimiProbe?: KimiAcpProbeV1
@@ -213,6 +215,9 @@ export function createXiaoguiRuntimeCompositionV1(
         : { enabled: false },
     })
     const ompLayout = resolveOmpPrivateLayoutV1(userDataDir)
+    const ompRuntimeStorageDirectory = options.ompProductionEnabled
+      ? options.ompRuntimeStorageDirectory ?? null
+      : null
     const ompProductionSelection = ompAcpProductionSelectionV1()
     if (options.ompProductionEnabled) {
       ompRecoveryStore = new SqliteOmpAcpRecoveryStoreV1({
@@ -232,15 +237,18 @@ export function createXiaoguiRuntimeCompositionV1(
         ? {
             enabled: true,
             selection: ompProductionSelection,
-            trustedLaunch: new OmpTrustedAcpLaunchProviderV1({
-              packageRoot: ompLayout.packageRoot,
-              installation: new OmpTrustedInstallationModuleV1({
-                packageRoot: ompLayout.packageRoot,
-                privateStateDir: ompLayout.stateDir,
-                receiptPath: ompLayout.receiptPath,
-                now: options.now,
-              }),
-            }),
+            trustedLaunch: ompRuntimeStorageDirectory
+              ? new OmpTrustedAcpLaunchProviderV1({
+                  installation: new OmpActivatedRuntimeBundleModuleV1({
+                    selectedStorageDirectory: ompRuntimeStorageDirectory,
+                    privateStateDir: ompLayout.stateDir,
+                  }),
+                })
+              : {
+                  async inspectLaunch() {
+                    return { available: false as const, reasonCode: 'OMP_RUNTIME_STORAGE_DIR_REQUIRED' }
+                  },
+                },
             recoveryStore: ompRecoveryStore,
             candidateInspector: new TaskHubOmpCandidateInspectorV1(attemptWorkspaces),
           }

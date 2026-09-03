@@ -75,6 +75,19 @@ P1B 人工验收后已开始 P1C；当前实现、真实旅程和聚焦验证完
 - `supportsResultReconcile: true` 只存在于显式 `ompProductionEnabled` 候选路径；当前桌面调用方没有开启，默认 Runtime 未改变。
 - 完整测试证据、环境差异和未执行项见 `OMP-ACP-P1C-QA.md`；审查结论见 `OMP-ACP-P1C-REVIEW.md`。
 
+## P1D-A：完整依赖闭包受信装配（阶段候选）
+
+P1C 经用户人工验收后，P1D-A 从固定提交 `9728eafdb67d0aea8a2f9e52fd6f315f4e4e7692` 建立独立分支。当前实现与最小验证已完成，等待代码审查和人工验收：
+
+1. `OmpRuntimeBundleManifestV1` 固定 OMP 18.1.2 的 npm 信任根、上游 revision、启动入口、安全参数、依赖锁、完整依赖树总账及关键 native 摘要；不包含绝对路径。
+2. 装配器先核验源闭包，动态检查目标盘暂存空间，再复制到同文件系统暂存目录并做第二次完整树核验；只有完全匹配才产生不可变版本目录和活动指针。
+3. 替换失败保持旧活动指针与旧版本；残留暂存目录会清理。Runtime 只消费当前活动回执，不从 PATH 或网络寻找 OMP。
+4. 用户选择的大体积目录由主进程私有配置保存，不进入 Renderer 通用设置或 TaskHub 契约。未提供目录时显式 fail-closed。
+5. `createOrResume` 在启动检查之前先读取持久 request 绑定：已结算结果回放，未结算结果返回 UNKNOWN；安装瞬时不可用不会触发重复派发。
+6. D 盘固定完整闭包实测为 24,230 文件、2,144 目录、802,081,247 字节；完成源/暂存/激活核验和一次 ACP initialize，未发送模型 Prompt。
+
+P1D-A 不包含 Renderer 目录选择、安装进度、清理 UI、自动下载、Portable 或默认 Runtime 切换。完整证据与风险见 `OMP-ACP-P1D-A-QA.md`。
+
 ## 六个未完成门映射
 
 | P0 留下的生产门 | 负责阶段 | 验收证据 |
@@ -91,4 +104,5 @@ P1B 人工验收后已开始 P1C；当前实现、真实旅程和聚焦验证完
 - P1A：共享契约、权限策略、权限模块聚焦测试；Node/Web 类型检查；差异检查。
 - P1B：只运行受信安装、模型设置、权限档位、Attempt 绑定和对应 Renderer 聚焦测试，再做一次设置页可见冒烟。
 - P1C：只运行 Runtime/TaskHub/Delivery/恢复聚焦测试和一条真实 Electron Coding 旅程。
+- P1D-A：只运行完整闭包装配/激活/持久回放的聚焦测试、Node/Web 类型检查和一次 D 盘完整闭包 ACP initialize；不重复模型旅程和 Electron 窗口。
 - 不复跑 OMP 上游测试，不跑无关 WORK、Office、Git、SQLite、React 或 Electron 全量套件，不制作 Portable。

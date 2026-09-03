@@ -20,10 +20,10 @@ import {
   type OmpAcpRecoveryStoreV1,
   type OmpAcpTrustedLaunchPortV1,
 } from './omp-acp-adapter'
-import {
-  OmpTrustedInstallationModuleV1,
-  type OmpTrustedInstallationReceiptV1,
-} from './omp-trusted-installation'
+import type {
+  OmpActivatedRuntimeBundleInspectionPortV1,
+  OmpRuntimeBundleActivationReceiptV1,
+} from './omp-runtime-bundle'
 
 const MINIMUM_BUN_VERSION = Object.freeze([1, 3, 14] as const)
 const PUBLIC_RUNTIME_SESSION_ID = /^xgrs_[0-9a-f]{32}$/
@@ -42,25 +42,22 @@ export interface OmpBunRuntimeProbeV1 {
  * from PATH; PATH is used only to locate the mature Bun runtime.
  */
 export class OmpTrustedAcpLaunchProviderV1 implements OmpAcpTrustedLaunchPortV1 {
-  private readonly packageRoot: string
   private readonly bunProbe: OmpBunRuntimeProbeV1
 
   constructor(private readonly options: {
-    readonly packageRoot: string
-    readonly installation: Pick<OmpTrustedInstallationModuleV1, 'inspect'>
+    readonly installation: OmpActivatedRuntimeBundleInspectionPortV1
     readonly bunProbe?: OmpBunRuntimeProbeV1
   }) {
-    this.packageRoot = exactAbsolutePath(options.packageRoot, 'OMP_INSTALL_ROOT_INVALID')
     this.bunProbe = options.bunProbe ?? new SystemOmpBunRuntimeProbeV1()
   }
 
   async inspectLaunch(): ReturnType<OmpAcpTrustedLaunchPortV1['inspectLaunch']> {
-    const inspection = this.options.installation.inspect()
+    const inspection = await this.options.installation.inspect()
     if (!inspection.ok) return { available: false, reasonCode: inspection.reasonCode }
     const bun = await this.bunProbe.findExecutable()
     if (!bun.available) return bun
     try {
-      const entryPath = trustedEntryPath(this.packageRoot, inspection.receipt)
+      const entryPath = trustedEntryPath(inspection.packageRoot, inspection.receipt)
       const version = await probeVersion(bun.command, [entryPath])
       if (version !== OMP_ACP_APPROVED_VERSION_V1) {
         return { available: false, reasonCode: 'OMP_TRUSTED_ENTRY_VERSION_MISMATCH' }
@@ -114,6 +111,7 @@ interface RecoveryRowV1 {
   readonly public_runtime_session_id: string
   readonly vendor_session_id: string
   readonly attempt_id: string
+  readonly request_id: string | null
   readonly request_json: string
   readonly request_digest: string
   readonly selection_digest: string
@@ -142,6 +140,7 @@ export class SqliteOmpAcpRecoveryStoreV1 implements OmpAcpRecoveryStoreV1 {
         public_runtime_session_id text primary key,
         vendor_session_id text not null,
         attempt_id text not null,
+        request_id text,
         request_json text not null,
         request_digest text not null,
         selection_digest text not null,
@@ -154,6 +153,7 @@ export class SqliteOmpAcpRecoveryStoreV1 implements OmpAcpRecoveryStoreV1 {
         settled_at text
       );
     `)
+    this.ensureRequestIdLookup()
   }
 
   async bind(binding: Omit<OmpAcpRecoveryBindingV1, 'outcome'>): Promise<void> {
@@ -170,17 +170,21 @@ export class SqliteOmpAcpRecoveryStoreV1 implements OmpAcpRecoveryStoreV1 {
         return
       }
       const canonical = canonicalBinding(binding, createdAt)
+      if (this.readRowsByRequestId(canonical.requestId).length > 0) {
+        throw new Error('OMP_RECOVERY_REQUEST_CONFLICT')
+      }
       this.db.prepare(`
         insert into xiaogui_omp_acp_recovery_bindings_v1 (
-          public_runtime_session_id, vendor_session_id, attempt_id, request_json,
+          public_runtime_session_id, vendor_session_id, attempt_id, request_id, request_json,
           request_digest, selection_digest, workspace_binding_digest,
           installation_receipt_digest, binding_digest, outcome_json,
           outcome_digest, created_at, settled_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, null)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, null)
       `).run(
         canonical.publicRuntimeSessionId,
         canonical.vendorSessionId,
         canonical.attemptId,
+        canonical.requestId,
         canonical.requestJson,
         canonical.requestDigest,
         canonical.selectionDigest,
@@ -236,6 +240,14 @@ export class SqliteOmpAcpRecoveryStoreV1 implements OmpAcpRecoveryStoreV1 {
     return row ? bindingFromRow(row) : null
   }
 
+  async readByRequestId(requestId: string): Promise<OmpAcpRecoveryBindingV1 | null> {
+    this.assertOpen()
+    if (!validRequestId(requestId)) throw new Error('OMP_RECOVERY_REQUEST_ID_INVALID')
+    const rows = this.readRowsByRequestId(requestId)
+    if (rows.length > 1) throw new Error('OMP_RECOVERY_REQUEST_CONFLICT')
+    return rows[0] ? bindingFromRow(rows[0]) : null
+  }
+
   async verifyCandidateBinding(input: {
     readonly attemptId: string
     readonly runtimeSessionId: string
@@ -264,7 +276,7 @@ export class SqliteOmpAcpRecoveryStoreV1 implements OmpAcpRecoveryStoreV1 {
 
   private readRow(publicRuntimeSessionId: string): RecoveryRowV1 | undefined {
     return this.db.prepare(`
-      select public_runtime_session_id, vendor_session_id, attempt_id, request_json,
+      select public_runtime_session_id, vendor_session_id, attempt_id, request_id, request_json,
         request_digest, selection_digest, workspace_binding_digest,
         installation_receipt_digest, binding_digest, outcome_json,
         outcome_digest, created_at, settled_at
@@ -273,12 +285,56 @@ export class SqliteOmpAcpRecoveryStoreV1 implements OmpAcpRecoveryStoreV1 {
     `).get(publicRuntimeSessionId) as unknown as RecoveryRowV1 | undefined
   }
 
+  private readRowsByRequestId(requestId: string): RecoveryRowV1[] {
+    return this.db.prepare(`
+      select public_runtime_session_id, vendor_session_id, attempt_id, request_id, request_json,
+        request_digest, selection_digest, workspace_binding_digest,
+        installation_receipt_digest, binding_digest, outcome_json,
+        outcome_digest, created_at, settled_at
+      from xiaogui_omp_acp_recovery_bindings_v1
+      where request_id = ? limit 2
+    `).all(requestId) as unknown as RecoveryRowV1[]
+  }
+
   private assertOpen(): void {
     if (this.closed) throw new Error('OMP_RECOVERY_STORE_CLOSED')
   }
+
+  private ensureRequestIdLookup(): void {
+    const columns = this.db.prepare('pragma table_info(xiaogui_omp_acp_recovery_bindings_v1)').all() as Array<{
+      name?: unknown
+    }>
+    if (!columns.some((column) => column.name === 'request_id')) {
+      this.db.exec('alter table xiaogui_omp_acp_recovery_bindings_v1 add column request_id text')
+    }
+    const rows = this.db.prepare(`
+      select public_runtime_session_id, request_json
+      from xiaogui_omp_acp_recovery_bindings_v1
+      where request_id is null
+    `).all() as Array<{ public_runtime_session_id: string; request_json: string }>
+    const update = this.db.prepare(`
+      update xiaogui_omp_acp_recovery_bindings_v1
+      set request_id = ? where public_runtime_session_id = ? and request_id is null
+    `)
+    for (const row of rows) {
+      const request = JSON.parse(row.request_json) as { requestId?: unknown }
+      if (!validRequestId(request.requestId)) throw new Error('OMP_RECOVERY_REQUEST_ID_INVALID')
+      update.run(request.requestId, row.public_runtime_session_id)
+    }
+    const duplicate = this.db.prepare(`
+      select request_id from xiaogui_omp_acp_recovery_bindings_v1
+      where request_id is not null
+      group by request_id having count(*) > 1 limit 1
+    `).get()
+    if (duplicate) throw new Error('OMP_RECOVERY_REQUEST_CONFLICT')
+    this.db.exec(`
+      create unique index if not exists xiaogui_omp_acp_recovery_request_id_unique_v1
+      on xiaogui_omp_acp_recovery_bindings_v1(request_id)
+    `)
+  }
 }
 
-function trustedEntryPath(root: string, receipt: OmpTrustedInstallationReceiptV1): string {
+function trustedEntryPath(root: string, receipt: OmpRuntimeBundleActivationReceiptV1): string {
   const realRoot = realpathSync.native(root)
   if (!lstatSync(realRoot).isDirectory() || pathKey(realRoot) !== pathKey(root)) {
     throw new Error('OMP_INSTALL_ROOT_INVALID')
@@ -303,6 +359,7 @@ function canonicalBinding(
   readonly publicRuntimeSessionId: string
   readonly vendorSessionId: string
   readonly attemptId: string
+  readonly requestId: string
   readonly requestJson: string
   readonly requestDigest: string
   readonly selectionDigest: string
@@ -332,6 +389,7 @@ function canonicalBinding(
   }
   return Object.freeze({
     ...unsigned,
+    requestId: binding.request.requestId,
     requestJson,
     bindingDigest: digestJson({ domain: 'xiaogui.omp-acp.recovery-binding.v1', ...unsigned }),
   })
@@ -344,7 +402,11 @@ function bindingFromRow(row: RecoveryRowV1): OmpAcpRecoveryBindingV1 {
   }
   const request = JSON.parse(row.request_json) as RuntimeCreateOrResumeRequestV1
   const shape = validateRuntimeProductionCreateRequestShapeV1(request)
-  if (!shape.ok || request.scope.attemptId !== row.attempt_id) throw new Error('OMP_RECOVERY_BINDING_INVALID')
+  if (
+    !shape.ok ||
+    request.scope.attemptId !== row.attempt_id ||
+    request.requestId !== row.request_id
+  ) throw new Error('OMP_RECOVERY_BINDING_INVALID')
   const unsigned = {
     publicRuntimeSessionId: row.public_runtime_session_id,
     vendorSessionId: row.vendor_session_id,
@@ -415,6 +477,7 @@ function sameUnsignedBinding(
   return row.public_runtime_session_id === binding.publicRuntimeSessionId &&
     row.vendor_session_id === binding.vendorSessionId &&
     row.attempt_id === binding.attemptId &&
+    row.request_id === binding.requestId &&
     row.request_json === binding.requestJson &&
     row.request_digest === binding.requestDigest &&
     row.selection_digest === binding.selectionDigest &&
@@ -429,6 +492,10 @@ function assertPublicSessionId(value: string): void {
 
 function safeId(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9._-]{1,256}$/.test(value)
+}
+
+function validRequestId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim()
 }
 
 function safeReasonCode(value: unknown): value is string {

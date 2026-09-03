@@ -4,11 +4,11 @@
 
 `can1357/oh-my-pi` 通过标准 ACP stdio 接缝接入小规现有 `AgentRuntimeRegistryV1`，不替换 Pi Worker、TaskHub、Attempt、工作树、权限、验证或交付状态机。
 
-`RUNTIME-R4-OMP-ACP-ADAPTER-01 / P0` 已于 2026-09-02 通过人工验收，固定提交为 `607618f952b102b889bc12f5ab101f802ab6b401`；P1A 已在 `b4f93e561d02673a62bbf7b0d7797bbe41b9d498` 通过人工验收。P1B 当前为隔离实现候选，但 Runtime 仍只有 `APPROVED_FOR_TEST`，不会被生产路由选中；默认生产运行时保持不变。
+`RUNTIME-R4-OMP-ACP-ADAPTER-01 / P0` 已于 2026-09-02 通过人工验收，固定提交为 `607618f952b102b889bc12f5ab101f802ab6b401`；P1A、P1B、P1C 已依次通过人工验收，P1C 固定提交为 `9728eafdb67d0aea8a2f9e52fd6f315f4e4e7692`。P1D-A 当前在独立分支上形成完整依赖闭包装配候选，但尚未经过人工验收、未接入产品入口，也不会被默认生产路由选中。
 
 P1 的三批任务与六项生产门映射见 `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`。P1 不把 OMP 改为 `write` 或 `yolo`；OMP 继续以 `always-ask` 作为内层审批基础，由 TaskHub 在硬边界核验后应用用户选择的三档权限策略。
 
-P1B 已增加受信完整性回执、OMP 私有模型设置和三档权限 UI。完整性信任根固定到 npm 官方 archive 的 SHA-512 SRI 及其完整解包树，不接受调用方自报 integrity 或仅匹配版本的目录。全局权限偏好只在 Attempt 创建时取样，之后由 TaskHub 以策略摘要不可变绑定；命令和外传在没有权威白名单时保持 `UNVERIFIED` 并拒绝。受信回执的生产消费与真实模型结果对账仍属于 P1C，不因 UI 已出现而提前批准 Runtime。
+P1B 已增加受信完整性回执、OMP 私有模型设置和三档权限 UI。P1C 已接通固定入口、真实工作树结果对账和同 Attempt/Runtime/vendor session/worktree 恢复。P1D-A 进一步把信任边界扩展到完整依赖闭包：固定 lock、全树总账和关键 native 摘要，采用用户选择的大体积目录、双重完整性校验及原子活动指针。以上能力仍受显式候选门控制，不因底层装配通过而提前批准默认 Runtime。
 
 ## 固定来源
 
@@ -20,9 +20,9 @@ P1B 已增加受信完整性回执、OMP 私有模型设置和三档权限 UI。
 - 许可证：MIT
 - 运行入口：`omp acp`
 
-小规不复制上游源码，也不把 OMP npm 包加入 `package.json` 或安装包。OMP 作为独立外部运行时安装；Adapter 只固定协议、版本、启动参数和权限边界。
+小规不复制上游源码，也不把 OMP npm 包加入 `package.json`。P1D-A 将已准备好的固定完整依赖闭包作为独立 Runtime 资产装配到用户选择的私有大体积目录；二进制与缓存不进入 Git，发布包与离线资源仍未实现。Adapter 固定协议、版本、启动参数和权限边界，并只消费已激活回执。
 
-P0 另提供显式的固定包测试入口：仅当 `XIAOGUI_OMP_ACP_BUNX_TEST_ENABLED=1` 时，探针才会使用 `bunx --bun @oh-my-pi/pi-coding-agent@18.1.2`。默认发现不会触发下载或联网。正式安装的 `omp` 仍可通过 PATH 或 `OMP_CLI_PATH` 被发现，但必须同样通过版本与启动参数校验。
+P0 仍保留显式的固定包测试入口：仅当 `XIAOGUI_OMP_ACP_BUNX_TEST_ENABLED=1` 时，探针才会使用 `bunx --bun @oh-my-pi/pi-coding-agent@18.1.2`。默认发现不会触发下载或联网。P1D-A 生产候选不使用该探针，也不从 PATH、`OMP_CLI_PATH` 或网络寻找 OMP；只有 Bun 引擎继续经过独立的绝对路径和版本门。
 
 ## 现有接缝复用
 
@@ -38,7 +38,7 @@ P0 另提供显式的固定包测试入口：仅当 `XIAOGUI_OMP_ACP_BUNX_TEST_E
 Adapter 固定以以下等价参数启动：
 
 ```text
-omp --approval-mode always-ask --no-skills --no-rules acp
+omp --approval-mode always-ask --no-extensions --no-skills --no-rules acp
 ```
 
 - `always-ask`：只自动放行 OMP 声明为只读的工具；写入和命令交给 ACP 客户端权限门。
@@ -60,13 +60,12 @@ omp --approval-mode always-ask --no-skills --no-rules acp
 
 ## 当前未完成门
 
-以下事项未通过前，不得把 OMP 改为 `APPROVED_FOR_PRODUCTION`：
+P1C 已完成人工验收，但 P1D-A 尚未成为用户可见产品入口。以下事项未通过前，不得把 OMP 切为默认 Runtime 或宣称完成发布装配：
 
-1. OMP 内建工具的工作区读取边界、命令摘要和数据外传需要真实模型旅程核对；上游当前权限配置本身不提供小规所需的细粒度目录规则。
-2. 真实代码修改结束后，需要从 TaskHub 工作树生成可对账的 `candidateDigest`，不能把模型或 ACP 文本自述当作交付证据。
-3. 断线恢复必须验证同一 Attempt、同一 Runtime、同一会话和同一工作树，不得静默换 Agent。
-4. OMP 私有模型设置已形成小规设置页，但 ACP 会话级模型选择和受信安装发布指引尚未完成。
-5. 尚未完成真实模型的“申请权限 → 修改独立工作树 → 验证 → Diff → 交付”桌面旅程。
-6. P1B 已能为固定包生成并复验完整性回执，但禁用中的 Adapter 尚未消费该回执作为生产启动源；PATH 上的任意同版本可执行物仍不能通过生产门。
+1. P1D-A 需完成只读审查与人工验收；当前只在独立候选分支，不得自动进入集成线。
+2. P1D-B 需提供主进程目录选择、动态空间/进度/失败提示和受控单机试用入口；Renderer 不得取得私有绝对路径或伪造安装状态。
+3. 旧活动版本的清理必须单独展示空间影响并取得人工确认；不得为节省空间静默删除可恢复版本。
+4. 自动下载、离线资源、Portable 和发布包尚未实现；当前装配输入是已经准备并固定校验的完整闭包目录。
+5. OMP 版本、依赖锁、完整树或 approval envelope 任一升级前仍需重新 Spike，不能沿用 18.1.2 回执。
 
-因此本阶段不会改变默认路由，不制作 Portable，也不宣称 OMP 已可用于生产任务。P1B UI 只用于配置与后续任务权限选择，不等于生产批准。
+因此 P1D-A 不改变默认路由，不制作 Portable，也不宣称已完成用户可用的生产安装。完整装配门通过只证明固定 Runtime 资产可以被受控激活，不等于 P1D-B 产品入口已经完成。

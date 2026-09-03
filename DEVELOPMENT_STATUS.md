@@ -1,5 +1,118 @@
 # 小规开发阶段状态
 
+## 2026-09-03｜RUNTIME-R4 OMP ACP Runtime P1D-A 完整依赖闭包装配
+
+### 本阶段目标与状态
+
+- P1C 人工验收：用户已于 2026-09-03 明确放行 `agent/runtime-r4-omp-acp-p1-v1@9728eafdb67d0aea8a2f9e52fd6f315f4e4e7692`。
+- P1D-A 目标：把约 802 MB、2.4 万文件的 OMP 完整依赖闭包纳入版本化受信清单；在用户选择的大体积目录中完成空间预检、双重完整性校验和原子激活；让已结算或结果未知的持久请求在安装暂时不可用时仍能安全回放且不重复派发。
+- 状态：实现、真实 D 盘完整装配与 ACP 初始化、聚焦测试、Node/Web 类型检查、双轴只读审查和最终阶段门禁已完成；当前为独立分支上的阶段候选，待提交推送后等待人工验收。
+- 工作树：`D:\CodexWorktrees\xiaogui-omp-acp-p1d-a-v1`；分支：`agent/runtime-r4-omp-acp-p1d-a-v1`；基线：已验收 P1C `9728eafdb67d0aea8a2f9e52fd6f315f4e4e7692`。
+- 隔离边界：未触碰 WORK 工作树或产品主线；未切换默认 Runtime，未合并、发布或制作 Portable；未修改 `package.json`、README、Renderer 或既有 Kimi 默认生产路径。
+
+### 实际修改文件
+
+- `src/main/xiaogui/agent-runtime/omp-runtime-bundle.ts`
+- `src/main/xiaogui/agent-runtime/omp-runtime-bundle.test.ts`
+- `src/main/xiaogui/agent-runtime/omp-runtime-storage-config.ts`
+- `src/main/xiaogui/agent-runtime/omp-runtime-storage-config.test.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-adapter.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-production.ts`
+- `src/main/xiaogui/agent-runtime/omp-acp-production.test.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.test.ts`
+- `doc/runtime-r4/OMP-ACP-P1D-A-QA.md`
+- `doc/runtime-r4/OMP-ACP-P1D-A-REVIEW.md`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 新增版本化 `OmpRuntimeBundleManifestV1`，同时固定 OMP 版本、上游 revision、npm archive SRI、入口、安全参数、根 package、依赖锁、完整树、文件/目录/字节总账，以及关键 `pi-natives` 文件摘要；清单不含本机路径。
+2. 新增完整树验证器。仅版本相同不再足够；缺依赖、关键 native 缺失、任意内容漂移、符号链接、异常文件类型、超限或目录重定向均 fail-closed。
+3. 新增 D 盘友好的受信装配事务：先验源、按实际总账和目标文件系统块大小检查空间、复制到同盘暂存、再验暂存、改名为不可变版本目录，最后原子替换活动指针。失败时旧活动指针和旧版本保持可用，不留下 `.staging-*`。
+4. 活动指针、回执和 Runtime 公开结果只含安全相对目录名与摘要，不含选择目录、私有状态目录或入口绝对路径。Runtime 只从当前活动回执解析 OMP；不从 PATH 寻找 OMP。完整树成功结果可在单进程缓存，但每次启动仍重读活动指针/回执并重算所有关键文件摘要，关键 native 被外部篡改会立即 fail-closed。
+5. 新增独立的主进程私有存储配置服务，严格保存用户选择的绝对资产目录并以摘要封口；没有复用 Renderer 可读的通用设置存储。
+6. 生产 composition 增加显式私有存储目录接缝。未提供目录时返回 `OMP_RUNTIME_STORAGE_DIR_REQUIRED`，不会回退到旧包目录、PATH 或网络下载；桌面当前调用方没有开启它。
+7. SQLite 恢复表幂等增加唯一 `request_id` 并真实迁移、回填 P1C 旧行。`createOrResume` 先查持久请求：已结算结果直接返回原终态并复核成功摘要，未结算结果返回但不缓存 UNKNOWN；两者都不检查临时不可用的安装、不启动进程、不重新读取 Prompt，也不重复派发。持久库后来结算后，下次相同请求可读到新终态。
+8. D 盘真实完整闭包通过源/暂存/激活三段核对并完成 ACP initialize：24,230 文件、2,144 目录、802,081,247 字节，tree digest 为 `sha256:b1e7aacadfc4791ab7cd092e17b96bfb15781f7b220bfc7eabb7a6d430f98591`，残留暂存目录为 0。
+
+### 未完成内容
+
+- P1D-A 尚待提交推送与人工验收；没有进入集成线、WORK 主线或正式主线，也没有成为默认 Runtime。
+- P1D-B 的文件夹选择、安装进度、空间提示、错误恢复和单机试用 UI 尚未开始；当前只提供主进程私有配置和装配接缝。
+- 当前装配输入是已准备好的固定完整闭包目录；自动下载、解包、更新、离线资源和 Portable 不在本阶段。
+- 旧活动版本会保留以便恢复，尚未实现经用户确认的磁盘清理策略。
+- 没有新增命令/外传白名单，没有扩大三档权限边界，也没有重复真实模型或 Electron 窗口旅程。
+
+### 与规格和冻结决策的偏差
+
+- 无架构偏差：继续复用 OMP/Pi ACP、P1C Adapter、TaskHub Attempt/权限/工作树/结果对账和恢复库；没有第二套 Agent Loop、下载器、权限系统或任务状态机。
+- 有意按阶段缩减：P1D-A 只完成主进程装配与恢复接缝，不提前开发 P1D-B Renderer；也不把 802 MB 二进制提交 Git 或塞入发布包。
+- 真实门只执行 ACP initialize，不发送模型 Prompt。P1C 已验收真实模型旅程，本阶段没有 Runtime 行为变化需要重复花费模型与窗口测试。
+
+### 测试命令和测试结果
+
+最终聚焦测试：
+
+```powershell
+npm run test:unit -- src/main/xiaogui/agent-runtime/omp-runtime-bundle.test.ts src/main/xiaogui/agent-runtime/omp-runtime-storage-config.test.ts src/main/xiaogui/agent-runtime/omp-acp-production.test.ts src/main/xiaogui/agent-runtime/omp-acp-adapter.test.ts src/main/xiaogui/agent-runtime/omp-trusted-installation.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts
+```
+
+结果：`6 test files passed`，`27 tests passed`，`4 tests skipped`。跳过项均需显式外部真实环境；P1D-A 的真实完整装配另行执行并通过。
+
+真实 D 盘门：
+
+```powershell
+$env:XIAOGUI_OMP_P1D_REAL_BUNDLE='1'
+$env:XIAOGUI_OMP_P1D_REAL_BUNDLE_ROOT='D:\CodexCache\xiaogui-omp-runtime-18.1.2-spike'
+$env:XIAOGUI_OMP_P1D_STORAGE_DIRECTORY='D:\CodexCache\xiaogui-omp-p1d-a-activated'
+$env:XIAOGUI_OMP_P1D_STATE_DIRECTORY='D:\CodexCache\xiaogui-omp-p1d-a-state'
+npm run test:unit -- src/main/xiaogui/agent-runtime/omp-runtime-bundle.test.ts
+```
+
+结果：`1 test file passed`，`4 tests passed`，退出码 `0`，耗时 `179.96s`；完成完整复制、全树复验、活动回执检查、固定入口版本探测和 ACP initialize，没有调用模型。
+
+类型与差异检查：
+
+```powershell
+npm run typecheck
+git diff --check
+```
+
+结果：Web/Node 类型检查退出码 `0`；差异检查退出码 `0`，只有 Windows LF/CRLF 提示。未运行仓库全量、OMP 上游、WORK/Office 或 Portable 测试。
+
+规格审查修复后的最小追加回归：
+
+```powershell
+npm run test:unit -- src/main/xiaogui/agent-runtime/omp-runtime-bundle.test.ts src/main/xiaogui/agent-runtime/omp-acp-production.test.ts src/main/xiaogui/agent-runtime/omp-acp-adapter.test.ts
+node node_modules\typescript\bin\tsc -p tsconfig.node.json --noEmit
+```
+
+结果：`3 test files passed`，`14 tests passed`，`3 tests skipped`；Node TypeScript 退出码 `0`。该轮验证缓存后的关键 native 篡改仍立即拒绝，以及 UNKNOWN 后来结算时同请求能直接回放终态。
+
+详细数据、边界与风险见 `doc/runtime-r4/OMP-ACP-P1D-A-QA.md`；双轴只读审查及修复闭环见 `doc/runtime-r4/OMP-ACP-P1D-A-REVIEW.md`。
+
+### 审查结果
+
+- Standards 轴：无阻断、无新增工程 smell。
+- Spec 轴：首轮发现“缓存后关键 native 篡改可能漏检”和“UNKNOWN 被永久缓存”两个阻断；均已修复并由最小追加回归覆盖，复审阻断数为 `0`。
+- 独立代码质量复审：`CLEAR` / `APPROVE`，无阻断项。跨进程安装锁、损坏安装的用户可见修复入口和断电级持久性只作为后续 LOW 风险记录，不在 P1D-A 扩围。
+- 最终阶段门禁：`APPROVE`，无真实阻断；只授权提交并推送当前独立分支，随后停止并等待人工验收。
+
+### 已知风险
+
+1. 完整树校验实测约数分钟。生产 inspector 在单进程内缓存一次完整树成功结果，同时每次启动重验活动指针、回执和所有关键文件；非关键依赖在缓存期内发生的外部篡改需通过活动版本切换、显式 fresh 或进程重启发现。
+2. 固定闭包源与活动副本合计约 1.60 GB 文件字节；旧版本又会继续占用空间。P1D-B 必须展示动态空间需求，并将清理做成单独人工确认动作。
+3. 原子指针使用同文件系统临时文件加 rename，并在回读失败时恢复旧指针；未宣称可覆盖断电和底层文件系统损坏的所有情形。
+4. OMP 版本、lock、完整树或 approval envelope 任一升级仍必须重新 Spike 并生成新 manifest，不能沿用 18.1.2 回执。
+5. 当前产品入口未读取私有存储配置或显示安装状态；这是 P1D-B 边界，不得把当前候选误称为用户可见成品。
+
+### 下一阶段计划
+
+提交并推送当前 P1D-A 分支，复核远端 SHA 与干净状态后等待人工验收。只有用户明确放行后才规划 P1D-B 的目录选择、装配进度和单机试用入口；不自动合并、不切默认 Runtime、不发布。
+
 ## 2026-09-03｜RUNTIME-R4 OMP ACP Runtime P1C 真实 Coding、结果对账与恢复
 
 ### 本阶段目标与状态

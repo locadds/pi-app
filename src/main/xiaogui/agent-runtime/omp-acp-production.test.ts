@@ -9,6 +9,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -76,8 +77,8 @@ import {
 } from './omp-acp-production'
 import {
   OmpTrustedInstallationModuleV1,
-  type OmpTrustedInstallationReceiptV1,
 } from './omp-trusted-installation'
+import type { OmpRuntimeBundleActivationReceiptV1 } from './omp-runtime-bundle'
 import { createAgentRuntimeRegistryV1 } from './runtime-registry'
 
 const roots: string[] = []
@@ -112,15 +113,16 @@ describe('Oh My Pi ACP P1C production seam', () => {
     const entry = join(root, 'dist', 'cli.js')
     mkdirSync(join(root, 'dist'), { recursive: true })
     writeFileSync(entry, `console.log('${OMP_ACP_APPROVED_VERSION_V1}')\n`, 'utf8')
-    const inspect = vi.fn(() => ({
+    const inspect = vi.fn(async () => ({
       ok: true as const,
+      packageRoot: root,
+      runtimeRoot,
       receipt: {
         entryRelativePath: 'dist/cli.js',
         receiptDigest: RECEIPT_DIGEST,
-      } as OmpTrustedInstallationReceiptV1,
+      } as OmpRuntimeBundleActivationReceiptV1,
     }))
     const provider = new OmpTrustedAcpLaunchProviderV1({
-      packageRoot: root,
       installation: { inspect },
       bunProbe: {
         async findExecutable() {
@@ -177,6 +179,163 @@ describe('Oh My Pi ACP P1C production seam', () => {
     expect(resolveWorkspace).not.toHaveBeenCalled()
     expect(createTransport).not.toHaveBeenCalled()
     await adapter.close()
+  })
+
+  it('replays settled and unsettled requests from durable recovery before inspecting a transiently unavailable install', async () => {
+    const root = tempRoot('xiaogui-omp-replay-')
+    const recovery = new SqliteOmpAcpRecoveryStoreV1({
+      dbPath: join(root, 'recovery.sqlite'),
+      now: () => SETTLED_AT,
+    })
+    const settledRequest = {
+      ...syntheticRequest(root),
+      requestId: 'xhbrr_omp_p1d_settled',
+    }
+    const unsettledRequest = {
+      ...syntheticRequest(root),
+      requestId: 'xhbrr_omp_p1d_unsettled',
+    }
+    const settledSessionId = `xgrs_${'c'.repeat(32)}`
+    const unsettledSessionId = `xgrs_${'d'.repeat(32)}`
+    await recovery.bind({
+      publicRuntimeSessionId: settledSessionId,
+      vendorSessionId: 'omp-vendor-session-p1d-settled',
+      request: settledRequest,
+      installationReceiptDigest: RECEIPT_DIGEST,
+    })
+    const settledOutcome = {
+      state: 'SUCCEEDED' as const,
+      runtimeSessionId: settledSessionId,
+      receiptDigest: `sha256:${'8'.repeat(64)}`,
+      candidateDigest: `sha256:${'7'.repeat(64)}`,
+    }
+    await recovery.settle(settledSessionId, settledOutcome)
+    await recovery.bind({
+      publicRuntimeSessionId: unsettledSessionId,
+      vendorSessionId: 'omp-vendor-session-p1d-unsettled',
+      request: unsettledRequest,
+      installationReceiptDigest: RECEIPT_DIGEST,
+    })
+
+    const inspectLaunch = vi.fn(async () => ({
+      available: false as const,
+      reasonCode: 'OMP_RUNTIME_BUNDLE_NOT_ACTIVATED',
+    }))
+    const resolveWorkspace = vi.fn()
+    const createTransport = vi.fn()
+    const adapter = createOmpAcpRuntimeAdapterV1({
+      payloadResolver: payloadResolver('must not resolve'),
+      workspaceResolver: { resolve: resolveWorkspace },
+      runtimeStateDir: join(root, 'state'),
+      transportFactory: { create: createTransport } as unknown as AcpTransportFactoryV1,
+      productionGate: {
+        enabled: true,
+        selection: ompAcpProductionSelectionV1(),
+        trustedLaunch: { inspectLaunch },
+        recoveryStore: recovery,
+        candidateInspector: {
+          async inspect() { return { candidateDigest: settledOutcome.candidateDigest } },
+        },
+      },
+    })
+
+    await expect(adapter.createOrResume(settledRequest)).resolves.toEqual(settledOutcome)
+    await expect(adapter.inspect(settledSessionId)).resolves.toEqual(settledOutcome)
+    await expect(adapter.createOrResume(unsettledRequest)).resolves.toMatchObject({
+      state: 'OUTCOME_UNKNOWN',
+      runtimeSessionId: unsettledSessionId,
+      reasonCode: 'OMP_RESTORED_OUTCOME_UNSETTLED',
+    })
+    await expect(adapter.inspect(unsettledSessionId)).resolves.toMatchObject({
+      state: 'OUTCOME_UNKNOWN',
+      runtimeSessionId: unsettledSessionId,
+      reasonCode: 'OMP_RESTORED_OUTCOME_UNSETTLED',
+    })
+    const laterOutcome = {
+      state: 'FAILED' as const,
+      runtimeSessionId: unsettledSessionId,
+      receiptDigest: `sha256:${'6'.repeat(64)}`,
+      reasonCode: 'OMP_TEST_LATER_SETTLED',
+    }
+    await recovery.settle(unsettledSessionId, laterOutcome)
+    await expect(adapter.createOrResume(unsettledRequest)).resolves.toEqual(laterOutcome)
+    expect(inspectLaunch).not.toHaveBeenCalled()
+    expect(resolveWorkspace).not.toHaveBeenCalled()
+    expect(createTransport).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it('adds the request lookup seam to an existing P1C recovery database', async () => {
+    const root = tempRoot('xiaogui-omp-recovery-migration-')
+    const dbPath = join(root, 'recovery.sqlite')
+    const request = { ...syntheticRequest(root), requestId: 'xhbrr_omp_p1d_migrated' }
+    const publicRuntimeSessionId = `xgrs_${'e'.repeat(32)}`
+    const vendorSessionId = 'omp-vendor-session-p1d-migrated'
+    const requestDigest = testDigestJson(request)
+    const selectionDigest = testDigestJson(request.selection)
+    const workspaceBindingDigest = testDigestJson(request.workspace)
+    const unsignedBinding = {
+      publicRuntimeSessionId,
+      vendorSessionId,
+      attemptId: request.scope.attemptId,
+      requestDigest,
+      selectionDigest,
+      workspaceBindingDigest,
+      installationReceiptDigest: RECEIPT_DIGEST,
+      createdAt: SETTLED_AT,
+    }
+    const legacy = new DatabaseSync(dbPath)
+    legacy.exec(`
+      create table xiaogui_omp_acp_recovery_bindings_v1 (
+        public_runtime_session_id text primary key,
+        vendor_session_id text not null,
+        attempt_id text not null,
+        request_json text not null,
+        request_digest text not null,
+        selection_digest text not null,
+        workspace_binding_digest text not null,
+        installation_receipt_digest text not null,
+        binding_digest text not null,
+        outcome_json text,
+        outcome_digest text,
+        created_at text not null,
+        settled_at text
+      )
+    `)
+    legacy.prepare(`
+      insert into xiaogui_omp_acp_recovery_bindings_v1 (
+        public_runtime_session_id, vendor_session_id, attempt_id, request_json,
+        request_digest, selection_digest, workspace_binding_digest,
+        installation_receipt_digest, binding_digest, outcome_json,
+        outcome_digest, created_at, settled_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, null)
+    `).run(
+      publicRuntimeSessionId,
+      vendorSessionId,
+      request.scope.attemptId,
+      JSON.stringify(request),
+      requestDigest,
+      selectionDigest,
+      workspaceBindingDigest,
+      RECEIPT_DIGEST,
+      testDigestJson({ domain: 'xiaogui.omp-acp.recovery-binding.v1', ...unsignedBinding }),
+      SETTLED_AT,
+    )
+    legacy.close()
+
+    const recovery = new SqliteOmpAcpRecoveryStoreV1({ dbPath, now: () => SETTLED_AT })
+    await expect(recovery.readByRequestId(request.requestId)).resolves.toMatchObject({
+      publicRuntimeSessionId,
+      vendorSessionId,
+      request,
+    })
+    await expect(recovery.bind({
+      publicRuntimeSessionId: `xgrs_${'f'.repeat(32)}`,
+      vendorSessionId: 'omp-vendor-session-p1d-duplicate',
+      request,
+      installationReceiptDigest: RECEIPT_DIGEST,
+    })).rejects.toThrow('OMP_RECOVERY_REQUEST_CONFLICT')
+    recovery.close()
   })
 
   it('keeps RuntimeMonitor, real worktree Diff, TaskChangeSet, Delivery, and restart recovery on one candidate digest', async () => {
@@ -403,10 +562,14 @@ describe('Oh My Pi ACP P1C production seam', () => {
     expect(tampered).toMatchObject({ ok: false, reasonCode: 'TASK_CHANGESET_DIGEST_DRIFT' })
 
     const unsettledRuntimeSessionId = `xgrs_${'b'.repeat(32)}`
+    const unsettledRequest = {
+      ...request,
+      requestId: 'xhbrr_omp_p1c_unsettled_recovery',
+    }
     await firstRecovery.bind({
       publicRuntimeSessionId: unsettledRuntimeSessionId,
       vendorSessionId: 'omp-vendor-session-unsettled',
-      request,
+      request: unsettledRequest,
       installationReceiptDigest: RECEIPT_DIGEST,
     })
     const stored = await firstRecovery.read(created.runtimeSessionId)
@@ -547,7 +710,21 @@ describe('Oh My Pi ACP P1C production seam', () => {
       productionGate: {
         enabled: true,
         selection: ompAcpProductionSelectionV1(),
-        trustedLaunch: new OmpTrustedAcpLaunchProviderV1({ packageRoot, installation }),
+        trustedLaunch: new OmpTrustedAcpLaunchProviderV1({
+          installation: {
+            async inspect() {
+              const inspected = installation.inspect()
+              return inspected.ok
+                ? {
+                    ok: true as const,
+                    runtimeRoot: join(packageRoot, '..', '..', '..'),
+                    packageRoot,
+                    receipt: inspected.receipt as unknown as OmpRuntimeBundleActivationReceiptV1,
+                  }
+                : inspected
+            },
+          },
+        }),
         recoveryStore: recovery,
         candidateInspector: new TaskHubOmpCandidateInspectorV1(workspaces),
       },
@@ -788,6 +965,7 @@ function inertRecoveryStore() {
     async bind() {},
     async settle() {},
     async read() { return null },
+    async readByRequestId() { return null },
     close() {},
   }
 }
@@ -939,6 +1117,10 @@ function requiredAbsoluteEnv(name: string): string {
   const value = process.env[name]
   if (!value || !/^(?:[A-Za-z]:[\\/]|\/)/.test(value)) throw new Error(`${name}_REQUIRED`)
   return value
+}
+
+function testDigestJson(value: unknown): string {
+  return digestBytes(Buffer.from(JSON.stringify(value), 'utf8'))
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

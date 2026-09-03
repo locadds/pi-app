@@ -126,6 +126,7 @@ export interface OmpAcpRecoveryStoreV1 {
     outcome: Exclude<RuntimeOutcomeV1, { state: 'OUTCOME_UNKNOWN' }>,
   ): Promise<void>
   read(publicRuntimeSessionId: string): Promise<OmpAcpRecoveryBindingV1 | null>
+  readByRequestId(requestId: string): Promise<OmpAcpRecoveryBindingV1 | null>
   close(): void | Promise<void>
 }
 
@@ -242,11 +243,20 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
     if (this.closed) return failed('runtime-unbound', 'OMP_ADAPTER_CLOSED')
     let launch: OmpAcpLaunchV1
     let production: OmpProductionSessionContextV1 | undefined
+    let requestDigest: string
     if (isContractTestRequest(request)) {
       const shape = validateRuntimeContractTestCreateRequestShapeV1(request)
       if (!shape.ok) return failed('runtime-unbound', shape.reasonCode)
       const allowed = isRuntimeContractTestSelectionAllowed(request.selection, request.contractTestPolicy)
       if (!allowed.ok) return failed('runtime-unbound', allowed.reasonCode)
+
+      requestDigest = digestJson(request)
+      const existing = this.idempotency.get(request.requestId)
+      if (existing) {
+        return existing.requestDigest === requestDigest
+          ? existing.outcome
+          : failed('runtime-unbound', 'IDEMPOTENCY_CONFLICT')
+      }
 
       const candidate = await this.probe.findExecutable()
       if (!candidate.available) return failed('runtime-unbound', candidate.reasonCode)
@@ -272,6 +282,31 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
       if (!selectionMatchesProductionCandidate(request.selection, gate.selection)) {
         return failed('runtime-unbound', 'OMP_PRODUCTION_SELECTION_MISMATCH')
       }
+
+      requestDigest = digestJson(request)
+      const existing = this.idempotency.get(request.requestId)
+      if (existing) {
+        return existing.requestDigest === requestDigest
+          ? existing.outcome
+          : failed('runtime-unbound', 'IDEMPOTENCY_CONFLICT')
+      }
+      let recovered: OmpAcpRecoveryBindingV1 | null
+      try {
+        recovered = await gate.recoveryStore.readByRequestId(request.requestId)
+      } catch {
+        return unknown('runtime-unbound', 'OMP_RECOVERY_LOOKUP_FAILED')
+      }
+      if (recovered) {
+        if (digestJson(recovered.request) !== requestDigest) {
+          return failed('runtime-unbound', 'IDEMPOTENCY_CONFLICT')
+        }
+        const persisted = await this.outcomeFromRecoveryBinding(recovered)
+        if (persisted.state === 'OUTCOME_UNKNOWN') {
+          return persisted
+        }
+        this.idempotency.set(request.requestId, { requestDigest, outcome: persisted })
+        return persisted
+      }
       const trusted = await gate.trustedLaunch.inspectLaunch()
       if (!trusted.available) return failed('runtime-unbound', trusted.reasonCode)
       if (!isApprovedProductionLaunch(trusted)) {
@@ -283,14 +318,6 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
         recoveryStore: gate.recoveryStore,
         candidateInspector: gate.candidateInspector,
       }
-    }
-
-    const requestDigest = digestJson(request)
-    const existing = this.idempotency.get(request.requestId)
-    if (existing) {
-      return existing.requestDigest === requestDigest
-        ? existing.outcome
-        : failed('runtime-unbound', 'IDEMPOTENCY_CONFLICT')
     }
 
     let workspace: OmpAcpWorkspaceResolutionV1
@@ -561,6 +588,25 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
   async *stream(runtimeSessionId: string, afterSequence: number): AsyncIterable<RuntimeEventV1> {
     const state = this.sessions.get(runtimeSessionId)
     if (!state) {
+      const persisted = await this.persistedOutcome(runtimeSessionId)
+      if (persisted) {
+        if (persisted.state === 'OUTCOME_UNKNOWN') {
+          yield {
+            type: 'OUTCOME_UNKNOWN',
+            runtimeSessionId,
+            sequence: afterSequence + 1,
+            reasonCode: persisted.reasonCode,
+          }
+        } else {
+          yield {
+            type: 'RUNTIME_SETTLED',
+            runtimeSessionId,
+            sequence: afterSequence + 1,
+            outcome: persisted.state,
+          }
+        }
+        return
+      }
       yield {
         type: 'OUTCOME_UNKNOWN',
         runtimeSessionId,
@@ -651,7 +697,10 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
 
   async inspect(runtimeSessionId: string): Promise<RuntimeOutcomeV1> {
     const state = this.sessions.get(runtimeSessionId)
-    if (!state) return unknown(runtimeSessionId, 'RUNTIME_SESSION_NOT_FOUND')
+    if (!state) {
+      return await this.persistedOutcome(runtimeSessionId)
+        ?? unknown(runtimeSessionId, 'RUNTIME_SESSION_NOT_FOUND')
+    }
     return state.outcome ?? unknown(runtimeSessionId, 'RUNTIME_STILL_RUNNING')
   }
 
@@ -708,12 +757,45 @@ export class OmpAcpRuntimeAdapterV1 implements AgentRuntimeAdapterV1, AgentRunti
       gate.recoveryStore.durable !== true ||
       typeof gate.recoveryStore.bind !== 'function' ||
       typeof gate.recoveryStore.read !== 'function' ||
+      typeof gate.recoveryStore.readByRequestId !== 'function' ||
       typeof gate.recoveryStore.settle !== 'function'
     ) return 'OMP_DURABLE_RECOVERY_UNAVAILABLE'
     if (typeof gate.candidateInspector.inspect !== 'function') {
       return 'OMP_RESULT_RECONCILE_UNAVAILABLE'
     }
     return undefined
+  }
+
+  private async persistedOutcome(runtimeSessionId: string): Promise<RuntimeOutcomeV1 | null> {
+    const gate = this.options.productionGate
+    if (!gate?.enabled || this.closed) return null
+    try {
+      const binding = await gate.recoveryStore.read(runtimeSessionId)
+      if (!binding) return null
+      return this.outcomeFromRecoveryBinding(binding)
+    } catch {
+      return unknown(runtimeSessionId, 'OMP_RECOVERY_LOOKUP_FAILED')
+    }
+  }
+
+  private async outcomeFromRecoveryBinding(binding: OmpAcpRecoveryBindingV1): Promise<RuntimeOutcomeV1> {
+    if (!binding.outcome) {
+      return unknown(binding.publicRuntimeSessionId, 'OMP_RESTORED_OUTCOME_UNSETTLED')
+    }
+    if (binding.outcome.state !== 'SUCCEEDED') return binding.outcome
+    try {
+      const gate = this.options.productionGate
+      if (!gate?.enabled) return unknown(binding.publicRuntimeSessionId, 'OMP_RESULT_RECONCILE_UNAVAILABLE')
+      const inspected = await gate.candidateInspector.inspect({
+        attemptId: binding.request.scope.attemptId,
+        allowNoApprovedChanges: isReadOnlyRole(binding.request),
+      })
+      return inspected.candidateDigest === binding.outcome.candidateDigest
+        ? binding.outcome
+        : unknown(binding.publicRuntimeSessionId, 'OMP_CANDIDATE_RUNTIME_RESULT_MISMATCH')
+    } catch {
+      return unknown(binding.publicRuntimeSessionId, 'OMP_CANDIDATE_RECONCILE_FAILED')
+    }
   }
 
   private handlePermissionRequest(

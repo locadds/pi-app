@@ -37,12 +37,12 @@ import {
   SystemOmpBunRuntimeProbeV1,
 } from '../agent-runtime/omp-acp-production'
 import {
-  OMP_ACP_APPROVED_ARCHIVE_URL_V1,
-  OMP_ACP_APPROVED_NPM_INTEGRITY_V1,
-  OMP_ACP_APPROVED_PACKAGE_NAME_V1,
   OMP_ACP_ENTRY_RELATIVE_PATH_V1,
-  OmpTrustedInstallationModuleV1,
 } from '../agent-runtime/omp-trusted-installation'
+import {
+  OMP_RUNTIME_BUNDLE_MANIFEST_V1,
+  OmpActivatedRuntimeBundleModuleV1,
+} from '../agent-runtime/omp-runtime-bundle'
 import { resolveOmpPrivateLayoutV1 } from '../agent-runtime/omp-private-layout'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
@@ -359,22 +359,24 @@ describe('Xiaogui runtime composition v1', () => {
       `process.stdout.write('${OMP_ACP_APPROVED_VERSION_V1}\\n')\n`,
       'utf8',
     )
-    const installationInspect = vi.spyOn(OmpTrustedInstallationModuleV1.prototype, 'inspect')
-      .mockReturnValue({
+    const installationInspect = vi.spyOn(OmpActivatedRuntimeBundleModuleV1.prototype, 'inspect')
+      .mockResolvedValue({
         ok: true,
+        runtimeRoot: layout.runtimeRoot,
+        packageRoot: layout.packageRoot,
         receipt: {
           schemaVersion: 1,
-          packageName: OMP_ACP_APPROVED_PACKAGE_NAME_V1,
+          manifestDigest: OMP_RUNTIME_BUNDLE_MANIFEST_V1.manifestDigest,
+          packageName: OMP_RUNTIME_BUNDLE_MANIFEST_V1.packageName,
           version: OMP_ACP_APPROVED_VERSION_V1,
           sourceRevision: OMP_ACP_SOURCE_REVISION_V1,
-          npmIntegrity: OMP_ACP_APPROVED_NPM_INTEGRITY_V1,
-          packageArchiveUrl: OMP_ACP_APPROVED_ARCHIVE_URL_V1,
           entryRelativePath: OMP_ACP_ENTRY_RELATIVE_PATH_V1,
-          packageJsonDigest: `sha256:${'1'.repeat(64)}`,
-          entryDigest: `sha256:${'2'.repeat(64)}`,
-          treeDigest: `sha256:${'3'.repeat(64)}`,
-          packageFileCount: 3_136,
-          packageByteLength: 48_326_575,
+          rootPackageJsonDigest: OMP_RUNTIME_BUNDLE_MANIFEST_V1.rootPackageJsonDigest,
+          dependencyLockDigest: OMP_RUNTIME_BUNDLE_MANIFEST_V1.dependencyLockDigest,
+          treeDigest: OMP_RUNTIME_BUNDLE_MANIFEST_V1.treeDigest,
+          fileCount: OMP_RUNTIME_BUNDLE_MANIFEST_V1.fileCount,
+          directoryCount: OMP_RUNTIME_BUNDLE_MANIFEST_V1.directoryCount,
+          byteLength: OMP_RUNTIME_BUNDLE_MANIFEST_V1.byteLength,
           privateStateDirDigest: `sha256:${'4'.repeat(64)}`,
           recordedAt: '2026-09-03T00:00:00.000Z',
           receiptDigest: `sha256:${'5'.repeat(64)}`,
@@ -394,6 +396,7 @@ describe('Xiaogui runtime composition v1', () => {
       userDataDir,
       productionEnabled: false,
       ompProductionEnabled: true,
+      ompRuntimeStorageDirectory: userDataDir,
       lookup: lookup('CODING'),
       projectResolver: { resolveProjectRoot },
       ompProbe: pathProbe,
