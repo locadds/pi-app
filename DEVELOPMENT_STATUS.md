@@ -37,6 +37,7 @@
 7. 存储根、`versions`、私有 state 和 native cache 改为逐级非递归安全创建：每层写入前后均核对实路径父子关系；junction/symlink 不再出现“写穿后才拒绝”。
 8. 同一 storage root 使用一个 SQLite `BEGIN EXCLUSIVE` 排他锁；不同 profile/state 也不能并行装配，进程崩溃由 SQLite/OS 自动释放。缓存只在锁内发布，晚期失败只清理本事务新建的 candidate/native cache。
 9. 重新完成 Pi 原生、Skill、插件/Package 候选实查并记录到 QA：复用既有 ACP Process Transport、`preSpawn`、TaskHub、Node SQLite 和 OMP package；Skill/Extension 无法在 native `require` 前提供进程环境和二进制回执门，因此只扩展既有最小接缝。
+10. 为回应 Standards 的文档门，本轮补充了 QA 的具体候选对象、官方来源、可固定版本/元数据和只读冒烟结果；源码与测试闭环保持不变。
 
 ### 未完成内容
 
@@ -51,6 +52,7 @@
 - 为修复实际 native 加载逃逸，新增约 175.6 MB 的回执绑定缓存。这是上游 Windows loader 固定行为要求的显式存储成本，已纳入空间预检和 D 盘总账。
 - 仍保留 P1B/P1C 的 `omp-trusted-installation` 兼容证据；本轮不为消除 LOW 级重复而扩大重构范围。
 - 真实门仅做 ACP initialize、模块路径和篡改拒绝，不发送模型 Prompt；P1C 已验收模型改文件旅程，本轮没有重复。
+- 本轮仅做文档证据补齐，没有新增源码变更，也没有重新运行 802 MB 真实门或仓库全量测试。
 
 ### 测试命令和测试结果
 

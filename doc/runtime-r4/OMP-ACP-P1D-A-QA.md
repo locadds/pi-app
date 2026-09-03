@@ -57,8 +57,20 @@
 本轮重新按根 `AGENTS.md` 和 ADR 实查，而不是只读名称或 README：
 
 1. **Pi/小规原生接缝**：现有 `AcpProcessTransportFactoryV1` 已负责进程启动，`preSpawn` 已负责启动前受信检查，TaskHub 已负责 Attempt、权限、工作树、结果对账和恢复。本轮直接复用这些接缝，只把 `preSpawn` 扩展为可等待的校验，并增加“不继承父环境”的可选项；没有新建 Agent Loop、安装状态机或权限系统。
-2. **Pi Skill**：仓库内置 Skills 在 Pi Worker 启动后提供 Prompt/流程指导，无法在 OMP native `require` 之前约束子进程环境、解析 Windows 模块加载路径或校验二进制摘要，不能解决本次供应链/进程隔离缺口。
-3. **Pi 插件/Extension/Package**：现有 Coding Extension Pack 与 TaskHub 接缝同样运行在 Agent/会话层；OMP 固定 package 自身的 `loader-state.js` 实查证明 Windows 会优先复用版本缓存。插件配置不能给该上游 loader 增加回执校验。最小可行接缝因此是既有 ACP Process Transport 的环境与 `preSpawn`，而不是另引插件框架。
+2. **Pi Skill 只读调查对象**：仓库内置 Skills、`pi-list-skills`、`pi-skillful` 与 `pi-skill-shiori`。
+   - 来源：根 `AGENTS.md` 的优先门、`https://pi.dev/packages/pi-list-skills`、`https://pi.dev/packages/pi-skillful`、`https://pi.dev/packages/pi-skill-shiori`。
+   - 版本/commit：Skill 目录与 pi.dev 页面未公开固定 commit；仅 `pi-list-skills@1.0.3`、`pi-skillful` 页面和 `pi-skill-shiori` 页面可确认当前发布状态，不能把页面说明当作受信装配证据。
+   - license：`pi-list-skills` 对应 npm 元数据为 MIT；`pi-skillful`、`pi-skill-shiori` 页面未单列 license，但本轮只读核对到的 npm 组件均为 MIT，仍不能替代 native 闭包验收。
+   - 能做什么：列出/整理已加载 Skills、改进 Skill 发现与触发、减少技能目录噪声。
+   - 为什么仍不足：这些能力都发生在 Pi Worker / 会话层，不能在 OMP native `require` 之前约束 Windows 子进程环境，也不能校验二进制摘要、模块加载路径或受信闭包缓存。
+   - 最小只读冒烟：`curl.exe -I -L https://pi.dev/packages/pi-list-skills`、`curl.exe -I -L https://pi.dev/packages/pi-skillful`、`curl.exe -I -L https://pi.dev/packages/pi-skill-shiori`，三者均返回 `200`。
+3. **Pi 插件/Extension/Package 只读调查对象**：`pi-web-access`、`pi-extension-toolkit`、`pi-subagents`、`pi-spine`，以及 `@oh-my-pi/pi-coding-agent@18.1.5`。
+   - 来源：`https://pi.dev/packages/pi-web-access`、`https://pi.dev/packages/pi-extension-toolkit`、`https://pi.dev/packages/pi-subagents`、`https://pi.dev/packages/pi-spine`，以及 npm 官方元数据 `npm view @oh-my-pi/pi-coding-agent version dist.integrity description --json`。
+   - 版本/commit：`@oh-my-pi/pi-coding-agent` 当前 npm 元数据为 `18.1.5`，`dist.integrity` 为 `sha512-ChIajiBfblgXnrzsrvFi52b8CKKh7IeVnfekWAR/7AoCYvcKKWkCbq+N+ePQykst7vh2pO5cOlG0jhEjShj0Yg==`；pi.dev 页面未公开独立 commit，仅能固定页面 URL 和当下版本说明。
+   - license：上述 npm 组件均为 MIT；pi.dev 页面仅作为发现入口，不把页面陈述当作装配签收。
+   - 能做什么：`pi-web-access` 提供 web 搜索、URL 抓取、GitHub clone、PDF/视频分析；`pi-extension-toolkit` 用于 scaffold / retrofit / verify 扩展；`pi-subagents` 提供单代理委派与脚本化多代理工作流；`pi-spine` 提供长任务编排脊柱。
+   - 为什么仍不足：这些包或页面都不能替代 OMP 自身的 Windows native 受信加载闭包。它们要么在网络/工具层，要么在扩展开发层，要么在协作编排层，不能给上游 `loader-state.js` 加上 activation receipt 绑定、不能阻止 `%USERPROFILE%\.omp` 的全局缓存优先级，也不能保证实际加载模块来自回执绑定缓存。
+   - 最小只读冒烟：`curl.exe -I -L https://pi.dev/packages/pi-web-access`、`curl.exe -I -L https://pi.dev/packages/pi-extension-toolkit`、`curl.exe -I -L https://pi.dev/packages/pi-subagents`、`curl.exe -I -L https://pi.dev/packages/pi-spine`，四者均返回 `200`；`npm view @oh-my-pi/pi-coding-agent version dist.integrity description --json` 返回 `18.1.5` 与上述 integrity。
 4. **真实验证**：封闭环境用真实子进程证明父进程敌意 sentinel 不会继承；固定 OMP 18.1.2 用真实 ACP 进程模块表证明加载文件来自回执绑定缓存。该证据直接验证了上述能力缺口与最小适配。
 
 ## 测试证据
