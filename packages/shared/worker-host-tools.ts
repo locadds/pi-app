@@ -44,6 +44,14 @@ import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from './xiaogui
 import type { TemplateDraftReviewRequestV2 } from './xiaogui-template-draft-review'
 import type { WorkMaterialsSnapshotV1 } from './xiaogui-work-materials'
 import type { CodingPlanBodyV1 } from './xiaogui-coding-extension-pack'
+import type {
+  DirectCodingBeginPayloadV2,
+  DirectCodingBeginResultV2,
+  DirectCodingPreflightPayloadV2,
+  DirectCodingPreflightResultV2,
+  DirectCodingSettlePayloadV2,
+  DirectCodingSettleResultV2,
+} from './xiaogui-direct-coding'
 
 /**
  * Worker 内的 Pi 工具只能通过这条窄通道请求主进程能力。
@@ -65,6 +73,12 @@ export const XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1 =
 export const XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 = 'xiaogui.work.document-snapshot.v1' as const
 export const XIAOGUI_WORK_MATERIALS_METHOD_V1 = 'xiaogui.work.materials.v1' as const
 export const XIAOGUI_CODING_PLAN_DRAFT_METHOD_V1 = 'xiaogui.coding.plan-draft.v1' as const
+export const XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V2 =
+  'xiaogui.coding.direct.preflight.v2' as const
+export const XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V2 =
+  'xiaogui.coding.direct.begin.v2' as const
+export const XIAOGUI_DIRECT_CODING_SETTLE_METHOD_V2 =
+  'xiaogui.coding.direct.settle.v2' as const
 
 export interface XiaoguiCreateCollaborationPlanPayloadV1 {
   draft: InitialPlanDraftInputV1
@@ -335,6 +349,24 @@ export type WorkerHostToolRequestV1 =
       method: typeof XIAOGUI_CODING_PLAN_DRAFT_METHOD_V1
       payload: XiaoguiCodingPlanDraftPayloadV1
     }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: typeof XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V2
+      payload: DirectCodingPreflightPayloadV2
+    }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: typeof XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V2
+      payload: DirectCodingBeginPayloadV2
+    }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: typeof XIAOGUI_DIRECT_CODING_SETTLE_METHOD_V2
+      payload: DirectCodingSettlePayloadV2
+    }
 
 /**
  * WORK 文档快照的模型侧接口同样不携带地址、路径、文件句柄或密码。
@@ -580,6 +612,11 @@ export type WorkerHostToolErrorCodeV1 =
   | 'WORK_DOCUMENT_SNAPSHOT_ACTIVE'
   | 'CODING_PLAN_DRAFT_INVALID'
   | 'CODING_PLAN_MODE_REQUIRED'
+  | 'DIRECT_CODING_REQUEST_INVALID'
+  | 'DIRECT_CODING_PERMISSION_DENIED'
+  | 'DIRECT_CODING_PATH_REJECTED'
+  | 'DIRECT_CODING_CHECKPOINT_FAILED'
+  | 'DIRECT_CODING_OUTCOME_UNKNOWN'
   | WorkDocxErrorCodeV1
   | TemplateIntakeErrorCodeV1
   | TemplateMaterializeErrorCodeV1
@@ -601,6 +638,9 @@ export type WorkerHostToolOutcomeV1 =
         | XiaoguiWorkDocumentSnapshotResultV1
         | XiaoguiWorkMaterialsResultV1
         | XiaoguiCodingPlanDraftResultV1
+        | DirectCodingPreflightResultV2
+        | DirectCodingBeginResultV2
+        | DirectCodingSettleResultV2
     }
   | {
       ok: false

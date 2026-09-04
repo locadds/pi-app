@@ -20,6 +20,8 @@ export type WorkerSlot = {
   cwd: string
   /** Runtime identity captured when this worker was created. */
   runtime: { mode: 'host' | 'wsl'; distro: string | null }
+  /** Project root + resource configuration + runtime captured at Worker creation. */
+  executionIdentityDigest: string
   /** Bound session file when known; null for workspace-only slots */
   sessionFile: string | null
   /** Worker 当前实际绑定的 Pi session id；与 sessionFile 一起随生命周期回包同步更新。 */

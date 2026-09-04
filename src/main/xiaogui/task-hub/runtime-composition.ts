@@ -56,6 +56,8 @@ import {
 import { CodingPermissionModuleV1 } from '../coding-extensions/permission-module'
 import { CodingPermissionModeModuleV1 } from '../coding-extensions/permission-mode-module'
 import { MainProcessCodingPermissionUIAdapterV1 } from '../coding-extensions/permission-ui-adapter'
+import { CodingAuthorizationModuleV2 } from '../coding-extensions/coding-authorization-module'
+import { MainProcessDirectCodingPermissionUIAdapterV2 } from '../coding-extensions/direct-permission-ui-adapter'
 import { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-module'
 import {
   CodingAttemptReviewModuleV1,
@@ -90,6 +92,8 @@ export interface XiaoguiRuntimeCompositionV1 {
   readonly codingPlan: CodingAttemptPlanModuleV1
   readonly codingReview: CodingAttemptReviewModuleV1
   readonly codingRoles: CodingRoleProfileModuleV1
+  /** Shared authorization authority; Direct and TaskHub enter through separate subject Adapters. */
+  readonly codingAuthorization: CodingAuthorizationModuleV2
   stageAttemptInput(input: StageAttemptExecutionInputV1): ResolvedAttemptExecutionInputV1
   close(): Promise<void>
 }
@@ -142,6 +146,7 @@ export function createXiaoguiRuntimeCompositionV1(
   let deliveryWorkflow: XiaoguiDeliveryWorkflowV1 | undefined
   let deliveryApplyRegistry: SqliteDeliveryApplyAttemptRegistryV1 | undefined
   let codingPermissionModule: CodingPermissionModuleV1 | undefined
+  let codingAuthorizationModule: CodingAuthorizationModuleV2 | undefined
   let codingPermissionModeModule: CodingPermissionModeModuleV1 | undefined
   let codingAttemptPlanModule: CodingAttemptPlanModuleV1 | undefined
   let codingReviewStore: CollaborationHubSqliteStoreV1 | undefined
@@ -278,6 +283,10 @@ export function createXiaoguiRuntimeCompositionV1(
       timeoutMs: 60_000,
       now: options.now,
     })
+    codingAuthorizationModule = new CodingAuthorizationModuleV2({
+      directUi: new MainProcessDirectCodingPermissionUIAdapterV2({ timeoutMs: 55_000 }),
+      taskHub: codingPermissionModule,
+    })
     codingAttemptPlanModule = new CodingAttemptPlanModuleV1({
       dbPath: hubDbPath,
       now: options.now,
@@ -311,7 +320,16 @@ export function createXiaoguiRuntimeCompositionV1(
         }
       },
       verificationCoordinator: taskVerificationCoordinator,
-      permissionModule: codingPermissionModule,
+      permissionModule: {
+        decide: (intent) => codingAuthorizationModule!.decideTaskHub({
+          subject: {
+            schemaVersion: 2,
+            kind: 'TASKHUB_ATTEMPT',
+            attemptId: intent.attemptId,
+          },
+          intent,
+        }),
+      },
       permissionScope: attemptWorkspaces,
       attemptPlanGate: codingAttemptPlanModule,
       attemptRoleGate: {
@@ -359,6 +377,7 @@ export function createXiaoguiRuntimeCompositionV1(
       payloadVault,
       workspaceRegistry,
       codingPermissionModule,
+      codingAuthorizationModule,
       codingPermissionModeModule,
       codingAttemptPlanModule,
       codingAttemptReviewModule,
@@ -399,6 +418,7 @@ function createCompositionInterface(
   payloadVault: PrivateRuntimePayloadVaultV1,
   workspaceRegistry: SqliteAttemptWorkspaceRegistryV1,
   codingPermissionModule: CodingPermissionModuleV1,
+  codingAuthorizationModule: CodingAuthorizationModuleV2,
   codingPermissionModeModule: CodingPermissionModeModuleV1,
   codingAttemptPlanModule: CodingAttemptPlanModuleV1,
   codingAttemptReviewModule: CodingAttemptReviewModuleV1,
@@ -416,6 +436,7 @@ function createCompositionInterface(
     codingPlan: codingAttemptPlanModule,
     codingReview: codingAttemptReviewModule,
     codingRoles: codingRoleProfiles,
+    codingAuthorization: codingAuthorizationModule,
     stageAttemptInput(input) {
       if (closed) throw new Error('XIAOGUI_RUNTIME_COMPOSITION_CLOSED')
       return inputStore.stage(input)

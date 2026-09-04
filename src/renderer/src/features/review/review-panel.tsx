@@ -15,6 +15,7 @@ import {
 } from '@renderer/components/icons'
 import { ChangeIcon, FileDiffView, ReviewCommitBar, type DiffMode } from './review-diff-views'
 import { useReviewGitData } from './use-review-git-data'
+import { DirectCodingCheckpointCard } from '@renderer/xiaogui/components/DirectCodingCheckpointCard'
 
 type AnyFileEntry = {
   path: string
@@ -33,6 +34,8 @@ export function ReviewPanel() {
   const [scope, setScope] = useState<Scope>('session')
   const fileChanges = useUIStore((s) => s.fileChanges)
   const workspace = useUIStore((s) => s.currentWorkspace)
+  const currentSessionId = useUIStore((s) => s.currentSessionId)
+  const sessions = useUIStore((s) => s.sessions)
   const activeRunId = useUIStore((s) => s.runState.activeRunId)
   const lastRunId = useUIStore((s) => s.runState.lastRunId)
   const running = useUIStore((s) => s.runState.status === 'running')
@@ -97,6 +100,7 @@ export function ReviewPanel() {
   }, [scope, gitData?.raw])
 
   const cwd = workspace || ''
+  const directCodingScope = sessions.find((session) => session.sessionId === currentSessionId)?.canonicalScope
 
   const handleCopy = (path: string) => {
     navigator.clipboard.writeText(path)
@@ -157,6 +161,9 @@ export function ReviewPanel() {
         </div>
       </div>
       <div className="scrollbar-overlay flex-1 overflow-y-auto">
+        {directCodingScope?.sessionMode === 'CODING' && (
+          <DirectCodingCheckpointCard address={directCodingScope} refreshKey={lastRunId} />
+        )}
         {scope === 'git' && gitData?.log && (
           <div className="border-b border-border/40 px-3 py-2">
             <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold text-foreground-secondary/70">

@@ -4,6 +4,32 @@ import { describe, expect, it, vi } from 'vitest'
 import { CodingPermissionDialog } from './coding-permission-dialog'
 
 describe('CodingPermissionDialog', () => {
+  it('普通 Coding V2 只提供允许一次和拒绝，并提示 Bash 不可撤销', () => {
+    const onChoose = vi.fn()
+    render(
+      <CodingPermissionDialog
+        prompt={{
+          schemaVersion: 2,
+          subject: 'DIRECT_SESSION',
+          requestDigest: `sha256:${'a'.repeat(64)}`,
+          operation: 'BASH',
+          mode: 'FULL_AUTONOMY',
+          commandPreview: 'npm run typecheck',
+          warning: '命令可能访问项目外路径、网络或子进程，且不能自动撤销。',
+          choices: ['ALLOW_ONCE', 'DENY'],
+        }}
+        onChoose={onChoose}
+      />,
+    )
+
+    expect(screen.getByText('npm run typecheck')).toBeTruthy()
+    expect(screen.getByText(/不能自动撤销/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '允许一次' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '允许本次任务中的相同规则' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '拒绝' }))
+    expect(onChoose).toHaveBeenCalledWith('DENY')
+  })
+
   it('只展示安全摘要和相对路径，并提供冻结的三个决定', () => {
     const onChoose = vi.fn()
     render(

@@ -59,6 +59,10 @@ import {
 import { observeAppEventForCompletion, observeWorkerExitForCompletion } from './completion-notification-events'
 import type { XiaoguiPromptContextResolverV1 } from './xiaogui/prompt-context'
 import { findSandboxWorkspaceForSessionFile } from './sandbox-workspaces'
+import {
+  canonicalWorkerProjectRootV1,
+  readCurrentWorkerExecutionIdentityDigestV1,
+} from './worker-execution-identity'
 
 interface InitResult extends WorkerInitResult {}
 
@@ -158,6 +162,7 @@ export class WorkerManager {
 
   /** Bind a session worker and make it the UI foreground authority. */
   async focusSessionWorker(sessionFile: string, cwd: string): Promise<InitResult> {
+    this.rememberSessionWorkspace(sessionFile, cwd)
     const run = this.lifecycleChain.then(async () => {
       const result = await this.ensureSessionWorkerUnlocked(sessionFile, cwd)
       const slot = this.pool.get(normalizeSessionKey(sessionFile))
@@ -181,9 +186,34 @@ export class WorkerManager {
     slot.lastForegroundAt = Date.now()
   }
 
-  private slotMatchesCurrentRuntime(slot: WorkerSlot): boolean {
+  private slotMatchesCurrentRuntime(slot: WorkerSlot, expectedCwd = slot.cwd): boolean {
     const runtime = getAgentRuntimeConfig()
-    return slot.runtime.mode === runtime.mode && slot.runtime.distro === runtime.distro
+    return (
+      slot.runtime.mode === runtime.mode &&
+      slot.runtime.distro === runtime.distro &&
+      slot.executionIdentityDigest ===
+        readCurrentWorkerExecutionIdentityDigestV1(expectedCwd, runtime)
+    )
+  }
+
+  private async disposePoolSlot(slot: WorkerSlot): Promise<void> {
+    for (const [key, candidate] of this.pool) {
+      if (candidate !== slot) continue
+      this.pool.delete(key)
+      if (this.foregroundPoolKey === key) this.foregroundPoolKey = null
+    }
+    if (!slot.stopping) await disposeWorkerSlot(slot, this.mainWindow)
+  }
+
+  /** Resource settings are captured by ResourceLoader at init; stale slots cannot be rebound. */
+  private async disposeStaleSlotsForCwd(cwd: string): Promise<void> {
+    const projectRoot = canonicalWorkerProjectRootV1(cwd)
+    const stale = new Set<WorkerSlot>()
+    for (const slot of this.pool.values()) {
+      if (canonicalWorkerProjectRootV1(slot.cwd) !== projectRoot) continue
+      if (!this.slotMatchesCurrentRuntime(slot, cwd)) stale.add(slot)
+    }
+    for (const slot of stale) await this.disposePoolSlot(slot)
   }
 
   /** Update view/extension UI authority without creating or binding a worker. */
@@ -206,7 +236,7 @@ export class WorkerManager {
     const promptContext = await this.workspacePromptContext(cwd)
     const key = workspacePoolKey(cwd)
     const existing = this.pool.get(key)
-    if (existing && !existing.stopping && this.slotMatchesCurrentRuntime(existing)) {
+    if (existing && !existing.stopping && this.slotMatchesCurrentRuntime(existing, cwd)) {
       this.setForeground(existing)
       evictIdleWorkers(this.pool, {
         foregroundKey: key,
@@ -222,9 +252,12 @@ export class WorkerManager {
       }
     }
 
+    if (existing) await this.disposePoolSlot(existing)
+    await this.disposeStaleSlotsForCwd(cwd)
+
     // Prefer reusing any session slot already on this cwd as workspace foreground
     for (const slot of this.pool.values()) {
-      if (slot.cwd === cwd && !slot.stopping && this.slotMatchesCurrentRuntime(slot)) {
+      if (slot.cwd === cwd && !slot.stopping && this.slotMatchesCurrentRuntime(slot, cwd)) {
         this.setForeground(slot)
         return this.initResultFromSlot(slot)
       }
@@ -281,14 +314,14 @@ export class WorkerManager {
     if (
       wsSlot &&
       !wsSlot.stopping &&
-      this.slotMatchesCurrentRuntime(wsSlot) &&
+      this.slotMatchesCurrentRuntime(wsSlot, cwd) &&
       (!wsSlot.sessionFile || wsSlot.sessionFile === sk)
     ) {
       return wsSlot
     }
     for (const slot of this.pool.values()) {
       if (slot === wsSlot || slot.stopping || slot.agentTurnActive) continue
-      if (!this.slotMatchesCurrentRuntime(slot)) continue
+      if (!this.slotMatchesCurrentRuntime(slot, cwd)) continue
       if (slot.cwd !== cwd) continue
       return slot
     }
@@ -301,7 +334,7 @@ export class WorkerManager {
     const promptContext = await this.sessionPromptContext(cwd, sk)
 
     const existing = this.pool.get(sk)
-    if (existing && !existing.stopping && this.slotMatchesCurrentRuntime(existing)) {
+    if (existing && !existing.stopping && this.slotMatchesCurrentRuntime(existing, cwd)) {
       existing.sessionFile = sk
       evictIdleWorkers(this.pool, {
         foregroundKey: this.foregroundPoolKey,
@@ -314,6 +347,9 @@ export class WorkerManager {
       existing.promptContext = promptContext
       return this.initResultFromSlot(existing)
     }
+
+    if (existing) await this.disposePoolSlot(existing)
+    await this.disposeStaleSlotsForCwd(cwd)
 
     // Reuse an idle same-cwd worker (workspace slot or any non-running session
     // slot) instead of forking — session switches then share a single worker.
@@ -521,7 +557,13 @@ export class WorkerManager {
     if (sessionFile) {
       const sk = normalizeSessionKey(sessionFile)
       const bySession = this.pool.get(sk)
-      if (bySession && !bySession.stopping) return bySession
+      if (
+        bySession &&
+        !bySession.stopping &&
+        this.slotMatchesCurrentRuntime(bySession, bySession.cwd)
+      ) {
+        return bySession
+      }
       const sessionCwd = this.resolveSessionWorkspaceCwd(sessionFile)
       const cwd = this.resolveWorkspaceCwd(sessionCwd)
       if (!cwd) throw new Error('Worker not started for session')
@@ -532,7 +574,19 @@ export class WorkerManager {
     }
     const slot = this.foregroundSlot()
     if (!slot) throw new Error('Worker not started')
-    return slot
+    if (this.slotMatchesCurrentRuntime(slot, slot.cwd)) return slot
+    const { cwd, sessionFile: foregroundSessionFile } = slot
+    if (foregroundSessionFile) {
+      await this.ensureSessionWorkerUnlocked(foregroundSessionFile, cwd)
+      const refreshed = this.pool.get(normalizeSessionKey(foregroundSessionFile))
+      if (!refreshed) throw new Error('Worker not started for session')
+      this.setForeground(refreshed)
+      return refreshed
+    }
+    await this.startWorkspaceUnlocked(cwd)
+    const refreshed = this.foregroundSlot()
+    if (!refreshed) throw new Error('Worker not started')
+    return refreshed
   }
 
   private request(type: string, data?: WorkerRequestPayload): Promise<WorkerResponsePayload> {
@@ -674,13 +728,14 @@ export class WorkerManager {
     },
   ): Promise<{ sessionId: string; sessionFile?: string }> {
     const run = this.lifecycleChain.then(async () => {
+      await this.disposeStaleSlotsForCwd(cwd)
       const promptContext = await this.workspacePromptContext(cwd, options?.mode)
       const result = await createNewSessionInPool({
         cwd,
         pool: this.pool,
         mainWindow: this.mainWindow,
         foregroundPoolKey: () => this.foregroundPoolKey,
-        slotMatchesCurrentRuntime: (slot) => this.slotMatchesCurrentRuntime(slot),
+        slotMatchesCurrentRuntime: (slot) => this.slotMatchesCurrentRuntime(slot, cwd),
         setForeground: (slot) => this.setForeground(slot),
         onAppEvent: (payload) => this.forwardAppEvent(payload),
         onHostToolRequest: (payload) => this.forwardHostToolRequest(payload),
@@ -997,11 +1052,47 @@ export class WorkerManager {
     return this.request('getContextPrompts')
   }
   async reloadResources(): Promise<void> {
-    await Promise.all(
-      [...this.pool.values()]
-        .filter((slot) => !slot.stopping && this.slotMatchesCurrentRuntime(slot))
-        .map((slot) => this.requestOnSlot(slot, 'reloadResources')),
+    const run = this.lifecycleChain.then(async () => {
+      const slots = [...new Set(this.pool.values())]
+      const stale = slots.filter(
+        (slot) => !slot.stopping && !this.slotMatchesCurrentRuntime(slot, slot.cwd),
+      )
+      if (stale.length === 0) {
+        await Promise.all(
+          slots
+            .filter((slot) => !slot.stopping)
+            .map((slot) => this.requestOnSlot(slot, 'reloadResources')),
+        )
+        return
+      }
+
+      const foreground = this.foregroundSlot()
+      const foregroundBinding = foreground
+        ? { cwd: foreground.cwd, sessionFile: foreground.sessionFile }
+        : null
+      for (const slot of stale) await this.disposePoolSlot(slot)
+
+      // Background Sessions are recreated lazily. Rebuild only the currently
+      // visible binding so ResourceLoader, SessionManager and tools share the
+      // newly captured project/config identity.
+      if (foreground && stale.includes(foreground) && foregroundBinding) {
+        if (foregroundBinding.sessionFile) {
+          await this.ensureSessionWorkerUnlocked(
+            foregroundBinding.sessionFile,
+            foregroundBinding.cwd,
+          )
+          const refreshed = this.pool.get(normalizeSessionKey(foregroundBinding.sessionFile))
+          if (refreshed) this.setForeground(refreshed)
+        } else {
+          await this.startWorkspaceUnlocked(foregroundBinding.cwd)
+        }
+      }
+    })
+    this.lifecycleChain = run.then(
+      () => undefined,
+      () => undefined,
     )
+    await run
   }
   async getCommandCompletions(commandName: string, argumentPrefix: string): Promise<WorkerCompletionItem[]> {
     const r = await this.request('getCommandCompletions', { commandName, argumentPrefix })
@@ -1061,7 +1152,7 @@ export class WorkerManager {
     // The authorized Session binding owns workspace identity. Pi's header cwd is
     // only a last-resort fallback because new Sessions can contain process.cwd().
     const sessionCwd = this.resolveSessionWorkspaceCwd(sessionFile)
-    const cwd = this.resolveWorkspaceCwd(sessionCwd || opts?.cwd)
+    const cwd = this.resolveWorkspaceCwd(opts?.cwd || sessionCwd)
     if (!cwd) throw new Error('Worker not started for session')
     await this.ensureSessionWorker(sessionFile, cwd)
     // Re-apply rewound leaf tip (main override map) so agent context matches UI.

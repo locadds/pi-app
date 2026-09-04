@@ -24,8 +24,8 @@
   "addFile": "添加文件",
   "permissionMode": {
     "title": "Coding 权限",
-    "appliesNextAttempt": "本次选择从下一个 Coding 任务开始生效；任务开始后不会静默改变。",
-    "taskHubBoundary": "任何档位都不能越过 TaskHub 已批准的文件、命令和外传边界。",
+    "appliesNextAttempt": "本次选择用于普通 Coding 对话；正在等待许可的操作不会被静默改档。",
+    "taskHubBoundary": "ASK/PLAN 和只读角色始终只读；命令与工具外传在任何档位都逐次询问。TaskHub 任务继续使用自己的冻结权限。",
     "saveFailed": "权限档位保存失败",
     "close": "关闭权限档位选择"
   },

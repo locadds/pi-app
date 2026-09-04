@@ -45,7 +45,7 @@ import { freezeXiaoguiPromptContextV1 } from './xiaogui-prompt/session-binding.j
 import { createXiaoguiCodingContextExtensionV1 } from './xiaogui-coding-extensions/context-extension.js'
 import { createXiaoguiCodingRoleGuardExtensionV1 } from './xiaogui-coding-extensions/role-guard-extension.js'
 import { CodingRoleRuntimeBindingV1 } from './xiaogui-coding-extensions/role-runtime-binding.js'
-import { createXiaoguiCodingTransparentHarnessExtensionV1 } from './xiaogui-coding-extensions/transparent-harness-extension.js'
+import { createXiaoguiDirectCodingToolLifecycleV2 } from './xiaogui-coding-extensions/direct-coding-tool-extension.js'
 
 export type WorkerModelRuntime = Pick<
   ModelRuntime,
@@ -489,6 +489,16 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
     const initialToolNames = codingRoleRuntimeBindingV1.activeToolNames(
       activeToolNamesForPromptContextV1(initialContext, sessionToolUniverse),
     )
+    const directCodingLifecycle = promptContext.mode === 'CODING'
+      ? createXiaoguiDirectCodingToolLifecycleV2({
+          context: () => st.promptTurnContext ?? st.promptContext ?? initialContext,
+          sourceSessionId: () => st.currentSessionId || undefined,
+          readOnlyRole: () => {
+            const role = codingRoleRuntimeBindingV1.read()?.snapshot.role
+            return role === 'RESEARCH' || role === 'REVIEW'
+          },
+        })
+      : null
     const services = await sdk.createAgentSessionServices({
       cwd,
       agentDir,
@@ -498,10 +508,10 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
         extensionFactories: [
           ...(promptContext.mode === 'CODING'
             ? [
-                createXiaoguiCodingTransparentHarnessExtensionV1(),
                 createXiaoguiCodingRoleGuardExtensionV1(
                   () => codingRoleRuntimeBindingV1.read(),
                 ).factory,
+                directCodingLifecycle!.factory,
               ]
             : []),
           createXiaoguiPromptSessionExtensionV1(
@@ -548,6 +558,19 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       sessionManager,
       sessionStartEvent,
       tools: [...sessionToolUniverse],
+      ...(directCodingLifecycle
+        ? {
+            customTools: [
+              sdk.defineTool(directCodingLifecycle.wrapDefinition(sdk.createReadToolDefinition(cwd))),
+              sdk.defineTool(directCodingLifecycle.wrapDefinition(sdk.createBashToolDefinition(cwd, {
+                commandPrefix: services.settingsManager.getShellCommandPrefix(),
+                shellPath: services.settingsManager.getShellPath(),
+              }))),
+              sdk.defineTool(directCodingLifecycle.wrapDefinition(sdk.createEditToolDefinition(cwd))),
+              sdk.defineTool(directCodingLifecycle.wrapDefinition(sdk.createWriteToolDefinition(cwd))),
+            ],
+          }
+        : {}),
     })
     // tools 传全集只是为了保住注册表；初始激活仍按首轮策略（空输入）收窄。
     created.session.setActiveToolsByName([...initialToolNames])

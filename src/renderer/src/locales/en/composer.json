@@ -24,8 +24,8 @@
   "addFile": "Add file",
   "permissionMode": {
     "title": "Coding permissions",
-    "appliesNextAttempt": "This selection applies to the next Coding task and cannot change silently after it starts.",
-    "taskHubBoundary": "No mode can bypass TaskHub's approved file, command, or data-egress boundaries.",
+    "appliesNextAttempt": "This selection applies to ordinary Coding conversations; a pending permission request never changes mode silently.",
+    "taskHubBoundary": "ASK, PLAN, and read-only roles stay read-only. Commands and third-party tool egress always ask. TaskHub attempts keep their frozen policy.",
     "saveFailed": "Failed to save permission mode",
     "close": "Close permission mode picker"
   },

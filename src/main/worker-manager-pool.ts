@@ -34,6 +34,7 @@ import { syncWorkerBundleToWsl } from './wsl/worker-host'
 import { resolveUtilityEntry } from './utility-entry-path'
 import { resolveBundledPiSkillsPath } from './xiaogui/bundled-skills'
 import { buildXiaoguiWorkerEnv } from './xiaogui/worker-env'
+import { readCurrentWorkerExecutionIdentityDigestV1 } from './worker-execution-identity'
 
 export const extensionUiDialogSource = new Map<string, WorkerSlot>()
 const hostToolAbortControllers = new WeakMap<WorkerSlot, Map<string, AbortController>>()
@@ -102,6 +103,7 @@ function createSlot(
     poolKey,
     cwd,
     runtime,
+    executionIdentityDigest: readCurrentWorkerExecutionIdentityDigestV1(cwd, runtime),
     sessionFile,
     sessionId: null,
     promptContext,

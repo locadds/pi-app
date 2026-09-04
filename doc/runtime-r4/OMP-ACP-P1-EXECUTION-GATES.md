@@ -1,15 +1,16 @@
 # OMP ACP Runtime P1 生产门与施工卡
 
-> [!important] 2026-09-04 产品路线已取代本文施工路线
-> 本文只保留 P0—P1D-A 的隔离研究与验收证据，不再是产品施工卡。`P1D-B` 及其独立 OMP Runtime、私有模型配置、设置页、启停、目录、状态和 Runtime 选择目标均已取消。当前产品主链固定为“进入 CODING → 启动现有 Pi Coding Harness → 自动装载小规隐藏透明能力 Extension，并复用 Pi 已加载 Skill”；不启动 OMP 进程，也不向用户展示 OMP。当前实际复用的六项 OMP 行为、生产接缝和逐项证据以 [CODING 透明能力映射](../architecture/xiaogui-oh-my-pi-acp-runtime.md#当前透明能力映射) 为准，历史研究源码不得重新注册进生产组合。
+> [!important] 2026-09-05 产品路线已取代本文施工路线
+> 本文只保留 P0—P1D-A 的隔离研究与验收证据，不再是产品施工卡。独立 OMP Runtime、私有模型配置、设置页、启停、目录、状态和 Runtime 选择均已取消；“透明 OMP 六能力”的表述也已被人工否决。当前阶段候选为普通 CODING 直接写入：Pi 以用户项目为唯一 cwd，ASK/PLAN 只读，EXECUTE 经宿主授权和 V2 文件检查点后直接修改项目；TaskHub V1 工作树交付链保持不变。当前实现与验证边界见 [普通 CODING 主链](../architecture/xiaogui-oh-my-pi-acp-runtime.md#当前产品结论2026-09-05)。
 
 ## 状态边界
 
 - P0 已于 2026-09-02 经人工验收通过，固定提交为 `607618f952b102b889bc12f5ab101f802ab6b401`。
 - P1A—P1D-A 发生在独立研究分支，不触碰 WORK；其通过只表示当时研究契约成立，不授权产品接入。
-- OMP Adapter、受信装配和恢复代码保留为历史研究证据，但已从产品 `runtime-composition` 移除，不存在产品启用开关或默认选择。
+- OMP Adapter、受信装配和恢复代码保留为历史研究证据，但已从产品 runtime-composition 移除，不存在产品启用开关或默认选择。
 - 小规只保留一套模型配置。CODING 与其他模式均由现有 Pi Worker 读取同一配置；不再维护 OMP 私有 `models.json`。
-- 已完成的上下文、权限、计划、Diff、检查点和角色能力继续作为小规自己的 Pi/TaskHub 受控扩展使用，不依赖 OMP 启动。
+- 普通 CODING 使用真实 Pi 工具生命周期、Direct 授权 Adapter 和 V2 文件检查点；TaskHub 继续使用 Attempt、工作树、V1 检查点、Delivery 与人工 Apply。两者不伪装成同一主体。
+- 旧透明提示 Extension 和重复六字符串能力清单已删除；实际工具可用性只由 Prompt Matrix 与 Prompt Capabilities 决定。
 
 ## P1A：权限契约与接缝 Spike（已验收）
 

@@ -10,7 +10,7 @@
 
 第一批安装包内置 Skill 及其 Pi 原生加载边界见 [architecture/xiaogui-bundled-pi-skills.md](./architecture/xiaogui-bundled-pi-skills.md)。
 
-CODING 当前透明能力、逐项行为证据及已取代的 Oh My Pi ACP Runtime 边界见 [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md)。旧 P1 Runtime 生产门仅作为历史研究证据保留在 [runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md](./runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md)，不是当前施工队列。
+普通 CODING 当前直接写入生命周期、真实 Pi/Main/Renderer 接缝及已取代的 Oh My Pi 研究边界见 [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md)。不存在“透明 OMP 能力包”或独立 OMP 产品表面。旧 P1 Runtime 生产门仅作为历史研究证据保留在 [runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md](./runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md)，不是当前施工队列。
 
 ## 用户指南（安装、快捷键、适配器列表）
 

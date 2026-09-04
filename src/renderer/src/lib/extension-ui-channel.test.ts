@@ -100,4 +100,29 @@ describe('Main-owned Coding permission request parsing', () => {
       payload: { ...prompt, relativePaths: ['C:/secret.txt'] },
     })).toBeNull()
   })
+
+  it('accepts the exact direct-session V2 envelope and rejects a hidden task rule', () => {
+    const directPrompt = {
+      schemaVersion: 2,
+      subject: 'DIRECT_SESSION',
+      requestDigest: `sha256:${'a'.repeat(64)}`,
+      operation: 'WRITE',
+      mode: 'AUTO_APPROVE',
+      relativePath: 'src/new.ts',
+      choices: ['ALLOW_ONCE', 'DENY'],
+    }
+    const request = {
+      id: 'xiaogui-direct-123e4567-e89b-42d3-a456-426614174000',
+      method: 'custom',
+      kind: 'coding_permission',
+      origin: 'xiaogui-direct',
+      payload: directPrompt,
+    }
+    expect(parseExtensionUIRequestV1(request))
+      .toEqual(expect.objectContaining({ method: 'coding_permission', prompt: directPrompt }))
+    expect(parseExtensionUIRequestV1({
+      ...request,
+      payload: { ...directPrompt, choices: ['ALLOW_ONCE', 'ALLOW_TASK_RULE', 'DENY'] },
+    })).toBeNull()
+  })
 })

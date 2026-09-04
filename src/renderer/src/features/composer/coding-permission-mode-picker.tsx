@@ -6,10 +6,10 @@ import { ShieldCheck } from '@renderer/components/icons'
 import { ipcClient } from '@renderer/lib/ipc-client'
 import {
   CODING_PERMISSION_MODES_V1,
-  XIAOGUI_CODING_PERMISSION_MODE_OPTIONS_V1,
   XIAOGUI_CODING_PERMISSION_MODE_SETTING_KEY_V1,
   type CodingPermissionModeV1,
-} from '@shared/xiaogui-coding-extension-pack'
+} from '@shared/xiaogui-coding-permission'
+import { XIAOGUI_DIRECT_CODING_PERMISSION_MODE_OPTIONS_V2 } from '@shared/xiaogui-direct-coding'
 
 export function CodingPermissionModePicker({ disabled }: { readonly disabled: boolean }) {
   const { t } = useTranslation('composer')
@@ -35,7 +35,7 @@ export function CodingPermissionModePicker({ disabled }: { readonly disabled: bo
   }, [disabled])
 
   const selected = useMemo(
-    () => XIAOGUI_CODING_PERMISSION_MODE_OPTIONS_V1.find((option) => option.mode === mode)!,
+    () => XIAOGUI_DIRECT_CODING_PERMISSION_MODE_OPTIONS_V2.find((option) => option.mode === mode)!,
     [mode],
   )
 
@@ -90,7 +90,7 @@ export function CodingPermissionModePicker({ disabled }: { readonly disabled: bo
                 {t('permissionMode.appliesNextAttempt')}
               </div>
             </div>
-            {XIAOGUI_CODING_PERMISSION_MODE_OPTIONS_V1.map((option) => (
+            {XIAOGUI_DIRECT_CODING_PERMISSION_MODE_OPTIONS_V2.map((option) => (
               <button
                 key={option.mode}
                 type="button"

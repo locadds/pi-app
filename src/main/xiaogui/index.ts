@@ -71,6 +71,10 @@ import {
   recordDefaultCodingCheckpointSessionAddressV1,
   registerDefaultCodingCheckpointHandlersV1,
 } from './coding-extensions/checkpoint-default-composition'
+import {
+  closeDefaultDirectCodingCompositionV2,
+  getDefaultDirectCodingCompositionV2,
+} from './coding-extensions/direct-coding-production-composition'
 
 let initialized = false
 
@@ -93,6 +97,8 @@ export function initXiaogui(): void {
   })
   registerDefaultCodingRoleHandlersV1()
   registerDefaultCodingCheckpointHandlersV1()
+  const directCoding = getDefaultDirectCodingCompositionV2()
+  directCoding.registerCheckpointHandlers()
   workerManager.setHostToolRequestHandler(
     createXiaoguiWorkerHostToolRouterV1({
       codingPlan: createXiaoguiCodingPlanWorkerToolHandlerV1({
@@ -100,6 +106,7 @@ export function initXiaogui(): void {
         recordTrustedSessionAddress: recordDefaultCodingCheckpointSessionAddressV1,
         publishPendingDraft: (input) => getDefaultCodingAttemptPlanModuleV1().publishPendingDraft(input),
       }),
+      directCoding: directCoding.workerHandler,
       collaboration: createXiaoguiWorkerToolHandlerV1({
         application: getDefaultCollaborationHubApplication(),
         scopeResolver: sessionScopeResolverV1,
@@ -150,6 +157,7 @@ export async function shutdownXiaoguiSidecar(): Promise<void> {
     Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),
     Promise.resolve().then(() => closeDefaultCodingRoleProfileModuleV1()),
     Promise.resolve().then(() => closeDefaultCodingCheckpointProductionCompositionV1()),
+    Promise.resolve().then(() => closeDefaultDirectCodingCompositionV2()),
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateIntakeServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxTemplateMaterializeServiceV1()),
     Promise.resolve().then(() => closeDefaultWorkDocxAdvancedGenerationServiceV1()),

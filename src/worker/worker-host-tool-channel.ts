@@ -16,6 +16,7 @@ const INTERACTIVE_ADVANCED_GENERATION_TIMEOUT_MS = 15 * 60_000
 const INTERACTIVE_REPORT_DOCX_TIMEOUT_MS = 15 * 60_000
 const INTERACTIVE_DOCUMENT_SNAPSHOT_TIMEOUT_MS = 15 * 60_000
 const INTERACTIVE_MATERIALS_TIMEOUT_MS = 15 * 60_000
+const INTERACTIVE_DIRECT_CODING_PERMISSION_TIMEOUT_MS = 75_000
 
 interface PendingRequest {
   resolve: (outcome: WorkerHostToolOutcomeV1) => void
@@ -51,6 +52,9 @@ function finish(requestId: string, outcome: WorkerHostToolOutcomeV1): boolean {
 }
 
 function requestTimeoutMs(request: WorkerHostToolRequestInputV1): number | null {
+  if (request.method === 'xiaogui.coding.direct.preflight.v2') {
+    return INTERACTIVE_DIRECT_CODING_PERMISSION_TIMEOUT_MS
+  }
   if (
     request.method === 'xiaogui.work.docx.v1' ||
     request.method === 'xiaogui.work.docx-template-data.v1'

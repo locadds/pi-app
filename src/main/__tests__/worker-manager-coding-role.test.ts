@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkerManager } from '../worker-manager'
 import { attachWorkerHandlers } from '../worker-manager-pool'
 import type { WorkerSlot } from '../worker-manager-types'
+import { readCurrentWorkerExecutionIdentityDigestV1 } from '../worker-execution-identity'
 
 vi.mock('electron', () => ({
   app: { getPath: vi.fn(() => process.cwd()) },
@@ -69,6 +70,10 @@ function slot(input: {
     poolKey: input.file,
     cwd: '/workspace',
     runtime: { mode: 'host', distro: null },
+    executionIdentityDigest: readCurrentWorkerExecutionIdentityDigestV1('/workspace', {
+      mode: 'host',
+      distro: null,
+    }),
     sessionFile: input.file,
     sessionId: `session:${input.file}`,
     promptContext: input.address ? {

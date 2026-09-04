@@ -1,6 +1,162 @@
 # 小规开发阶段状态
 
-## 2026-09-04｜CODING 透明能力正向链返修（待人工验收）
+## 2026-09-05｜CODING-P1D-B-R3.1 普通 CODING 直接写入闭环（阶段候选，待人工验收）
+
+### 本阶段目标
+
+把普通 CODING 恢复为一条可用的 Pi 主链：Pi 会话、资源、Skill 和真实工具统一使用用户所选项目作为 cwd；ASK/PLAN 与研究/审阅角色保持只读；EXECUTE 中的普通会话经宿主权限门后直接修改项目。文件写入具有独立的 V2 文件检查点和冲突保护，Bash 保持逐次确认且不承诺回滚。TaskHub 原有 Attempt 工作树、V1 检查点、Delivery 和人工 Apply 语义不变。
+
+本阶段不接入、启动、展示或复测 OMP，也不创建隐藏 Attempt、隐藏工作树或额外 Apply。
+
+### 实际修改文件
+
+共享契约：
+
+- packages/shared/ipc-channels.ts
+- packages/shared/ipc-contract.ts
+- packages/shared/worker-host-tools.ts
+- packages/shared/xiaogui-coding-extension-pack.ts
+- packages/shared/xiaogui-coding-permission.ts
+- packages/shared/xiaogui-direct-coding.ts
+
+Main 与 TaskHub 接缝：
+
+- src/main/config-store.ts
+- src/main/ipc/schemas.ts
+- src/main/worker-execution-identity.ts
+- src/main/worker-manager-pool.ts
+- src/main/worker-manager-types.ts
+- src/main/worker-manager.ts
+- src/main/xiaogui/index.ts
+- src/main/xiaogui/task-hub/ipc.ts
+- src/main/xiaogui/task-hub/runtime-composition.ts
+- src/main/xiaogui/worker-host-tool-router.ts
+- src/main/xiaogui/coding-extensions/coding-authorization-module.ts
+- src/main/xiaogui/coding-extensions/direct-coding-checkpoint-ipc.ts
+- src/main/xiaogui/coding-extensions/direct-coding-module.ts
+- src/main/xiaogui/coding-extensions/direct-coding-production-composition.ts
+- src/main/xiaogui/coding-extensions/direct-coding-worker-tool.ts
+- src/main/xiaogui/coding-extensions/direct-permission-ui-adapter.ts
+
+Pi Worker 与 Renderer：
+
+- src/worker/worker-host-tool-channel.ts
+- src/worker/worker-runtime.ts
+- src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.ts
+- src/worker/xiaogui-coding-extensions/extension-pack.ts
+- src/worker/xiaogui-coding-extensions/role-guard-extension.ts
+- src/worker/xiaogui-coding-extensions/transparent-harness-extension.ts（删除）
+- src/renderer/src/features/composer/coding-permission-mode-picker.tsx
+- src/renderer/src/features/extension-ui/coding-permission-dialog.tsx
+- src/renderer/src/features/review/review-panel.tsx
+- src/renderer/src/lib/extension-ui-channel.ts
+- src/renderer/src/locales/en/composer.json
+- src/renderer/src/locales/zh/composer.json
+- src/renderer/src/stores/extension-ui-store.ts
+- src/renderer/src/xiaogui/components/DirectCodingCheckpointCard.tsx
+- src/renderer/src/xiaogui/lib/direct-coding-checkpoint-client.ts
+
+聚焦测试：
+
+- src/main/__tests__/worker-execution-identity.test.ts
+- src/main/__tests__/worker-manager-coding-role.test.ts
+- src/main/__tests__/worker-manager-extension-ui.test.ts
+- src/main/__tests__/worker-manager-pool.test.ts
+- src/main/__tests__/worker-manager-session-isolation.test.ts
+- src/main/xiaogui/index.test.ts
+- src/main/xiaogui/worker-host-tool-router.test.ts
+- src/main/xiaogui/coding-extensions/coding-authorization-module.test.ts
+- src/main/xiaogui/coding-extensions/direct-coding-checkpoint-ipc.test.ts
+- src/main/xiaogui/coding-extensions/direct-coding-module.test.ts
+- src/main/xiaogui/coding-extensions/direct-coding-worker-tool.test.ts
+- src/renderer/src/features/composer/coding-permission-mode-picker.test.tsx
+- src/renderer/src/features/extension-ui/coding-permission-dialog.test.tsx
+- src/renderer/src/lib/extension-ui-channel.test.ts
+- src/worker/handlers/worker-runtime-tool-registry.test.ts
+- src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts
+- src/worker/xiaogui-coding-extensions/role-guard-extension.test.ts
+
+阶段记录：
+
+- DEVELOPMENT_STATUS.md
+- doc/README.md
+- doc/README.zh-CN.md
+- doc/architecture/xiaogui-oh-my-pi-acp-runtime.md
+- doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md
+
+仓库外同步更新既有长期记录，不新建碎片笔记：
+
+- D:\Codex\longtime_memory\projects\小规Agent\施工总控.md
+- D:\Codex\longtime_memory\projects\小规Agent\progress.md
+- D:\Codex\longtime_memory\projects\小规Agent\research\2026-09-03-CODING研究-OMP-ACP-P1C验收与P1D装配规划.md
+
+### 已完成内容
+
+1. 新增 CodingAuthorizationModuleV2：一个深层授权 Module，通过 Direct Adapter 和 TaskHub Adapter 区分 DIRECT_SESSION 与 TASKHUB_ATTEMPT。直接会话只提供“允许一次/拒绝”；TaskHub V1 的 ALLOW_TASK_RULE 和 Attempt 语义不变。
+2. 实现普通 CODING 权限矩阵。ASK 只读，PLAN 只读加计划；只有 EXECUTE 且非研究/审阅角色才能进入 bash/edit/write。Bash 和向当前模型提供方之外第三方的工具外传在所有档位均逐次确认。
+3. 新增 DirectCodingModuleV2，持久化 PENDING → ALLOWED → EXECUTING → SETTLED/OUTCOME_UNKNOWN；以 toolCallId + requestDigest 幂等，未知结果不会自动重放。
+4. edit/write 在权限通过后建立 DirectCodingFileCheckpointV2，私有保存前镜像；执行前再次核验项目根、路径、链接状态和前摘要。撤销只影响目标文件，不倒退 Pi 对话；文件后来变化时拒绝覆盖。
+5. 写入路径拒绝绝对路径、路径穿越、.git、symlink、junction 和 hardlink 写穿；新建文件核验最近存在父目录。读操作可并行，edit/write/Bash 使用 Pi 顺序执行语义。
+6. Bash 只记录安全预览摘要、执行状态、退出码和可观察结果，不创建文件检查点，并明确提示项目外路径、网络和子进程副作用不能自动撤销。
+7. Worker 复用身份加入项目根、Runtime 和 Resource 配置摘要；项目或资源身份变化时销毁并重建 Worker。AgentSession、SessionManager、ResourceLoader、Skill/规则与工具继续共享同一个所选项目 cwd。
+8. 未绑定 TaskHub 角色的普通 CODING 不再被角色 Extension 强制只读；研究/审阅角色仍保持只读硬上限。
+9. 删除只追加提示词的透明能力 Extension 和重复六字符串清单。普通 CODING 的真实工具事实继续来自 xiaogui-prompt-matrix.ts 与 xiaogui-prompt-capabilities.ts。
+10. Review 复用现有区域展示“文件修改检查点”；只列出已完成且可恢复的文件操作，OUTCOME_UNKNOWN 只提示审计与 Diff，不自动重放。
+
+### Pi / Skill /插件复用调查
+
+- 固定复用仓库现有 @earendil-works/pi-coding-agent@0.84.1：AgentSession、SessionManager、ResourceLoader、Extension 生命周期及 read/bash/edit/write 工具均未另建。
+- 复用现有 Worker→Main 宿主工具窄通道、Extension UI 和 TaskHub 权限模块；没有建立第二条 IPC、第二套 Agent Loop 或第二套 TaskHub 工作树服务。
+- 已安装 Skill、pi-package-manager 和历史 OMP 研究不能在 Main 边界提供直接会话的路径复验、幂等入账和私有前镜像，不能替代本次安全接缝。用户已明确批准 R3.1 的最小框架例外。
+- TaskHub V1 检查点硬绑定 Attempt/工作树，不能伪装成普通会话；因此保留 V1，并新增主体为 DIRECT_SESSION 的窄 V2 文件检查点。
+
+### 未完成内容
+
+- 真实“自然语言 → 外部模型 → 用户界面”旅程和 Electron 窗口操作尚未覆盖，留给人工验收。
+- 当前没有向第三方目的地主动发送数据的生产工具消费者；DATA_EGRESS 已有授权语义，但没有伪造调用证据。
+- 当前仍是独立 CODING 分支的阶段候选，未合入 WORK、阶段线或正式主线，未发布、未制作 Portable。
+- 历史 OMP Adapter/装配源码仍仅作研究证据保留，没有产品消费者；本阶段未删除、启动或复测。
+
+### 与规格文档存在的偏差
+
+- 无产品语义偏差。按用户批准的 R3.1，普通 CODING 直接修改所选项目，不创建 Attempt/隐藏工作树/额外 Apply；TaskHub 仍使用原工作树交付链。
+- OMP 完全退出当前产品与验收范围；上一轮“透明集成 OMP 六项能力”的口径已被人工否决并由本记录取代。
+- 按用户“非必要不做那么多测试”的要求，没有运行 OMP、802 MB 装配、外部模型、Electron、Portable、完整构建或无关全量测试。
+
+### 测试命令和测试结果
+
+真实 Pi 工具生命周期与真实文件写入冒烟：
+
+~~~powershell
+npx vitest run src/main/xiaogui/coding-extensions/direct-coding-checkpoint-ipc.test.ts src/main/xiaogui/coding-extensions/direct-coding-module.test.ts src/main/xiaogui/coding-extensions/direct-coding-worker-tool.test.ts src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts
+~~~
+
+结果：4 个测试文件、20 项全部通过。覆盖真实临时目录中的写入、前后摘要、当前可信项目根绑定、撤销与冲突保护；不宣称外部模型或 Electron 完整旅程。
+
+其余聚焦证据：
+
+- Worker 项目/资源身份及复用：5 个文件、61 项通过。
+- Direct/TaskHub 授权、TaskHub V1 检查点/Review/Runtime 接缝：5 个文件、33 项通过；TaskHub 仍走原 Attempt 工作树语义。
+- Renderer 权限两按钮、档位文案和公开契约：3 个文件、11 项通过。
+- 主入口生产装配：2 项通过。
+- npx tsc -p tsconfig.node.json --noEmit：通过。
+- npx tsc -p tsconfig.web.json --noEmit：通过。
+- 定向 ESLint：通过。
+- git diff --check：通过。
+- 独立增量代码复审：APPROVE/CLEAR，HIGH 与 MEDIUM 阻断均为 0；审查证据保存在忽略的 .omo/evidence，不进入提交。
+
+### 已知风险
+
+1. Bash 不是 OS 沙箱，批准后可能触达项目外路径、网络或子进程；产品只承诺逐次确认和审计，不承诺回滚。
+2. 文件授权后若有其他进程修改，执行前摘要或撤销时摘要会冲突并安全停止；用户需要人工处理最新内容。
+3. 文件前镜像保存在主进程私有 SQLite；后续应在不改变恢复语义的前提下设计明确保留/清理周期并显示占用。
+4. 历史 OMP 研究源码仍位于仓库，后续合并必须继续防止误注册为 Runtime 或恢复旧产品表面。
+
+### 下一阶段计划
+
+完成最终差异审查、提交并推送当前隔离分支后立即停止。下一门只有人工或审查 Agent 验收；通过也不自动授权合入 WORK、阶段线、正式主线、发布或 Portable。
+
+## 2026-09-04｜CODING 透明能力正向链返修（人工验收未通过，已由 2026-09-05 R3.1 取代）
 
 ### 本阶段目标
 

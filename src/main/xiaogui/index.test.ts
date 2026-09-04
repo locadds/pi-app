@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   closeCodingRoleProfiles: vi.fn(),
   registerCodingCheckpointHandlers: vi.fn(),
   closeCodingCheckpointComposition: vi.fn(),
+  closeDirectCodingComposition: vi.fn(),
+  registerDirectCodingCheckpointHandlers: vi.fn(),
   recordCodingCheckpointSessionAddress: vi.fn(),
   registerXiaoguiHandlers: vi.fn(),
   shutdownSidecar: vi.fn(),
@@ -32,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   workDocumentSnapshotHandler: vi.fn(),
   workMaterialsHandler: vi.fn(),
   codingPlanHandler: vi.fn(),
+  directCodingHandler: vi.fn(),
   routedHandler: vi.fn(),
   createCollaborationHandler: vi.fn(),
   createWorkDocxHandler: vi.fn(),
@@ -84,6 +87,14 @@ vi.mock('./coding-extensions/checkpoint-default-composition', () => ({
   registerDefaultCodingCheckpointHandlersV1: mocks.registerCodingCheckpointHandlers,
   closeDefaultCodingCheckpointProductionCompositionV1: mocks.closeCodingCheckpointComposition,
   recordDefaultCodingCheckpointSessionAddressV1: mocks.recordCodingCheckpointSessionAddress,
+}))
+
+vi.mock('./coding-extensions/direct-coding-production-composition', () => ({
+  getDefaultDirectCodingCompositionV2: () => ({
+    registerCheckpointHandlers: mocks.registerDirectCodingCheckpointHandlers,
+    workerHandler: mocks.directCodingHandler,
+  }),
+  closeDefaultDirectCodingCompositionV2: mocks.closeDirectCodingComposition,
 }))
 
 vi.mock('./coding-extensions/plan-worker-tool', () => ({
@@ -176,6 +187,7 @@ describe('xiaogui shutdown lifecycle', () => {
     expect(mocks.closeRuntimeComposition).toHaveBeenCalledOnce()
     expect(mocks.closeCodingRoleProfiles).toHaveBeenCalledOnce()
     expect(mocks.closeCodingCheckpointComposition).toHaveBeenCalledOnce()
+    expect(mocks.closeDirectCodingComposition).toHaveBeenCalledOnce()
 
     sidecar.resolve()
     await Promise.resolve()
@@ -212,6 +224,7 @@ describe('xiaogui Worker host-tool wiring', () => {
     })
     expect(mocks.registerCodingRoleHandlers).toHaveBeenCalledOnce()
     expect(mocks.registerCodingCheckpointHandlers).toHaveBeenCalledOnce()
+    expect(mocks.registerDirectCodingCheckpointHandlers).toHaveBeenCalledOnce()
     expect(mocks.createCodingPlanHandler).toHaveBeenCalledWith({
       scopeResolver: mocks.scopeResolver,
       recordTrustedSessionAddress: mocks.recordCodingCheckpointSessionAddress,
@@ -241,6 +254,7 @@ describe('xiaogui Worker host-tool wiring', () => {
     })
     expect(mocks.createRouter).toHaveBeenCalledWith(expect.objectContaining({
       codingPlan: mocks.codingPlanHandler,
+      directCoding: mocks.directCodingHandler,
       collaboration: mocks.collaborationHandler,
       workDocx: mocks.workDocxHandler,
       workReportDocx: mocks.workReportDocxHandler,

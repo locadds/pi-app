@@ -1,4 +1,11 @@
 import type { SessionAddressV1, SessionMode } from './xiaogui-session-scope'
+import type { CodingPermissionModeV1 } from './xiaogui-coding-permission'
+
+export {
+  CODING_PERMISSION_MODES_V1,
+  XIAOGUI_CODING_PERMISSION_MODE_SETTING_KEY_V1,
+  type CodingPermissionModeV1,
+} from './xiaogui-coding-permission'
 
 export type CodingExtensionIdV1 =
   | 'coding.context'
@@ -35,7 +42,7 @@ export interface CodingExtensionManifestV1 {
   readonly extensionId: CodingExtensionIdV1
   readonly displayName: string
   readonly allowedModes: readonly Extract<SessionMode, 'CODING'>[]
-  /** P0 freezes contracts only. Production enablement belongs to P1-P3. */
+  /** Historical/TaskHub metadata only; ordinary CODING tool availability comes from Prompt Capabilities. */
   readonly defaultEnabled: false
   readonly requiredSeams: readonly CodingExtensionSeamV1[]
   readonly capabilities: readonly CodingExtensionCapabilityV1[]
@@ -167,14 +174,6 @@ export interface CodingPermissionPromptV1 {
   readonly choices: readonly ['ALLOW_ONCE', 'ALLOW_TASK_RULE', 'DENY']
 }
 
-export const CODING_PERMISSION_MODES_V1 = Object.freeze([
-  'CONFIRM_EACH',
-  'AUTO_APPROVE',
-  'FULL_AUTONOMY',
-] as const)
-
-export type CodingPermissionModeV1 = typeof CODING_PERMISSION_MODES_V1[number]
-export const XIAOGUI_CODING_PERMISSION_MODE_SETTING_KEY_V1 = 'xiaoguiCodingPermissionMode' as const
 export type CodingPermissionPolicyEffectV1 = 'ASK_USER' | 'ALLOW_ONCE' | 'DENY'
 
 export interface CodingPermissionModeOptionV1 {

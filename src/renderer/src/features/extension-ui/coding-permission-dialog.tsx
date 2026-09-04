@@ -2,12 +2,16 @@ import type {
   CodingPermissionPromptV1,
   CodingPermissionUserChoiceV1,
 } from '@shared/xiaogui-coding-extension-pack'
+import type {
+  DirectCodingPermissionChoiceV2,
+  DirectCodingPermissionPromptV2,
+} from '@shared/xiaogui-direct-coding'
 
 import { ExtensionDialogShell } from './extension-dialog-shell'
 
 export interface CodingPermissionDialogProps {
-  readonly prompt: CodingPermissionPromptV1
-  readonly onChoose: (choice: CodingPermissionUserChoiceV1) => void
+  readonly prompt: CodingPermissionPromptV1 | DirectCodingPermissionPromptV2
+  readonly onChoose: (choice: CodingPermissionUserChoiceV1 | DirectCodingPermissionChoiceV2) => void
 }
 
 const OPERATION_LABELS: Record<CodingPermissionPromptV1['operation'], string> = {
@@ -18,6 +22,39 @@ const OPERATION_LABELS: Record<CodingPermissionPromptV1['operation'], string> = 
 }
 
 export function CodingPermissionDialog({ prompt, onChoose }: CodingPermissionDialogProps) {
+  if (prompt.schemaVersion === 2) {
+    const labels = {
+      READ: '读取文件',
+      EDIT: '修改文件',
+      WRITE: '写入文件',
+      BASH: '运行命令',
+      DATA_EGRESS: '工具外传',
+    } as const
+    return (
+      <ExtensionDialogShell title="需要你的许可" onDismiss={() => onChoose('DENY')} wide>
+        <div className="space-y-4 text-[13px]">
+          <div className="rounded-md border bg-muted/30 p-3">
+            <div className="font-medium">{labels[prompt.operation]}</div>
+            {prompt.relativePath && <div className="mt-2 font-mono text-[12px]">{prompt.relativePath}</div>}
+            {prompt.commandPreview && <div className="mt-2 whitespace-pre-wrap rounded border p-2 font-mono text-[12px]">{prompt.commandPreview}</div>}
+          </div>
+          {prompt.warning && (
+            <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-amber-800 dark:text-amber-200">
+              {prompt.warning}
+            </div>
+          )}
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button type="button" className="rounded-md border px-3 py-2 hover:bg-muted" onClick={() => onChoose('ALLOW_ONCE')}>
+              允许一次
+            </button>
+            <button type="button" className="rounded-md bg-destructive px-3 py-2 text-destructive-foreground" onClick={() => onChoose('DENY')}>
+              拒绝
+            </button>
+          </div>
+        </div>
+      </ExtensionDialogShell>
+    )
+  }
   return (
     <ExtensionDialogShell title="需要你的许可" onDismiss={() => onChoose('DENY')} wide>
       <div className="space-y-4 text-[13px]">

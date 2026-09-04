@@ -10,10 +10,6 @@ import { workerPromptContextToolNamesForModeV1 } from '@shared/xiaogui-prompt-ca
 
 import { initSession, st } from '../worker-runtime'
 import { freezeCodingContextAgentPayloadV1 } from '../xiaogui-coding-extensions/context-extension'
-import {
-  XIAOGUI_CODING_TRANSPARENT_CAPABILITIES_V1,
-  XIAOGUI_CODING_TRANSPARENT_HARNESS_MARKER_V1,
-} from '../xiaogui-coding-extensions/transparent-harness-extension'
 import { freezeXiaoguiPromptContextV1 } from '../xiaogui-prompt/session-binding'
 
 type ExtensionHandler = (event: never, context: never) => unknown
@@ -67,6 +63,7 @@ describe('worker-runtime session tool registry whitelist', () => {
     const universe = workerPromptContextToolNamesForModeV1('WORK')
     const captured: {
       tools?: readonly string[]
+      customTools?: ReadonlyArray<{ name: string; executionMode?: string }>
       additionalSkillPaths?: readonly string[]
       extensionFactories?: readonly InlineExtension[]
     } = {}
@@ -112,13 +109,23 @@ describe('worker-runtime session tool registry whitelist', () => {
         return {
           resourceLoader: { getSystemPrompt: () => null },
           modelRuntime,
+          settingsManager: {
+            getShellCommandPrefix: () => undefined,
+            getShellPath: () => undefined,
+          },
           diagnostics: [],
         }
       }),
       createAgentSessionFromServices: vi.fn(async (options) => {
         captured.tools = [...options.tools]
+        captured.customTools = [...(options.customTools ?? [])]
         return { session }
       }),
+      createReadToolDefinition: vi.fn(() => toolDefinition('read')),
+      createBashToolDefinition: vi.fn(() => toolDefinition('bash')),
+      createEditToolDefinition: vi.fn(() => toolDefinition('edit')),
+      createWriteToolDefinition: vi.fn(() => toolDefinition('write')),
+      defineTool: vi.fn((tool) => tool),
       createAgentSessionRuntime: vi.fn(async (createRuntime, options) => {
         const made = await createRuntime({
           cwd: options.cwd,
@@ -190,55 +197,29 @@ describe('worker-runtime session tool registry whitelist', () => {
       projectId: 'xgp1_coding_probe',
     }))
     const codingFactories = [...(captured.extensionFactories ?? [])]
-    expect(codingFactories).toContainEqual(expect.objectContaining({
-      name: 'xiaogui-coding-transparent-harness-v1',
-      hidden: true,
-    }))
     const codingRegistrations = await Promise.all(codingFactories.map(registerFactory))
 
-    // 不再只比较 Extension 数量：实际触发 CODING 初始化交给 Pi 的隐藏
-    // Extension，证明透明能力包、角色硬门和受控上下文三条行为接缝。
-    const beforeAgentStartResults = await Promise.allSettled(
-      codingRegistrations.flatMap((entry) => entry.get('before_agent_start') ?? []).map((handler) =>
-        Promise.resolve(handler({
-          systemPrompt: 'Pi base prompt',
-          systemPromptOptions: {
-            selectedTools: [],
-            toolSnippets: {},
-            promptGuidelines: [],
-            customPrompt: false,
-          },
-        } as never, {
-          isProjectTrusted: () => true,
-          abort: vi.fn(),
-        } as never)),
-      ),
-    )
-    const injectedPrompts = beforeAgentStartResults
-      .filter((result): result is PromiseFulfilledResult<unknown> => result.status === 'fulfilled')
-      .map((result) => (result.value as { systemPrompt?: string } | undefined)?.systemPrompt ?? '')
-    const transparentPrompt = injectedPrompts.find((prompt) =>
-      prompt.includes(XIAOGUI_CODING_TRANSPARENT_HARNESS_MARKER_V1)
-      && prompt.includes('不得强制切换到 ASK 或 PLAN')
-      && prompt.includes('真实差异和实际验证结果'))
-    expect(transparentPrompt).toBeTruthy()
-    expect(transparentPrompt).not.toMatch(/\bOMP\b|Oh My Pi/i)
-    expect(XIAOGUI_CODING_TRANSPARENT_CAPABILITIES_V1).toEqual([
-      'PROJECT_RULES_AND_SKILLS',
-      'CONTROLLED_CONTEXT',
-      'ROLE_SCOPED_TOOLS',
-      'HOST_MEDIATED_PERMISSION',
-      'USER_SELECTED_PLANNING',
-      'EVIDENCE_AND_CHECKPOINT',
-    ])
+    // 普通 CODING 直接装配 Main 授权生命周期；不再通过提示词或第二份
+    // “六能力”字符串清单冒充生产能力。四个 Pi 内置工具由 customTools
+    // 覆盖，修改与命令固定串行，read 保持可并行。
+    const lifecycleRegistration = codingRegistrations.find((entry) => entry.has('tool_result'))
+    expect(lifecycleRegistration?.has('tool_call')).toBe(true)
+    expect(captured.customTools?.map((tool) => tool.name)).toEqual(['read', 'bash', 'edit', 'write'])
+    expect(captured.customTools?.find((tool) => tool.name === 'read')?.executionMode).toBeUndefined()
+    expect(captured.customTools?.filter((tool) => tool.name !== 'read'))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'bash', executionMode: 'sequential' }),
+        expect.objectContaining({ name: 'edit', executionMode: 'sequential' }),
+        expect.objectContaining({ name: 'write', executionMode: 'sequential' }),
+      ]))
 
-    const roleRegistration = codingRegistrations.find((entry) => entry.has('tool_call'))
+    // 没有 TaskHub Attempt 角色绑定时，普通 CODING 不再被角色 Extension
+    // 强制只读；ASK/PLAN/EXECUTE 的硬门由生产 Prompt Capabilities 与
+    // Direct Coding 生命周期共同执行。
+    const roleRegistration = codingRegistrations.find((entry) =>
+      entry.has('before_agent_start') && entry.has('tool_call') && !entry.has('tool_result'))
     expect(roleRegistration?.get('tool_call')?.[0]?.({ toolName: 'write' } as never, {} as never))
-      .toEqual({
-        block: true,
-        reason: 'XIAOGUI_CODING_ROLE_BINDING_REQUIRED',
-        terminate: true,
-      })
+      .toBeUndefined()
 
     st.promptCodingContext = freezeCodingContextAgentPayloadV1({
       schemaVersion: 1,
@@ -258,3 +239,13 @@ describe('worker-runtime session tool registry whitelist', () => {
     expect(captured.tools).toEqual([...workerPromptContextToolNamesForModeV1('CODING')])
   })
 })
+
+function toolDefinition(name: string) {
+  return {
+    name,
+    label: name,
+    description: name,
+    parameters: {} as never,
+    execute: vi.fn(async () => ({ content: [], details: undefined })),
+  }
+}

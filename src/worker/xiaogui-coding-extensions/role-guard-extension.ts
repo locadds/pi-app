@@ -75,16 +75,10 @@ export function createXiaoguiCodingRoleGuardExtensionV1(
   const factory: ExtensionFactory = (pi) => {
     pi.on('before_agent_start', (event) => {
       const binding = source()
-      if (!binding) {
-        return {
-          systemPrompt: [
-            event.systemPrompt,
-            '',
-            '【小规受控角色：尚未绑定】',
-            '当前仅允许只读查看；选择并绑定实现角色后，才可请求命令或写入操作。',
-          ].join('\n'),
-        }
-      }
+      // Ordinary CODING conversations intentionally have no TaskHub role
+      // binding. Their upper bound comes from Prompt Capabilities + direct
+      // authorization, so absence of an Attempt role must be transparent.
+      if (!binding) return undefined
       return {
         systemPrompt: [
           event.systemPrompt,
@@ -97,14 +91,7 @@ export function createXiaoguiCodingRoleGuardExtensionV1(
 
     pi.on('tool_call', (event) => {
       const binding = source()
-      if (!binding && event.toolName === 'read') return undefined
-      if (!binding) {
-        return {
-          block: true,
-          reason: 'XIAOGUI_CODING_ROLE_BINDING_REQUIRED',
-          terminate: true,
-        }
-      }
+      if (!binding) return undefined
       if (binding.snapshot.effectiveToolAllowlist.includes(event.toolName)) return undefined
       return {
         block: true,

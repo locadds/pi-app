@@ -19,7 +19,7 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe('CodingPermissionModePicker', () => {
-  it('renders the shared three choices and saves the selection for the next Attempt', async () => {
+  it('renders the direct-session three choices and saves the selection', async () => {
     vi.mocked(ipcClient.invoke)
       .mockResolvedValueOnce({ settings: { xiaoguiCodingPermissionMode: 'CONFIRM_EACH' } })
       .mockResolvedValueOnce({ key: 'xiaoguiCodingPermissionMode', value: 'AUTO_APPROVE' })
@@ -29,10 +29,10 @@ describe('CodingPermissionModePicker', () => {
 
     expect(screen.getByRole('menu', { name: 'permissionMode.title' })).toBeTruthy()
     expect(screen.getByRole('menuitemradio', { name: /逐条确认/ })).toBeTruthy()
-    expect(screen.getByRole('menuitemradio', { name: /自动通过/ })).toBeTruthy()
-    expect(screen.getByRole('menuitemradio', { name: /完全自主/ })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: /^自动通过/ })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: /^完全自主/ })).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('menuitemradio', { name: /自动通过/ }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /^自动通过/ }))
     await waitFor(() => expect(ipcClient.invoke).toHaveBeenCalledWith('settings.set', {
       key: 'xiaoguiCodingPermissionMode',
       value: 'AUTO_APPROVE',

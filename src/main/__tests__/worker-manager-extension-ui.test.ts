@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkerSlot } from '../worker-manager-types'
+import { readCurrentWorkerExecutionIdentityDigestV1 } from '../worker-execution-identity'
 import type { WorkerTransport } from '../worker-transport'
 
 vi.mock('../config-store', () => ({
@@ -32,6 +33,10 @@ function slot(poolKey: string, worker: WorkerTransport = makeTransport()): Worke
     poolKey,
     cwd: '/w',
     runtime: { mode: 'host', distro: null },
+    executionIdentityDigest: readCurrentWorkerExecutionIdentityDigestV1('/w', {
+      mode: 'host',
+      distro: null,
+    }),
     sessionFile: poolKey,
     sessionId: `session:${poolKey}`,
     worker,

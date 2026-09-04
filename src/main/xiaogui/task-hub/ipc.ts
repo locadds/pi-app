@@ -201,6 +201,10 @@ export function getDefaultCodingRoleProfileModuleV1(): CodingRoleProfileModuleV1
   return getDefaultRuntimeLifecycle().composition.codingRoles
 }
 
+export function getDefaultCodingAuthorizationModuleV2() {
+  return getDefaultRuntimeLifecycle().composition.codingAuthorization
+}
+
 export function getDefaultDeliveryCoordinator(): XiaoguiDeliveryCoordinatorPortV1 {
   return getDefaultRuntimeLifecycle().composition.delivery
 }

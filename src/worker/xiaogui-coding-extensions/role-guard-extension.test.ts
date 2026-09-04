@@ -60,7 +60,7 @@ describe('Xiaogui CODING role guard extension', () => {
       })
   })
 
-  it('拒绝角色白名单之外的未知工具，未绑定角色也只能只读', async () => {
+  it('拒绝已绑定只读角色的白名单外工具，未绑定普通会话保持透明', async () => {
     const guarded = registeredHandlers(freezeCodingRoleAgentSnapshotV1(RESEARCH_SNAPSHOT))
     expect(guarded.get('tool_call')!({ toolName: 'third_party_write' } as never, {} as never))
       .toEqual({
@@ -72,15 +72,9 @@ describe('Xiaogui CODING role guard extension', () => {
     const unbound = registeredHandlers(null)
     expect(unbound.get('tool_call')!({ toolName: 'read' } as never, {} as never)).toBeUndefined()
     expect(unbound.get('tool_call')!({ toolName: 'third_party_write' } as never, {} as never))
-      .toEqual({
-        block: true,
-        reason: 'XIAOGUI_CODING_ROLE_BINDING_REQUIRED',
-        terminate: true,
-      })
+      .toBeUndefined()
     expect(unbound.get('before_agent_start')!({ systemPrompt: 'Pi base prompt' } as never, {} as never))
-      .toEqual({
-        systemPrompt: expect.stringContaining('【小规受控角色：尚未绑定】'),
-      })
+      .toBeUndefined()
   })
 
   it('验证 Main 冻结快照的摘要与只读上限，拒绝篡改或非法放权', () => {

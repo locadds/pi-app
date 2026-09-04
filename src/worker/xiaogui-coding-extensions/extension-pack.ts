@@ -28,9 +28,8 @@ export interface CreateXiaoguiCodingExtensionPackInputV1 {
 }
 
 /**
- * First-party Pi extension registrar for CODING. P0 registers contract-only
- * modules: it deliberately installs no hooks and no tools until each later
- * production gate is accepted.
+ * Historical P0/TaskHub seam registrar. It deliberately installs no hooks or
+ * tools and is not the ordinary CODING runtime capability source.
  */
 export function createXiaoguiCodingExtensionPackV1(
   input: CreateXiaoguiCodingExtensionPackInputV1,

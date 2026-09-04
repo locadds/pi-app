@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { normalizeFontName } from '../../../packages/shared/custom-theme.ts'
 import { ICON_THEMES } from '../../../packages/shared/icon-theme.ts'
-import { CODING_PERMISSION_MODES_V1 } from '../../../packages/shared/xiaogui-coding-extension-pack.ts'
+import { CODING_PERMISSION_MODES_V1 } from '../../../packages/shared/xiaogui-coding-permission.ts'
 
 export const shellOpenPathSchema = z.object({
   path: z.string(),

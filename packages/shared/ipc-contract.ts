@@ -81,6 +81,14 @@ import type {
   CodingRoleUpsertOutcomeV1,
   CodingRoleUpsertRequestV1,
 } from './xiaogui-coding-role-control'
+import type {
+  DirectCodingCheckpointConfirmOutcomeV2,
+  DirectCodingCheckpointConfirmRequestV2,
+  DirectCodingCheckpointListOutcomeV2,
+  DirectCodingCheckpointListRequestV2,
+  DirectCodingCheckpointPreviewOutcomeV2,
+  DirectCodingCheckpointPreviewRequestV2,
+} from './xiaogui-direct-coding'
 
 // ── Workspace ──
 export interface WorkspaceOpenRequest { path?: string; awaitWorker?: boolean }
@@ -402,6 +410,18 @@ export interface IpcMethodMap {
   'xiaogui.coding.checkpoint.restore.confirm': {
     request: CodingCheckpointConfirmRequestV1
     response: CodingCheckpointConfirmOutcomeV1
+  }
+  'xiaogui.coding.direct.checkpoint.list': {
+    request: DirectCodingCheckpointListRequestV2
+    response: DirectCodingCheckpointListOutcomeV2
+  }
+  'xiaogui.coding.direct.checkpoint.restore.preview': {
+    request: DirectCodingCheckpointPreviewRequestV2
+    response: DirectCodingCheckpointPreviewOutcomeV2
+  }
+  'xiaogui.coding.direct.checkpoint.restore.confirm': {
+    request: DirectCodingCheckpointConfirmRequestV2
+    response: DirectCodingCheckpointConfirmOutcomeV2
   }
   'xiaogui.coding.roles.list': {
     request: CodingRoleListRequestV1

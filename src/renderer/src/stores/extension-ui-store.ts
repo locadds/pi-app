@@ -8,6 +8,7 @@ import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draf
 import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from '@shared/xiaogui-work-template-review'
 import type { TemplateMaterializePreviewRequestV1 } from '@shared/xiaogui-work-docx-template-materialize'
 import type { CodingPermissionPromptV1 } from '@shared/xiaogui-coding-extension-pack'
+import type { DirectCodingPermissionPromptV2 } from '@shared/xiaogui-direct-coding'
 
 export type ExtensionUIPending =
   | { id: string; method: 'ask_user_question'; questions: AskQuestionPayload[] }
@@ -21,7 +22,7 @@ export type ExtensionUIPending =
       payload: TemplateIntakeReviewRequestV1 | TemplateDraftReviewRequestV2 | TemplateReviewRequestV2 | TemplateReviewRequestV3
       origin?: 'DIRECT'
     }
-  | { id: string; method: 'coding_permission'; prompt: CodingPermissionPromptV1 }
+  | { id: string; method: 'coding_permission'; prompt: CodingPermissionPromptV1 | DirectCodingPermissionPromptV2 }
   | {
       id: string
       method: 'template_materialize_preview'

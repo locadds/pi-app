@@ -3,6 +3,7 @@ import type { WorkerSlot } from '../worker-manager-types'
 import { WorkerManager } from '../worker-manager'
 import { attachWorkerHandlers } from '../worker-manager-pool'
 import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
+import { readCurrentWorkerExecutionIdentityDigestV1 } from '../worker-execution-identity'
 import {
   clearSessionLeafOverride,
   getSessionLeafOverride,
@@ -80,6 +81,10 @@ function fakeSlot(poolKey: string, active = false): WorkerSlot {
     poolKey,
     cwd: '/workspace',
     runtime: { mode: 'host', distro: null },
+    executionIdentityDigest: readCurrentWorkerExecutionIdentityDigestV1('/workspace', {
+      mode: 'host',
+      distro: null,
+    }),
     sessionFile: poolKey.startsWith('ws:') ? null : poolKey,
     sessionId: `session:${poolKey}`,
     worker,
@@ -232,10 +237,18 @@ describe('WorkerManager session isolation', () => {
     const createdFile = normalizeSessionKey('/sessions/new-with-stale-header.jsonl')
     const created = fakeSlot(workspacePoolKey(workspace))
     created.cwd = workspace
+    created.executionIdentityDigest = readCurrentWorkerExecutionIdentityDigestV1(
+      workspace,
+      created.runtime,
+    )
     replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
 
     const reloaded = fakeSlot(createdFile)
     reloaded.cwd = workspace
+    reloaded.executionIdentityDigest = readCurrentWorkerExecutionIdentityDigestV1(
+      workspace,
+      reloaded.runtime,
+    )
     replyFrom(reloaded, {
       type: 'loadSession-done',
       sessionId: 'new',
@@ -283,6 +296,102 @@ describe('WorkerManager session isolation', () => {
         sessionKey: `xgs1_${Buffer.from(targetFile).toString('hex')}`,
       }),
     }))
+  })
+
+  it('replaces a session Worker instead of loading it under a different project cwd', async () => {
+    const sessionFile = normalizeSessionKey('/sessions/project-switch.jsonl')
+    const existing = fakeSlot(sessionFile)
+    existing.cwd = '/project-a'
+    existing.executionIdentityDigest = readCurrentWorkerExecutionIdentityDigestV1(
+      existing.cwd,
+      existing.runtime,
+    )
+    replyFrom(existing, { type: 'abort-done' })
+    const manager = new WorkerManager()
+    const internals = manager as unknown as Internals
+    internals.pool.set(sessionFile, existing)
+
+    const created = fakeSlot(sessionFile)
+    created.cwd = '/project-b'
+    created.executionIdentityDigest = readCurrentWorkerExecutionIdentityDigestV1(
+      created.cwd,
+      created.runtime,
+    )
+    replyFrom(created, {
+      type: 'loadSession-done',
+      sessionId: 'project-b-session',
+      sessionFile,
+    })
+    forkWorkerForCwd.mockResolvedValue({
+      slot: created,
+      init: Promise.resolve({ sessionId: 'bootstrap' }),
+    })
+
+    await manager.loadSession(sessionFile, { cwd: '/project-b' })
+
+    expect(existing.worker.kill).toHaveBeenCalledOnce()
+    expect(forkWorkerForCwd).toHaveBeenCalledWith(
+      '/project-b',
+      expect.objectContaining({ sessionFile }),
+    )
+    expect(internals.pool.get(sessionFile)).toBe(created)
+    expect(existing.worker.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'loadSession' }),
+    )
+  })
+
+  it('replaces a Worker whose captured resource identity is stale', async () => {
+    const sessionFile = normalizeSessionKey('/sessions/resource-change.jsonl')
+    const existing = fakeSlot(sessionFile)
+    existing.executionIdentityDigest = `sha256:${'0'.repeat(64)}`
+    replyFrom(existing, { type: 'abort-done' })
+    const manager = new WorkerManager()
+    const internals = manager as unknown as Internals
+    internals.pool.set(sessionFile, existing)
+
+    const created = fakeSlot(sessionFile)
+    replyFrom(created, {
+      type: 'loadSession-done',
+      sessionId: 'resource-refreshed',
+      sessionFile,
+    })
+    forkWorkerForCwd.mockResolvedValue({
+      slot: created,
+      init: Promise.resolve({ sessionId: 'bootstrap' }),
+    })
+
+    await manager.ensureSessionWorker(sessionFile, '/workspace')
+
+    expect(existing.worker.kill).toHaveBeenCalledOnce()
+    expect(internals.pool.get(sessionFile)).toBe(created)
+  })
+
+  it('rebuilds the foreground Session when resource reload sees a stale identity', async () => {
+    const sessionFile = normalizeSessionKey('/sessions/resource-reload.jsonl')
+    const existing = fakeSlot(sessionFile)
+    existing.executionIdentityDigest = `sha256:${'0'.repeat(64)}`
+    replyFrom(existing, { type: 'abort-done' })
+    const { manager, internals } = managerWithForeground(existing)
+
+    const created = fakeSlot(sessionFile)
+    replyFrom(created, {
+      type: 'loadSession-done',
+      sessionId: 'resource-reloaded',
+      sessionFile,
+    })
+    forkWorkerForCwd.mockResolvedValue({
+      slot: created,
+      init: Promise.resolve({ sessionId: 'bootstrap' }),
+    })
+
+    await manager.reloadResources()
+
+    expect(existing.worker.kill).toHaveBeenCalledOnce()
+    expect(internals.pool.get(sessionFile)).toBe(created)
+    expect(internals.foregroundPoolKey).toBe(sessionFile)
+    expect(created.worker.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'reloadResources' }),
+    )
   })
 
   it('runs the new-session persistence gate before foreground activation', async () => {

@@ -5,7 +5,7 @@ import { DEFAULT_ICON_THEME, type IconTheme } from '@shared/icon-theme'
 import { DEFAULT_TIMELINE_MAX_AUTO_EXPANDED_TOOLS } from '@shared/timeline-settings'
 import { bindSecretStoreBacking } from './secret-store'
 import { nextRecentProjects } from './recent-projects'
-import type { CodingPermissionModeV1 } from '@shared/xiaogui-coding-extension-pack'
+import type { CodingPermissionModeV1 } from '@shared/xiaogui-coding-permission'
 
 export interface StoreSchema {
   recentProjects: string[]

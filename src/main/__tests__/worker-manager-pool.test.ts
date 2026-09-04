@@ -20,6 +20,7 @@ import {
   MAX_TIMER_DELAY_MS,
 } from '../worker-pool-config'
 import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
+import { readCurrentWorkerExecutionIdentityDigestV1 } from '../worker-execution-identity'
 
 vi.mock('electron', () => ({
   app: {
@@ -74,6 +75,10 @@ function fakeSlot(poolKey: string, cwd: string, active: boolean, lastFg = Date.n
     poolKey,
     cwd,
     runtime: { mode: 'host', distro: null },
+    executionIdentityDigest: readCurrentWorkerExecutionIdentityDigestV1(cwd, {
+      mode: 'host',
+      distro: null,
+    }),
     sessionFile: poolKey.startsWith('ws:') ? null : poolKey,
     sessionId: 'session-1',
     worker: {} as WorkerSlot['worker'],

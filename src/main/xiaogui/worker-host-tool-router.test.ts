@@ -18,6 +18,13 @@ describe('xiaogui Worker host-tool router', () => {
       ok: true as const,
       value: { kind: 'XIAOGUI_CODING_PLAN_DRAFT_SAVED' as const },
     }))
+    const directCoding = vi.fn(async () => ({
+      ok: false as const,
+      error: {
+        code: 'DIRECT_CODING_PERMISSION_DENIED' as const,
+        message: '测试拒绝',
+      },
+    }))
     const collaboration = vi.fn(async () => ({
       ok: true as const,
       value: { kind: 'XIAOGUI_COLLABORATION_DRAFT_CREATED' as const, taskCount: 1, sessionVersion: 1 },
@@ -70,6 +77,7 @@ describe('xiaogui Worker host-tool router', () => {
     }))
     const router = createXiaoguiWorkerHostToolRouterV1({
       codingPlan,
+      directCoding,
       collaboration,
       workDocx,
       workReportDocx,
@@ -104,6 +112,19 @@ describe('xiaogui Worker host-tool router', () => {
           steps: [{ stepId: 'inspect', title: '定位问题', validation: '复现用例通过' }],
           constraints: ['只改项目内文件'],
         },
+      },
+    }
+    const directCodingRequest: WorkerHostToolRequestV1 = {
+      type: 'host-tool-request',
+      requestId: 'direct-coding-1',
+      method: 'xiaogui.coding.direct.preflight.v2',
+      payload: {
+        sourceSessionId: 'session-1',
+        toolCallId: 'call-direct-1',
+        requestDigest: `sha256:${'a'.repeat(64)}`,
+        phase: 'EXECUTE',
+        operation: 'WRITE',
+        relativePath: 'src/a.ts',
       },
     }
     const workRequest: WorkerHostToolRequestV1 = {
@@ -196,6 +217,7 @@ describe('xiaogui Worker host-tool router', () => {
     }
 
     await router(metadata(codingPlanRequest))
+    await router(metadata(directCodingRequest))
     await router(metadata(collaborationRequest))
     await router(metadata(workRequest))
     await router(metadata(reportRequest))
@@ -207,6 +229,7 @@ describe('xiaogui Worker host-tool router', () => {
     await router(metadata(materialsRequest))
 
     expect(codingPlan).toHaveBeenCalledOnce()
+    expect(directCoding).toHaveBeenCalledOnce()
     expect(collaboration).toHaveBeenCalledOnce()
     expect(workDocx).toHaveBeenCalledOnce()
     expect(workReportDocx).toHaveBeenCalledOnce()
@@ -217,6 +240,7 @@ describe('xiaogui Worker host-tool router', () => {
     expect(workDocumentSnapshot).toHaveBeenCalledOnce()
     expect(workMaterials).toHaveBeenCalledOnce()
     expect(codingPlan).toHaveBeenCalledWith(metadata(codingPlanRequest))
+    expect(directCoding).toHaveBeenCalledWith(metadata(directCodingRequest))
     expect(collaboration).toHaveBeenCalledWith(metadata(collaborationRequest))
     expect(workDocx).toHaveBeenCalledWith(metadata(workRequest))
     expect(workReportDocx).toHaveBeenCalledWith(metadata(reportRequest))
