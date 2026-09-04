@@ -69,9 +69,17 @@ describe('H1-4C result wire contract', () => {
     attachedDrive.result.resultSummary = '路径D:\\secret\\result.txt'
     expect(parseXiaoguiTaskResultSubmissionV1(attachedDrive).ok).toBe(false)
 
+    const forwardSlashDrive = submission()
+    forwardSlashDrive.result.resultSummary = '路径C://secret/result.txt'
+    expect(parseXiaoguiTaskResultSubmissionV1(forwardSlashDrive).ok).toBe(false)
+
     const attachedUnc = submission()
     attachedUnc.result.resultSummary = '附件\\\\server\\share\\result.txt'
     expect(parseXiaoguiTaskResultSubmissionV1(attachedUnc).ok).toBe(false)
+
+    const forwardSlashUnc = submission()
+    forwardSlashUnc.result.resultSummary = '附件//server/share/result.txt'
+    expect(parseXiaoguiTaskResultSubmissionV1(forwardSlashUnc).ok).toBe(false)
 
     const intranetUrl = submission()
     intranetUrl.result.resultSummary = '请参考 https://intranet.example/result 的审阅记录。'

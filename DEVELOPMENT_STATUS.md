@@ -1,8 +1,59 @@
 # DEVELOPMENT STATUS
 
-更新时间：2026-09-04
+更新时间：2026-09-05
 阶段：`TASKHUB-H1-4C-B` — 桌面受控结果上报候选
-状态：阶段 B 二次 `REQUEST CHANGES` 的路径边界整改已完成聚焦验证，等待固定提交的增量复验。现仍停在代码审查门；未授权或启动两机人工验收、C3、Renderer/Web 前端，未合并正式主线或发布。
+状态：阶段 B 第三轮最小整改已关闭 `C://` 与 `//server/share` 路径绕过，并与 Hub 中央文本校验规则对齐。单文件聚焦测试已通过，等待固定提交的只读增量复验。现仍停在代码审查门；未授权或启动两机人工验收、C3、Renderer/Web 前端，未合并正式主线或发布。
+
+## H1-4C 阶段 B 第三轮最小整改（2026-09-05）
+
+### 本阶段目标
+
+只关闭桌面受控结果摘要对正斜杠形式 Windows 盘符路径与 UNC 路径的绕过；继续接受明确的院内 HTTPS 链接。不修改 ACK、恢复流程、状态机、前端或 C3。
+
+### 实际修改文件
+
+| 范围 | 文件 |
+| --- | --- |
+| 桌面中央结果文本合同 | `packages/shared/xiaogui-hub-task-contract.ts` |
+| 聚焦回归 | `packages/shared/xiaogui-hub-task-contract.test.ts` |
+| 阶段记录 | `DEVELOPMENT_STATUS.md` |
+
+### 已完成内容
+
+- 只中和大小写不敏感的明确 `https://`，不再删除任意 `scheme://`。
+- 剩余文本在任意位置识别 `[A-Za-z]:[\\/]+`、反斜杠 UNC、正斜杠 UNC，并继续执行 Unix 绝对路径检查。
+- 五个冻结样例已覆盖：拒绝 `D:\\secret\\result.txt`、`C://secret/result.txt`、`\\\\server\\share\\result.txt`、`//server/share/result.txt`，接受 `https://intranet.example/result`。
+- Hub 与桌面继续使用同一规则，没有建立第二套校验模块。
+
+### 未完成内容
+
+- 尚待固定提交后的只读增量复验与人工放行；当前不进行两机真实旅程。
+- 没有修改 ACK、重启恢复、Renderer、C3、自动执行、自动合并或 Apply。
+
+### 与规格文档的偏差
+
+- 无偏差。本次只关闭已确认的路径门绕过，不改变结果信封字段或状态语义。
+
+### 测试命令和测试结果
+
+| 检查 | 结果 |
+| --- | --- |
+| 红灯：`.\\node_modules\\.bin\\vitest.cmd run packages/shared/xiaogui-hub-task-contract.test.ts` | 失败：1 文件中 1/2 用例失败；`路径C://secret/result.txt` 被旧实现错误接受。 |
+| 绿灯：同一命令 | 通过：1 文件 / 2 用例；覆盖五个冻结路径/HTTPS 样例。 |
+| `git diff --check` | 通过；仅有 Git 的 LF/CRLF 工作区提示，无空白错误或冲突标记。 |
+
+测试进程另输出既有 `--localstorage-file` 无有效路径警告，不影响本聚焦用例结果。按批准的最小门禁，不运行全量测试、typecheck、构建、Electron 或两机旅程。
+
+### 已知风险
+
+- 本次只证明桌面结果合同入口；完整 H1-4C 产品旅程仍需固定提交复验通过并获得人工明确授权。
+- 桌面既有 `pdfjs-dist` 缺口仍阻断完整构建和发布结论，本阶段没有安装依赖或改写 WORK/PDF 链路。
+
+### 下一阶段计划
+
+1. 完成 `git diff --check`，固定并推送桌面提交。
+2. 以阶段 A、Hub、桌面三个固定 SHA 做一次只读增量复验。
+3. 只有复验 `APPROVE` 且人工明确授权后，才可安排两机验收。
 
 ## H1-4C 阶段 B 二次路径边界整改（2026-09-04）
 

@@ -467,11 +467,11 @@ function isSha256(value: unknown): value is string {
 function isTaskText(value: unknown, maxLength: number): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > maxLength || value.trim() !== value) return false
   const unixPathBoundary = String.raw`(?:^|[^\p{L}\p{N}_:/])`
-  const pathCandidate = value.replace(/[A-Za-z][A-Za-z0-9+.-]*:\/\//gu, '')
-  const windowsAbsolute = new RegExp(String.raw`[A-Za-z]:[\\/]`, 'u')
-  const uncAbsolute = new RegExp(String.raw`\\\\`, 'u')
+  const pathCandidate = value.replace(/https:\/\//giu, 'https__allowed__')
+  const windowsAbsolute = new RegExp(String.raw`[A-Za-z]:[\\/]+`, 'u')
+  const uncAbsolute = new RegExp(String.raw`(?:\\\\|//)`, 'u')
   const unixAbsolute = new RegExp(`${unixPathBoundary}/(?!/)`, 'u')
-  return !windowsAbsolute.test(pathCandidate) && !uncAbsolute.test(pathCandidate) && !unixAbsolute.test(value)
+  return !windowsAbsolute.test(pathCandidate) && !uncAbsolute.test(pathCandidate) && !unixAbsolute.test(pathCandidate)
 }
 
 function isResultArtifactRef(value: unknown): value is XiaoguiTaskResultArtifactRefV1 {
