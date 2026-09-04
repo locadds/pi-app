@@ -7,7 +7,10 @@ import {
   type XiaoguiHubTaskWorkerPortV1,
 } from './worker-service'
 import {
+  createHubTaskWorkerStateStoreV1,
   createInMemoryHubTaskWorkerStateStoreV1,
+  type HubTaskWorkerStatePersistenceV1,
+  type HubTaskWorkerStateV1,
   type HubTaskWorkerStateStoreV1,
 } from './worker-state'
 
@@ -618,5 +621,91 @@ describe('HubTaskWorkerServiceV1', () => {
     expect(state.pendingEvidence()).toEqual([])
     expect(state.requireAssignment('xgh_assignment_1').assignment.executionState).toBe('RESULT_READY')
     service.close()
+  })
+
+  it('rebuilds a missing result from a persisted terminal Delivery projection after restart', async () => {
+    let persisted: HubTaskWorkerStateV1 | undefined
+    const persistence: HubTaskWorkerStatePersistenceV1 = {
+      read: () => persisted ? structuredClone(persisted) : undefined,
+      write: (value) => { persisted = structuredClone(value) },
+    }
+    const beforeRestart = createHubTaskWorkerStateStoreV1(persistence)
+    beforeRestart.upsertAssignment({
+      assignment: {
+        assignmentId: 'xgh_assignment_1',
+        taskId: 'xgh_task_1',
+        decisionState: 'ACCEPTED',
+        deliveryState: 'OPENED',
+        executionState: 'RUNNING',
+        createdAt: '2026-09-01T00:00:00.000Z',
+        updatedAt: '2026-09-01T00:01:00.000Z',
+      },
+      offer: {
+        taskId: 'xgh_task_1',
+        mode: 'DIRECT',
+        title: '整理院内任务',
+        taskContent: '请先生成一份待人工确认的任务计划。',
+        constraints: ['不要自动执行'],
+        acceptanceRequirements: ['用户确认计划后再执行'],
+        attachmentRefs: [],
+        packageSha256: PACKAGE_SHA256,
+      },
+    })
+    beforeRestart.markOpened('xgh_assignment_1', '2026-09-01T00:00:30.000Z')
+    beforeRestart.bindPlanDraft('xgh_assignment_1', {
+      ...ADDRESS,
+      flowId: 'xhbf_1',
+      revisionId: 'xhbr_1',
+      createdAt: '2026-09-01T00:00:45.000Z',
+    })
+
+    const restartedState = createHubTaskWorkerStateStoreV1(persistence)
+    const credentials = createInMemoryHubTaskWorkerCredentialsV1()
+    credentials.write({
+      endpoint: 'http://hub.intranet:3000',
+      accessToken: 'hub-access-token-which-never-reaches-renderer',
+      node: {
+        subjectId: 'xgh_subject_1',
+        nodeId: 'xgh_node_1',
+        keyId: 'ed25519:test-key',
+        deviceToken: 'node-token-never-reaches-renderer',
+        privateKeyPem: 'PRIVATE',
+      },
+    })
+    const hubPort = port()
+    ;(hubPort.submitResult as ReturnType<typeof vi.fn>).mockRejectedValue({ code: 'OFFLINE' })
+    const readDelivery = vi.fn(async () => ({
+      state: 'READY_FOR_REVIEW',
+      flowId: 'xhbf_1',
+      deliveryChangeSetId: 'xhbdcs_1',
+      deliveryChangeSetDigest: `sha256:${'d'.repeat(64)}`,
+    } as never))
+    let id = 0
+    const restarted = createHubTaskWorkerServiceV1({
+      state: restartedState,
+      credentials,
+      createPort: () => hubPort,
+      application: { perform: vi.fn() },
+      now: () => '2026-09-01T00:02:00.000Z',
+      idFactory: (prefix) => `${prefix}_${++id}`,
+      signReceipt: (unsigned) => ({
+        ...unsigned,
+        signature: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      }),
+    })
+
+    await restarted.recoverPersistedDeliveryOutcomes(readDelivery)
+
+    expect(readDelivery).toHaveBeenCalledWith(ADDRESS, 'xhbf_1')
+    expect(restartedState.pendingEvidence()).toEqual([
+      expect.objectContaining({
+        kind: 'RESULT',
+        submission: expect.objectContaining({
+          result: expect.objectContaining({ outcome: 'RESULT_READY' }),
+          receipt: expect.objectContaining({ eventType: 'RESULT_READY' }),
+        }),
+      }),
+    ])
+    restarted.close()
   })
 })

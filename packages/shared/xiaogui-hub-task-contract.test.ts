@@ -60,5 +60,9 @@ describe('H1-4C result wire contract', () => {
     const unsafe = submission()
     unsafe.result.resultSummary = '结果保存在 D:\\private\\result.txt'
     expect(parseXiaoguiTaskResultSubmissionV1(unsafe).ok).toBe(false)
+
+    const chinesePunctuation = submission()
+    chinesePunctuation.result.resultSummary = '路径：D:\\secret\\result.txt'
+    expect(parseXiaoguiTaskResultSubmissionV1(chinesePunctuation).ok).toBe(false)
   })
 })

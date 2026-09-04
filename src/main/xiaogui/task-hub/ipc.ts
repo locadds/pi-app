@@ -226,6 +226,12 @@ export function registerCollaborationHubHandlers(
   } else if (arguments.length === 0) {
     registerXiaoguiDeliveryHandlers(getDefaultDeliveryCoordinator(), lifecycleReporter)
   }
+  if (defaultLifecycle && lifecycleReporter) {
+    void recoverHubTaskWorkerDeliveryResultsV1(
+      defaultLifecycle.composition.delivery,
+      lifecycleReporter,
+    ).catch(() => undefined)
+  }
 
   registerHandler('ipc:xiaogui.hub.observe', async (payload) => {
     const parsed = parseIpc(ObserveSchema, payload)
@@ -294,6 +300,18 @@ export function registerCollaborationHubHandlers(
     assertEmptyKimiIpcPayload(payload)
     return resolveKimiLogin().startLogin()
   })
+}
+
+async function recoverHubTaskWorkerDeliveryResultsV1(
+  delivery: Pick<XiaoguiRuntimeCompositionV1['delivery'], 'recover' | 'readLatestDelivery'>,
+  reporter: HubTaskWorkerLifecycleReporterV1,
+): Promise<void> {
+  // Delivery outboxes must settle first; otherwise the terminal projection may
+  // still be absent in the precise crash window this repair closes.
+  await delivery.recover()
+  await reporter.recoverPersistedDeliveryOutcomes(
+    (address, flowId) => delivery.readLatestDelivery(address, flowId),
+  )
 }
 
 function getDefaultRuntimeLifecycle(): DefaultRuntimeLifecycleV1 {

@@ -107,13 +107,20 @@ export interface HubTaskWorkerServiceV1 {
   recordExecutionStarted(address: HubAddressV1, flowId: string): Promise<void>
   /** Trusted post-verification hook; it reuses Delivery/Evidence and does not apply changes. */
   reportDeliveryOutcome(address: HubAddressV1, delivery: DeliveryBatchProjectionV1): Promise<void>
+  /** Startup repair for the narrow crash window after Delivery persisted but before its Hub result was queued. */
+  recoverPersistedDeliveryOutcomes(
+    readDelivery: (
+      address: HubAddressV1,
+      flowId: string,
+    ) => DeliveryBatchProjectionV1 | null | Promise<DeliveryBatchProjectionV1 | null>,
+  ): Promise<void>
   startPolling(intervalMs?: number): void
   close(): void
 }
 
 export type HubTaskWorkerLifecycleReporterV1 = Pick<
   HubTaskWorkerServiceV1,
-  'recordExecutionStarted' | 'reportDeliveryOutcome'
+  'recordExecutionStarted' | 'reportDeliveryOutcome' | 'recoverPersistedDeliveryOutcomes'
 >
 
 export interface CreateHubTaskWorkerServiceOptionsV1 {
@@ -457,6 +464,26 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     const receipt = (this.options.signReceipt ?? signXiaoguiTaskDeliveryReceiptV1)(unsigned, credentials.node.privateKeyPem)
     this.options.state.enqueueResult({ result, receipt: receipt as XiaoguiTaskResultSubmissionV1['receipt'] }, this.now())
     this.requestEvidenceFlush(credentials)
+  }
+
+  async recoverPersistedDeliveryOutcomes(
+    readDelivery: (
+      address: HubAddressV1,
+      flowId: string,
+    ) => DeliveryBatchProjectionV1 | null | Promise<DeliveryBatchProjectionV1 | null>,
+  ): Promise<void> {
+    for (const entry of this.options.state.listAssignments()) {
+      const binding = entry.localPlanDraft
+      if (!binding || this.options.state.hasTerminalEvidenceForAssignment(entry.assignment.assignmentId)) continue
+      try {
+        const address = { projectId: binding.projectId, sessionKey: binding.sessionKey }
+        const delivery = await readDelivery(address, binding.flowId)
+        if (delivery) await this.reportDeliveryOutcome(address, delivery)
+      } catch {
+        // Startup recovery is best effort. The persisted Delivery remains the
+        // source of truth and will be examined again on the next application start.
+      }
+    }
   }
 
   startPolling(intervalMs = 30_000): void {

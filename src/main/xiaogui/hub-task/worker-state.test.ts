@@ -206,6 +206,16 @@ describe('HubTaskWorkerStateStoreV1', () => {
       resultId: 'xgh_result_1',
       eventId: 'xgh_event_result_2',
       verified: true,
+      duplicate: false,
+      executionState: 'FAILED',
+      occurredAt: '2026-09-01T00:02:00.000Z',
+      receivedAt: '2026-09-01T00:03:00.000Z',
+    })).toBe(false)
+    expect(store.pendingEvidence()).toHaveLength(2)
+    expect(store.acknowledgeResult('xgh_result_1', 'xgh_event_result_2', {
+      resultId: 'xgh_result_1',
+      eventId: 'xgh_event_result_2',
+      verified: true,
       duplicate: true,
       executionState: 'RESULT_READY',
       occurredAt: '2026-09-01T00:02:00.000Z',

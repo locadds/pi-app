@@ -466,10 +466,11 @@ function isSha256(value: unknown): value is string {
 
 function isTaskText(value: unknown, maxLength: number): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > maxLength || value.trim() !== value) return false
-  const pathBoundary = `(?:^|[\\s(\\[\"'])`
-  const windowsAbsolute = new RegExp(`${pathBoundary}[A-Za-z]:[\\\\/]`)
-  const uncAbsolute = new RegExp(`${pathBoundary}\\\\\\\\`)
-  const unixAbsolute = new RegExp(`${pathBoundary}/(?!/)`)
+  const pathBoundary = String.raw`(?:^|[^\p{L}\p{N}_])`
+  const unixPathBoundary = String.raw`(?:^|[^\p{L}\p{N}_:/])`
+  const windowsAbsolute = new RegExp(`${pathBoundary}[A-Za-z]:[\\\\/]`, 'u')
+  const uncAbsolute = new RegExp(`${pathBoundary}\\\\\\\\`, 'u')
+  const unixAbsolute = new RegExp(`${unixPathBoundary}/(?!/)`, 'u')
   return !windowsAbsolute.test(value) && !uncAbsolute.test(value) && !unixAbsolute.test(value)
 }
 

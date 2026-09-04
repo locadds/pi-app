@@ -968,6 +968,16 @@ export class CollaborationHubSqliteStoreV1 {
     return batch ? this.deliveryProjection(batch.batch_id) : null
   }
 
+  /** Latest persisted projection including terminal states, for restart repair only. */
+  readLatestDelivery(address: HubAddressV1, flowId: FlowId): DeliveryBatchProjectionV1 | null {
+    const row = this.db
+      .prepare(
+        'select batch_id from delivery_batches where project_id = ? and session_key = ? and flow_id = ? order by rowid desc limit 1',
+      )
+      .get(address.projectId, address.sessionKey, flowId) as { batch_id: DeliveryBatchId } | undefined
+    return row ? this.deliveryProjection(row.batch_id) : null
+  }
+
   readDeliveryProjection(batchId: DeliveryBatchId): DeliveryBatchProjectionV1 | null {
     return this.deliveryProjection(batchId)
   }

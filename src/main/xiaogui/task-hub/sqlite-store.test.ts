@@ -2144,6 +2144,7 @@ describe('M4D delivery apply recovery persistence', () => {
     expect(reopened.readDeliveryApplyOutbox(fixture.applyAttemptId)?.status).toBe(expected.outboxState)
     expect(reopened.taskRun(fixture.taskRunId)?.status).toBe(expected.taskState)
     expect(deliveryBatchState(dbPath, fixture.batchId)).toBe(expected.batchState)
+    expect(reopened.readLatestDelivery(ADDRESS, fixture.flowId)).toMatchObject({ state: expected.batchState })
     expect(reopened.currentVersion(ADDRESS)).toBe(versionBefore + 1)
 
     const terminalVersion = reopened.currentVersion(ADDRESS)

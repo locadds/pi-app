@@ -56,6 +56,7 @@ function service(): HubTaskWorkerServiceV1 {
     createPlanDraft: vi.fn(async () => ({ ok: true as const, value: { flowId: 'xhbf_1', revisionId: 'xhbr_1' } })),
     recordExecutionStarted: vi.fn(async () => undefined),
     reportDeliveryOutcome: vi.fn(async () => undefined),
+    recoverPersistedDeliveryOutcomes: vi.fn(async () => undefined),
     startPolling: vi.fn(),
     close: vi.fn(),
   }

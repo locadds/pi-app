@@ -12,6 +12,7 @@ import {
   closeDefaultCollaborationHubRuntimeComposition,
   getDefaultCollaborationHubApplication,
   registerCollaborationHubHandlers,
+  setHubTaskWorkerLifecycleReporterV1,
 } from './ipc'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 
@@ -33,6 +34,8 @@ const mocks = vi.hoisted(() => ({
       reconcileApply: ReturnType<typeof vi.fn>
       retryApply: ReturnType<typeof vi.fn>
       prepareRecovery: ReturnType<typeof vi.fn>
+      recover: ReturnType<typeof vi.fn>
+      readLatestDelivery: ReturnType<typeof vi.fn>
     }
   }>,
   loginCoordinators: [] as Array<{
@@ -79,6 +82,8 @@ mocks.createRuntimeComposition.mockImplementation(() => {
       reconcileApply: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
       retryApply: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
       prepareRecovery: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
+      recover: vi.fn(async () => undefined),
+      readLatestDelivery: vi.fn(() => null),
     },
   }
   mocks.runtimeCompositions.push(composition)
@@ -142,6 +147,7 @@ const roots: string[] = []
 const CONTROLLED_EVIDENCE_ROOT = 'D:\\CodexTemp\\xiaogui-hub-m4g-real-journey-v1\\evidence'
 
 afterEach(async () => {
+  setHubTaskWorkerLifecycleReporterV1(null)
   await closeDefaultCollaborationHubRuntimeComposition()
   mocks.handlers.clear()
   mocks.runtimeCompositions.splice(0)
@@ -383,6 +389,27 @@ describe('M2A collaboration hub IPC adapter', () => {
     expect(mocks.runtimeCompositions[0]?.delivery).toBeDefined()
   })
 
+  it('rechecks persisted Delivery outcomes after the default startup recovery completes', async () => {
+    const reporter = {
+      recordExecutionStarted: vi.fn(async () => undefined),
+      reportDeliveryOutcome: vi.fn(async () => undefined),
+      recoverPersistedDeliveryOutcomes: vi.fn(async (readDelivery: (address: typeof ADDRESS, flowId: string) => unknown) => {
+        await readDelivery(ADDRESS, 'xhbf_recovered')
+      }),
+    }
+    setHubTaskWorkerLifecycleReporterV1(reporter)
+
+    registerCollaborationHubHandlers()
+
+    await vi.waitFor(() => expect(reporter.recoverPersistedDeliveryOutcomes).toHaveBeenCalledOnce())
+    const delivery = mocks.runtimeCompositions[0]!.delivery
+    expect(delivery.recover).toHaveBeenCalledOnce()
+    expect(delivery.readLatestDelivery).toHaveBeenCalledWith(ADDRESS, 'xhbf_recovered')
+    expect(delivery.recover.mock.invocationCallOrder[0]).toBeLessThan(
+      reporter.recoverPersistedDeliveryOutcomes.mock.invocationCallOrder[0]!,
+    )
+  })
+
   it('accepts only the narrow execution confirmation shape and rejects internal or unsafe fields before orchestration', async () => {
     registerCollaborationHubHandlers()
     const startExecution = mocks.handlers.get('ipc:xiaogui.hub.execution.start')!
@@ -418,6 +445,7 @@ describe('M2A collaboration hub IPC adapter', () => {
     const reporter = {
       recordExecutionStarted: vi.fn(async () => undefined),
       reportDeliveryOutcome: vi.fn(async () => undefined),
+      recoverPersistedDeliveryOutcomes: vi.fn(async () => undefined),
     }
     registerCollaborationHubHandlers(undefined, undefined, undefined, undefined, reporter)
     const startExecution = mocks.handlers.get('ipc:xiaogui.hub.execution.start')!

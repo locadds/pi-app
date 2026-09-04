@@ -357,6 +357,7 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
       || ack.verified !== true
       || pending.submission.result.resultId !== expectedResultId
       || pending.submission.receipt.eventId !== expectedEventId
+      || ack.executionState !== expectedExecutionState(pending.submission.result.outcome)
     ) return false
 
     const nextResults = { ...results }
@@ -512,6 +513,16 @@ function canonicalReceipt(receipt: XiaoguiTaskDeliveryReceiptV1): string {
 
 function canonicalResultSubmission(submission: XiaoguiTaskResultSubmissionV1): string {
   return JSON.stringify(submission)
+}
+
+function expectedExecutionState(
+  outcome: XiaoguiTaskResultSubmissionV1['result']['outcome'],
+): XiaoguiTaskResultAckV1['executionState'] {
+  switch (outcome) {
+    case 'RESULT_READY': return 'RESULT_READY'
+    case 'EXECUTION_FAILED': return 'FAILED'
+    case 'OUTCOME_UNKNOWN': return 'OUTCOME_UNKNOWN'
+  }
 }
 
 function evidenceSequence(evidence: HubTaskWorkerPendingEvidenceV1): number {

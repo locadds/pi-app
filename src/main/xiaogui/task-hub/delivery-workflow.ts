@@ -449,6 +449,15 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
     return recoveryPromise
   }
 
+  /**
+   * Read-only bridge for H1 restart repair. Delivery remains authoritative;
+   * callers receive only the public projection, never outbox payloads or paths.
+   */
+  readLatestDelivery(address: HubAddressV1, flowId: string): DeliveryBatchProjectionV1 | null {
+    if (this.closing || this.closed) return null
+    return this.store.readLatestDelivery(address, flowId as FlowId)
+  }
+
   private async recoverInternal(): Promise<void> {
     if (this.closing || this.closed) return
     for (const pending of this.store.pendingDeliveryVerificationOutboxes()) {

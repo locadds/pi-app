@@ -82,6 +82,7 @@ describe('M4D delivery IPC adapter', () => {
     const reporter = {
       recordExecutionStarted: vi.fn(async () => undefined),
       reportDeliveryOutcome: vi.fn(async () => undefined),
+      recoverPersistedDeliveryOutcomes: vi.fn(async () => undefined),
     }
     const outcome = okBatch()
     ;(port.selectTasks as ReturnType<typeof vi.fn>).mockResolvedValue(outcome)

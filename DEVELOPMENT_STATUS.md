@@ -2,7 +2,64 @@
 
 更新时间：2026-09-04
 阶段：`TASKHUB-H1-4C-B` — 桌面受控结果上报候选
-状态：候选已提交并推送至 `planning-agent` 独立功能分支；桌面主进程实现、聚焦测试、真实 Hub HTTP 双 Worker 验证和两份独立只读审查已完成，现停在人工验收门。未合并正式主线、未发布；未进入 C3 或 Renderer/Web 前端。
+状态：阶段 B 首轮候选收到 `REQUEST CHANGES` 后，已完成限定范围整改与聚焦验证；当前等待本整改提交推送及独立复验。未启动两机人工验收、C3、Renderer/Web 前端，未合并正式主线或发布。
+
+## H1-4C 阶段 B 限定整改（2026-09-04）
+
+### 本阶段目标
+
+只修复首轮验收报告列出的桌面问题：拒绝中文标点后泄漏的本机绝对路径、严格核对 Result ACK 的终态映射，以及关闭“Delivery 已持久化终态、结果尚未入队就退出”造成的重启永久丢结果窗口。不得借整改启动前端、C3 或两机人工验收。
+
+### 实际修改文件
+
+| 范围 | 文件 |
+| --- | --- |
+| 共享结果路径门 | `packages/shared/xiaogui-hub-task-contract.ts`、`packages/shared/xiaogui-hub-task-contract.test.ts` |
+| Result ACK 精确校验 | `src/main/xiaogui/hub-task/worker-state.ts`、`worker-state.test.ts` |
+| 重启结果修复服务 | `src/main/xiaogui/hub-task/worker-service.ts`、`worker-service.test.ts`、`worker-ipc.test.ts` |
+| Delivery 终态读取与启动顺序 | `src/main/xiaogui/task-hub/sqlite-store.ts`、`sqlite-store.test.ts`、`delivery-workflow.ts`、`ipc.ts`、`ipc.test.ts`、`delivery-ipc.test.ts` |
+| 阶段记录 | `DEVELOPMENT_STATUS.md` |
+
+### 已完成内容
+
+- 受控结果文本使用 Unicode 边界识别本机绝对路径，`路径：D:\\secret\\result.txt` 等中文标点前缀会在本机合同解析阶段被拒绝；不依赖 Hub 最后兜底。
+- Result ACK 除 `resultId`、`eventId` 和 `verified` 外，还必须满足 `RESULT_READY → RESULT_READY`、`EXECUTION_FAILED → FAILED`、`OUTCOME_UNKNOWN → OUTCOME_UNKNOWN`；不匹配时结果证据继续留在持久队列，本地状态不被错误覆盖。
+- Delivery Store 新增只读 `readLatestDelivery`，可读取包括 `APPLIED`、`REJECTED` 等终态在内的最新公开投影，不返回 outbox、路径或内部证据载荷。
+- 默认启动恢复现在先等待既有 Delivery outbox 恢复完成，再按持久化的 Hub 分配—本机 flow 绑定重查 Delivery 终态；若尚无终态 Result 证据，则复用既有 `reportDeliveryOutcome` 生成并持久化一次结果。网络离线时证据保留，下次启动或同步仍可补传。
+- 恢复过程逐任务 fail-safe：单条读取或投影失败不会阻止应用启动，也不会删除 Delivery 权威事实；已有终态证据时不会重复生成。
+
+### 未完成内容
+
+- 本整改尚待独立只读复验与人工验收；在通过前不进行两机真实旅程。
+- 没有修改 Renderer/Hub 网页结果时间线，也没有启动 C3、自动执行、自动合并、自动 Apply 或制品下载。
+- 桌面完整 typecheck/build 仍被工作树既有 `pdfjs-dist/legacy/build/pdf.mjs` 依赖缺口阻断；本包没有越界安装或改写 WORK/PDF 依赖。
+
+### 与规格文档的偏差
+
+- 无冻结产品或架构决策偏差。重启修复只读取既有 TaskHub Delivery 的公开投影，并通过原 H1 Result 服务入队；没有建立第二套执行状态机或绕过人工批准门。
+- 终态恢复使用最近一次应用启动时作为结果生成时间，因为现有公开 Delivery 投影没有独立的“终态持久化时间”字段；回执/Hub 接收时间仍由现有签名与 ACK 合同记录。本包未为此扩大 Delivery 合同。
+
+### 测试命令和结果
+
+| 检查 | 结果 |
+| --- | --- |
+| `vitest run`（9 个 H1/Delivery 聚焦文件） | 通过：9 文件 / 80 用例。覆盖路径绕过、三类 ACK 映射、重启后从持久终态重建结果、恢复先后顺序、终态 Store 重开读取及既有 Worker/IPC 回归。 |
+| `tsc -p tsconfig.node.json --noEmit` | 未通过；本包引入的测试类型问题修复后，仅余既有 `src/main/xiaogui/work-document-review-renderer.ts` 对 `pdfjs-dist/legacy/build/pdf.mjs` 的缺失。 |
+| `npm run typecheck` | 未通过；仅报既有 main/Renderer 文档预览文件无法解析同一 `pdfjs-dist` 依赖，H1-4C 修改文件不在错误列表。 |
+| `npm run build` | 未通过：main 与 preload 已完成构建，Renderer 在既有 `template-review-v2-dialog.tsx` 的同一 `pdfjs-dist` 导入处停止。 |
+| `git diff --check` | 通过；只有 Git 行尾转换提示。 |
+
+### 已知风险
+
+- 完整桌面构建仍因既有共享依赖工作树缺少锁定的 `pdfjs-dist` 而红灯；因此本整改只能进入代码复验，不能被表述为可发布构建。
+- 恢复逻辑已有真实 SQLite 重开与离线结果持久化测试，但尚未执行真实进程“终态写入后立即退出再重启”的 Electron/两机旅程；这应在代码复验通过后由人工验收覆盖。
+- 本包不改变网络重试机制；Hub 不可用时 Result 仍由既有有序证据队列保存并在后续同步中重试。
+
+### 下一阶段计划
+
+1. 提交并推送本独立桌面分支到 `planning-agent`，固定 SHA 后交由独立审查 Agent 复验。
+2. 仅当 Hub 与桌面整改都通过复验并获得人工授权后，再安排 H1-4C 两机旅程，重点验证真实进程重启和离线补传。
+3. 继续禁止 C3、前端、正式主线合并与发布。
 
 ## H1-4C 阶段 B 目标
 
