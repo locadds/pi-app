@@ -64,5 +64,17 @@ describe('H1-4C result wire contract', () => {
     const chinesePunctuation = submission()
     chinesePunctuation.result.resultSummary = '路径：D:\\secret\\result.txt'
     expect(parseXiaoguiTaskResultSubmissionV1(chinesePunctuation).ok).toBe(false)
+
+    const attachedDrive = submission()
+    attachedDrive.result.resultSummary = '路径D:\\secret\\result.txt'
+    expect(parseXiaoguiTaskResultSubmissionV1(attachedDrive).ok).toBe(false)
+
+    const attachedUnc = submission()
+    attachedUnc.result.resultSummary = '附件\\\\server\\share\\result.txt'
+    expect(parseXiaoguiTaskResultSubmissionV1(attachedUnc).ok).toBe(false)
+
+    const intranetUrl = submission()
+    intranetUrl.result.resultSummary = '请参考 https://intranet.example/result 的审阅记录。'
+    expect(parseXiaoguiTaskResultSubmissionV1(intranetUrl).ok).toBe(true)
   })
 })
