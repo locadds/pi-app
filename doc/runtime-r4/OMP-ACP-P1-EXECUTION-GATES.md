@@ -1,7 +1,7 @@
 # OMP ACP Runtime P1 生产门与施工卡
 
 > [!important] 2026-09-04 产品路线已取代本文施工路线
-> 本文只保留 P0—P1D-A 的隔离研究与验收证据，不再是产品施工卡。`P1D-B` 及其独立 OMP Runtime、私有模型配置、设置页、启停、目录、状态和 Runtime 选择目标均已取消。当前产品主链固定为“进入 CODING → 启动现有 Pi Coding Harness → 自动装载小规内置 Coding Extension/Skill”；不启动 OMP 进程，也不向用户展示 OMP。历史研究源码不得重新注册进生产组合，除非以后针对一个已验证的具体缺口另行批准最小复用。
+> 本文只保留 P0—P1D-A 的隔离研究与验收证据，不再是产品施工卡。`P1D-B` 及其独立 OMP Runtime、私有模型配置、设置页、启停、目录、状态和 Runtime 选择目标均已取消。当前产品主链固定为“进入 CODING → 启动现有 Pi Coding Harness → 自动装载小规隐藏透明能力 Extension，并复用 Pi 已加载 Skill”；不启动 OMP 进程，也不向用户展示 OMP。当前实际复用的六项 OMP 行为、生产接缝和逐项证据以 [CODING 透明能力映射](../architecture/xiaogui-oh-my-pi-acp-runtime.md#当前透明能力映射) 为准，历史研究源码不得重新注册进生产组合。
 
 ## 状态边界
 

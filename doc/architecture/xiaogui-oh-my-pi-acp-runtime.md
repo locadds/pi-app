@@ -1,4 +1,4 @@
-# 小规 Oh My Pi ACP 研究记录（产品路线已取代）
+# 小规 CODING 透明能力与 Oh My Pi ACP 历史边界
 
 ## 当前产品结论（2026-09-04）
 
@@ -7,13 +7,30 @@
 ```text
 进入 CODING
 → 启动现有 Pi Coding Harness
-→ 自动装载小规内置的 Coding Extension / Skill
+→ 自动装载小规隐藏的 CODING 透明能力 Extension，并复用 Pi 已加载的内置 Skill
 → 使用小规唯一一套模型配置
 ```
 
-OMP 不作为独立 Runtime、模式、模型目标或用户可见产品。产品组合不注册 OMP Adapter，不提供 OMP 启停、目录、状态、安装、清理或选择入口，也不启动 OMP 进程。上下文、权限、计划、Diff、检查点和角色等已完成能力属于小规自己的 Pi/TaskHub 扩展；它们在 CODING 下按现有接缝自动工作，不要求用户知道 OMP。
+OMP 不作为独立 Runtime、模式、模型目标或用户可见产品。产品组合不注册 OMP Adapter，不提供 OMP 启停、目录、状态、安装、清理或选择入口，也不启动 OMP 进程。用户只进入 CODING，并继续使用小规唯一模型配置。
 
-`RUNTIME-R4-OMP-ACP-ADAPTER-01` 的 P0—P1D-A 代码和下文说明仅保留为隔离研究证据。它们不进入当前产品主链，不因曾经通过研究验收而恢复。以后若 OMP 某项具体能力优于 Pi 原生能力，必须先给出真实缺口，再以 Pi Extension、Skill 或最小适配单独审批；不得整体恢复 OMP Runtime 产品化。
+OMP 研究中确认有价值的交互能力没有随独立 Runtime 一起取消，而是由现有 Pi Extension、Skill 与 TaskHub 接缝透明提供。这里的“复用”是等价复用成熟行为，不复制 OMP 源码、不加载 OMP 包，也不建立第二套 Agent Loop。
+
+## 当前透明能力映射
+
+| 能力编号 | 保留的 OMP 行为 | 当前权威实现 | 默认启用与行为证据 |
+|---|---|---|---|
+| `PROJECT_RULES_AND_SKILLS` | 编程时利用项目规则与可用 Skill | Pi 原生 Resource Loader + 隐藏 `xiaogui-coding-transparent-harness-v1` | `worker-runtime-tool-registry.test.ts` 实际触发 CODING 初始化注入的 `before_agent_start`；WORK 不注册该能力 |
+| `CONTROLLED_CONTEXT` | 把用户选择的文件上下文送入本轮模型调用 | `xiaogui-coding-context-v1` | `context-extension.test.ts` 证明相对路径、临时上下文、无绝对路径及无快照不注入 |
+| `ROLE_SCOPED_TOOLS` | 研究、实现、审阅角色具有不同工具上限 | `xiaogui-coding-role-guard-v1` | `role-guard-extension.test.ts` 证明研究角色和未绑定角色不能写入，未知工具拒绝 |
+| `HOST_MEDIATED_PERMISSION` | 写入、命令及外传必须由宿主决定 | TaskHub `CodingPermissionModuleV1` 与权限策略 | `permission-module.test.ts` / `permission-policy.test.ts` 证明超时、畸形结果和未核验操作均 fail-closed |
+| `USER_SELECTED_PLANNING` | 需要时产生可审阅计划 | Pi 计划工具 + TaskHub Attempt 计划 | 透明 Extension 明确禁止把普通请求强制切到 ASK/PLAN；`xiaogui-coding-plan-tool.test.ts` / `attempt-plan-module.test.ts` 证明计划草稿与批准接缝 |
+| `EVIDENCE_AND_CHECKPOINT` | 用真实变更、验证和检查点支持审阅与恢复 | TaskHub Review/Checkpoint 模块 | `attempt-review-module.test.ts` 证明真实 Diff/退出状态；`checkpoint-module.test.ts` 证明恢复先预览、确认及失败停止 |
+
+`src/worker/worker-runtime.ts` 是 Pi 侧唯一初始化入口：仅当 `mode === 'CODING'` 时装入透明能力 Extension、角色硬门和受控上下文；公共 Prompt Extension 仍由所有模式共用。权限、计划、Review 与 Checkpoint 的硬状态继续由 Main/TaskHub 生产组合持有，模型提示不能替代这些门。这样既有正向产品链，也没有 OMP Runtime 选择。
+
+普通编程请求默认直接处理。只有用户明确提出规划，或会话已经处于 PLAN，才使用计划流程；透明能力包不得把 CODING 硬编码为先 ASK、先 PLAN 或先等待确认。
+
+`RUNTIME-R4-OMP-ACP-ADAPTER-01` 的 P0—P1D-A Adapter、进程与装配代码及下文说明仅保留为隔离研究证据。它们不进入当前产品主链，不因曾经通过研究验收而恢复；上表是当前唯一有效的 OMP 能力复用口径。
 
 ## 历史研究结论
 

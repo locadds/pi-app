@@ -45,6 +45,7 @@ import { freezeXiaoguiPromptContextV1 } from './xiaogui-prompt/session-binding.j
 import { createXiaoguiCodingContextExtensionV1 } from './xiaogui-coding-extensions/context-extension.js'
 import { createXiaoguiCodingRoleGuardExtensionV1 } from './xiaogui-coding-extensions/role-guard-extension.js'
 import { CodingRoleRuntimeBindingV1 } from './xiaogui-coding-extensions/role-runtime-binding.js'
+import { createXiaoguiCodingTransparentHarnessExtensionV1 } from './xiaogui-coding-extensions/transparent-harness-extension.js'
 
 export type WorkerModelRuntime = Pick<
   ModelRuntime,
@@ -496,9 +497,12 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
         additionalSkillPaths: [...st.bundledSkillPaths],
         extensionFactories: [
           ...(promptContext.mode === 'CODING'
-            ? [createXiaoguiCodingRoleGuardExtensionV1(
-                () => codingRoleRuntimeBindingV1.read(),
-              ).factory]
+            ? [
+                createXiaoguiCodingTransparentHarnessExtensionV1(),
+                createXiaoguiCodingRoleGuardExtensionV1(
+                  () => codingRoleRuntimeBindingV1.read(),
+                ).factory,
+              ]
             : []),
           createXiaoguiPromptSessionExtensionV1(
             () => st.promptTurnContext ?? initialContext,

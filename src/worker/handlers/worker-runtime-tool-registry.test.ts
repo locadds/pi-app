@@ -1,10 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentSession, LoadExtensionsResult } from '@earendil-works/pi-coding-agent'
+import type {
+  AgentSession,
+  ExtensionAPI,
+  InlineExtension,
+  LoadExtensionsResult,
+} from '@earendil-works/pi-coding-agent'
 
 import { workerPromptContextToolNamesForModeV1 } from '@shared/xiaogui-prompt-capabilities'
 
 import { initSession, st } from '../worker-runtime'
+import { freezeCodingContextAgentPayloadV1 } from '../xiaogui-coding-extensions/context-extension'
+import {
+  XIAOGUI_CODING_TRANSPARENT_CAPABILITIES_V1,
+  XIAOGUI_CODING_TRANSPARENT_HARNESS_MARKER_V1,
+} from '../xiaogui-coding-extensions/transparent-harness-extension'
 import { freezeXiaoguiPromptContextV1 } from '../xiaogui-prompt/session-binding'
+
+type ExtensionHandler = (event: never, context: never) => unknown
+
+async function registerFactory(extension: InlineExtension): Promise<Map<string, ExtensionHandler[]>> {
+  const handlers = new Map<string, ExtensionHandler[]>()
+  const factory = typeof extension === 'function' ? extension : extension.factory
+  await factory({
+    on: vi.fn((event: string, handler: ExtensionHandler) => {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler])
+    }),
+  } as unknown as ExtensionAPI)
+  return handlers
+}
 
 /**
  * 回归：SDK createAgentSession 的 tools 选项同时是注册表白名单
@@ -31,6 +54,7 @@ describe('worker-runtime session tool registry whitelist', () => {
     st.promptDiagnostics = null
     st.effectivePrompt = null
     st.promptPreflight = null
+    st.promptCodingContext = null
     st.agentTurnActive = false
     st.currentSessionId = ''
     st.currentRunId = ''
@@ -44,7 +68,7 @@ describe('worker-runtime session tool registry whitelist', () => {
     const captured: {
       tools?: readonly string[]
       additionalSkillPaths?: readonly string[]
-      extensionFactoryCount?: number
+      extensionFactories?: readonly InlineExtension[]
     } = {}
     const activeCalls: string[][] = []
     let active: string[] = []
@@ -81,7 +105,7 @@ describe('worker-runtime session tool registry whitelist', () => {
       SessionManager: { create: vi.fn((cwd: string) => ({ getCwd: () => cwd })) },
       createAgentSessionServices: vi.fn(async (options) => {
         captured.additionalSkillPaths = options.resourceLoaderOptions.additionalSkillPaths
-        captured.extensionFactoryCount = options.resourceLoaderOptions.extensionFactories?.length ?? 0
+        captured.extensionFactories = [...(options.resourceLoaderOptions.extensionFactories ?? [])]
         overrideResult = options.resourceLoaderOptions.extensionsOverride({
           extensions: [],
         } as unknown as LoadExtensionsResult)
@@ -147,10 +171,13 @@ describe('worker-runtime session tool registry whitelist', () => {
     expect(registered).toContain('xiaogui_work_docx_template_intake')
     expect(registered).toContain('xiaogui_work_docx_template_materialize')
 
-    // WORK 只加载公共 Prompt Extension；进入 CODING 后，Pi Resource Loader
-    // 会在同一 Harness 中自动增加角色保护和受控上下文两个隐藏 Extension。
-    const workExtensionFactoryCount = captured.extensionFactoryCount ?? 0
-    expect(workExtensionFactoryCount).toBeGreaterThan(0)
+    // WORK 只加载公共 Prompt Extension；它没有 CODING 的上下文或工具硬门。
+    const workFactories = [...(captured.extensionFactories ?? [])]
+    expect(workFactories.length).toBeGreaterThan(0)
+    const workRegistrations = await Promise.all(workFactories.map(registerFactory))
+    expect(workRegistrations.some((entry) => entry.has('context'))).toBe(false)
+    expect(workRegistrations.some((entry) => entry.has('tool_call'))).toBe(false)
+
     await initSession('D:\\ws', freezeXiaoguiPromptContextV1({
       schemaVersion: 1,
       mode: 'CODING',
@@ -162,7 +189,72 @@ describe('worker-runtime session tool registry whitelist', () => {
       sessionKey: 'xgs1_coding_probe',
       projectId: 'xgp1_coding_probe',
     }))
-    expect(captured.extensionFactoryCount).toBeGreaterThan(workExtensionFactoryCount)
+    const codingFactories = [...(captured.extensionFactories ?? [])]
+    expect(codingFactories).toContainEqual(expect.objectContaining({
+      name: 'xiaogui-coding-transparent-harness-v1',
+      hidden: true,
+    }))
+    const codingRegistrations = await Promise.all(codingFactories.map(registerFactory))
+
+    // 不再只比较 Extension 数量：实际触发 CODING 初始化交给 Pi 的隐藏
+    // Extension，证明透明能力包、角色硬门和受控上下文三条行为接缝。
+    const beforeAgentStartResults = await Promise.allSettled(
+      codingRegistrations.flatMap((entry) => entry.get('before_agent_start') ?? []).map((handler) =>
+        Promise.resolve(handler({
+          systemPrompt: 'Pi base prompt',
+          systemPromptOptions: {
+            selectedTools: [],
+            toolSnippets: {},
+            promptGuidelines: [],
+            customPrompt: false,
+          },
+        } as never, {
+          isProjectTrusted: () => true,
+          abort: vi.fn(),
+        } as never)),
+      ),
+    )
+    const injectedPrompts = beforeAgentStartResults
+      .filter((result): result is PromiseFulfilledResult<unknown> => result.status === 'fulfilled')
+      .map((result) => (result.value as { systemPrompt?: string } | undefined)?.systemPrompt ?? '')
+    const transparentPrompt = injectedPrompts.find((prompt) =>
+      prompt.includes(XIAOGUI_CODING_TRANSPARENT_HARNESS_MARKER_V1)
+      && prompt.includes('不得强制切换到 ASK 或 PLAN')
+      && prompt.includes('真实差异和实际验证结果'))
+    expect(transparentPrompt).toBeTruthy()
+    expect(transparentPrompt).not.toMatch(/\bOMP\b|Oh My Pi/i)
+    expect(XIAOGUI_CODING_TRANSPARENT_CAPABILITIES_V1).toEqual([
+      'PROJECT_RULES_AND_SKILLS',
+      'CONTROLLED_CONTEXT',
+      'ROLE_SCOPED_TOOLS',
+      'HOST_MEDIATED_PERMISSION',
+      'USER_SELECTED_PLANNING',
+      'EVIDENCE_AND_CHECKPOINT',
+    ])
+
+    const roleRegistration = codingRegistrations.find((entry) => entry.has('tool_call'))
+    expect(roleRegistration?.get('tool_call')?.[0]?.({ toolName: 'write' } as never, {} as never))
+      .toEqual({
+        block: true,
+        reason: 'XIAOGUI_CODING_ROLE_BINDING_REQUIRED',
+        terminate: true,
+      })
+
+    st.promptCodingContext = freezeCodingContextAgentPayloadV1({
+      schemaVersion: 1,
+      snapshotIds: ['xgctx_12345678-1234-1234-1234-123456789abc'],
+      sources: [{ relativePath: 'src/feature.ts', content: 'export const value = 1', truncated: false }],
+      symbolService: 'UNAVAILABLE',
+      diagnosticService: 'UNAVAILABLE',
+    })
+    const contextRegistration = codingRegistrations.find((entry) => entry.has('context'))
+    const contextResult = await contextRegistration?.get('context')?.[0]?.({
+      type: 'context',
+      messages: [],
+    } as never, {} as never) as { messages?: Array<{ content?: string }> } | undefined
+    expect(contextResult?.messages?.at(-1)?.content).toContain('"relativePath":"src/feature.ts"')
+    expect(JSON.stringify(contextResult)).not.toMatch(/[A-Z]:[\\/]/)
+
     expect(captured.tools).toEqual([...workerPromptContextToolNamesForModeV1('CODING')])
   })
 })

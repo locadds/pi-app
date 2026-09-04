@@ -10,7 +10,7 @@ Before developing any feature, inspect Pi native capabilities, available Skills,
 
 The first installer-bundled Skill set and its native Pi loading boundary are documented in [architecture/xiaogui-bundled-pi-skills.md](./architecture/xiaogui-bundled-pi-skills.md).
 
-The superseded Oh My Pi ACP runtime research is retained in [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md) and [runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md](./runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md). It is historical evidence, not the current product architecture or an implementation queue.
+The current transparent CODING capability map, its behavioural evidence, and the boundary of the superseded Oh My Pi ACP Runtime are documented in [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md). The old P1 Runtime gates remain in [runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md](./runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md) as historical evidence, not as the current implementation queue.
 
 ## User guide (install, shortcuts, adapter list)
 

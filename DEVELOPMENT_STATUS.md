@@ -1,6 +1,83 @@
 # 小规开发阶段状态
 
-## 2026-09-04｜CODING Pi 主链与 OMP 产品路线纠偏返修（待人工验收）
+## 2026-09-04｜CODING 透明能力正向链返修（待人工验收）
+
+### 本阶段目标
+
+关闭 `d8dfec1` 人工验收指出的正向链与双语文档缺口：保留已经完成的独立 OMP Runtime/UI/模型配置删减，明确当前实际复用的 OMP 行为，并证明这些能力在进入 CODING 时由现有 Pi Extension、Skill 与 TaskHub 接缝透明生效，而不是只比较 Extension 数量。
+
+### 实际修改文件
+
+- `src/worker/xiaogui-coding-extensions/transparent-harness-extension.ts`
+- `src/worker/worker-runtime.ts`
+- `src/worker/handlers/worker-runtime-tool-registry.test.ts`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+- `doc/README.md`
+- `doc/README.zh-CN.md`
+- `DEVELOPMENT_STATUS.md`
+
+仓库外继续更新既有长期记录，不新建零散规划：
+
+- `D:\Codex\longtime_memory\projects\小规Agent\progress.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\施工总控.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\research\2026-09-03-CODING研究-OMP-ACP-P1C验收与P1D装配规划.md`
+
+### 已完成内容
+
+1. 新增隐藏的 `xiaogui-coding-transparent-harness-v1` Pi Extension，并且只在 `mode === 'CODING'` 的现有 Pi Worker 初始化链自动装入；没有 OMP 进程、Adapter、开关、模型目录或用户界面。
+2. 单一版本化清单明确六项透明能力：项目规则与 Skill、受控上下文、角色工具边界、宿主权限、用户选择的计划、真实证据与检查点。
+3. 能力提示明确普通编程请求直接处理；只有用户明确要求规划或会话已处于 PLAN 才使用计划流程，禁止把普通 CODING 请求硬切到 ASK/PLAN。
+4. 写入、命令、外传、真实 Diff/验证和检查点恢复继续由既有角色保护与 TaskHub 权威模块硬性控制；Extension 只提供 Pi 侧装配和提示，不复制权限或状态机。
+5. 初始化回归不再统计 Extension 数量，而是实际注册并触发工厂：验证透明提示存在、未绑定角色写入被拦截、相对文件上下文进入本轮模型且不出现绝对路径；同时证明 WORK 没有这些 CODING 行为钩子。
+6. 架构文档新增六项能力逐项映射及行为证据；中英文 README 统一说明当前透明能力与旧 OMP Runtime 历史研究的边界，旧生产门不再被表述为当前施工队列。
+
+### 未完成内容
+
+- 当前仍是独立 CODING 分支候选，未合入 WORK、阶段线或正式主线，未发布或制作 Portable。
+- 历史 OMP Adapter、装配与测试源码继续作为研究证据保留，但没有生产消费者；本阶段未删除或复测它们。
+- 本阶段仍需人工验收；验收前不进入新的后续工作。
+
+### 与规格文档存在的偏差
+
+- 原 P1D-B“独立 OMP ACP Runtime 产品化”已被用户最新决定取代；当前复用的是已选定的成熟交互行为，由 Pi/TaskHub 现有接缝等价提供，不是运行 OMP 包。
+- OMP 能力不产生任何用户可见名称、按钮、模式、状态、安装或第二模型配置。用户只知道自己进入 CODING。
+- 计划能力保留，但不作为所有请求的前置硬门；这与用户明确取消“默认先 ASK/PLAN”的决定一致。
+
+### 测试命令和测试结果
+
+```powershell
+$env:XIAOGUI_TEST_TEMP_ROOT='D:\CodexTemp'
+npm exec vitest run -- src/worker/handlers/worker-runtime-tool-registry.test.ts src/worker/xiaogui-coding-extensions/context-extension.test.ts src/worker/xiaogui-coding-extensions/role-guard-extension.test.ts src/main/xiaogui/coding-extensions/permission-policy.test.ts src/worker/xiaogui-coding-plan-tool.test.ts src/main/xiaogui/coding-extensions/attempt-review-module.test.ts src/main/xiaogui/coding-extensions/checkpoint-module.test.ts --reporter=dot
+```
+
+结果：`7` 个测试文件、`29` 项测试全部通过，退出码 `0`。随后只补跑权限持久规则和 Attempt 计划两个直接权威模块：
+
+```powershell
+npm exec vitest run -- src/main/xiaogui/coding-extensions/permission-module.test.ts src/main/xiaogui/coding-extensions/attempt-plan-module.test.ts --reporter=dot
+```
+
+补充结果：`2` 个测试文件、`13` 项测试全部通过。合计 `9` 个相关文件、`42` 项通过；逐项覆盖 CODING 初始化、受控上下文、角色工具上限、权限 fail-closed、计划草稿/批准、真实审阅证据和检查点恢复，不是 OMP 本体复测。
+
+```powershell
+npm run typecheck
+npm exec eslint -- src/worker/xiaogui-coding-extensions/transparent-harness-extension.ts src/worker/worker-runtime.ts src/worker/handlers/worker-runtime-tool-registry.test.ts
+git diff --check
+```
+
+结果：Web/Node TypeScript、定向 ESLint 与 `git diff --check` 均通过，退出码 `0`。按用户要求不运行 OMP 本体、802 MB 装配、真实模型、Electron、全量测试或 Portable。
+
+### 已知风险
+
+1. 项目规则与 Skill 的发现继续依赖 Pi 原生 Resource Loader；透明 Extension 只规定如何使用，不能代替 Pi 的实际加载诊断。
+2. 历史 OMP 研究源码仍在 `src/main`，但当前没有生产 import 或消费者；未来合并仍需防止误恢复旧 Runtime 选择。
+3. 透明提示是单一版本化代码来源；后续若调整能力口径，应同步行为测试和架构映射，不能另加散落硬编码。
+
+### 下一阶段计划
+
+完成 TypeScript、定向 ESLint、差异检查和只读审查后，提交并推送当前隔离分支并停止，等待人工验收。通过也不代表合入 WORK/主线、切换 Runtime 或发布。
+
+## 2026-09-04｜CODING Pi 主链与 OMP 产品路线纠偏返修（人工验收未通过，已进入上方正向链返修）
 
 ### 本阶段目标
 
