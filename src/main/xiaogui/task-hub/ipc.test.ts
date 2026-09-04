@@ -414,6 +414,33 @@ describe('M2A collaboration hub IPC adapter', () => {
     expect(taskExecution.start).toHaveBeenCalledOnce()
   })
 
+  it('reports an execution start only after the existing orchestrator accepted the user-confirmed action', async () => {
+    const reporter = {
+      recordExecutionStarted: vi.fn(async () => undefined),
+      reportDeliveryOutcome: vi.fn(async () => undefined),
+    }
+    registerCollaborationHubHandlers(undefined, undefined, undefined, undefined, reporter)
+    const startExecution = mocks.handlers.get('ipc:xiaogui.hub.execution.start')!
+    const taskExecution = mocks.runtimeCompositions[0]!.taskExecution
+    const valid = {
+      address: ADDRESS,
+      flowId: 'xhbf_flow',
+      prompt: '完成当前任务',
+      files: [{ operation: 'MODIFY', relativePath: 'src/task.ts' }],
+    }
+
+    await expect(startExecution(valid)).resolves.toMatchObject({ ok: true })
+    await Promise.resolve()
+    expect(reporter.recordExecutionStarted).toHaveBeenCalledWith(ADDRESS, 'xhbf_flow')
+
+    ;(taskExecution.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'EXECUTION_INPUT_INVALID' },
+    })
+    await expect(startExecution(valid)).resolves.toMatchObject({ ok: false })
+    expect(reporter.recordExecutionStarted).toHaveBeenCalledTimes(1)
+  })
+
   it('registers a versioned batch execution IPC method and forwards only its narrow 1..2 item shape', async () => {
     registerCollaborationHubHandlers()
     const startBatch = mocks.handlers.get('ipc:xiaogui.hub.execution.startBatch')!

@@ -23,7 +23,7 @@ const ADDRESS = {
   sessionKey: `xgs1_${'2'.repeat(64)}`,
 } as SessionAddressV1
 
-function okBatch(): XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1> {
+function okBatch(): Extract<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>, { ok: true }> {
   return {
     ok: true,
     value: {
@@ -75,6 +75,34 @@ describe('M4D delivery IPC adapter', () => {
       })
     }
     expect(port.selectTasks).toHaveBeenCalledOnce()
+  })
+
+  it('forwards only an already-authoritative delivery projection to the trusted H1-4C reporter', async () => {
+    const port = coordinator()
+    const reporter = {
+      recordExecutionStarted: vi.fn(async () => undefined),
+      reportDeliveryOutcome: vi.fn(async () => undefined),
+    }
+    const outcome = okBatch()
+    ;(port.selectTasks as ReturnType<typeof vi.fn>).mockResolvedValue(outcome)
+    registerXiaoguiDeliveryHandlers(port, reporter)
+    const select = mocks.handlers.get('ipc:xiaogui.delivery.selection.submit')!
+    const payload = {
+      contractVersion: 'm4d.v1',
+      address: ADDRESS,
+      request: { requestId: 'req-result', flowId: 'xhbf_flow', taskRunIds: ['xhbtr_a'] },
+    }
+
+    await expect(select(payload)).resolves.toEqual(outcome)
+    await Promise.resolve()
+    expect(reporter.reportDeliveryOutcome).toHaveBeenCalledWith(ADDRESS, outcome.value)
+
+    ;(port.selectTasks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' },
+    })
+    await select(payload)
+    expect(reporter.reportDeliveryOutcome).toHaveBeenCalledTimes(1)
   })
 
   it('passes approval only with the current delivery subject shape', async () => {

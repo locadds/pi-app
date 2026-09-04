@@ -10,9 +10,13 @@ import {
   type XiaoguiTaskDeliveryReceiptUnsignedV1,
   type XiaoguiTaskDeliveryReceiptV1,
   type XiaoguiTaskReceiptAckV1,
+  type XiaoguiTaskResultAckV1,
+  type XiaoguiTaskResultSubmissionV1,
 } from '@shared/xiaogui-hub-task-contract'
+import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { CollaborationHubApplicationV1 } from '../task-hub/application'
 import { signXiaoguiTaskDeliveryReceiptV1 } from './receipt-crypto'
+import { projectHubTaskResultFromDeliveryV1 } from './task-result-projection'
 import {
   type HubTaskWorkerAssignmentDetailV1,
   type HubTaskWorkerAssignmentV1,
@@ -32,6 +36,8 @@ export interface XiaoguiHubTaskWorkerPortV1 {
   claimOffer(taskId: string): Promise<HubTaskWorkerAssignmentDetailV1>
   /** Main-process-only, signed evidence upload. The Hub returns no task body. */
   submitReceipt(receipt: XiaoguiTaskDeliveryReceiptV1): Promise<XiaoguiTaskReceiptAckV1>
+  /** Atomic controlled result + terminal receipt upload; never local bytes or paths. */
+  submitResult(submission: XiaoguiTaskResultSubmissionV1): Promise<XiaoguiTaskResultAckV1>
 }
 
 export interface HubTaskWorkerCredentialBundleV1 {
@@ -97,9 +103,18 @@ export interface HubTaskWorkerServiceV1 {
   createPlanDraft(assignmentId: string, address: HubAddressV1): Promise<
     HubTaskWorkerServiceResultV1<{ flowId: string; revisionId: string }>
   >
+  /** Trusted main-process lifecycle hook; it is deliberately not a Renderer IPC. */
+  recordExecutionStarted(address: HubAddressV1, flowId: string): Promise<void>
+  /** Trusted post-verification hook; it reuses Delivery/Evidence and does not apply changes. */
+  reportDeliveryOutcome(address: HubAddressV1, delivery: DeliveryBatchProjectionV1): Promise<void>
   startPolling(intervalMs?: number): void
   close(): void
 }
+
+export type HubTaskWorkerLifecycleReporterV1 = Pick<
+  HubTaskWorkerServiceV1,
+  'recordExecutionStarted' | 'reportDeliveryOutcome'
+>
 
 export interface CreateHubTaskWorkerServiceOptionsV1 {
   state: HubTaskWorkerStateStoreV1
@@ -142,7 +157,7 @@ export function createHubTaskWorkerServiceV1(
 class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   private state: HubTaskWorkerPublicStatusV1
   private timer: NodeJS.Timeout | null = null
-  private receiptFlush: Promise<void> | null = null
+  private evidenceFlush: Promise<void> | null = null
 
   constructor(private readonly options: CreateHubTaskWorkerServiceOptionsV1) {
     const configured = Boolean(options.credentials.read())
@@ -150,7 +165,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       configured,
       state: configured ? 'READY' : 'UNCONFIGURED',
       lastSyncedAt: null,
-      pendingReceiptCount: options.state.pendingReceipts().length,
+      pendingReceiptCount: options.state.pendingEvidence().length,
     }
   }
 
@@ -192,7 +207,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         configured: true,
         state: 'READY',
         lastSyncedAt: this.state.lastSyncedAt,
-        pendingReceiptCount: this.options.state.pendingReceipts().length,
+        pendingReceiptCount: this.options.state.pendingEvidence().length,
       }
       this.startPolling()
       // Pairing is already durable at this point. Do one immediate best-effort
@@ -212,7 +227,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
           ...this.state,
           configured: this.options.credentials.read() !== null,
           state: nextState,
-          pendingReceiptCount: this.options.state.pendingReceipts().length,
+          pendingReceiptCount: this.options.state.pendingEvidence().length,
         }
       }
       return { ok: false, code: this.portFailureCode(error) }
@@ -220,7 +235,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   }
 
   status(): HubTaskWorkerPublicStatusV1 {
-    return { ...this.state, pendingReceiptCount: this.options.state.pendingReceipts().length }
+    return { ...this.state, pendingReceiptCount: this.options.state.pendingEvidence().length }
   }
 
   async refresh(): Promise<HubTaskWorkerServiceResultV1<HubTaskWorkerPublicStatusV1>> {
@@ -235,7 +250,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       const port = this.options.createPort(credentials)
       let receiptFailure: unknown = null
       try {
-        await this.flushPendingReceipts(port)
+        await this.flushPendingEvidence(port)
       } catch (error) {
         receiptFailure = error
         this.recordPortFailure(error)
@@ -256,7 +271,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         try {
           // New packages add NODE_STORED evidence during this poll. Submit it
           // in the same online turn, but never delete a record before its ACK.
-          await this.flushPendingReceipts(port)
+          await this.flushPendingEvidence(port)
         } catch (error) {
           receiptFailure = error
           this.recordPortFailure(error)
@@ -267,7 +282,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         configured: true,
         state: 'READY',
         lastSyncedAt: this.now(),
-        pendingReceiptCount: this.options.state.pendingReceipts().length,
+        pendingReceiptCount: this.options.state.pendingEvidence().length,
       }
       return { ok: true, value: this.status() }
     } catch (error) {
@@ -298,7 +313,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       // Opening is immediately durable even when offline. An online Worker
       // starts a best-effort upload without making the local open wait on the
       // network; refresh remains the authoritative reconciliation action.
-      this.requestReceiptFlush(credentials)
+      this.requestEvidenceFlush(credentials)
     }
     return { ok: true, value: opened }
   }
@@ -322,7 +337,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       const detail = await this.options.createPort(credentials).submitDecision(assignmentId, decision)
       this.options.state.upsertAssignment(detail)
       this.enqueueReceipt(decision === 'ACCEPT' ? 'DIRECT_ACCEPTED' : 'DIRECT_REJECTED', detail, credentials)
-      this.requestReceiptFlush(credentials)
+      this.requestEvidenceFlush(credentials)
       return { ok: true, value: this.options.state.requireAssignment(assignmentId) }
     } catch (error) {
       this.recordPortFailure(error)
@@ -391,6 +406,59 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     return { ok: true, value: { flowId: outcome.value.flowId, revisionId: outcome.value.revisionId } }
   }
 
+  async recordExecutionStarted(address: HubAddressV1, flowId: string): Promise<void> {
+    const terminalCode = this.terminalActionCode()
+    const credentials = this.options.credentials.read()
+    if (terminalCode || !credentials) return
+    const entry = this.findBoundAssignment(address, flowId)
+    if (!entry || entry.assignment.executionState !== 'NOT_STARTED') return
+    if (this.hasPendingEvent(entry.assignment.assignmentId, 'EXECUTION_STARTED')) return
+    this.enqueueReceipt('EXECUTION_STARTED', entry, credentials)
+    this.requestEvidenceFlush(credentials)
+  }
+
+  async reportDeliveryOutcome(address: HubAddressV1, delivery: DeliveryBatchProjectionV1): Promise<void> {
+    const terminalCode = this.terminalActionCode()
+    const credentials = this.options.credentials.read()
+    if (terminalCode || !credentials) return
+    const entry = this.findBoundAssignment(address, delivery.flowId)
+    // The terminal event must never leap over an actual local execution start.
+    // An offline queued EXECUTION_STARTED is adequate evidence; its sequence
+    // is flushed ahead of the result submission below.
+    if (!entry || this.options.state.hasTerminalEvidenceForAssignment(entry.assignment.assignmentId)) return
+    if (
+      entry.assignment.executionState !== 'RUNNING'
+      && !this.hasPendingEvent(entry.assignment.assignmentId, 'EXECUTION_STARTED')
+    ) return
+
+    const occurredAt = this.now()
+    const result = projectHubTaskResultFromDeliveryV1({
+      resultId: this.id('xgh_result'),
+      assignmentId: entry.assignment.assignmentId,
+      taskId: entry.assignment.taskId,
+      occurredAt,
+      delivery,
+    })
+    if (!result) return
+    const unsigned: XiaoguiTaskDeliveryReceiptUnsignedV1 = {
+      schemaVersion: 'xiaogui.task-receipt.v1',
+      eventId: this.id('xgh_event'),
+      assignmentId: entry.assignment.assignmentId,
+      taskId: entry.assignment.taskId,
+      subjectId: credentials.node.subjectId,
+      nodeId: credentials.node.nodeId,
+      keyId: credentials.node.keyId,
+      eventType: result.outcome,
+      packageSha256: entry.offer.packageSha256,
+      occurredAt,
+      sequence: this.options.state.nextReceiptSequence(),
+      resultSha256: result.resultSha256,
+    }
+    const receipt = (this.options.signReceipt ?? signXiaoguiTaskDeliveryReceiptV1)(unsigned, credentials.node.privateKeyPem)
+    this.options.state.enqueueResult({ result, receipt: receipt as XiaoguiTaskResultSubmissionV1['receipt'] }, this.now())
+    this.requestEvidenceFlush(credentials)
+  }
+
   startPolling(intervalMs = 30_000): void {
     if (this.timer) return
     this.timer = setInterval(() => {
@@ -401,6 +469,28 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   close(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+  }
+
+  private findBoundAssignment(address: HubAddressV1, flowId: string): HubTaskWorkerInboxEntryV1 | null {
+    return this.options.state.listAssignments().find((entry) => (
+      entry.openedAt !== null
+      && entry.assignment.decisionState === 'ACCEPTED'
+      && entry.localPlanDraft !== null
+      && entry.localPlanDraft.projectId === address.projectId
+      && entry.localPlanDraft.sessionKey === address.sessionKey
+      && entry.localPlanDraft.flowId === flowId
+    )) ?? null
+  }
+
+  private hasPendingEvent(
+    assignmentId: string,
+    eventType: XiaoguiTaskDeliveryReceiptUnsignedV1['eventType'],
+  ): boolean {
+    return this.options.state.pendingEvidence().some((evidence) => (
+      evidence.kind === 'RECEIPT'
+        ? evidence.receipt.assignmentId === assignmentId && evidence.receipt.eventType === eventType
+        : evidence.submission.receipt.assignmentId === assignmentId && evidence.submission.receipt.eventType === eventType
+    ))
   }
 
   private enqueueReceipt(
@@ -426,40 +516,55 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     this.options.state.enqueueReceipt(receipt, this.now())
   }
 
-  private requestReceiptFlush(credentials: HubTaskWorkerCredentialBundleV1): void {
-    void this.flushPendingReceipts(this.options.createPort(credentials)).catch((error) => {
+  private requestEvidenceFlush(credentials: HubTaskWorkerCredentialBundleV1): void {
+    void this.flushPendingEvidence(this.options.createPort(credentials)).catch((error) => {
       // The signed record remains durable. Do not turn a local open/decision
       // into a failed user action merely because the Hub is temporarily away.
       this.recordPortFailure(error)
     })
   }
 
-  private flushPendingReceipts(port: XiaoguiHubTaskWorkerPortV1): Promise<void> {
-    if (this.receiptFlush) return this.receiptFlush
+  private flushPendingEvidence(port: XiaoguiHubTaskWorkerPortV1): Promise<void> {
+    if (this.evidenceFlush) return this.evidenceFlush
 
-    const work = this.flushPendingReceiptsSerial(port)
-    this.receiptFlush = work
+    const work = this.flushPendingEvidenceSerial(port)
+    this.evidenceFlush = work
     void work.finally(() => {
-      if (this.receiptFlush === work) this.receiptFlush = null
+      if (this.evidenceFlush === work) this.evidenceFlush = null
     }).catch(() => undefined)
     return work
   }
 
-  private async flushPendingReceiptsSerial(port: XiaoguiHubTaskWorkerPortV1): Promise<void> {
+  private async flushPendingEvidenceSerial(port: XiaoguiHubTaskWorkerPortV1): Promise<void> {
     // Sequence order is part of the Hub anti-replay contract. Stop at the
-    // first non-ACKed item so a later receipt never leaps over it.
+    // first non-ACKed item so a later receipt/result never leaps over it.
     for (;;) {
-      const pending = this.options.state.pendingReceipts()[0]
+      const pending = this.options.state.pendingEvidence()[0]
       if (!pending) return
-      const ack = await port.submitReceipt(pending.receipt)
-      // A Hub response is not allowed to advance a different queued event.
-      // This comparison belongs here, where the submitted queue head is still
-      // known, and is duplicated by the state store's expected-event gate.
-      if (
-        ack.eventId !== pending.receipt.eventId
-        || !this.options.state.acknowledgeReceipt(pending.receipt.eventId, ack)
-      ) {
-        throw new HubTaskWorkerReceiptAckError()
+      if (pending.kind === 'RECEIPT') {
+        const ack = await port.submitReceipt(pending.receipt)
+        // A Hub response is not allowed to advance a different queued event.
+        // This comparison belongs here, where the submitted queue head is still
+        // known, and is duplicated by the state store's expected-event gate.
+        if (
+          ack.eventId !== pending.receipt.eventId
+          || !this.options.state.acknowledgeReceipt(pending.receipt.eventId, ack)
+        ) {
+          throw new HubTaskWorkerReceiptAckError()
+        }
+      } else {
+        const ack = await port.submitResult(pending.submission)
+        if (
+          ack.resultId !== pending.submission.result.resultId
+          || ack.eventId !== pending.submission.receipt.eventId
+          || !this.options.state.acknowledgeResult(
+            pending.submission.result.resultId,
+            pending.submission.receipt.eventId,
+            ack,
+          )
+        ) {
+          throw new HubTaskWorkerResultAckError()
+        }
       }
     }
   }
@@ -520,6 +625,14 @@ class HubTaskWorkerReceiptAckError extends Error {
 
   constructor() {
     super('Hub receipt ACK was not valid for the pending local event')
+  }
+}
+
+class HubTaskWorkerResultAckError extends Error {
+  readonly code = 'RESULT_ACK_INVALID'
+
+  constructor() {
+    super('Hub result ACK was not valid for the pending local result')
   }
 }
 

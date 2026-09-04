@@ -14,6 +14,7 @@ import { xiaogui } from './sidecar-bridge'
 import {
   closeDefaultCollaborationHubRuntimeComposition,
   registerCollaborationHubHandlers,
+  setHubTaskWorkerLifecycleReporterV1,
 } from './task-hub/ipc'
 import { getDefaultWorkDocxServiceV1, registerWorkDocxHandlers } from './work-docx-ipc'
 import { getDefaultWorkDocumentSnapshotServiceV1 } from './work-document-snapshot-composition'
@@ -62,9 +63,11 @@ export function initXiaogui(): void {
   initialized = true
 
   registerXiaoguiHandlers()
+  const hubTaskWorker = getDefaultHubTaskWorkerServiceV1()
+  setHubTaskWorkerLifecycleReporterV1(hubTaskWorker)
   registerCollaborationHubHandlers()
   registerHubTaskWorkerHandlers(
-    getDefaultHubTaskWorkerServiceV1(),
+    hubTaskWorker,
     getDefaultHubTaskWorkerInstallationIdDigestV1(),
   )
   registerWorkDocxHandlers()
@@ -112,6 +115,7 @@ export function initXiaogui(): void {
 
 /** 优雅停止 Python sidecar 与内嵌任务中枢运行时。 */
 export async function shutdownXiaoguiSidecar(): Promise<void> {
+  setHubTaskWorkerLifecycleReporterV1(null)
   const results = await Promise.allSettled([
     Promise.resolve().then(() => xiaogui.shutdown()),
     Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),

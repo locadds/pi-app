@@ -119,6 +119,19 @@ function port(): XiaoguiHubTaskWorkerPortV1 {
       occurredAt: receipt.occurredAt,
       receivedAt: '2026-09-01T00:02:00.000Z',
     })),
+    submitResult: vi.fn(async (submission) => ({
+      resultId: submission.result.resultId,
+      eventId: submission.receipt.eventId,
+      verified: true as const,
+      duplicate: false,
+      executionState: submission.result.outcome === 'RESULT_READY'
+        ? 'RESULT_READY' as const
+        : submission.result.outcome === 'EXECUTION_FAILED'
+          ? 'FAILED' as const
+          : 'OUTCOME_UNKNOWN' as const,
+      occurredAt: submission.result.occurredAt,
+      receivedAt: '2026-09-01T00:02:00.000Z',
+    })),
   }
 }
 
@@ -494,6 +507,116 @@ describe('HubTaskWorkerServiceV1', () => {
     expect(service.status()).toEqual(expect.objectContaining({ configured: true, state: 'READY' }))
     expect(credentials.snapshot()).not.toBeNull()
     expect(service.listInbox()).toHaveLength(1)
+    service.close()
+  })
+
+  it('queues execution start before a controlled Delivery result, then uploads both in signed sequence order', async () => {
+    const state = createInMemoryHubTaskWorkerStateStoreV1()
+    const credentials = createInMemoryHubTaskWorkerCredentialsV1()
+    const hubPort = port()
+    const detail = {
+      assignment: {
+        assignmentId: 'xgh_assignment_1',
+        taskId: 'xgh_task_1',
+        decisionState: 'ACCEPTED' as const,
+        deliveryState: 'OPENED' as const,
+        executionState: 'NOT_STARTED' as const,
+        createdAt: '2026-09-01T00:00:00.000Z',
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      },
+      offer: {
+        taskId: 'xgh_task_1',
+        mode: 'DIRECT' as const,
+        title: '整理院内任务',
+        taskContent: '请先生成一份待人工确认的任务计划。',
+        constraints: ['不要自动执行'],
+        acceptanceRequirements: ['用户确认计划后再执行'],
+        attachmentRefs: [],
+        packageSha256: PACKAGE_SHA256,
+      },
+    }
+    state.upsertAssignment(detail)
+    state.markOpened('xgh_assignment_1', '2026-09-01T00:00:00.000Z')
+    state.bindPlanDraft('xgh_assignment_1', {
+      ...ADDRESS,
+      flowId: 'xhbf_1',
+      revisionId: 'xhbr_1',
+      createdAt: '2026-09-01T00:00:00.000Z',
+    })
+    credentials.write({
+      endpoint: 'http://hub.intranet:3000',
+      accessToken: 'hub-access-token-which-never-reaches-renderer',
+      node: {
+        subjectId: 'xgh_subject_1',
+        nodeId: 'xgh_node_1',
+        keyId: 'ed25519:test-key',
+        deviceToken: 'node-token-never-reaches-renderer',
+        privateKeyPem: 'PRIVATE',
+      },
+    })
+    ;(hubPort.submitReceipt as ReturnType<typeof vi.fn>).mockRejectedValue({ code: 'OFFLINE' })
+    let id = 0
+    const service = createHubTaskWorkerServiceV1({
+      state,
+      credentials,
+      createPort: () => hubPort,
+      application: { perform: vi.fn() },
+      now: () => '2026-09-01T00:01:00.000Z',
+      idFactory: (prefix) => `${prefix}_${++id}`,
+      signReceipt: (unsigned) => ({
+        ...unsigned,
+        signature: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      }),
+    })
+
+    await service.recordExecutionStarted(ADDRESS, 'xhbf_1')
+    await service.reportDeliveryOutcome(ADDRESS, {
+      state: 'READY_FOR_REVIEW',
+      flowId: 'xhbf_1',
+      deliveryChangeSetId: 'xhbdcs_1',
+      deliveryChangeSetDigest: `sha256:${'d'.repeat(64)}`,
+    } as never)
+
+    expect(state.pendingEvidence().map((entry) => entry.kind === 'RECEIPT'
+      ? [entry.kind, entry.receipt.eventType, entry.receipt.sequence]
+      : [entry.kind, entry.submission.result.outcome, entry.submission.receipt.sequence],
+    )).toEqual([
+      ['RECEIPT', 'EXECUTION_STARTED', 1],
+      ['RESULT', 'RESULT_READY', 2],
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    ;(hubPort.submitReceipt as ReturnType<typeof vi.fn>).mockImplementation(async (receipt) => ({
+      receiptId: `xgh_receipt_${receipt.eventId}`,
+      eventId: receipt.eventId,
+      verified: true as const,
+      duplicate: false,
+      occurredAt: receipt.occurredAt,
+      receivedAt: '2026-09-01T00:02:00.000Z',
+    }))
+    ;(hubPort.pollAssignments as ReturnType<typeof vi.fn>).mockResolvedValue({
+      cursor: 'snapshot-1',
+      assignments: [{ ...detail.assignment, executionState: 'RESULT_READY' as const }],
+    })
+    ;(hubPort.downloadAssignment as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...detail,
+      assignment: { ...detail.assignment, executionState: 'RESULT_READY' as const },
+    })
+
+    await expect(service.refresh()).resolves.toEqual({
+      ok: true,
+      value: expect.objectContaining({ state: 'READY', pendingReceiptCount: 0 }),
+    })
+    expect(hubPort.submitReceipt).toHaveBeenLastCalledWith(expect.objectContaining({
+      eventType: 'EXECUTION_STARTED',
+      resultSha256: null,
+      sequence: 1,
+    }))
+    expect(hubPort.submitResult).toHaveBeenCalledWith(expect.objectContaining({
+      result: expect.objectContaining({ outcome: 'RESULT_READY' }),
+      receipt: expect.objectContaining({ eventType: 'RESULT_READY', sequence: 2 }),
+    }))
+    expect(state.pendingEvidence()).toEqual([])
+    expect(state.requireAssignment('xgh_assignment_1').assignment.executionState).toBe('RESULT_READY')
     service.close()
   })
 })

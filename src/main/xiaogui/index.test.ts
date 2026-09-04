@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   closeTemplateMaterializeService: vi.fn(),
   closeAdvancedGenerationService: vi.fn(),
   registerCollaborationHubHandlers: vi.fn(),
+  setHubTaskWorkerLifecycleReporter: vi.fn(),
   registerHubTaskWorkerHandlers: vi.fn(),
   registerWorkDocxHandlers: vi.fn(),
   registerTemplateLibraryHandlers: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock('./task-hub/ipc', () => ({
   closeDefaultCollaborationHubRuntimeComposition: mocks.closeRuntimeComposition,
   getDefaultCollaborationHubApplication: mocks.getCollaborationApplication,
   registerCollaborationHubHandlers: mocks.registerCollaborationHubHandlers,
+  setHubTaskWorkerLifecycleReporterV1: mocks.setHubTaskWorkerLifecycleReporter,
 }))
 
 vi.mock('./hub-task/worker-composition', () => ({
@@ -184,6 +186,9 @@ describe('xiaogui Worker host-tool wiring', () => {
     expect(mocks.registerHubTaskWorkerHandlers).toHaveBeenCalledWith(
       { kind: 'hub-task-worker-service' },
       `sha256:${'a'.repeat(64)}`,
+    )
+    expect(mocks.setHubTaskWorkerLifecycleReporter).toHaveBeenCalledWith(
+      { kind: 'hub-task-worker-service' },
     )
 
     expect(mocks.createCollaborationHandler).toHaveBeenCalledWith({

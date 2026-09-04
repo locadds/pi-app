@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
 
 import type { HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
-import type { XiaoguiTaskDeliveryReceiptV1 } from '@shared/xiaogui-hub-task-contract'
+import {
+  canonicalizeXiaoguiTaskResultEnvelopeV1,
+  type XiaoguiTaskDeliveryReceiptV1,
+  type XiaoguiTaskResultSubmissionV1,
+} from '@shared/xiaogui-hub-task-contract'
 import {
   createInMemoryHubTaskWorkerStateStoreV1,
   type HubTaskWorkerAssignmentDetailV1,
@@ -49,6 +54,31 @@ function receipt(sequence: number): XiaoguiTaskDeliveryReceiptV1 {
     sequence,
     resultSha256: null,
     signature: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  }
+}
+
+function resultSubmission(sequence: number): XiaoguiTaskResultSubmissionV1 {
+  const result = {
+    schemaVersion: 'xiaogui.task-result.v1' as const,
+    resultId: 'xgh_result_1',
+    assignmentId: 'xgh_assignment_1',
+    taskId: 'xgh_task_1',
+    outcome: 'RESULT_READY' as const,
+    resultSummary: '本机已形成通过受控验证的交付候选，仍需人工批准。',
+    artifactRefs: [],
+    verification: { verdict: 'PASS' as const, summary: '本机交付验证已通过。' },
+    occurredAt: '2026-09-01T00:02:00.000Z',
+  }
+  const resultSha256 = `sha256:${createHash('sha256').update(canonicalizeXiaoguiTaskResultEnvelopeV1(result), 'utf8').digest('hex')}`
+  return {
+    result: { ...result, resultSha256 },
+    receipt: {
+      ...receipt(sequence),
+      eventId: `xgh_event_result_${sequence}`,
+      eventType: 'RESULT_READY',
+      occurredAt: result.occurredAt,
+      resultSha256,
+    },
   }
 }
 
@@ -153,5 +183,35 @@ describe('HubTaskWorkerStateStoreV1', () => {
       revisionId: 'xhbr_1',
       createdAt: '2026-09-01T00:02:00.000Z',
     })
+  })
+
+  it('keeps a terminal result and its receipt as one durable item after the start receipt', () => {
+    const store = createInMemoryHubTaskWorkerStateStoreV1()
+    store.upsertAssignment(detail())
+    store.enqueueReceipt({ ...receipt(1), eventType: 'EXECUTION_STARTED' }, '2026-09-01T00:01:00.000Z')
+    store.enqueueResult(resultSubmission(2), '2026-09-01T00:02:00.000Z')
+
+    expect(store.pendingEvidence().map((entry) => entry.kind)).toEqual(['RECEIPT', 'RESULT'])
+    expect(store.hasPendingResultForAssignment('xgh_assignment_1')).toBe(true)
+    expect(store.acknowledgeResult('xgh_result_1', 'xgh_event_wrong', {
+      resultId: 'xgh_result_1',
+      eventId: 'xgh_event_wrong',
+      verified: true,
+      duplicate: false,
+      executionState: 'RESULT_READY',
+      occurredAt: '2026-09-01T00:02:00.000Z',
+      receivedAt: '2026-09-01T00:03:00.000Z',
+    })).toBe(false)
+    expect(store.acknowledgeResult('xgh_result_1', 'xgh_event_result_2', {
+      resultId: 'xgh_result_1',
+      eventId: 'xgh_event_result_2',
+      verified: true,
+      duplicate: true,
+      executionState: 'RESULT_READY',
+      occurredAt: '2026-09-01T00:02:00.000Z',
+      receivedAt: '2026-09-01T00:03:00.000Z',
+    })).toBe(true)
+    expect(store.pendingEvidence()).toHaveLength(1)
+    expect(store.requireAssignment('xgh_assignment_1').assignment.executionState).toBe('RESULT_READY')
   })
 })

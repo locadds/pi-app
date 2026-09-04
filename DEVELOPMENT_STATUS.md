@@ -1,10 +1,77 @@
 # DEVELOPMENT STATUS
 
-更新时间：2026-09-03
-阶段：`TASKHUB-H1-4C/C3-A` — 集成基线审计与合同冻结
-状态：阶段 A 第三次修订合同候选 `8d2063c6fe7d2fd49fee5a8e77917a8aa0ed4a04` 已通过独立只读复验（`APPROVE`，Standards/Spec 均 0 项）；现停在人工验收门，不授权启动阶段 B。本阶段仅写入审计、合同、夹具和聚焦验证器，没有 H1-4C/C3 产品代码、迁移、路由或前端实现。未合并正式主线、未发布。
+更新时间：2026-09-04
+阶段：`TASKHUB-H1-4C-B` — 桌面受控结果上报候选
+状态：桌面主进程实现、聚焦测试和真实 Hub HTTP 双 Worker 验证已完成；等待独立代码审查与人工验收。未合并正式主线、未发布；未进入 C3 或 Renderer/Web 前端。
 
-## 阶段 A 目标
+## H1-4C 阶段 B 目标
+
+在不新建执行状态机、不绕过现有计划/执行/交付人工门的前提下，把本机既有 TaskHub Delivery/Evidence 的终态投影为严格受控结果：先签名 `EXECUTION_STARTED`，再以同一有序证据队列提交“结果信封 + 终态签名回执”；只在 Hub 返回精确验证 ACK 后出队。该能力只在主进程受信生命周期回调中调用，不新增 Renderer 控制入口。
+
+## H1-4C 实际修改文件
+
+| 范围 | 文件 |
+| --- | --- |
+| 共享桌面结果契约和聚焦断言 | `packages/shared/xiaogui-hub-task-contract.ts`、`packages/shared/xiaogui-hub-task-contract.test.ts` |
+| 受控 Delivery/Evidence 结果投影 | `src/main/xiaogui/hub-task/task-result-projection.ts`、`task-result-projection.test.ts` |
+| HTTP Adapter 与 ACK/409 语义 | `src/main/xiaogui/hub-task/http-task-worker-port.ts`、`http-task-worker-port.test.ts` |
+| 本机有序证据队列、持久化和服务 | `src/main/xiaogui/hub-task/worker-state.ts`、`worker-state.test.ts`、`worker-persistence.test.ts`、`worker-service.ts`、`worker-service.test.ts`、`worker-ipc.test.ts` |
+| 受信执行/交付生命周期接线 | `src/main/xiaogui/task-hub/ipc.ts`、`ipc.test.ts`、`src/main/xiaogui/task-hub/delivery-ipc.ts`、`delivery-ipc.test.ts`、`src/main/xiaogui/index.ts`、`index.test.ts` |
+| 阶段记录 | `DEVELOPMENT_STATUS.md` |
+
+## H1-4C 已完成内容
+
+- `XiaoguiTaskResultEnvelopeV1` 现冻结结果摘要、只含 SHA-256 的制品引用、验证结论及三类终态；本机绝对路径、文件字节、模型会话、Agent 凭据和原始验证输出均会被拒绝。
+- `task-result-projection` 只消费既有 Delivery/Evidence 的 `READY_FOR_REVIEW`、`REJECTED`、`OUTCOME_UNKNOWN` 等终态投影；不能由 Renderer、自然语言或模型直接伪造结果。
+- Worker 状态把普通签名回执和“结果 + 终态回执”统一为按 `sequence` 排序的持久证据队列；前一项未收到精确 ACK 时，后续终态不会越过它。
+- 用户批准的本机计划被原有 orchestrator 接受后才记录 `EXECUTION_STARTED`；原有交付选择产生权威结果投影后才报告终态。没有新增自动执行、自动合并或自动 Apply。
+- HTTP Adapter 已接入 Hub 的 `POST /api/v2/taskhub/worker/results`；`403` 仍表示节点失效并清理本机凭据，`409` 仍表示任务状态冲突并保留凭据、缓存和收件箱。
+- 真实 HTTP 冒烟已用两套隔离桌面 Worker 服务、真实 Fastify Hub 和发布者 API 跑通；收件方上报的时间线为 `NODE_STORED → USER_OPENED → DIRECT_ACCEPTED → EXECUTION_STARTED → RESULT_READY`，发布者能读取受控结果摘要，队列最终为 0。
+
+## H1-4C 未完成内容
+
+- 尚未完成独立代码审查或人工验收，也未进行两台真实电脑的 H1-4C 结果回传旅程。
+- 未建设或修改 Renderer 结果时间线、Hub 网页投影、C3 Demand Intake、社区投影或死信处理。
+- 未允许发布者下载结果制品、触发执行、合并或 Apply；这些均不属于本阶段。
+- H1-LAN 的首页全局收件箱与 Windows CMD 启动脚本两个既有 P2，仍保持独立待办。
+
+## H1-4C 与规格文档的偏差
+
+- 无冻结产品或架构偏差：复用现有 TaskHub Delivery/Evidence 和 `TaskAssignment.executionState`，未建立第二套 Attempt、工作树、运行时或 Apply 状态机。
+- 阶段 A 的 C3 合同仍只作为后续合同，未被本桌面候选实现或以假数据冒充真实联调。
+- 本地 `node_modules` Junction 复用 `D:\PI\pi-app\node_modules`；该共享目录缺少桌面锁定的 `pdfjs-dist@6.1.200`，所以本次没有为 H1-4C 修改依赖、锁文件或 PDF 实现来掩盖环境缺口。
+
+## H1-4C 测试命令和结果
+
+| 检查 | 结果 |
+| --- | --- |
+| `vitest run packages/shared/xiaogui-hub-task-contract.test.ts src/main/xiaogui/hub-task/task-result-projection.test.ts src/main/xiaogui/hub-task/worker-state.test.ts` | 通过：3 文件 / 12 用例。 |
+| `vitest run src/main/xiaogui/hub-task/worker-service.test.ts src/main/xiaogui/hub-task/worker-persistence.test.ts src/main/xiaogui/hub-task/http-task-worker-port.test.ts src/main/xiaogui/hub-task/worker-ipc.test.ts` | 通过：4 文件 / 26 用例。 |
+| `vitest run src/main/xiaogui/task-hub/ipc.test.ts src/main/xiaogui/task-hub/delivery-ipc.test.ts src/main/xiaogui/index.test.ts` | 通过：3 文件 / 21 用例。 |
+| 以上聚焦测试合计 | 通过：10 文件 / 59 用例。 |
+| `tsx --tsconfig <desktop>/tsconfig.node.json D:\CodexTemp\xiaogui-h1-4c-result-http-smoke.mts` | 通过：真实 HTTP Hub、两套隔离 Worker、发布者结果读取；不使用 Fake Hub 数据。 |
+| `tsc --noEmit -p tsconfig.node.json` 与 `tsconfig.web.json` | 未通过，仅报 4 处既有 `pdfjs-dist/legacy/build/pdf.mjs` 缺失（含 1 个 main、3 个 Renderer 文档预览文件）；H1-4C 新增/修改文件不在报错列表。 |
+| `npm run build` | 未通过，主进程和 preload 已构建完成，Renderer 在同一既有 `pdfjs-dist` 缺失处停止；未修改无关 PDF 依赖以规避该问题。 |
+| `git diff --check` | 待最终提交前复跑。 |
+
+## H1-4C 已知风险
+
+- 当前共享依赖工作树与本候选 `package-lock.json` 不一致，缺少已锁定的 `pdfjs-dist`；这阻断全量桌面 typecheck/build，但不改变已通过的 H1-4C 聚焦测试和真实 HTTP 验证。应另立依赖恢复/WORK 文档预览验证包处理，不能在本任务中静默改动。
+- 真实 HTTP 冒烟是同机双 Worker 服务而非两台真实电脑，未覆盖断网、重启或跨机网络；H1-4B 的送达 LAN 证据不能自动扩展为 H1-4C 结果回传验收。
+- 生命周期回调使用非阻塞上传，网络故障时证据队列保留并由同步重试；必须在人工跨机验收中核对发生时间与 Hub 接收时间。
+
+## H1-4C 下一阶段计划
+
+1. 复跑差异检查，分别提交并推送桌面与 Hub 候选。
+2. 对固定 SHA 执行独立只读代码审查；审查通过后暂停在人工验收门。
+3. 获得人工授权后，才安排两台真实电脑的 H1-4C “发布—接受—执行开始—结果回传—发布者审阅”旅程。
+4. H1-4C 人工验收后，才依据冻结合同单独派发 Renderer/Web 前端小包；C3 继续保持未启动。
+
+## H1-4C 验收门
+
+当前只形成独立候选。不得合并正式主线、发布、启动 C3 或启动前端实施；必须先完成独立审查与人工验收。
+
+## 历史阶段 A 目标
 
 只读核对 H1、C2、WORK 与 CODING 的提交关系、冲突面和迁移顺序，选择后续独立工作树基线；冻结 H1-4C 结果回传和 C3 Demand Intake/只读投影的 DTO、状态语义、错误码、接口路径与正常/失败夹具，并对夹具执行摘要、签名和错误信封的聚焦合同校验。阶段 A 不建立统一产品基线、不写产品代码。
 

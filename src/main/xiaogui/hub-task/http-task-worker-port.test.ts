@@ -176,6 +176,75 @@ describe('HttpXiaoguiHubTaskWorkerPortV1', () => {
     expect(body).not.toHaveProperty('deviceToken')
   })
 
+  it('uploads a controlled result together with its terminal signed receipt and validates the ResultAck', async () => {
+    const resultSha256 = `sha256:${'b'.repeat(64)}`
+    const fetchImpl = vi.fn().mockResolvedValue(response({
+      data: {
+        resultId: 'xgh_result_1',
+        eventId: 'xgh_event_result_1',
+        verified: true,
+        duplicate: false,
+        executionState: 'RESULT_READY',
+        occurredAt: '2026-09-01T00:01:00.000Z',
+        receivedAt: '2026-09-01T00:02:00.000Z',
+      },
+    }))
+    const port = createHttpXiaoguiHubTaskWorkerPortV1({
+      endpoint: 'http://hub.intranet:3000',
+      accessToken: 'account-jwt',
+      node: { deviceToken: 'node-token' },
+      fetchImpl,
+    })
+    await expect(port.submitResult({
+      result: {
+        schemaVersion: 'xiaogui.task-result.v1',
+        resultId: 'xgh_result_1',
+        assignmentId: 'xgh_assignment_1',
+        taskId: 'xgh_task_1',
+        outcome: 'RESULT_READY',
+        resultSummary: '本机已形成通过受控验证的交付候选，仍需人工批准。',
+        artifactRefs: [],
+        verification: { verdict: 'PASS', summary: '本机交付验证已通过。' },
+        occurredAt: '2026-09-01T00:01:00.000Z',
+        resultSha256,
+      },
+      receipt: {
+        schemaVersion: 'xiaogui.task-receipt.v1',
+        eventId: 'xgh_event_result_1',
+        assignmentId: 'xgh_assignment_1',
+        taskId: 'xgh_task_1',
+        subjectId: 'xgh_subject_1',
+        nodeId: 'xgh_node_1',
+        keyId: 'ed25519:test-key',
+        eventType: 'RESULT_READY',
+        packageSha256: PACKAGE_SHA256,
+        occurredAt: '2026-09-01T00:01:00.000Z',
+        sequence: 3,
+        resultSha256,
+        signature: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      },
+    })).resolves.toEqual({
+      resultId: 'xgh_result_1',
+      eventId: 'xgh_event_result_1',
+      verified: true,
+      duplicate: false,
+      executionState: 'RESULT_READY',
+      occurredAt: '2026-09-01T00:01:00.000Z',
+      receivedAt: '2026-09-01T00:02:00.000Z',
+    })
+    expect(fetchImpl).toHaveBeenCalledWith('http://hub.intranet:3000/api/v2/taskhub/worker/results', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({
+        authorization: 'Bearer account-jwt',
+        'x-xiaogui-node-token': 'node-token',
+      }),
+    }))
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>
+    expect(body).toEqual(expect.objectContaining({ result: expect.any(Object), receipt: expect.any(Object) }))
+    expect(JSON.stringify(body)).not.toContain('privateKeyPem')
+    expect(JSON.stringify(body)).not.toContain('deviceToken')
+  })
+
   it('maps a replaced node to the dedicated safe status', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(response({ error: { code: 'FORBIDDEN', message: 'node was replaced' } }, 403))
     const port = createHttpXiaoguiHubTaskWorkerPortV1({

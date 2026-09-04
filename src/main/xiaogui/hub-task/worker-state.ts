@@ -1,8 +1,11 @@
 import type { HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
 import {
   parseXiaoguiTaskDeliveryReceiptV1,
+  parseXiaoguiTaskResultSubmissionV1,
   type XiaoguiTaskDeliveryReceiptV1,
   type XiaoguiTaskReceiptAckV1,
+  type XiaoguiTaskResultAckV1,
+  type XiaoguiTaskResultSubmissionV1,
 } from '@shared/xiaogui-hub-task-contract'
 
 /**
@@ -58,10 +61,22 @@ export interface HubTaskWorkerPendingReceiptV1 {
   queuedAt: string
 }
 
+/** A terminal result and its signed terminal receipt are one durable unit. */
+export interface HubTaskWorkerPendingResultV1 {
+  submission: XiaoguiTaskResultSubmissionV1
+  queuedAt: string
+}
+
+export type HubTaskWorkerPendingEvidenceV1 =
+  | { kind: 'RECEIPT'; receipt: XiaoguiTaskDeliveryReceiptV1; queuedAt: string }
+  | { kind: 'RESULT'; submission: XiaoguiTaskResultSubmissionV1; queuedAt: string }
+
 export interface HubTaskWorkerStateV1 {
   version: 1
   assignments: Record<string, HubTaskWorkerInboxEntryV1>
   receipts: Record<string, HubTaskWorkerPendingReceiptV1>
+  /** Optional only for H1-4B persisted-record migration; new snapshots always include it. */
+  results?: Record<string, HubTaskWorkerPendingResultV1>
   lastReceiptSequence: number
   cursor: string | null
 }
@@ -89,13 +104,18 @@ export interface HubTaskWorkerStateStoreV1 {
   reconcileAssignments(authoritativeAssignmentIds: readonly string[]): void
   markOpened(assignmentId: string, openedAt: string): HubTaskWorkerInboxEntryV1
   enqueueReceipt(receipt: XiaoguiTaskDeliveryReceiptV1, queuedAt: string): void
+  enqueueResult(submission: XiaoguiTaskResultSubmissionV1, queuedAt: string): void
   /**
    * Removes exactly one durable receipt only after the Hub's verified ACK.
    * The event id is the idempotency key; an ACK for any other event is never
    * allowed to advance this local queue.
    */
   acknowledgeReceipt(expectedEventId: string, ack: XiaoguiTaskReceiptAckV1): boolean
+  acknowledgeResult(expectedResultId: string, expectedEventId: string, ack: XiaoguiTaskResultAckV1): boolean
   pendingReceipts(): readonly HubTaskWorkerPendingReceiptV1[]
+  pendingEvidence(): readonly HubTaskWorkerPendingEvidenceV1[]
+  hasPendingResultForAssignment(assignmentId: string): boolean
+  hasTerminalEvidenceForAssignment(assignmentId: string): boolean
   nextReceiptSequence(): number
   bindPlanDraft(assignmentId: string, binding: HubTaskWorkerPlanDraftBindingV1): void
 }
@@ -104,6 +124,7 @@ const EMPTY_STATE: HubTaskWorkerStateV1 = {
   version: 1,
   assignments: {},
   receipts: {},
+  results: {},
   lastReceiptSequence: 0,
   cursor: null,
 }
@@ -218,6 +239,9 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
   }
 
   enqueueReceipt(receipt: XiaoguiTaskDeliveryReceiptV1, queuedAt: string): void {
+    if (Object.values(this.state.results ?? {}).some((entry) => entry.submission.receipt.eventId === receipt.eventId)) {
+      throw new Error('HUB_LOCAL_EVIDENCE_EVENT_ID_CONFLICT')
+    }
     const existing = this.state.receipts[receipt.eventId]
     if (existing) {
       if (canonicalReceipt(existing.receipt) !== canonicalReceipt(receipt)) {
@@ -268,6 +292,21 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
           },
         }
       }
+    } else if (pending.receipt.eventType === 'EXECUTION_STARTED') {
+      const entry = assignments[pending.receipt.assignmentId]
+      if (
+        entry
+        && entry.assignment.taskId === pending.receipt.taskId
+        && entry.offer.packageSha256 === pending.receipt.packageSha256
+      ) {
+        assignments = {
+          ...assignments,
+          [pending.receipt.assignmentId]: {
+            ...entry,
+            assignment: { ...entry.assignment, executionState: 'RUNNING', updatedAt: ack.receivedAt },
+          },
+        }
+      }
     }
 
     this.state = { ...this.state, assignments, receipts }
@@ -279,6 +318,93 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
     return Object.values(this.state.receipts)
       .map((entry) => ({ receipt: cloneReceipt(entry.receipt), queuedAt: entry.queuedAt }))
       .sort((left, right) => left.receipt.sequence - right.receipt.sequence)
+  }
+
+  enqueueResult(submission: XiaoguiTaskResultSubmissionV1, queuedAt: string): void {
+    const parsed = parseXiaoguiTaskResultSubmissionV1(submission)
+    if (!parsed.ok) throw new Error('HUB_LOCAL_RESULT_CONTRACT_INVALID')
+    const normalized = parsed.value
+    if (this.state.receipts[normalized.receipt.eventId]) throw new Error('HUB_LOCAL_EVIDENCE_EVENT_ID_CONFLICT')
+    const results = this.state.results ?? {}
+    const existing = results[normalized.result.resultId]
+    if (existing) {
+      if (canonicalResultSubmission(existing.submission) !== canonicalResultSubmission(normalized)) {
+        throw new Error('HUB_LOCAL_RESULT_IDEMPOTENCY_CONFLICT')
+      }
+      return
+    }
+    if (Object.values(results).some((entry) => entry.submission.receipt.eventId === normalized.receipt.eventId)) {
+      throw new Error('HUB_LOCAL_EVIDENCE_EVENT_ID_CONFLICT')
+    }
+    this.state = {
+      ...this.state,
+      results: {
+        ...results,
+        [normalized.result.resultId]: { submission: cloneResultSubmission(normalized), queuedAt },
+      },
+      lastReceiptSequence: Math.max(this.state.lastReceiptSequence, normalized.receipt.sequence),
+    }
+    this.persist()
+  }
+
+  acknowledgeResult(expectedResultId: string, expectedEventId: string, ack: XiaoguiTaskResultAckV1): boolean {
+    const results = this.state.results ?? {}
+    const pending = results[ack.resultId]
+    if (
+      !pending
+      || ack.resultId !== expectedResultId
+      || ack.eventId !== expectedEventId
+      || ack.verified !== true
+      || pending.submission.result.resultId !== expectedResultId
+      || pending.submission.receipt.eventId !== expectedEventId
+    ) return false
+
+    const nextResults = { ...results }
+    delete nextResults[ack.resultId]
+    let assignments = this.state.assignments
+    const entry = assignments[pending.submission.result.assignmentId]
+    if (
+      entry
+      && entry.assignment.taskId === pending.submission.result.taskId
+      && entry.offer.packageSha256 === pending.submission.receipt.packageSha256
+    ) {
+      assignments = {
+        ...assignments,
+        [pending.submission.result.assignmentId]: {
+          ...entry,
+          assignment: { ...entry.assignment, executionState: ack.executionState, updatedAt: ack.receivedAt },
+        },
+      }
+    }
+    this.state = { ...this.state, assignments, results: nextResults }
+    this.persist()
+    return true
+  }
+
+  pendingEvidence(): readonly HubTaskWorkerPendingEvidenceV1[] {
+    const receipts: HubTaskWorkerPendingEvidenceV1[] = this.pendingReceipts().map((entry) => ({
+      kind: 'RECEIPT',
+      receipt: entry.receipt,
+      queuedAt: entry.queuedAt,
+    }))
+    const results: HubTaskWorkerPendingEvidenceV1[] = Object.values(this.state.results ?? {}).map((entry) => ({
+      kind: 'RESULT',
+      submission: cloneResultSubmission(entry.submission),
+      queuedAt: entry.queuedAt,
+    }))
+    return [...receipts, ...results].sort((left, right) => evidenceSequence(left) - evidenceSequence(right))
+  }
+
+  hasPendingResultForAssignment(assignmentId: string): boolean {
+    return Object.values(this.state.results ?? {}).some((entry) => entry.submission.result.assignmentId === assignmentId)
+  }
+
+  hasTerminalEvidenceForAssignment(assignmentId: string): boolean {
+    return this.hasPendingResultForAssignment(assignmentId)
+      || Object.values(this.state.assignments).some((entry) => (
+        entry.assignment.assignmentId === assignmentId
+        && ['RESULT_READY', 'FAILED', 'OUTCOME_UNKNOWN'].includes(entry.assignment.executionState)
+      ))
   }
 
   nextReceiptSequence(): number {
@@ -331,6 +457,10 @@ function cloneState(state: HubTaskWorkerStateV1): HubTaskWorkerStateV1 {
       id,
       { receipt: cloneReceipt(entry.receipt), queuedAt: entry.queuedAt },
     ])),
+    results: Object.fromEntries(Object.entries(state.results ?? {}).map(([id, entry]) => [
+      id,
+      { submission: cloneResultSubmission(entry.submission), queuedAt: entry.queuedAt },
+    ])),
     lastReceiptSequence: Number.isSafeInteger(state.lastReceiptSequence) && state.lastReceiptSequence >= 0
       ? state.lastReceiptSequence
       : 0,
@@ -365,8 +495,27 @@ function cloneReceipt(receipt: XiaoguiTaskDeliveryReceiptV1): XiaoguiTaskDeliver
   return { ...receipt }
 }
 
+function cloneResultSubmission(submission: XiaoguiTaskResultSubmissionV1): XiaoguiTaskResultSubmissionV1 {
+  return {
+    result: {
+      ...submission.result,
+      artifactRefs: submission.result.artifactRefs.map((artifact) => ({ ...artifact })),
+      verification: { ...submission.result.verification },
+    },
+    receipt: { ...submission.receipt },
+  }
+}
+
 function canonicalReceipt(receipt: XiaoguiTaskDeliveryReceiptV1): string {
   return JSON.stringify(receipt)
+}
+
+function canonicalResultSubmission(submission: XiaoguiTaskResultSubmissionV1): string {
+  return JSON.stringify(submission)
+}
+
+function evidenceSequence(evidence: HubTaskWorkerPendingEvidenceV1): number {
+  return evidence.kind === 'RECEIPT' ? evidence.receipt.sequence : evidence.submission.receipt.sequence
 }
 
 function isOpaqueId(value: unknown): value is string {
@@ -386,7 +535,9 @@ function isStoredState(value: unknown): value is HubTaskWorkerStateV1 {
     isOpaqueId(assignmentId) && isStoredEntry(entry, assignmentId)
   )) && Object.entries(value.receipts).every(([eventId, entry]) => (
     isOpaqueId(eventId) && isStoredPendingReceipt(entry, eventId)
-  ))
+  )) && (value.results === undefined || (isRecord(value.results) && Object.entries(value.results).every(([resultId, entry]) => (
+    isOpaqueId(resultId) && isStoredPendingResult(entry, resultId)
+  ))))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -441,6 +592,12 @@ function isStoredPendingReceipt(value: unknown, eventId: string): value is HubTa
   if (!isRecord(value) || !isTimestamp(value.queuedAt)) return false
   const parsed = parseXiaoguiTaskDeliveryReceiptV1(value.receipt)
   return parsed.ok && parsed.value.eventId === eventId
+}
+
+function isStoredPendingResult(value: unknown, resultId: string): value is HubTaskWorkerPendingResultV1 {
+  if (!isRecord(value) || !isTimestamp(value.queuedAt)) return false
+  const parsed = parseXiaoguiTaskResultSubmissionV1(value.submission)
+  return parsed.ok && parsed.value.result.resultId === resultId
 }
 
 function isTimestamp(value: unknown): value is string {

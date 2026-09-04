@@ -23,6 +23,7 @@ import { registerHandler } from '../../ipc/registry'
 import { KimiLoginCoordinatorV1 } from '../agent-runtime/kimi-login'
 import { sessionScopeResolverV1 } from '../scope-service'
 import type { CollaborationHubApplicationV1 } from './application'
+import type { HubTaskWorkerLifecycleReporterV1 } from '../hub-task/worker-service'
 import { hubError } from './errors'
 import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
 import {
@@ -173,6 +174,17 @@ interface DefaultRuntimeLifecycleV1 {
 }
 
 let defaultRuntimeLifecycle: DefaultRuntimeLifecycleV1 | null = null
+let hubTaskWorkerLifecycleReporter: HubTaskWorkerLifecycleReporterV1 | null = null
+
+/**
+ * This is main-process wiring only. The reporter has no Renderer IPC and can
+ * only turn an already-approved local lifecycle transition into Hub evidence.
+ */
+export function setHubTaskWorkerLifecycleReporterV1(
+  reporter: HubTaskWorkerLifecycleReporterV1 | null,
+): void {
+  hubTaskWorkerLifecycleReporter = reporter
+}
 
 export function getDefaultCollaborationHubApplication(): CollaborationHubApplicationV1 {
   return getDefaultRuntimeLifecycle().composition.application
@@ -203,15 +215,16 @@ export function registerCollaborationHubHandlers(
   kimiLogin?: KimiLoginCoordinatorV1,
   taskExecution?: XiaoguiTaskExecutionOrchestratorV1,
   deliveryCoordinator?: XiaoguiDeliveryCoordinatorPortV1,
+  lifecycleReporter: HubTaskWorkerLifecycleReporterV1 | null = hubTaskWorkerLifecycleReporter,
 ): void {
   const defaultLifecycle = arguments.length === 0 ? getDefaultRuntimeLifecycle() : undefined
   const resolveKimiLogin = () => kimiLogin ?? defaultLifecycle?.kimiLogin ?? getDefaultKimiLoginCoordinator()
   const resolveTaskExecution = () =>
     taskExecution ?? defaultLifecycle?.composition.taskExecution ?? getDefaultTaskExecutionOrchestrator()
   if (deliveryCoordinator) {
-    registerXiaoguiDeliveryHandlers(deliveryCoordinator)
+    registerXiaoguiDeliveryHandlers(deliveryCoordinator, lifecycleReporter)
   } else if (arguments.length === 0) {
-    registerXiaoguiDeliveryHandlers(getDefaultDeliveryCoordinator())
+    registerXiaoguiDeliveryHandlers(getDefaultDeliveryCoordinator(), lifecycleReporter)
   }
 
   registerHandler('ipc:xiaogui.hub.observe', async (payload) => {
@@ -227,7 +240,9 @@ export function registerCollaborationHubHandlers(
   registerHandler('ipc:xiaogui.hub.execution.start', async (payload) => {
     const parsed = ExecutionStartSchema.safeParse(payload)
     if (!parsed.success) return invalidExecutionInput()
-    return resolveTaskExecution().start(parsed.data as unknown as XiaoguiTaskExecutionStartRequestV1)
+    const outcome = await resolveTaskExecution().start(parsed.data as unknown as XiaoguiTaskExecutionStartRequestV1)
+    if (outcome.ok) void lifecycleReporter?.recordExecutionStarted(parsed.data.address as HubAddressV1, parsed.data.flowId)
+    return outcome
   })
   registerHandler('ipc:xiaogui.hub.execution.startBatch', async (payload) => {
     const parsed = ExecutionStartBatchSchema.safeParse(payload)
@@ -236,9 +251,11 @@ export function registerCollaborationHubHandlers(
       itemCount: parsed.data.items.length,
       taskRunIds: parsed.data.items.map((item) => item.taskRunId),
     })
-    return resolveTaskExecution().startBatch(
+    const outcome = await resolveTaskExecution().startBatch(
       parsed.data as unknown as XiaoguiTaskExecutionStartBatchRequestV1,
     )
+    if (outcome.ok) void lifecycleReporter?.recordExecutionStarted(parsed.data.address as HubAddressV1, parsed.data.flowId)
+    return outcome
   })
   registerHandler('ipc:xiaogui.hub.perform', async (payload) => {
     const parsed = parseIpc(PerformSchema, payload)

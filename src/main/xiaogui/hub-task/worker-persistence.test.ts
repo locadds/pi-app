@@ -41,6 +41,7 @@ describe('HubTaskWorkerStatePersistenceV1', () => {
     ])
     expect(JSON.stringify(values.get('state'))).not.toContain('privateKeyPem')
     expect(JSON.stringify(values.get('state'))).not.toContain('deviceToken')
+    expect(restarted.snapshot().results).toEqual({})
   })
 
   it('fails closed to an empty state when an on-disk state object is malformed', () => {
