@@ -2,7 +2,7 @@
 
 更新时间：2026-09-04
 阶段：`TASKHUB-H1-4C-B` — 桌面受控结果上报候选
-状态：桌面主进程实现、聚焦测试和真实 Hub HTTP 双 Worker 验证已完成；等待独立代码审查与人工验收。未合并正式主线、未发布；未进入 C3 或 Renderer/Web 前端。
+状态：候选已提交并推送至 `planning-agent` 独立功能分支；桌面主进程实现、聚焦测试和真实 Hub HTTP 双 Worker 验证已完成，等待独立代码审查与人工验收。未合并正式主线、未发布；未进入 C3 或 Renderer/Web 前端。
 
 ## H1-4C 阶段 B 目标
 
@@ -52,7 +52,7 @@
 | `tsx --tsconfig <desktop>/tsconfig.node.json D:\CodexTemp\xiaogui-h1-4c-result-http-smoke.mts` | 通过：真实 HTTP Hub、两套隔离 Worker、发布者结果读取；不使用 Fake Hub 数据。 |
 | `tsc --noEmit -p tsconfig.node.json` 与 `tsconfig.web.json` | 未通过，仅报 4 处既有 `pdfjs-dist/legacy/build/pdf.mjs` 缺失（含 1 个 main、3 个 Renderer 文档预览文件）；H1-4C 新增/修改文件不在报错列表。 |
 | `npm run build` | 未通过，主进程和 preload 已构建完成，Renderer 在同一既有 `pdfjs-dist` 缺失处停止；未修改无关 PDF 依赖以规避该问题。 |
-| `git diff --check` | 待最终提交前复跑。 |
+| `git diff --check` | 通过：提交前已复跑，无空白错误或冲突标记；仅有 Git 行尾转换提示。 |
 
 ## H1-4C 已知风险
 
