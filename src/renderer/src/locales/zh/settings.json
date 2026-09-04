@@ -398,11 +398,7 @@
   },
   "models": {
     "title": "模型供应商",
-    "targetLabel": "模型配置目标",
     "targetPi": "小规默认模型",
-    "targetOmp": "Oh My Pi（测试）",
-    "ompPrivatePath": "小规私有目录 / Oh My Pi / models.json",
-    "ompPrivateHint": "这里的模型与凭据只写入小规主进程管理的 Oh My Pi 私有目录，不进入 TaskHub、对话或公开路径。当前 OMP 仍只批准用于测试。",
     "description": "编辑 {{path}}，与小规底层运行时一致。保存后重载模型列表。",
     "reload": "重新加载",
     "loading": "加载 models.json…",

@@ -3,9 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (request: Record<string, unknown>) => Promise<unknown>>(),
   readModelsConfig: vi.fn(),
-  readModelsConfigForAgentDir: vi.fn(),
   writeModelsConfig: vi.fn(),
-  writeModelsConfigForAgentDir: vi.fn(),
   reloadModels: vi.fn(),
   sendEvent: vi.fn(),
   getAllWindows: vi.fn(() => [] as Array<{ id: number }>),
@@ -39,9 +37,7 @@ vi.mock('./registry', () => ({
 
 vi.mock('../pi-models-json', () => ({
   readModelsConfig: mocks.readModelsConfig,
-  readModelsConfigForAgentDir: mocks.readModelsConfigForAgentDir,
   writeModelsConfig: mocks.writeModelsConfig,
-  writeModelsConfigForAgentDir: mocks.writeModelsConfigForAgentDir,
   fetchRemoteModelIds: vi.fn(),
 }))
 
@@ -102,9 +98,7 @@ const config = {
 beforeEach(() => {
   mocks.handlers.clear()
   mocks.readModelsConfig.mockReset()
-  mocks.readModelsConfigForAgentDir.mockReset()
   mocks.writeModelsConfig.mockReset()
-  mocks.writeModelsConfigForAgentDir.mockReset()
   mocks.reloadModels.mockReset()
   mocks.sendEvent.mockReset()
   mocks.getAllWindows.mockReset().mockReturnValue([])
@@ -185,28 +179,6 @@ describe('pi.models IPC handlers', () => {
       schemaError: undefined,
       warnings: ['normalized'],
     })
-  })
-
-  it('reads and writes OMP models through its private directory without exposing an absolute path', async () => {
-    mocks.readModelsConfigForAgentDir.mockResolvedValue({
-      path: 'D:\\XiaoguiUserData\\xiaogui\\agent-runtime\\omp-v18.1.2\\state\\models.json',
-      config,
-    })
-    mocks.writeModelsConfigForAgentDir.mockResolvedValue({
-      ok: true,
-      path: 'D:\\XiaoguiUserData\\xiaogui\\agent-runtime\\omp-v18.1.2\\state\\models.json',
-    })
-
-    const read = await mocks.handlers.get('ipc:xiaogui.omp.models.get')!({})
-    const written = await mocks.handlers.get('ipc:xiaogui.omp.models.set')!({ config })
-
-    const privateDir = 'D:\\XiaoguiUserData\\xiaogui\\agent-runtime\\omp-v18.1.2\\state'
-    expect(mocks.readModelsConfigForAgentDir).toHaveBeenCalledWith(privateDir)
-    expect(mocks.writeModelsConfigForAgentDir).toHaveBeenCalledWith(config, privateDir)
-    expect(read).toMatchObject({ path: '小规私有目录 / Oh My Pi / models.json', config })
-    expect(written).toEqual({ ok: true, path: '小规私有目录 / Oh My Pi / models.json' })
-    expect(JSON.stringify({ read, written })).not.toContain('D:\\XiaoguiUserData')
-    expect(mocks.reloadModels).not.toHaveBeenCalled()
   })
 
   it('notifies every renderer only after an SDK install succeeds', async () => {

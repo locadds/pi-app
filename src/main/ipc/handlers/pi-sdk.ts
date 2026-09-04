@@ -6,9 +6,7 @@ import { configStore } from '../../config-store'
 import { readPiInfo, readResourceList } from '../../pi-info'
 import {
   readModelsConfig,
-  readModelsConfigForAgentDir,
   writeModelsConfig,
-  writeModelsConfigForAgentDir,
   fetchRemoteModelIds,
 } from '../../pi-models-json'
 import { clearGlobalSdkPathCache, readSdkSelection } from '../../sdk-loader'
@@ -29,7 +27,6 @@ import { probeSelectedSdk } from '../sdk-session'
 import { getAgentRuntimeConfig } from '../../wsl/runtime-config'
 import { assertWslSdkAvailable } from '../../wsl/sdk-resolve'
 import { sessionPreviewProcess } from '../../session-preview-process'
-import { resolveOmpPrivateLayoutV1 } from '../../xiaogui/agent-runtime/omp-private-layout'
 
 function sendSdkRuntimeChanged(): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -46,33 +43,6 @@ async function restartWorkers(): Promise<void> {
 
 function rejectActiveTurns(): string | null {
   return workerManager.hasActiveTurns ? '当前有 Agent 正在运行，无法切换 SDK' : null
-}
-
-const OMP_MODELS_SAFE_LABEL = '小规私有目录 / Oh My Pi / models.json'
-
-function ompPrivateAgentDir(): string {
-  return resolveOmpPrivateLayoutV1(app.getPath('userData')).stateDir
-}
-
-function redactOmpModelsResult<T extends {
-  path: string
-  error?: string
-  schemaError?: string
-  parseError?: string
-}>(
-  result: T,
-  privateDir: string,
-): T {
-  const redact = (value: string | undefined): string | undefined => value
-    ?.replaceAll(result.path, OMP_MODELS_SAFE_LABEL)
-    .replaceAll(privateDir, '小规私有目录 / Oh My Pi')
-  return {
-    ...result,
-    path: OMP_MODELS_SAFE_LABEL,
-    ...(result.error ? { error: redact(result.error) } : {}),
-    ...(result.schemaError ? { schemaError: redact(result.schemaError) } : {}),
-    ...(result.parseError ? { parseError: redact(result.parseError) } : {}),
-  }
 }
 
 async function verifySelectedSdk(target: 'builtin' | 'global' | 'user') {
@@ -117,28 +87,6 @@ export function registerPiSdkHandlers(): void {
     } catch (e) {
       return { ...r, ok: false, error: `模型配置已写入，但重载失败: ${errorMessage(e)}` }
     }
-  })
-
-  registerHandler('ipc:xiaogui.omp.models.get', async () => {
-    const privateDir = ompPrivateAgentDir()
-    const r = await readModelsConfigForAgentDir(privateDir)
-    return redactOmpModelsResult({
-      path: r.path,
-      config: r.config,
-      parseError: r.parseError,
-      schemaError: r.schemaError,
-      warnings: r.warnings,
-    }, privateDir)
-  })
-
-  registerHandler('ipc:xiaogui.omp.models.set', async (req) => {
-    const config = req?.config
-    if (!config?.providers || typeof config.providers !== 'object') {
-      return { ok: false, path: OMP_MODELS_SAFE_LABEL, error: '无效 config' }
-    }
-    const privateDir = ompPrivateAgentDir()
-    const r = await writeModelsConfigForAgentDir(config, privateDir)
-    return redactOmpModelsResult(r, privateDir)
   })
 
   registerHandler('ipc:pi.models.fetch', async (req) =>

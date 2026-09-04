@@ -1,5 +1,64 @@
 # 小规开发阶段状态
 
+## 2026-09-04｜CODING 模型配置与 OMP 产品表面简化（待人工验收）
+
+### 本阶段目标
+
+按用户最终确认收回过度设计：CODING 继续使用现有 Pi Coding Harness 和小规唯一一套模型配置；OMP 不作为用户可见的新模式、独立模型目标或设置项。
+
+### 实际修改文件
+
+- `packages/shared/ipc-channels.ts`
+- `packages/shared/ipc-contract.ts`
+- `src/main/ipc/handlers/pi-sdk.ts`
+- `src/main/ipc/pi-models-handler.test.ts`
+- `src/renderer/src/features/settings/models-settings-panel.tsx`
+- `src/renderer/src/features/settings/models-settings-panel.test.tsx`
+- `src/renderer/src/locales/en/settings.json`
+- `src/renderer/src/locales/zh/settings.json`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 模型设置页恢复为唯一的“小规默认模型”配置，不再显示或切换到“Oh My Pi”独立页签。
+2. 删除 Renderer 可调用的 OMP 专用模型读写通道及其主进程 Handler；用户不再维护第二份模型配置。
+3. 保留 Pi 原有供应商、模型列表、默认模型和 Worker 重载流程，CODING 不新增模型选择体系。
+4. 本轮曾产生但未提交的 P1D-B OMP 安装、存储、清理、状态 UI 和默认 Runtime 改动已整体撤下，并保存在可恢复 stash 中；未进入本候选。
+
+### 未完成内容
+
+- 不继续实现 OMP 独立启动、安装、存储、清理、模型同步或 Runtime 选择功能。
+- 不把 P1D-A 的 OMP Runtime 研究成果合入主线；其仍只保留在独立研究分支。
+- 本阶段没有修改 WORK、发布配置、Portable 或正式主线。
+
+### 与规格文档存在的偏差
+
+- 本阶段以用户 2026-09-04 的最新产品决定为准，终止此前“OMP 作为独立 ACP Runtime 产品化”的 P1D-B 方向。
+- P1D-A/P1C 的历史证据继续保留，但不再构成当前产品施工指令。
+- OMP 中未来确有必要复用的成熟能力，只允许按需作为 Pi Extension 或 Skill 接入；不得因此新增用户界面、模式或第二套模型配置。
+
+### 测试命令和测试结果
+
+```powershell
+npm exec vitest run -- src/renderer/src/features/settings/models-settings-panel.test.tsx src/main/ipc/pi-models-handler.test.ts --reporter=dot
+npm run typecheck
+git diff --check
+```
+
+- 首次聚焦测试因测试初始化仍引用已删除的 OMP mock 而失败；删除该过期引用后复跑通过：`2` 个测试文件、`20` 项测试全部通过。
+- Web 与 Node TypeScript 类型检查通过，退出码 `0`。
+- `git diff --check` 通过，仅有 Windows LF/CRLF 提示。
+- 按用户要求未运行 OMP 本体、802 MB 装配、真实模型、全量测试、Electron 或 Portable。
+
+### 已知风险
+
+1. P1D-A/P1C 仍存在于独立历史分支，后续不得误合入产品主线。
+2. 本轮只移除用户可见的第二套模型配置，不重构或复测历史 OMP 研究代码。
+
+### 下一阶段计划
+
+提交并推送本独立分支后停止，等待人工验收。未经新授权不继续 OMP 产品化，也不合入 WORK 或正式主线。
+
 ## 2026-09-03｜RUNTIME-R4 P1D-A 复用调查文档门补录（待人工复验）
 
 ### 本阶段目标与状态

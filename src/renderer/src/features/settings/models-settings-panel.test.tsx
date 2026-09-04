@@ -89,43 +89,6 @@ afterEach(() => {
 })
 
 describe('ModelsSettingsPanel save', () => {
-  it('switches to the private OMP target and saves without reloading the active Pi Worker catalog', async () => {
-    const ompConfig = {
-      providers: {
-        omp: { name: 'OMP provider', models: [{ id: 'omp-model' }] },
-      },
-    }
-    const ompChanged = {
-      providers: {
-        omp: { name: 'Changed provider', models: [{ id: 'omp-model' }] },
-      },
-    }
-    vi.mocked(ipcClient.invoke)
-      .mockResolvedValueOnce({ path: 'models.json', config: initialConfig })
-      .mockResolvedValueOnce({ models: availableModels })
-      .mockResolvedValueOnce({ path: '小规私有目录 / Oh My Pi / models.json', config: ompConfig })
-      .mockResolvedValueOnce({ ok: true, path: '小规私有目录 / Oh My Pi / models.json' })
-      .mockResolvedValueOnce({ path: '小规私有目录 / Oh My Pi / models.json', config: ompChanged })
-
-    render(<ModelsSettingsPanel />)
-    expect(await screen.findByText('Original provider')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /Oh My Pi.*test/i }))
-    expect(await screen.findByText('OMP provider')).toBeTruthy()
-    expect(screen.queryByTestId('sdk-provider-section')).toBeNull()
-    expect(screen.getByText(/main-process-managed private Oh My Pi directory/i)).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'edit provider' }))
-    await act(async () => {
-      await commitAllSettingsSlices()
-    })
-
-    expect(getRequest('xiaogui.omp.models.set')).toEqual([
-      ['xiaogui.omp.models.set', { config: ompChanged }],
-    ])
-    expect(getRequest('xiaogui.omp.models.get')).toHaveLength(2)
-    expect(getRequest('model.list')).toHaveLength(1)
-  })
-
   it('separates editable user providers from the active Pi SDK catalog', async () => {
     vi.mocked(ipcClient.invoke)
       .mockResolvedValueOnce({ path: 'models.json', config: initialConfig })
@@ -141,6 +104,8 @@ describe('ModelsSettingsPanel save', () => {
 
     const userSection = await screen.findByTestId('user-provider-section')
     const sdkSection = screen.getByTestId('sdk-provider-section')
+    expect(screen.queryByText(/Oh My Pi/i)).toBeNull()
+    expect(getRequest('xiaogui.omp.models.get')).toHaveLength(0)
     expect(userSection).toHaveTextContent(/User-configured providers/i)
     expect(userSection).toHaveTextContent(/Original provider/i)
     expect(userSection).toContainElement(screen.getByRole('button', { name: /Add Provider/i }))
