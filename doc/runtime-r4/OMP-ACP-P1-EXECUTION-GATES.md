@@ -1,11 +1,15 @@
 # OMP ACP Runtime P1 生产门与施工卡
 
+> [!important] 2026-09-04 产品路线已取代本文施工路线
+> 本文只保留 P0—P1D-A 的隔离研究与验收证据，不再是产品施工卡。`P1D-B` 及其独立 OMP Runtime、私有模型配置、设置页、启停、目录、状态和 Runtime 选择目标均已取消。当前产品主链固定为“进入 CODING → 启动现有 Pi Coding Harness → 自动装载小规内置 Coding Extension/Skill”；不启动 OMP 进程，也不向用户展示 OMP。历史研究源码不得重新注册进生产组合，除非以后针对一个已验证的具体缺口另行批准最小复用。
+
 ## 状态边界
 
 - P0 已于 2026-09-02 经人工验收通过，固定提交为 `607618f952b102b889bc12f5ab101f802ab6b401`。
-- P1 在独立分支 `agent/runtime-r4-omp-acp-p1-v1` 施工，不触碰 WORK 活动分支，也不直接合入产品主线。
-- P1 完成前，OMP 继续保持 `APPROVED_FOR_TEST`、`OMP_PRODUCTION_DISABLED` 和固定 `--approval-mode always-ask`。
-- 三档权限控制属于 TaskHub 策略，不等价于把 OMP 启动参数改为 `write` 或 `yolo`。只有 TaskHub 已核验的操作才可依据用户档位自动放行；未核验、越界或被拒绝的操作在所有档位下均拒绝。
+- P1A—P1D-A 发生在独立研究分支，不触碰 WORK；其通过只表示当时研究契约成立，不授权产品接入。
+- OMP Adapter、受信装配和恢复代码保留为历史研究证据，但已从产品 `runtime-composition` 移除，不存在产品启用开关或默认选择。
+- 小规只保留一套模型配置。CODING 与其他模式均由现有 Pi Worker 读取同一配置；不再维护 OMP 私有 `models.json`。
+- 已完成的上下文、权限、计划、Diff、检查点和角色能力继续作为小规自己的 Pi/TaskHub 受控扩展使用，不依赖 OMP 启动。
 
 ## P1A：权限契约与接缝 Spike（已验收）
 
@@ -36,14 +40,14 @@
 - ACP 的 Default/Plan 模式与小规三档权限不是同一概念，不能复用一个 UI 字段；
 - OMP 的 `--approval-mode` 仍是 Runtime 内层审批基础，小规生产接入继续固定 `always-ask`，以保证每个写入、命令和外传请求都先到 TaskHub。
 
-现有小规 `pi-models-json.ts` 和模型设置页已能管理 Pi 兼容的 `models.json`。P1B 应把经过现有校验的配置写入 OMP 私有 `PI_CODING_AGENT_DIR`，而不是把 API Key、路径或原始配置放入 TaskHub 公共 DTO。
+现有小规 `pi-models-json.ts` 和模型设置页已能管理 Pi 兼容的唯一 `models.json`。历史 P1B 曾提出写入 OMP 私有 `PI_CODING_AGENT_DIR`；该目标已取消，后续不得恢复第二份模型配置。
 
-## P1B：受信安装、私有模型设置与三档 UI（已验收）
+## P1B：受信安装、私有模型设置与三档 UI（历史研究，产品表面已撤回）
 
 P1B 已于 2026-09-03 由用户人工验收，固定提交为 `a9ee7bc4b18ce8ded6f5fc7fd00d393374cd9589`：
 
 1. 受信安装流程生成固定版本、包完整性、入口摘要和私有状态目录摘要；PATH 上仅版本相同但来源不明的程序不得通过生产门。
-2. 设置页复用现有模型配置表单与校验，只增加 OMP Runtime 目标；凭据和原始配置继续留在主进程私有目录。
+2. 历史候选曾在设置页增加 OMP Runtime 目标；该产品表面已于 2026-09-04 删除，当前只保留小规唯一模型配置。
 3. Composer 显示三档权限选择器；选择在 Attempt 创建时冻结为 `CodingPermissionModeBindingV1`，执行中不得静默改变。
 4. TaskHub 为文件、命令和外传分别给出硬边界核验结果；Renderer 只展示模式与审批，不拥有策略决定权。
 5. 断线恢复读取同一 Attempt 的冻结权限档位和 Runtime 绑定；缺失或摘要冲突时停止。
@@ -51,7 +55,7 @@ P1B 已于 2026-09-03 由用户人工验收，固定提交为 `a9ee7bc4b18ce8ded
 ### P1B 当前证据与边界
 
 - 固定包完整性模块以 npm 官方固定 archive 的 SHA-512 SRI 及其完整解包树为独立信任根，已经生成并复验版本、来源、入口、树摘要、文件数/体积和私有状态目录摘要；D 盘真实固定缓存与官方 archive 解包结果完全一致，伪造同版本目录、内容/回执篡改或私有状态目录重定向均拒绝。
-- 模型设置页已复用既有表单和 Pi SDK 校验器增加 OMP 私有目标；公开 UI 只显示安全标签，TaskHub 不接收配置、凭据或绝对路径。
+- 历史候选曾增加 OMP 私有模型目标；当前 Renderer、公开 IPC 和产品模型服务均已删除该目标，不得按本段历史描述恢复。
 - Composer 三档选择已接入。TaskHub 在调度前取样，在真实 Attempt 返回后不可变绑定；恢复时同时校验 Saga 快照与绑定摘要。
 - 文件边界可由 Attempt manifest 核验；命令和外传尚无权威白名单，因此明确为 `UNVERIFIED` 并拒绝，三档 UI 不会扩大该边界。
 - P1B 提交中的 OMP 仍为测试专用；受信回执消费、真实结果对账和生产候选接缝由 P1C 完成。PATH 同版本不构成生产信任。
@@ -72,10 +76,10 @@ P1B 人工验收后已开始 P1C；当前实现、真实旅程和聚焦验证完
 - OMP 18.1.2 普通文件工具实测在结构化 `tool_call` 前先请求 form elicitation。适配器保留结构化权限通道，并对该固定版本增加精确、单目标、fail-closed 的兼容 envelope；任何歧义、截断或未来形状均取消。
 - 真实 OMP 模型只修改 Attempt 工作树中的一个授权文件，源项目不变；真实结果树摘要贯穿 RuntimeOutcomeMonitor、CandidateAudit、ChangeSet 和 Delivery。
 - SQLite 绑定保证恢复同一 Attempt、Runtime selection、vendor session 和工作树；已结算结果回放，未结算结果返回 UNKNOWN 且不重新 prompt。
-- `supportsResultReconcile: true` 只存在于显式 `ompProductionEnabled` 候选路径；当前桌面调用方没有开启，默认 Runtime 未改变。
+- 历史候选的 `ompProductionEnabled` 生产选择接缝已从产品组合删除；结果对账实现只作为隔离研究证据保留。
 - 完整测试证据、环境差异和未执行项见 `OMP-ACP-P1C-QA.md`；审查结论见 `OMP-ACP-P1C-REVIEW.md`。
 
-## P1D-A：完整依赖闭包受信装配（首次候选已拒绝，复修待验收）
+## P1D-A：完整依赖闭包受信装配（历史研究已验收，不进入产品）
 
 P1C 经用户人工验收后，P1D-A 从固定提交 `9728eafdb67d0aea8a2f9e52fd6f315f4e4e7692` 建立独立分支。首次候选 `a9377a22e531cc55e06b40917e103217c6e71c93` 因 native 加载逃逸、版本冲突误删、完整树缓存和 junction 绕过被人工拒绝。当前只修复这些阻断并重新送验：
 
@@ -91,9 +95,9 @@ P1C 经用户人工验收后，P1D-A 从固定提交 `9728eafdb67d0aea8a2f9e52fd
 10. 同一 storage root 以 SQLite `BEGIN EXCLUSIVE` 串行装配，不因 private state 不同而绕过；连接关闭或进程退出后由 SQLite/OS 释放锁。
 11. 版本目录、staging 和 native cache 只由实际创建它们的事务清理；版本冲突、pointer 提交失败或并发失败不得删除旧有效版本或其他事务资源。
 
-P1D-A 不包含 Renderer 目录选择、安装进度、清理 UI、自动下载、Portable 或默认 Runtime 切换。完整证据与风险见 `OMP-ACP-P1D-A-QA.md`。
+P1D-A 不包含 Renderer 目录选择、安装进度、清理 UI、自动下载、Portable 或默认 Runtime 切换。完整证据与风险见 `OMP-ACP-P1D-A-QA.md`。其后续产品化已经取消，不能以 P1D-A 验收为由继续 P1D-B。
 
-## 六个未完成门映射
+## 历史六门映射（非当前待办）
 
 | P0 留下的生产门 | 负责阶段 | 验收证据 |
 |---|---|---|

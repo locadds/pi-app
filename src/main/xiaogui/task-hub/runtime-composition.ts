@@ -19,19 +19,6 @@ import {
 } from '../agent-runtime/kimi-adapter'
 import { KIMI_ACP_APPROVED_VERSION_V1 } from '../agent-runtime/acp/kimi-tool-policy'
 import type { AcpTransportFactoryV1 } from '../agent-runtime/acp/types'
-import {
-  createOmpAcpRuntimeAdapterV1,
-  OMP_ACP_ADAPTER_ID_V1,
-  ompAcpProductionSelectionV1,
-  type OmpAcpProbeV1,
-  type OmpAcpRuntimeAdapterV1,
-} from '../agent-runtime/omp-acp-adapter'
-import {
-  OmpTrustedAcpLaunchProviderV1,
-  SqliteOmpAcpRecoveryStoreV1,
-  TaskHubOmpCandidateInspectorV1,
-} from '../agent-runtime/omp-acp-production'
-import { OmpActivatedRuntimeBundleModuleV1 } from '../agent-runtime/omp-runtime-bundle'
 import { prepareKimiProductionHomeV1 } from '../agent-runtime/kimi-production-home'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { createAgentRuntimeRegistryV1 } from '../agent-runtime/runtime-registry'
@@ -75,21 +62,14 @@ import {
   GitAttemptReviewDiffPortV1,
 } from '../coding-extensions/attempt-review-module'
 import { CodingRoleProfileModuleV1 } from '../coding-extensions/role-profile-module'
-import { resolveOmpPrivateLayoutV1 } from '../agent-runtime/omp-private-layout'
 
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
   readonly productionEnabled: boolean
-  /** Explicit acceptance/production seam. Omission keeps OMP test-only and Kimi unchanged. */
-  readonly ompProductionEnabled?: boolean
-  /** Main-process-private large-asset directory. It is never copied into TaskHub contracts. */
-  readonly ompRuntimeStorageDirectory?: string
   readonly lookup: SessionScopeLookupV1
   readonly projectResolver?: ProjectWorkspaceResolverV1
   readonly kimiProbe?: KimiAcpProbeV1
   readonly kimiTransportFactory?: AcpTransportFactoryV1
-  readonly ompProbe?: OmpAcpProbeV1
-  readonly ompTransportFactory?: AcpTransportFactoryV1
   readonly additionalRuntimeAdapters?: readonly AgentRuntimeAdapterV1[]
   /** Opaque, process-launch-gated E2E seam. Forged launch objects are rejected by the adapter. */
   readonly piE2eScriptedRuntimeLaunch?: PiE2eScriptedRuntimeLaunchV1
@@ -155,8 +135,6 @@ export function createXiaoguiRuntimeCompositionV1(
   let inputStore: AttemptExecutionInputStoreV1 | undefined
   let application: CollaborationHubApplicationV1 | undefined
   let kimiAdapter: KimiAcpRuntimeAdapterV1 | undefined
-  let ompAdapter: OmpAcpRuntimeAdapterV1 | undefined
-  let ompRecoveryStore: SqliteOmpAcpRecoveryStoreV1 | undefined
   let runtimeRegistry: AgentRuntimeRegistryV1 | undefined
   let taskExecution: XiaoguiTaskExecutionOrchestratorV1 | undefined
   let runtimeMonitor: RuntimeOutcomeMonitorV1 | undefined
@@ -214,49 +192,8 @@ export function createXiaoguiRuntimeCompositionV1(
         ? { enabled: true, selection: KIMI_PRODUCTION_SELECTION_V1 }
         : { enabled: false },
     })
-    const ompLayout = resolveOmpPrivateLayoutV1(userDataDir)
-    const ompRuntimeStorageDirectory = options.ompProductionEnabled
-      ? options.ompRuntimeStorageDirectory ?? null
-      : null
-    const ompProductionSelection = ompAcpProductionSelectionV1()
-    if (options.ompProductionEnabled) {
-      ompRecoveryStore = new SqliteOmpAcpRecoveryStoreV1({
-        dbPath: join(taskHubDir, 'omp-acp-recovery-v1.sqlite'),
-        now: options.now,
-      })
-    }
-    ompAdapter = createOmpAcpRuntimeAdapterV1({
-      payloadResolver: payloadVault,
-      // The attempt resolver already validates the exact TaskHub workspace
-      // binding. Its Kimi-only home field is ignored by the OMP adapter.
-      workspaceResolver: kimiWorkspaceResolver,
-      runtimeStateDir: ompLayout.stateDir,
-      probe: options.ompProbe,
-      transportFactory: options.ompTransportFactory,
-      productionGate: options.ompProductionEnabled && ompRecoveryStore
-        ? {
-            enabled: true,
-            selection: ompProductionSelection,
-            trustedLaunch: ompRuntimeStorageDirectory
-              ? new OmpTrustedAcpLaunchProviderV1({
-                  installation: new OmpActivatedRuntimeBundleModuleV1({
-                    selectedStorageDirectory: ompRuntimeStorageDirectory,
-                    privateStateDir: ompLayout.stateDir,
-                  }),
-                })
-              : {
-                  async inspectLaunch() {
-                    return { available: false as const, reasonCode: 'OMP_RUNTIME_STORAGE_DIR_REQUIRED' }
-                  },
-                },
-            recoveryStore: ompRecoveryStore,
-            candidateInspector: new TaskHubOmpCandidateInspectorV1(attemptWorkspaces),
-          }
-        : { enabled: false },
-    })
     runtimeRegistry = createAgentRuntimeRegistryV1()
     void runtimeRegistry.register(kimiAdapter)
-    void runtimeRegistry.register(ompAdapter)
     const piE2eAdapter = options.piE2eScriptedRuntimeLaunch
       ? new PiE2eWorkspaceScriptedRuntimeAdapterV1(
           attemptWorkspaces,
@@ -281,27 +218,7 @@ export function createXiaoguiRuntimeCompositionV1(
     const fixedVerificationPort = new FixedTypecheckVerificationPortV1()
     taskVerificationCoordinator = createTaskVerificationCoordinatorV1({
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
-      candidateAudit: new TaskCandidateAuditServiceV1(
-        attemptWorkspaces,
-        options.ompProductionEnabled
-          ? {
-              async verify(input) {
-                const store = new CollaborationHubSqliteStoreV1(hubDbPath)
-                try {
-                  const outbox = store.agentDispatchOutbox(input.attemptId)
-                  if (!outbox?.runtime_request_json) return false
-                  const request = JSON.parse(outbox.runtime_request_json) as { selection?: { adapterId?: unknown } }
-                  if (request.selection?.adapterId !== OMP_ACP_ADAPTER_ID_V1) return false
-                  return ompRecoveryStore?.verifyCandidateBinding(input) ?? false
-                } catch {
-                  return false
-                } finally {
-                  store.close()
-                }
-              },
-            }
-          : undefined,
-      ),
+      candidateAudit: new TaskCandidateAuditServiceV1(attemptWorkspaces),
       verificationPort: fixedVerificationPort,
       projectResolver,
       attemptRoleProvider: {
@@ -317,22 +234,17 @@ export function createXiaoguiRuntimeCompositionV1(
       // Keep the existing desktop database location so installing the runtime
       // composition does not make previously created plans disappear.
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
-      ...(options.productionEnabled || options.ompProductionEnabled || piE2eAdapter
+      ...(options.productionEnabled || piE2eAdapter
         ? {
             agentRuntime: runtimeHost,
-            ...((options.productionEnabled || options.ompProductionEnabled) && !piE2eAdapter
-              ? { agentSelection: options.ompProductionEnabled ? ompProductionSelection : KIMI_PRODUCTION_SELECTION_V1 }
+            ...(options.productionEnabled && !piE2eAdapter
+              ? { agentSelection: KIMI_PRODUCTION_SELECTION_V1 }
               : {}),
             agentRoutingPolicy: options.runtimeRoutingPolicy ?? {
               mode: 'CODING' as const,
               requiredCapabilities: ['CODING.GIT.CHANGESET' as const, 'CODING.TYPESCRIPT' as const],
               dataEgressPolicy: 'EXTERNAL_ALLOWED' as const,
-              ...(options.ompProductionEnabled
-                ? { preferredAdapterId: OMP_ACP_ADAPTER_ID_V1 }
-                : {}),
-              priorityAdapterIds: [options.ompProductionEnabled
-                ? OMP_ACP_ADAPTER_ID_V1
-                : KIMI_PRODUCTION_SELECTION_V1.adapterId],
+              priorityAdapterIds: [KIMI_PRODUCTION_SELECTION_V1.adapterId],
               requireProductionApproval: true as const,
             },
           }
@@ -461,7 +373,6 @@ export function createXiaoguiRuntimeCompositionV1(
     closeQuietly(deliveryWorkflow)
     closeQuietly(deliveryApplyRegistry)
     closeQuietly(runtimeRegistry)
-    closeQuietly(ompRecoveryStore)
     closeQuietly(application)
     closeQuietly(inputStore)
     closeQuietly(payloadVault)

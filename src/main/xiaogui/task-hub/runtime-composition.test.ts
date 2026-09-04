@@ -28,24 +28,6 @@ import {
 } from '../agent-runtime/acp/kimi-tool-policy'
 import { KIMI_PRODUCTION_CONFIG_CONTENT_V1 } from '../agent-runtime/kimi-production-home'
 import type { KimiAcpProbeV1 } from '../agent-runtime/kimi-adapter'
-import {
-  OMP_ACP_APPROVED_VERSION_V1,
-  OMP_ACP_NATIVE_DIGEST_V1,
-  OMP_ACP_NATIVE_FILE_V1,
-  OMP_ACP_SOURCE_REVISION_V1,
-  type OmpAcpProbeV1,
-} from '../agent-runtime/omp-acp-adapter'
-import {
-  SystemOmpBunRuntimeProbeV1,
-} from '../agent-runtime/omp-acp-production'
-import {
-  OMP_ACP_ENTRY_RELATIVE_PATH_V1,
-} from '../agent-runtime/omp-trusted-installation'
-import {
-  OMP_RUNTIME_BUNDLE_MANIFEST_V1,
-  OmpActivatedRuntimeBundleModuleV1,
-} from '../agent-runtime/omp-runtime-bundle'
-import { resolveOmpPrivateLayoutV1 } from '../agent-runtime/omp-private-layout'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
 import { digestJson } from './digest'
@@ -286,8 +268,6 @@ describe('Xiaogui runtime composition v1', () => {
     const userDataDir = tempUserData()
     const probe = fakeKimiProbe()
     const transportFactory = rejectingTransportFactory()
-    const ompProbe = fakeOmpProbe()
-    const ompTransportFactory = rejectingTransportFactory()
     const resolveProjectRoot = vi.fn(async () => {
       throw new Error('STOP_BEFORE_GIT')
     })
@@ -298,8 +278,6 @@ describe('Xiaogui runtime composition v1', () => {
       projectResolver: { resolveProjectRoot },
       kimiProbe: probe,
       kimiTransportFactory: transportFactory,
-      ompProbe,
-      ompTransportFactory,
     }))
 
     const start = await composition.application.execute({
@@ -346,140 +324,8 @@ describe('Xiaogui runtime composition v1', () => {
       },
     })
     expect(probe.findExecutable).toHaveBeenCalledTimes(2)
-    expect(ompProbe.findExecutable).toHaveBeenCalled()
     expect(resolveProjectRoot).toHaveBeenCalledWith(ADDRESS.projectId)
     expect(transportFactory.create).not.toHaveBeenCalled()
-    expect(ompTransportFactory.create).not.toHaveBeenCalled()
-  })
-
-  it('assembles the explicit OMP production seam from the trusted receipt instead of the PATH probe', async () => {
-    const userDataDir = tempUserData()
-    const layout = resolveOmpPrivateLayoutV1(userDataDir)
-    const nativeRoot = join(userDataDir, 'trusted-native-runtime')
-    const nativeEnvironment = {
-      XDG_DATA_HOME: join(nativeRoot, 'xdg'),
-      USERPROFILE: join(nativeRoot, 'home'),
-      HOME: join(nativeRoot, 'home'),
-      LOCALAPPDATA: join(nativeRoot, 'local-app-data'),
-      APPDATA: join(nativeRoot, 'app-data'),
-      TEMP: join(nativeRoot, 'temp'),
-      TMP: join(nativeRoot, 'temp'),
-      PI_NATIVE_VARIANT: 'baseline',
-    }
-    for (const directory of Object.values(nativeEnvironment).filter((value) => value !== 'baseline')) {
-      mkdirSync(directory, { recursive: true })
-    }
-    mkdirSync(join(nativeEnvironment.XDG_DATA_HOME, 'omp'), { recursive: true })
-    mkdirSync(join(layout.packageRoot, 'dist'), { recursive: true })
-    writeFileSync(
-      join(layout.packageRoot, OMP_ACP_ENTRY_RELATIVE_PATH_V1),
-      `process.stdout.write('${OMP_ACP_APPROVED_VERSION_V1}\\n')\n`,
-      'utf8',
-    )
-    const installationInspect = vi.spyOn(OmpActivatedRuntimeBundleModuleV1.prototype, 'inspect')
-      .mockResolvedValue({
-        ok: true,
-        runtimeRoot: layout.runtimeRoot,
-        packageRoot: layout.packageRoot,
-        receipt: {
-          schemaVersion: 1,
-          manifestDigest: OMP_RUNTIME_BUNDLE_MANIFEST_V1.manifestDigest,
-          packageName: OMP_RUNTIME_BUNDLE_MANIFEST_V1.packageName,
-          version: OMP_ACP_APPROVED_VERSION_V1,
-          sourceRevision: OMP_ACP_SOURCE_REVISION_V1,
-          entryRelativePath: OMP_ACP_ENTRY_RELATIVE_PATH_V1,
-          rootPackageJsonDigest: OMP_RUNTIME_BUNDLE_MANIFEST_V1.rootPackageJsonDigest,
-          dependencyLockDigest: OMP_RUNTIME_BUNDLE_MANIFEST_V1.dependencyLockDigest,
-          treeDigest: OMP_RUNTIME_BUNDLE_MANIFEST_V1.treeDigest,
-          fileCount: OMP_RUNTIME_BUNDLE_MANIFEST_V1.fileCount,
-          directoryCount: OMP_RUNTIME_BUNDLE_MANIFEST_V1.directoryCount,
-          byteLength: OMP_RUNTIME_BUNDLE_MANIFEST_V1.byteLength,
-          privateStateDirDigest: `sha256:${'4'.repeat(64)}`,
-          recordedAt: '2026-09-03T00:00:00.000Z',
-          receiptDigest: `sha256:${'5'.repeat(64)}`,
-        },
-        nativeRuntime: {
-          environment: nativeEnvironment,
-          addonPath: join(
-            nativeEnvironment.XDG_DATA_HOME,
-            'omp',
-            'natives',
-            OMP_ACP_APPROVED_VERSION_V1,
-            OMP_ACP_NATIVE_FILE_V1,
-          ),
-          addonDigest: OMP_ACP_NATIVE_DIGEST_V1,
-          async verifyBeforeSpawn() {},
-        },
-      })
-    vi.spyOn(SystemOmpBunRuntimeProbeV1.prototype, 'findExecutable').mockResolvedValue({
-      available: true,
-      command: process.execPath,
-      version: '1.3.14',
-    })
-    const pathProbe = fakeOmpProbe()
-    const transportFactory = rejectingTransportFactory()
-    const resolveProjectRoot = vi.fn(async () => {
-      throw new Error('STOP_BEFORE_GIT')
-    })
-    const composition = track(createXiaoguiRuntimeCompositionV1({
-      userDataDir,
-      productionEnabled: false,
-      ompProductionEnabled: true,
-      ompRuntimeStorageDirectory: userDataDir,
-      lookup: lookup('CODING'),
-      projectResolver: { resolveProjectRoot },
-      ompProbe: pathProbe,
-      ompTransportFactory: transportFactory,
-    }))
-
-    const start = await composition.application.execute({
-      contractVersion: 'm2a.v1',
-      address: ADDRESS,
-      trustedActor: { kind: 'main-process-user' },
-      requestId: 'omp-production-start',
-      intent: { type: 'flow.start.with_draft', draft: draft() },
-    })
-    if (!start.ok || !start.value.flowId || !start.value.revisionId) throw new Error('start failed')
-    const projection = await composition.application.observe(ADDRESS)
-    if (!projection.ok || !projection.value.activeRevision) throw new Error('draft missing')
-    await composition.application.execute({
-      contractVersion: 'm2a.v1',
-      address: ADDRESS,
-      trustedActor: { kind: 'main-process-user' },
-      requestId: 'omp-production-approve',
-      expectedSessionVersion: projection.value.sessionVersion,
-      intent: {
-        type: 'plan.revision.submit',
-        flowId: start.value.flowId,
-        baseRevisionId: start.value.revisionId,
-        draft: projection.value.activeRevision.draft,
-      },
-    })
-    const approved = await composition.application.observeM2B(ADDRESS)
-    await expect(composition.application.executeSystem({
-      contractVersion: 'm2b.v1',
-      address: ADDRESS,
-      trustedActor: { kind: 'main-process-system' },
-      requestId: 'omp-production-schedule',
-      expectedSessionVersion: approved.ok ? approved.value.sessionVersion : 0,
-      intent: {
-        type: 'system.schedule',
-        flowId: start.value.flowId,
-        authorizationScope: authorizationScope('omp-production'),
-      },
-    })).resolves.toMatchObject({
-      ok: false,
-      error: {
-        code: 'BASELINE_UNAVAILABLE',
-        safeArgs: { reason: 'BASELINE_PROVIDER_ERROR' },
-      },
-    })
-
-    expect(installationInspect).toHaveBeenCalled()
-    expect(pathProbe.findExecutable).not.toHaveBeenCalled()
-    expect(resolveProjectRoot).toHaveBeenCalledWith(ADDRESS.projectId)
-    expect(transportFactory.create).not.toHaveBeenCalled()
-    expect(existsSync(join(userDataDir, 'xiaogui', 'task-hub', 'omp-acp-recovery-v1.sqlite'))).toBe(true)
   })
 
   it('accepts an additional adapter and an explicit deterministic routing policy', async () => {
@@ -492,7 +338,6 @@ describe('Xiaogui runtime composition v1', () => {
       projectResolver: { resolveProjectRoot: vi.fn(async () => { throw new Error('STOP_BEFORE_GIT') }) },
       kimiProbe: fakeKimiProbe(),
       kimiTransportFactory: rejectingTransportFactory(),
-      ompProbe: unavailableOmpProbe(),
       additionalRuntimeAdapters: [adapter],
       runtimeRoutingPolicy: {
         mode: 'CODING',
@@ -569,26 +414,6 @@ function fakeKimiProbe(): KimiAcpProbeV1 & { findExecutable: ReturnType<typeof v
       available: true as const,
       command: 'never-spawn-kimi',
       version: KIMI_ACP_APPROVED_VERSION_V1,
-    })),
-  }
-}
-
-function fakeOmpProbe(): OmpAcpProbeV1 & { findExecutable: ReturnType<typeof vi.fn> } {
-  return {
-    findExecutable: vi.fn(async () => ({
-      available: true as const,
-      command: 'never-spawn-omp',
-      args: ['--approval-mode', 'always-ask', '--no-extensions', '--no-skills', '--no-rules', 'acp'],
-      version: OMP_ACP_APPROVED_VERSION_V1,
-    })),
-  }
-}
-
-function unavailableOmpProbe(): OmpAcpProbeV1 {
-  return {
-    findExecutable: vi.fn(async () => ({
-      available: false as const,
-      reasonCode: 'OMP_EXECUTABLE_NOT_FOUND',
     })),
   }
 }

@@ -41,7 +41,11 @@ describe('worker-runtime session tool registry whitelist', () => {
 
   it('passes the full mode tool universe as the registry whitelist, then narrows initial active tools', async () => {
     const universe = workerPromptContextToolNamesForModeV1('WORK')
-    const captured: { tools?: readonly string[]; additionalSkillPaths?: readonly string[] } = {}
+    const captured: {
+      tools?: readonly string[]
+      additionalSkillPaths?: readonly string[]
+      extensionFactoryCount?: number
+    } = {}
     const activeCalls: string[][] = []
     let active: string[] = []
     let overrideResult: LoadExtensionsResult | null = null
@@ -77,6 +81,7 @@ describe('worker-runtime session tool registry whitelist', () => {
       SessionManager: { create: vi.fn((cwd: string) => ({ getCwd: () => cwd })) },
       createAgentSessionServices: vi.fn(async (options) => {
         captured.additionalSkillPaths = options.resourceLoaderOptions.additionalSkillPaths
+        captured.extensionFactoryCount = options.resourceLoaderOptions.extensionFactories?.length ?? 0
         overrideResult = options.resourceLoaderOptions.extensionsOverride({
           extensions: [],
         } as unknown as LoadExtensionsResult)
@@ -141,5 +146,23 @@ describe('worker-runtime session tool registry whitelist', () => {
       .flatMap((extension) => [...extension.tools.keys()])
     expect(registered).toContain('xiaogui_work_docx_template_intake')
     expect(registered).toContain('xiaogui_work_docx_template_materialize')
+
+    // WORK 只加载公共 Prompt Extension；进入 CODING 后，Pi Resource Loader
+    // 会在同一 Harness 中自动增加角色保护和受控上下文两个隐藏 Extension。
+    const workExtensionFactoryCount = captured.extensionFactoryCount ?? 0
+    expect(workExtensionFactoryCount).toBeGreaterThan(0)
+    await initSession('D:\\ws', freezeXiaoguiPromptContextV1({
+      schemaVersion: 1,
+      mode: 'CODING',
+      phase: 'EXECUTE',
+      workspaceAvailable: true,
+      projectTrusted: true,
+      enabledCapabilities: ['coding.workspace'],
+      availableToolNames: ['read'],
+      sessionKey: 'xgs1_coding_probe',
+      projectId: 'xgp1_coding_probe',
+    }))
+    expect(captured.extensionFactoryCount).toBeGreaterThan(workExtensionFactoryCount)
+    expect(captured.tools).toEqual([...workerPromptContextToolNamesForModeV1('CODING')])
   })
 })

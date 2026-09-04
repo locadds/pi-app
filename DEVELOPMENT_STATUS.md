@@ -1,6 +1,87 @@
 # 小规开发阶段状态
 
-## 2026-09-04｜CODING 模型配置与 OMP 产品表面简化（待人工验收）
+## 2026-09-04｜CODING Pi 主链与 OMP 产品路线纠偏返修（待人工验收）
+
+### 本阶段目标
+
+关闭 `3731316` 人工验收提出的五项问题：不能只删除 OMP 界面，还必须从产品生产组合撤下独立 OMP Runtime/选择接缝，删除第二模型目录遗留接口，把正向主链固定为现有 Pi Coding Harness 自动装载小规 Coding Extension/Skill，并同步仓库权威文档和长期总控。
+
+本阶段继续保留首轮已经正确完成的界面删减，不恢复废弃 P1D-B stash，不触碰 WORK、阶段线或正式主线。
+
+### 实际修改文件
+
+- `src/main/xiaogui/task-hub/runtime-composition.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.test.ts`
+- `src/main/pi-models-json.ts`
+- `src/worker/handlers/worker-runtime-tool-registry.test.ts`
+- `doc/README.md`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+- `DEVELOPMENT_STATUS.md`
+
+仓库外同步更新现有长期记录（不新建碎片文档）：
+
+- `D:\Codex\longtime_memory\projects\小规Agent\progress.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\施工总控.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\research\2026-09-03-CODING研究-OMP-ACP-P1C验收与P1D装配规划.md`
+
+### 已完成内容
+
+1. `createXiaoguiRuntimeCompositionV1` 删除 `ompProductionEnabled`、OMP 存储目录、Probe/Transport 参数、OMP Adapter 创建与注册、OMP Recovery Store、OMP 专用 CandidateAudit、首选 Adapter 和选择分支。默认产品组合已不存在 OMP 的启停或 Runtime 选择。
+2. 通用 `additionalRuntimeAdapters` 接缝继续保留，供 TaskHub 已批准的外部执行器使用；它不是 OMP 专用入口，也不会自动注册历史 OMP Adapter。
+3. 历史 OMP Adapter、受信装配和研究测试源码没有整体删除或二次开发，只作为隔离研究证据保留；产品组合没有消费者。
+4. 删除 `readModelsConfigForAgentDir`、`writeModelsConfigForAgentDir` 及其只为第二 Agent 目录存在的路径校验代码。模型读写只剩小规现有统一配置入口。
+5. 现有生产事实得到聚焦测试固定：WORK 仅加载公共 Prompt Extension；进入 CODING 后，同一个 Pi Resource Loader 自动增加角色保护与受控上下文两个隐藏 Coding Extension，同时使用 CODING 工具全集。该路径不启动或展示 OMP。
+6. OMP 架构文档和施工门文档已显著标记为“历史研究、产品路线已取代”；`doc/README.md` 不再把它们描述为当前架构/施工队列。
+7. Obsidian 的进展、施工总控和原 OMP 研究规划已同步：P1D-A 最终验收点 `59e23bf` 只作为研究证据，P1D-B 明确取消，旧的显式 OMP 单机试用指令不可继续。
+
+### 未完成内容
+
+- 未合入 WORK、阶段线或正式主线，未切换发布配置，未制作 Portable。
+- 未删除 P0—P1D-A 的历史研究源码、文档证据或 D 盘资产；本阶段只保证产品组合不注册它们。
+- 未新增或重做 OMP 功能。以后只有出现 Pi 原生/现有小规扩展无法满足的真实缺口，才可另行审批具体 Skill/Extension 复用。
+- 本阶段候选仍需人工验收；验收前不得进入新的后续阶段。
+
+### 与规格文档存在的偏差
+
+- 2026-09-04 用户最新产品决定明确取代原 P1D-B：OMP 不再是独立 ACP Runtime 产品，不存在专用模型、设置页、启停、目录、状态、安装、清理或选择 UI。
+- CODING 正向产品主链为现有 Pi Worker/Pi Coding Harness；上下文、权限、计划、Diff、检查点和角色仍按已验收的小规 Pi/TaskHub 接缝工作。没有为了改名而复制 OMP 或另建 Agent Loop。
+- `runtime-composition.ts` 中既有 Kimi Adapter 属于 TaskHub 外部任务执行基础设施，不是 CODING 对话的模型配置或第二套 Harness；本次不借 OMP 纠偏扩大为多运行时重构。
+- 未违反 WORK、Univer、Prompt 模式边界及现有降级路径；相关文件未修改。
+
+### 测试命令和测试结果
+
+```powershell
+$env:XIAOGUI_TEST_TEMP_ROOT='D:\CodexTemp'
+npm exec vitest run -- src/main/xiaogui/task-hub/runtime-composition.test.ts src/main/pi-models-json.test.ts src/worker/handlers/worker-runtime-tool-registry.test.ts --reporter=dot
+```
+
+结果：`3` 个测试文件、`20` 项测试全部通过，退出码 `0`。
+
+```powershell
+npm run typecheck
+```
+
+结果：Web 与 Node TypeScript 均通过，退出码 `0`。
+
+```powershell
+npm exec eslint -- src/main/pi-models-json.ts src/main/xiaogui/task-hub/runtime-composition.ts src/main/xiaogui/task-hub/runtime-composition.test.ts src/worker/handlers/worker-runtime-tool-registry.test.ts
+git diff --check
+```
+
+结果：定向 ESLint 与 `git diff --check` 均通过。按用户要求未运行 OMP 本体、802 MB 装配、真实模型、Electron、全量测试或 Portable。
+
+### 已知风险
+
+1. 历史 OMP 研究文件仍在仓库中；权威文档已加取代标记，但未来合并时仍应确认产品组合没有重新导入这些模块。
+2. TaskHub 仍保留通用外部 Runtime 注册能力。这是既有多 Agent 架构接缝，不会让 OMP 自动出现；任何新 Runtime 仍需单独审批。
+3. D 盘历史 OMP 资产未清理，避免未经授权执行破坏性操作；其磁盘处置不属于本阶段。
+
+### 下一阶段计划
+
+完成最终差异检查、提交并推送当前隔离分支后停止，等待人工验收。通过也只表示本次产品路线纠偏候选可用，不代表合入 WORK、阶段线、正式主线或发布。
+
+## 2026-09-04｜CODING 模型配置与 OMP 产品表面简化（首轮人工验收未通过，已进入上方返修）
 
 ### 本阶段目标
 

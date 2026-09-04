@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
-import { dirname, isAbsolute, join, resolve } from 'path'
+import { dirname, join } from 'path'
 import { app } from 'electron'
 import { pathToFileURL } from 'node:url'
 import { resolveActiveSdk } from './sdk-loader'
@@ -134,14 +134,6 @@ export async function readModelsConfig(): Promise<Awaited<ReturnType<typeof read
   return readModelsConfigWithSdk(sdk, agentDir)
 }
 
-/** Main-process-only alternate agent directory using the same Pi SDK validator. */
-export async function readModelsConfigForAgentDir(
-  agentDir: string,
-): Promise<Awaited<ReturnType<typeof readModelsConfigWithSdk>>> {
-  const sdk = await loadPiSdk()
-  return readModelsConfigWithSdk(sdk, exactAgentDir(agentDir))
-}
-
 function asRecord(v: unknown): Record<string, unknown> | null {
   if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>
   return null
@@ -262,22 +254,6 @@ export async function writeModelsConfig(config: PiModelsConfig): Promise<{ ok: b
   const sdk = await loadPiSdk()
   const agentDir = resolveActiveAgentDir()
   return writeModelsConfigWithSdk(config, sdk, agentDir)
-}
-
-/** Main-process-only alternate agent directory using the same Pi SDK validator. */
-export async function writeModelsConfigForAgentDir(
-  config: PiModelsConfig,
-  agentDir: string,
-): Promise<{ ok: boolean; error?: string; path: string }> {
-  const sdk = await loadPiSdk()
-  return writeModelsConfigWithSdk(config, sdk, exactAgentDir(agentDir))
-}
-
-function exactAgentDir(value: string): string {
-  if (typeof value !== 'string' || value !== value.trim() || !isAbsolute(value)) {
-    throw new Error('PI_MODELS_AGENT_DIR_INVALID')
-  }
-  return resolve(value)
 }
 
 function resolveApiKeyForFetch(apiKey?: string): string | undefined {
