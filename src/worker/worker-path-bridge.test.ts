@@ -25,6 +25,37 @@ describe('worker-path-bridge', () => {
     })
   })
 
+  it('converts the operation-scoped session execution lease without rewriting its identity fields', async () => {
+    vi.stubEnv('PI_WSL_DISTRO', 'Debian')
+    vi.resetModules()
+
+    const bridge = await import('./worker-path-bridge')
+
+    expect(
+      bridge.translateIncomingPaths({
+        type: 'loadSession',
+        sessionExecutionLease: {
+          schemaVersion: 1,
+          sessionFile: 'C:\\Users\\T\\sessions\\one.jsonl',
+          authorizedCwd: 'C:\\Users\\T\\workspace',
+          projectIdentityDigest: `sha256:${'1'.repeat(64)}`,
+          slotBindingDigest: `sha256:${'2'.repeat(64)}`,
+          operationNonce: 'nonce-1',
+        },
+      }),
+    ).toEqual({
+      type: 'loadSession',
+      sessionExecutionLease: {
+        schemaVersion: 1,
+        sessionFile: '/mnt/c/Users/T/sessions/one.jsonl',
+        authorizedCwd: '/mnt/c/Users/T/workspace',
+        projectIdentityDigest: `sha256:${'1'.repeat(64)}`,
+        slotBindingDigest: `sha256:${'2'.repeat(64)}`,
+        operationNonce: 'nonce-1',
+      },
+    })
+  })
+
   it('translates session row paths to Windows view on outgoing responses', async () => {
     vi.stubEnv('PI_WSL_DISTRO', 'Debian')
     vi.resetModules()

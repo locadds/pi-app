@@ -1,6 +1,6 @@
 # 小规普通 CODING 主链与 Oh My Pi 历史边界
 
-## 当前产品结论（2026-09-05）
+## 当前产品结论（2026-09-06）
 
 当前阶段候选只有一条普通 CODING 产品主链：
 
@@ -93,6 +93,21 @@ Bash 在所有档位都逐次确认。授权框显示完整真实命令并保留
 - Bash 命令在 Worker、Main 和 Renderer 共用控制字符与 Unicode Bidi 安全门；正常换行、制表符、完整命令及 64 KiB 上限保持不变。
 - READ 授权前 Main 只异步读取元数据；edit/write 在获批后才异步捕获不超过 16 MiB 的前镜像。不能建立检查点时不执行写入。
 - 授权后执行前再次核验目录实体、目标实体与前摘要；未知结果和重复幂等键不重放真实工具。
+
+## R3.3 CLOSEOUT：Pi Worker 项目根唯一权威
+
+R3.3 CLOSEOUT 只收口 Worker 执行目录的唯一权威，不新增产品能力：
+
+- Main 以内存对象身份和 `WeakMap` 持有项目／会话能力。能力句柄不含可序列化授权字段，不能由路径、摘要、IPC 参数或持久化数据构造；Renderer 和 Worker 均不会收到该句柄。
+- `WorkerManager` 的创建、恢复、聚焦与重新绑定只接受上述 Main 内部句柄。旧的裸会话文件、字符串 cwd/workspace hint 和 JSONL cwd 执行兜底已被替换，不保留兼容重载。
+- Main→Worker 只发送一次性执行租约。租约绑定精确 slot、项目摘要、转换后的 cwd、会话文件和 nonce；Worker 只验证并消费，不在 Windows/WSL 两侧重算项目实体身份，也不能签发新能力。
+- 冷装载固定使用 Pi 0.84.1 的 `SessionManager.open(..., cwdOverride)`，热切换固定使用 `switchSession(..., { cwdOverride })`。装载后的 AgentSession、SessionManager、ResourceLoader、项目 Skill/规则和工具共用同一授权 cwd。
+- JSONL `cwd` 只参与归属一致性检查。Main 登记缺失、JSONL 伪造、项目实体变化或会话不属于授权根时，在 Worker 创建、上下文装配、模型调用和消息提交前失败。
+- New/Fork/Clone 的一次性创建操作绑定来源 Worker、slot、项目能力、nonce 和预期会话目录；Main 验证未使用回执后原子签发新会话能力。列表和预览只返回安全显示数据，不签发能力或冷启动 Worker。
+- Checkpoint 持久化只保存待复核证据。恢复时 Main 重新核验项目实体、会话归属和 JSONL 一致性，再签发新的内存能力；旧记录不能直接恢复执行权。
+- WORK 可以继续调用迁移后的共享底层接口，但其 UI、产品流程、状态语义和工具能力不变。TaskHub V1 仍独立保有 Attempt 工作树、Checkpoint、Delivery 和人工 Apply。
+
+该实现仍是隔离分支阶段候选，等待人工复验；不代表已合入 WORK、阶段线或主线。
 
 ## Pi 原生复用与最小框架例外
 

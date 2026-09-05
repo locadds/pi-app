@@ -17,6 +17,7 @@ import {
   resolveAvailableModels,
   resolveCatalogModels,
 } from '../../active-sdk-models'
+import { startTrustedWorkerForProjectV1 } from '../../trusted-worker-control'
 
 export function registerModelRuntimeHandlers(): void {
   registerHandler('ipc:model.list', async (req) => {
@@ -111,7 +112,7 @@ export function registerModelRuntimeHandlers(): void {
     if (!workerManager.isRunning && !sessionFile) {
       const cwd = workerManager.cwd || configStore.get('currentProject')
       if (!cwd || isSandboxWorkspacePath(cwd)) throw new Error('Worker not started')
-      await workerManager.start(cwd)
+      await startTrustedWorkerForProjectV1(cwd)
     }
     const actualModel = await workerManager.setModel(provider, modelId, sessionFile)
     return { modelId: actualModel }
@@ -127,7 +128,7 @@ export function registerModelRuntimeHandlers(): void {
     if (!workerManager.isRunning && !sessionFile) {
       const cwd = workerManager.cwd || configStore.get('currentProject')
       if (!cwd || isSandboxWorkspacePath(cwd)) throw new Error('Worker not started')
-      await workerManager.start(cwd)
+      await startTrustedWorkerForProjectV1(cwd)
     }
     await workerManager.setThinkingLevel(req.level, sessionFile)
     return { level: req.level }

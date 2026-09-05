@@ -2,6 +2,7 @@ import { existsSync } from 'fs'
 import { resolve } from 'path'
 import { registerHandler } from '../registry'
 import { workerManager } from '../../worker-manager'
+import { startTrustedWorkerForProjectV1 } from '../../trusted-worker-control'
 import { configStore } from '../../config-store'
 import {
   listPromptsOnDisk,
@@ -47,7 +48,7 @@ export function registerSkillsResourceHandlers(): void {
       !workerManager.isRunning ||
       normalizeSessionKey(workerManager.cwd || '') !== normalizeSessionKey(cwd)
     ) {
-      await workerManager.start(cwd)
+      await startTrustedWorkerForProjectV1(cwd)
     }
     const catalog = await workerManager.getSkillsList()
     const presentation = configStore.get('skillPresentation') || {}
@@ -127,7 +128,7 @@ export function registerSkillsResourceHandlers(): void {
     let effectivePromptDiagnostics = null
     try {
       if (!useLiveWorker) {
-        await workerManager.start(cwd)
+        await startTrustedWorkerForProjectV1(cwd)
         useLiveWorker = true
       }
       try {
@@ -214,7 +215,7 @@ export function registerSkillsResourceHandlers(): void {
           !workerManager.isRunning ||
           normalizeSessionKey(workerManager.cwd || '') !== normalizeSessionKey(cwd)
         ) {
-          await workerManager.start(cwd)
+          await startTrustedWorkerForProjectV1(cwd)
         }
         const preview = await workerManager.getEffectivePromptPreview()
         const expectedPromptSha256 = String(req.expectedPromptSha256 || '').trim()

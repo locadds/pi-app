@@ -49,7 +49,13 @@ function record(
   sourceSessionId = 'pi-session-1',
   sessionFile = 'D:\\private\\sessions\\one.jsonl',
 ): void {
-  value.recordAddress({ address, sourceSessionId, sessionFile })
+  value.recordAddress({
+    address,
+    sourceSessionId,
+    sessionFile,
+    authorizedRoot: 'D:\\private\\projects\\one',
+    projectIdentityDigest: 'sha256:' + 'a'.repeat(64),
+  })
 }
 
 function errorCode(run: () => unknown): string | undefined {
@@ -73,11 +79,15 @@ describe('CheckpointSessionBindingRegistryV1', () => {
       address: ADDRESS_ONE,
       sourceSessionId: 'pi-session-1',
       sessionFile: 'D:\\private\\sessions\\one.jsonl',
+      authorizedRoot: 'D:\\private\\projects\\one',
+      projectIdentityDigest: 'sha256:' + 'a'.repeat(64),
     })
     expect(first.readAddressBinding(ADDRESS_ONE)).toEqual({
       address: ADDRESS_ONE,
       sourceSessionId: 'pi-session-1',
       sessionFile: 'D:\\private\\sessions\\one.jsonl',
+      authorizedRoot: 'D:\\private\\projects\\one',
+      projectIdentityDigest: 'sha256:' + 'a'.repeat(64),
     })
     expect(first.bindAttempt('attempt-1', ADDRESS_ONE)).toEqual(
       first.readAttemptBinding('attempt-1'),
@@ -89,12 +99,16 @@ describe('CheckpointSessionBindingRegistryV1', () => {
       address: ADDRESS_ONE,
       sourceSessionId: 'pi-session-1',
       sessionFile: 'D:\\private\\sessions\\one.jsonl',
+      authorizedRoot: 'D:\\private\\projects\\one',
+      projectIdentityDigest: 'sha256:' + 'a'.repeat(64),
     })
     expect(restored.readAttemptBinding('attempt-1')).toEqual({
       attemptId: 'attempt-1',
       address: ADDRESS_ONE,
       sourceSessionId: 'pi-session-1',
       sessionFile: 'D:\\private\\sessions\\one.jsonl',
+      authorizedRoot: 'D:\\private\\projects\\one',
+      projectIdentityDigest: 'sha256:' + 'a'.repeat(64),
     })
   })
 

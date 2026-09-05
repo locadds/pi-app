@@ -23,6 +23,9 @@ import {
   extensionUiDialogSource,
 } from '../worker-manager-pool'
 import { WorkerManager } from '../worker-manager'
+import { createTrustedWorkerCapabilityFixtureV1 } from './trusted-worker-capability-fixture'
+
+const trusted = createTrustedWorkerCapabilityFixtureV1()
 
 function makeTransport(): WorkerTransport & { emitMessage: (message: Record<string, unknown>) => void } {
   const listeners: Array<(message: Record<string, unknown>) => void> = []
@@ -39,6 +42,8 @@ function makeTransport(): WorkerTransport & { emitMessage: (message: Record<stri
 }
 
 function slot(poolKey: string, worker: WorkerTransport = makeTransport()): WorkerSlot {
+  const projectBinding = trusted.issueProject('/w')
+  const project = trusted.authority.inspectProject(projectBinding)
   return {
     poolKey,
     cwd: '/w',
@@ -47,6 +52,10 @@ function slot(poolKey: string, worker: WorkerTransport = makeTransport()): Worke
       mode: 'host',
       distro: null,
     }),
+    projectIdentityDigest: project.projectIdentityDigest,
+    projectBinding,
+    sessionBinding: trusted.issueSession('/w', poolKey),
+    slotBindingDigest: `slot:${poolKey}`,
     sessionFile: poolKey,
     sessionId: `session:${poolKey}`,
     worker,
@@ -65,7 +74,7 @@ function slot(poolKey: string, worker: WorkerTransport = makeTransport()): Worke
 }
 
 function managerWithSlots(foreground: WorkerSlot, ...rest: WorkerSlot[]): WorkerManager {
-  const manager = new WorkerManager()
+  const manager = new WorkerManager(undefined, trusted.authority)
   const internals = manager as unknown as { pool: Map<string, WorkerSlot>; foregroundPoolKey: string | null }
   internals.pool.set(foreground.poolKey, foreground)
   for (const row of rest) internals.pool.set(row.poolKey, row)

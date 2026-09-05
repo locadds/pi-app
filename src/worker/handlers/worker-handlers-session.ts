@@ -21,6 +21,8 @@ import {
   runXiaoguiPromptPreflightV1,
   createXiaoguiPromptAssemblyGateV1,
   resetXiaoguiPromptAssemblyGateV1,
+  inspectWorkerSessionExecutionLeaseV1,
+  consumeWorkerSessionExecutionLeaseV1,
 } from '../worker-runtime.js'
 import {
   decideXiaoguiPromptContextTransitionV1,
@@ -74,6 +76,8 @@ export async function handleSetthinkinglevel(msg: WorkerIncomingMessage, reply: 
 
 export async function handleNewsession(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
         try {
+          const creationOperationNonce = String(msg.creationOperationNonce || '').trim()
+          if (!creationOperationNonce) throw new Error('SESSION_CREATION_OPERATION_REQUIRED')
           const promptContext = freezeXiaoguiPromptContextV1(msg.promptContext)
           decideXiaoguiPromptContextTransitionV1({
             current: st.promptContextCandidate ?? st.promptContext,
@@ -88,13 +92,16 @@ export async function handleNewsession(msg: WorkerIncomingMessage, reply: Worker
               return
             }
           } else {
-            await initSession(st.currentCwd || process.cwd(), promptContext)
+            const authorizedCwd = st.workerExecutionIdentity?.authorizedCwd
+            if (!authorizedCwd) throw new Error('WORKER_EXECUTION_IDENTITY_REQUIRED')
+            await initSession(authorizedCwd, promptContext)
           }
           st.promptSent = false
           reply({
             type: 'newSession-done',
             sessionId: st.currentSessionId,
             sessionFile: st.session?.sessionFile,
+            creationOperationNonce,
           })
         } catch (e: unknown) {
           reply({ type: 'error', error: `newSession failed: ${errorMessage(e)}` })
@@ -103,8 +110,13 @@ export async function handleNewsession(msg: WorkerIncomingMessage, reply: Worker
 }
 
 
-export async function handleListsessions(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
-        const sessions = await listSessions(msg.cwd || st.currentCwd)
+export async function handleListsessions(_msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
+        const authorizedCwd = st.workerExecutionIdentity?.authorizedCwd
+        if (!authorizedCwd) {
+          reply({ type: 'error', error: 'WORKER_EXECUTION_IDENTITY_REQUIRED' })
+          return
+        }
+        const sessions = await listSessions(authorizedCwd)
         reply({ type: 'listSessions-done', sessions })
         return
 }
@@ -131,8 +143,8 @@ function applyLeafOverrideToLiveSession(leafId: string | null | undefined): void
 
 export async function handleLoadsession(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
         try {
-          const targetFile = msg.sessionFile as string
-          if (!targetFile) throw new Error('SESSION_FILE_REQUIRED')
+          const executionLease = inspectWorkerSessionExecutionLeaseV1(msg.sessionExecutionLease)
+          const targetFile = executionLease.sessionFile
           const promptContext = freezeXiaoguiPromptContextV1(msg.promptContext)
           const leafOverride =
             typeof msg.leafId === 'string'
@@ -153,6 +165,7 @@ export async function handleLoadsession(msg: WorkerIncomingMessage, reply: Worke
             busy: sameSession ? busy : msg.force !== true && busy,
           })
           if (sameSession && transition.kind === 'REUSE') {
+            consumeWorkerSessionExecutionLeaseV1(executionLease)
             applyLeafOverrideToLiveSession(leafOverride)
             const session = st.session!
             const modelStr = currentSessionModelKey()
@@ -170,7 +183,7 @@ export async function handleLoadsession(msg: WorkerIncomingMessage, reply: Worke
           }
           st.agentTurnActive = false
           await switchOrLoadSession(
-            targetFile,
+            executionLease,
             promptContext,
             leafOverride,
             sameSession && transition.kind === 'REBUILD',
@@ -330,6 +343,8 @@ export async function handleNavigatetree(msg: WorkerIncomingMessage, reply: Work
 /** TUI /fork — new session file from user entry (position: before). */
 export async function handleFork(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
   try {
+    const creationOperationNonce = String(msg.creationOperationNonce || '').trim()
+    if (!creationOperationNonce) throw new Error('SESSION_CREATION_OPERATION_REQUIRED')
     if (!st.session || !st.runtime) {
       reply({ type: 'error', error: 'No session' })
       return
@@ -352,6 +367,7 @@ export async function handleFork(msg: WorkerIncomingMessage, reply: WorkerReply)
         cancelled: true,
         sessionId: st.currentSessionId,
         sessionFile: st.session?.sessionFile,
+        creationOperationNonce,
       })
       return
     }
@@ -361,6 +377,7 @@ export async function handleFork(msg: WorkerIncomingMessage, reply: WorkerReply)
       cancelled: false,
       sessionId: st.currentSessionId,
       sessionFile: st.session?.sessionFile,
+      creationOperationNonce,
       editorText: result.selectedText,
       model: currentSessionModelKey(),
       thinkingLevel: st.session?.thinkingLevel,
@@ -372,8 +389,10 @@ export async function handleFork(msg: WorkerIncomingMessage, reply: WorkerReply)
 }
 
 /** TUI /clone — fork(leafId, { position: 'at' }). */
-export async function handleClone(_msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
+export async function handleClone(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
   try {
+    const creationOperationNonce = String(msg.creationOperationNonce || '').trim()
+    if (!creationOperationNonce) throw new Error('SESSION_CREATION_OPERATION_REQUIRED')
     if (!st.session || !st.runtime) {
       reply({ type: 'error', error: 'No session' })
       return
@@ -394,6 +413,7 @@ export async function handleClone(_msg: WorkerIncomingMessage, reply: WorkerRepl
         cancelled: true,
         sessionId: st.currentSessionId,
         sessionFile: st.session?.sessionFile,
+        creationOperationNonce,
       })
       return
     }
@@ -403,6 +423,7 @@ export async function handleClone(_msg: WorkerIncomingMessage, reply: WorkerRepl
       cancelled: false,
       sessionId: st.currentSessionId,
       sessionFile: st.session?.sessionFile,
+      creationOperationNonce,
       model: currentSessionModelKey(),
       thinkingLevel: st.session?.thinkingLevel,
       promptDiagnostics: st.promptDiagnostics,

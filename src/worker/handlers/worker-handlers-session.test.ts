@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentSession } from '@earendil-works/pi-coding-agent'
 import type { WorkerModelRuntime } from '../worker-runtime'
-import { handleLoadsession, handleSetmodel } from './worker-handlers-session'
-import { st } from '../worker-runtime'
+import { handleListsessions, handleLoadsession, handleSetmodel } from './worker-handlers-session'
+import { bindWorkerExecutionIdentityV1, st } from '../worker-runtime'
 import { freezeXiaoguiPromptContextV1 } from '../xiaogui-prompt/session-binding'
 
 function modelRuntimeWith(getModel: (provider: string, modelId: string) => unknown): WorkerModelRuntime {
@@ -29,6 +29,8 @@ afterEach(() => {
   st.session = null
   st.modelRuntime = null
   st.runtime = null
+  st.workerExecutionIdentity = null
+  st.consumedSessionOperationNonces.clear()
   st.promptContext = null
   st.promptContextCandidate = null
   st.promptTurnContext = null
@@ -52,6 +54,26 @@ function promptContext(phase: 'ASK' | 'EXECUTE', sessionKey = 'xgs1_one') {
     sessionKey,
     projectId: 'xgp1_project',
   })
+}
+
+function bindTestWorker(sessionFile: string, nonce: string) {
+  const authorizedCwd = 'C:\\project'
+  const projectIdentityDigest = `sha256:${'1'.repeat(64)}`
+  const slotBindingDigest = `sha256:${'2'.repeat(64)}`
+  st.currentCwd = authorizedCwd
+  bindWorkerExecutionIdentityV1({
+    authorizedCwd,
+    projectIdentityDigest,
+    slotBindingDigest,
+  })
+  return {
+    schemaVersion: 1 as const,
+    sessionFile,
+    authorizedCwd,
+    projectIdentityDigest,
+    slotBindingDigest,
+    operationNonce: nonce,
+  }
 }
 
 describe('handleSetmodel', () => {
@@ -122,8 +144,107 @@ describe('handleSetmodel', () => {
 })
 
 describe('handleLoadsession Prompt Context', () => {
+  it('derives the switch target from the execution lease instead of the top-level sessionFile', async () => {
+    const currentFile = 'C:\\sessions\\current.jsonl'
+    const targetFile = 'C:\\sessions\\target.jsonl'
+    const authorizedCwd = 'C:\\project'
+    const targetSession = {
+      sessionId: 'target-session',
+      sessionFile: targetFile,
+      model: { provider: 'test', id: 'model' },
+      thinkingLevel: 'medium',
+      isStreaming: false,
+      sessionManager: {
+        getCwd: () => authorizedCwd,
+        getLeafId: () => null,
+      },
+    } as unknown as AgentSession
+    const switchSession = vi.fn(async () => {
+      st.session = targetSession
+      return { cancelled: false }
+    })
+    st.currentCwd = authorizedCwd
+    st.session = {
+      sessionId: 'current-session',
+      sessionFile: currentFile,
+      isStreaming: false,
+      sessionManager: { getCwd: () => authorizedCwd, getLeafId: () => null },
+    } as unknown as AgentSession
+    st.runtime = {
+      switchSession,
+      services: { modelRuntime: null },
+      modelFallbackMessage: null,
+      dispose: vi.fn(async () => undefined),
+    } as never
+    st.sdk = {} as never
+    bindWorkerExecutionIdentityV1({
+      authorizedCwd,
+      projectIdentityDigest: `sha256:${'1'.repeat(64)}`,
+      slotBindingDigest: `sha256:${'2'.repeat(64)}`,
+    })
+    const reply = vi.fn()
+
+    await handleLoadsession({
+      // Deliberately misleading legacy field: it must not decide the target.
+      sessionFile: currentFile,
+      sessionExecutionLease: {
+        schemaVersion: 1,
+        sessionFile: targetFile,
+        authorizedCwd,
+        projectIdentityDigest: `sha256:${'1'.repeat(64)}`,
+        slotBindingDigest: `sha256:${'2'.repeat(64)}`,
+        operationNonce: 'nonce-handler-target-1',
+      },
+      promptContext: promptContext('ASK', 'xgs1_target'),
+    }, reply)
+
+    expect(switchSession).toHaveBeenCalledWith(targetFile, { cwdOverride: authorizedCwd })
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'loadSession-done',
+      sessionFile: targetFile,
+    }))
+  })
+
+  it('consumes a same-session lease once before applying its leaf operation', async () => {
+    const currentFile = 'C:\\sessions\\current.jsonl'
+    const sessionExecutionLease = bindTestWorker(currentFile, 'nonce-handler-reuse-1')
+    const currentContext = promptContext('ASK')
+    st.promptContextCandidate = currentContext
+    st.session = {
+      sessionId: 'current-session',
+      sessionFile: currentFile,
+      model: { provider: 'test', id: 'model' },
+      thinkingLevel: 'medium',
+      isStreaming: false,
+      sessionManager: {
+        getCwd: () => 'C:\\project',
+        getLeafId: () => null,
+      },
+    } as unknown as AgentSession
+    const firstReply = vi.fn()
+    const replayReply = vi.fn()
+
+    await handleLoadsession({
+      sessionFile: currentFile,
+      sessionExecutionLease,
+      promptContext: currentContext,
+    }, firstReply)
+    await handleLoadsession({
+      sessionFile: currentFile,
+      sessionExecutionLease,
+      promptContext: currentContext,
+    }, replayReply)
+
+    expect(firstReply).toHaveBeenCalledWith(expect.objectContaining({ type: 'loadSession-done' }))
+    expect(replayReply).toHaveBeenCalledWith({
+      type: 'error',
+      error: 'loadSession failed: SESSION_EXECUTION_LEASE_REPLAYED',
+    })
+  })
+
   it('rejects a phase change for the same Session while a Turn is active', async () => {
     const sessionFile = 'C:\\sessions\\one.jsonl'
+    const sessionExecutionLease = bindTestWorker(sessionFile, 'nonce-turn-active-1')
     st.promptContextCandidate = promptContext('ASK')
     st.agentTurnActive = true
     st.session = {
@@ -135,6 +256,7 @@ describe('handleLoadsession Prompt Context', () => {
 
     await handleLoadsession({
       sessionFile,
+      sessionExecutionLease,
       promptContext: promptContext('EXECUTE'),
     }, reply)
 
@@ -146,6 +268,7 @@ describe('handleLoadsession Prompt Context', () => {
 
   it('rejects a different opaque sessionKey for the same Session file', async () => {
     const sessionFile = 'C:\\sessions\\one.jsonl'
+    const sessionExecutionLease = bindTestWorker(sessionFile, 'nonce-session-key-1')
     st.promptContextCandidate = promptContext('ASK', 'xgs1_one')
     st.session = {
       sessionFile,
@@ -156,6 +279,7 @@ describe('handleLoadsession Prompt Context', () => {
 
     await handleLoadsession({
       sessionFile,
+      sessionExecutionLease,
       promptContext: promptContext('ASK', 'xgs1_two'),
     }, reply)
 
@@ -163,5 +287,20 @@ describe('handleLoadsession Prompt Context', () => {
       type: 'error',
       error: 'loadSession failed: XIAOGUI_PROMPT_CONTEXT_SESSION_MISMATCH',
     })
+  })
+})
+
+describe('handleListsessions project identity', () => {
+  it('uses the Worker-bound project root instead of a request cwd', async () => {
+    const authorizedCwd = 'C:\\project'
+    bindTestWorker('C:\\sessions\\unused.jsonl', 'nonce-list-unused-1')
+    const list = vi.fn(async () => [])
+    st.sdk = { SessionManager: { list } } as never
+    const reply = vi.fn()
+
+    await handleListsessions({ cwd: 'C:\\other-project' }, reply)
+
+    expect(list).toHaveBeenCalledWith(authorizedCwd)
+    expect(reply).toHaveBeenCalledWith({ type: 'listSessions-done', sessions: [] })
   })
 })

@@ -62,6 +62,13 @@ function resolveTrustedSessionCwd(reqCwd: string | undefined): { ok: true; cwd: 
   return { ok: false, error: 'cwd_not_trusted' }
 }
 
+/** Main-owned project grant: active/recent project or a managed sandbox. */
+export function authorizeTrustedProjectRoot(
+  reqCwd: string | undefined,
+): { ok: true; cwd: string } | { ok: false; error: string } {
+  return resolveTrustedSessionCwd(reqCwd)
+}
+
 /** Authorize a renderer-provided session path before opening it in the main process. */
 export function authorizeTrustedSessionFile(
   reqCwd: string | undefined,

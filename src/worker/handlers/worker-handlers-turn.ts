@@ -16,12 +16,19 @@ import {
   completeXiaoguiPromptTurnV1,
   createXiaoguiPromptAssemblyGateV1,
   resetXiaoguiPromptAssemblyGateV1,
+  bindWorkerExecutionIdentityV1,
 } from '../worker-runtime.js'
 import { freezeCodingContextAgentPayloadV1 } from '../xiaogui-coding-extensions/context-extension.js'
 
 export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply): Promise<void> {
         try {
-          console.log('[Worker] Initializing st.session for:', msg.cwd)
+          const cwd = String(msg.cwd || '')
+          bindWorkerExecutionIdentityV1({
+            authorizedCwd: cwd,
+            projectIdentityDigest: msg.projectIdentityDigest,
+            slotBindingDigest: msg.slotBindingDigest,
+          })
+          console.log('[Worker] Initializing st.session for:', cwd)
           st.activeSdkPath = typeof msg.sdkPath === 'string' && msg.sdkPath ? msg.sdkPath : null
           let sdkFallback = false
           try {
@@ -47,7 +54,7 @@ export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply)
           const bundledSkillPaths = Array.isArray(msg.bundledSkillPaths)
             ? msg.bundledSkillPaths.filter((path): path is string => typeof path === 'string')
             : []
-          await initSession(String(msg.cwd || ''), msg.promptContext, bundledSkillPaths)
+          await initSession(cwd, msg.promptContext, bundledSkillPaths)
           console.log('[Worker] Init done, sessionId:', st.currentSessionId)
           reply({ type: 'init-done', sessionId: st.currentSessionId, sessionFile: st.session?.sessionFile, model: currentSessionModelKey(), thinkingLevel: st.session?.thinkingLevel, promptDiagnostics: st.promptDiagnostics, sdkFallback })
         } catch (e: unknown) {

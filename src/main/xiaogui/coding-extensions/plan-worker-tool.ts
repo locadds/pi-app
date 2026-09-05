@@ -63,7 +63,7 @@ export interface XiaoguiCodingPlanWorkerToolHandlerOptionsV1 {
   readonly scopeResolver: SessionScopeResolverV1
   /** Main-only private callback. Its input must never be copied into a public receipt or log. */
   readonly recordTrustedSessionAddress?: (
-    input: CheckpointSessionAddressRecordV1,
+    input: Pick<CheckpointSessionAddressRecordV1, 'address' | 'sourceSessionId' | 'sessionFile'>,
   ) => void | Promise<void>
   readonly publishPendingDraft: (
     input: CodingPlanPendingDraftV1,

@@ -19,6 +19,7 @@ import { ensureDesignExtensionDeployed } from '../../xiaogui/design-extension-de
 import { errorMessage } from '@shared/error-message'
 import { getMainWindow } from '../../window'
 import { refreshGitWorkspaceWatch } from '../../git-workspace-watch'
+import { startTrustedWorkerForProjectV1 } from '../../trusted-worker-control'
 
 export function registerWorkspaceHandlers(): void {
   registerHandler('ipc:workspace.ensureWorker', async (req) => {
@@ -30,7 +31,7 @@ export function registerWorkspaceHandlers(): void {
       await ensureDesignExtensionDeployed(path).catch(() => {})
     }
     try {
-      const r = await workerManager.start(path)
+      const r = await startTrustedWorkerForProjectV1(path)
       refreshGitWorkspaceWatch(getMainWindow())
       return { ok: true, workspaceId: path, sessionId: r.sessionId, model: r.model }
     } catch (e: unknown) {
@@ -54,7 +55,7 @@ export function registerWorkspaceHandlers(): void {
     // Worker-required action (prompt / session.new / ensureWorker).
     if (req.awaitWorker === true) {
       try {
-        await workerManager.start(path)
+        await startTrustedWorkerForProjectV1(path)
         refreshGitWorkspaceWatch(getMainWindow())
       } catch (e) {
         console.error('[IPC] Worker start failed:', e)
@@ -70,7 +71,8 @@ export function registerWorkspaceHandlers(): void {
     if (getScope('project', req.workspaceId) === 'DESIGN') {
       await ensureDesignExtensionDeployed(req.workspaceId).catch(() => {})
     }
-    const result = await workerManager.start(req.workspaceId)
+    configStore.set('currentProject', req.workspaceId)
+    const result = await startTrustedWorkerForProjectV1(req.workspaceId)
     refreshGitWorkspaceWatch(getMainWindow())
     return {
       workspaceId: req.workspaceId,

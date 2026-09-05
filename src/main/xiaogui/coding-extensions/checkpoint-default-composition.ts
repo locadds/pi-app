@@ -4,6 +4,9 @@ import { workerManager } from '../../worker-manager'
 import type { SessionAddressV1 } from '@shared/xiaogui-session-scope'
 import { getDefaultCollaborationHubApplication } from '../task-hub/ipc'
 import type { CheckpointSessionAddressRecordV1 } from './checkpoint-session-binding-registry'
+import { trustedSessionAccessV1 } from '../../trusted-session-access'
+import { trustedWorkerCapabilityAuthorityV1 } from '../../trusted-worker-capability'
+import { normalizeSessionKey } from '../../worker-session-key'
 import {
   createDefaultCodingCheckpointProductionCompositionV1,
   type CodingCheckpointProductionCompositionV1,
@@ -20,9 +23,19 @@ export function registerDefaultCodingCheckpointHandlersV1(): void {
 }
 
 export function recordDefaultCodingCheckpointSessionAddressV1(
-  input: CheckpointSessionAddressRecordV1,
+  input: Pick<CheckpointSessionAddressRecordV1, 'address' | 'sourceSessionId' | 'sessionFile'>,
 ): void {
-  getDefaultCodingCheckpointProductionCompositionV1().recordTrustedSessionAddress(input)
+  const binding = workerManager.resolveRegisteredSessionBinding(input.sessionFile)
+  if (!binding) throw new Error('TRUSTED_SESSION_BINDING_REQUIRED')
+  const snapshot = trustedWorkerCapabilityAuthorityV1.inspectSession(binding)
+  if (normalizeSessionKey(snapshot.canonicalSessionFile) !== normalizeSessionKey(input.sessionFile)) {
+    throw new Error('SESSION_SCOPE_MISMATCH')
+  }
+  getDefaultCodingCheckpointProductionCompositionV1().recordTrustedSessionAddress({
+    ...input,
+    authorizedRoot: snapshot.authorizedRoot,
+    projectIdentityDigest: snapshot.projectIdentityDigest,
+  })
 }
 
 export function defaultCodingCheckpointStatusV1(): CodingCheckpointProductionStatusV1 {
@@ -38,7 +51,8 @@ export async function ensureDefaultCodingRoleWorkerSessionV1(
 ): Promise<void> {
   const record = getDefaultCodingCheckpointProductionCompositionV1()
     .readTrustedSessionAddress(address)
-  await workerManager.loadSession(record.sessionFile)
+  const access = await trustedSessionAccessV1.reissuePersisted(record)
+  await workerManager.loadSession(access.binding)
 }
 
 export async function closeDefaultCodingCheckpointProductionCompositionV1(): Promise<void> {

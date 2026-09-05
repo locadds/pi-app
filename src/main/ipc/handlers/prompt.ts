@@ -15,11 +15,11 @@ export function registerPromptHandlers(): void {
   }) => {
     const access = await trustedSessionAccessV1.prompt(input)
     const bind = await ensureWorkerSessionBound(
-      (f, o) =>
-        workerManager.loadSession(f, {
+      (binding, o) =>
+        workerManager.loadSession(binding, {
           force: o?.force,
         }),
-      { sessionFile: access.ref.sessionFile },
+      { sessionBinding: access.binding },
     )
     return { access, bind }
   }
@@ -41,10 +41,11 @@ export function registerPromptHandlers(): void {
 
   registerHandlerWithSchema('ipc:prompt.send', promptTextSchema, async (req) => {
     const { access, bind } = await bindBeforePrompt(req)
-    const codingContext = await resolveCodingContextForPromptV1(
-      access.ref.sessionFile,
-      req.codingContextSnapshotIds,
-    )
+    const codingContext = await resolveCodingContextForPromptV1({
+      authorizedRoot: access.ref.rootPath,
+      sessionFile: access.ref.sessionFile,
+      snapshotIds: req.codingContextSnapshotIds,
+    })
     await workerManager.sendPrompt(req.text, access.ref.sessionFile, codingContext)
     // Keep clipboard images on disk for the agent turn (tools like `read` use the path).
     // Cleanup is TTL/startup prune + optional quit, not immediate delete-on-send.

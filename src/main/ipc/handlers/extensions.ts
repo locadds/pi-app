@@ -5,6 +5,7 @@ import { probeExtensions } from '../../../extension-compat/extension-probe'
 import { buildPluginAdapters } from '../../../extension-compat/plugin-adapters'
 import { invalidateAdapterCatalog } from '../../../extension-compat/adapter-loader'
 import { listMissingRuntimePackages, appendMissingGitPackagesToSettings } from '../../pi-packages-sync'
+import { startTrustedWorkerForProjectV1 } from '../../trusted-worker-control'
 
 export function registerExtensionHandlers(): void {
   registerHandler('ipc:extensions.list', async () => {
@@ -60,7 +61,7 @@ export function registerExtensionHandlers(): void {
     if (result.added.length > 0 && cwd) {
       try {
         await workerManager.stop()
-        await workerManager.start(cwd)
+        await startTrustedWorkerForProjectV1(cwd)
       } catch (e) {
         console.error('[IPC] Worker restart after package sync failed:', e)
       }

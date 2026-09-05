@@ -10,7 +10,7 @@ Before developing any feature, inspect Pi native capabilities, available Skills,
 
 The first installer-bundled Skill set and its native Pi loading boundary are documented in [architecture/xiaogui-bundled-pi-skills.md](./architecture/xiaogui-bundled-pi-skills.md).
 
-The current ordinary-CODING direct-write lifecycle, V4 authorized execution path, Main-owned trusted-session access, background source-bound permission UI, and real Pi/Main/Renderer seams are documented in [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md). There is no transparent OMP capability pack or separate OMP product surface. The old P1 Runtime gates remain in [runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md](./runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md) as historical evidence, not as the current implementation queue.
+The current ordinary-CODING direct-write lifecycle, V4 authorized execution path, Main-owned opaque project/session capabilities, one-shot Main-to-Worker execution leases, background source-bound permission UI, and real Pi/Main/Renderer seams are documented in [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md). JSONL `cwd` is comparison-only and never selects a Worker execution root. There is no transparent OMP capability pack or separate OMP product surface. The old P1 Runtime gates remain in [runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md](./runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md) as historical evidence, not as the current implementation queue.
 
 ## User guide (install, shortcuts, adapter list)
 

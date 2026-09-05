@@ -72,6 +72,16 @@ export function translateIncomingPaths<T extends Record<string, unknown>>(msg: T
       out[key] = toWorkerPath(out[key] as string)
     }
   }
+  if (
+    out.sessionExecutionLease
+    && typeof out.sessionExecutionLease === 'object'
+    && !Array.isArray(out.sessionExecutionLease)
+  ) {
+    const lease = { ...(out.sessionExecutionLease as Record<string, unknown>) }
+    if (typeof lease.sessionFile === 'string') lease.sessionFile = toWorkerPath(lease.sessionFile)
+    if (typeof lease.authorizedCwd === 'string') lease.authorizedCwd = toWorkerPath(lease.authorizedCwd)
+    out.sessionExecutionLease = lease
+  }
   return out as T
 }
 

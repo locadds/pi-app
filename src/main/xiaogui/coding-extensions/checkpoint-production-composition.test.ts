@@ -29,6 +29,8 @@ function fixture(overrides: {
     address: ADDRESS,
     sourceSessionId: 'pi-session-1',
     sessionFile: 'D:\\private\\sessions\\one.jsonl',
+    authorizedRoot: 'D:\\private\\projects\\one',
+    projectIdentityDigest: DIGEST('root'),
   }
   const binding: AttemptCheckpointBindingV1 = {
     attemptId: 'attempt-1',

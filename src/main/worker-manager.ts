@@ -1,6 +1,7 @@
 // Worker Manager - multi-session utility process pool (sessionKey + workspace keys)
 
 import { type BrowserWindow } from 'electron'
+import { randomUUID } from 'node:crypto'
 import type { AppEvent } from '@shared/app-events'
 import type {
   XiaoguiAdvancedPromptDiagnosticsV1,
@@ -44,12 +45,9 @@ import type {
   WorkerSlot,
 } from './worker-manager-types'
 import { normalizeSessionKey, workspacePoolKey } from './worker-session-key'
-import { isWslWindowsPath } from '@shared/wsl-path'
-import { getAgentRuntimeConfig, isWslRuntimeActive } from './wsl/runtime-config'
+import { getAgentRuntimeConfig } from './wsl/runtime-config'
 import { readMaxSessionWorkers } from './worker-pool-config'
-import { configStore } from './config-store'
 import { createNewSessionInPool } from './worker-manager-new-session'
-import { readSessionMetaFromFile } from './session-file-meta'
 import {
   applySettledRunToSessionLeafOverride,
   clearSessionLeafOverride,
@@ -58,12 +56,18 @@ import {
 } from './session-leaf-override'
 import { observeAppEventForCompletion, observeWorkerExitForCompletion } from './completion-notification-events'
 import type { XiaoguiPromptContextResolverV1 } from './xiaogui/prompt-context'
-import { findSandboxWorkspaceForSessionFile } from './sandbox-workspaces'
 import {
   canonicalWorkerProjectRootV1,
   readCurrentWorkerExecutionIdentityDigestV1,
 } from './worker-execution-identity'
 import { cancelDirectExtensionUIForSource } from './direct-extension-ui'
+import {
+  trustedWorkerCapabilityAuthorityV1,
+  type TrustedProjectBindingHandleV1,
+  type TrustedSessionBindingHandleV1,
+  type TrustedWorkerCapabilityAuthorityV1,
+} from './trusted-worker-capability'
+import { createWorkerSessionCreationOperationV1 } from './worker-session-creation-operation'
 
 interface InitResult extends WorkerInitResult {}
 
@@ -83,11 +87,13 @@ export class WorkerManager {
   private lifecycleChain: Promise<unknown> = Promise.resolve()
   private idleTimer: ReturnType<typeof setInterval> | null = null
   private hostToolRequestHandler: WorkerHostToolRequestHandler | null = null
-  /** Main-process-authorized Session -> workspace hints outrank stale Pi header cwd values. */
-  private sessionWorkspaceHints = new Map<string, string>()
+  /** Main-owned session capabilities. Paths/digests alone can never populate this registry. */
+  private sessionBindings = new Map<string, TrustedSessionBindingHandleV1>()
 
   constructor(
     private promptContextResolver?: XiaoguiPromptContextResolverV1,
+    private readonly capabilityAuthority: TrustedWorkerCapabilityAuthorityV1 =
+      trustedWorkerCapabilityAuthorityV1,
   ) {}
 
   private async getPromptContextResolver(): Promise<XiaoguiPromptContextResolverV1> {
@@ -141,8 +147,8 @@ export class WorkerManager {
     }
   }
 
-  async start(cwd: string): Promise<InitResult> {
-    const run = this.lifecycleChain.then(() => this.startWorkspaceUnlocked(cwd))
+  async start(projectBinding: TrustedProjectBindingHandleV1): Promise<InitResult> {
+    const run = this.lifecycleChain.then(() => this.startWorkspaceUnlocked(projectBinding))
     this.lifecycleChain = run.then(
       () => undefined,
       () => undefined,
@@ -150,10 +156,13 @@ export class WorkerManager {
     return run
   }
 
-  /** Acquire or create a worker bound to sessionFile without changing UI foreground. */
-  async ensureSessionWorker(sessionFile: string, cwd: string): Promise<InitResult> {
-    this.rememberSessionWorkspace(sessionFile, cwd)
-    const run = this.lifecycleChain.then(() => this.ensureSessionWorkerUnlocked(sessionFile, cwd))
+  /** Acquire or create a worker bound to a Main-authored session binding without changing UI foreground. */
+  async ensureSessionWorker(
+    binding: TrustedSessionBindingHandleV1,
+    opts?: { readonly force?: boolean; readonly leafId?: string | null },
+  ): Promise<InitResult> {
+    this.rememberSessionBinding(binding)
+    const run = this.lifecycleChain.then(() => this.ensureSessionWorkerUnlocked(binding, opts))
     this.lifecycleChain = run.then(
       () => undefined,
       () => undefined,
@@ -162,11 +171,15 @@ export class WorkerManager {
   }
 
   /** Bind a session worker and make it the UI foreground authority. */
-  async focusSessionWorker(sessionFile: string, cwd: string): Promise<InitResult> {
-    this.rememberSessionWorkspace(sessionFile, cwd)
+  async focusSessionWorker(
+    binding: TrustedSessionBindingHandleV1,
+    opts?: { readonly force?: boolean; readonly leafId?: string | null },
+  ): Promise<InitResult> {
+    const snapshot = this.capabilityAuthority.inspectSession(binding)
+    this.rememberSessionBinding(binding)
     const run = this.lifecycleChain.then(async () => {
-      const result = await this.ensureSessionWorkerUnlocked(sessionFile, cwd)
-      const slot = this.pool.get(normalizeSessionKey(sessionFile))
+      const result = await this.ensureSessionWorkerUnlocked(binding, opts)
+      const slot = this.pool.get(normalizeSessionKey(snapshot.canonicalSessionFile))
       if (slot && !slot.stopping) this.setForeground(slot)
       return result
     })
@@ -260,11 +273,17 @@ export class WorkerManager {
     this.foregroundPoolKey = null
   }
 
-  private async startWorkspaceUnlocked(cwd: string): Promise<InitResult> {
+  private async startWorkspaceUnlocked(projectBinding: TrustedProjectBindingHandleV1): Promise<InitResult> {
+    const project = this.capabilityAuthority.inspectProject(projectBinding)
+    const cwd = project.authorizedRoot
     const promptContext = await this.workspacePromptContext(cwd)
     const key = workspacePoolKey(cwd)
     const existing = this.pool.get(key)
     if (existing && !existing.stopping && this.slotMatchesCurrentRuntime(existing, cwd)) {
+      if (existing.projectIdentityDigest !== project.projectIdentityDigest) {
+        throw new Error('PROJECT_IDENTITY_CHANGED')
+      }
+      existing.projectBinding = projectBinding
       this.setForeground(existing)
       evictIdleWorkers(this.pool, {
         foregroundKey: key,
@@ -303,6 +322,8 @@ export class WorkerManager {
     if (!cap.ok) throw new Error(cap.reason)
 
     const { slot, init } = await forkWorkerForCwd(cwd, {
+      projectBinding,
+      projectIdentityDigest: project.projectIdentityDigest,
       poolKey: key,
       sessionFile: null,
       promptContext,
@@ -356,9 +377,18 @@ export class WorkerManager {
     return null
   }
 
-  private async ensureSessionWorkerUnlocked(sessionFile: string, cwd: string): Promise<InitResult> {
+  private async ensureSessionWorkerUnlocked(
+    binding: TrustedSessionBindingHandleV1,
+    opts?: { readonly force?: boolean; readonly leafId?: string | null },
+  ): Promise<InitResult> {
+    const session = this.capabilityAuthority.inspectSession(binding)
+    const sessionFile = session.canonicalSessionFile
+    const cwd = session.authorizedRoot
     const sk = normalizeSessionKey(sessionFile)
     if (!sk) throw new Error('sessionFile required')
+    if (this.resolveRegisteredSessionBinding(sessionFile) !== binding) {
+      throw new Error('TRUSTED_SESSION_BINDING_REQUIRED')
+    }
     const promptContext = await this.sessionPromptContext(cwd, sk)
 
     const existing = this.pool.get(sk)
@@ -370,8 +400,8 @@ export class WorkerManager {
         mainWindow: this.mainWindow,
       })
       if (existing.initPromise) await existing.initPromise
-      // Bind live session on worker
-      await this.requestOnSlot(existing, 'loadSession', { sessionFile: sk, promptContext })
+      await this.loadSessionOnSlot(existing, binding, { promptContext, ...opts })
+      existing.sessionBinding = binding
       existing.promptContext = promptContext
       return this.initResultFromSlot(existing)
     }
@@ -386,10 +416,11 @@ export class WorkerManager {
       const oldKey = reusable.poolKey
       const wasForeground = this.foregroundPoolKey === oldKey
       if (reusable.initPromise) await reusable.initPromise
-      await this.requestOnSlot(reusable, 'loadSession', { sessionFile: sk, promptContext })
+      await this.loadSessionOnSlot(reusable, binding, { promptContext, ...opts })
       if (this.pool.get(oldKey) === reusable) this.pool.delete(oldKey)
       reusable.poolKey = sk
       reusable.sessionFile = sk
+      reusable.sessionBinding = binding
       this.pool.set(sk, reusable)
       if (wasForeground) this.foregroundPoolKey = sk
       reusable.promptContext = promptContext
@@ -413,6 +444,8 @@ export class WorkerManager {
     // two different Session files and correctly reject the transition.
     const bootstrapPromptContext = await this.workspacePromptContext(cwd, promptContext.mode)
     const { slot, init } = await forkWorkerForCwd(cwd, {
+      projectBinding: this.capabilityAuthority.projectForSession(binding),
+      projectIdentityDigest: session.projectIdentityDigest,
       poolKey: sk,
       sessionFile: sk,
       promptContext: bootstrapPromptContext,
@@ -428,7 +461,9 @@ export class WorkerManager {
     })
 
     await init
-    await this.requestOnSlot(slot, 'loadSession', { sessionFile: sk, promptContext })
+    this.capabilityAuthority.inspectSession(binding)
+    await this.loadSessionOnSlot(slot, binding, { promptContext, ...opts })
+    slot.sessionBinding = binding
     slot.promptContext = promptContext
 
     evictIdleWorkers(this.pool, {
@@ -544,76 +579,131 @@ export class WorkerManager {
     type: string,
     data?: WorkerRequestPayload,
   ): Promise<WorkerResponsePayload> {
+    if (type === 'loadSession') {
+      throw new Error('TRUSTED_SESSION_EXECUTION_LEASE_REQUIRED')
+    }
     return slotRequest(slot, type, data as Record<string, unknown> | undefined)
   }
 
-  /**
-   * Workspace cwd for lazy Worker creation.
-   * After cold start without ensureWorker, foreground may be empty — fall back to
-   * persisted currentProject so rewind/prompt can still spawn a session Worker.
-   */
-  resolveWorkspaceCwd(preferred?: string | null): string | null {
-    const fromPreferred = preferred?.trim()
-    if (fromPreferred) return fromPreferred
-    if (this.cwd) return this.cwd
-    const fromConfig = configStore.get('currentProject')
-    if (typeof fromConfig === 'string' && fromConfig.trim()) return fromConfig.trim()
-    return null
+  private async loadSessionOnSlot(
+    slot: WorkerSlot,
+    binding: TrustedSessionBindingHandleV1,
+    data: {
+      readonly promptContext: Awaited<ReturnType<WorkerManager['sessionPromptContext']>>
+      readonly force?: boolean
+      readonly leafId?: string | null
+    },
+  ): Promise<WorkerResponsePayload> {
+    const session = this.capabilityAuthority.inspectSession(binding)
+    const projectBinding = this.capabilityAuthority.projectForSession(binding)
+    const project = this.capabilityAuthority.inspectProject(projectBinding)
+    if (
+      project.projectIdentityDigest !== slot.projectIdentityDigest
+      || canonicalWorkerProjectRootV1(project.authorizedRoot) !== canonicalWorkerProjectRootV1(slot.cwd)
+      || canonicalWorkerProjectRootV1(session.authorizedRoot) !== canonicalWorkerProjectRootV1(slot.cwd)
+    ) {
+      throw new Error('SESSION_SCOPE_MISMATCH')
+    }
+
+    const response = await slotRequest(slot, 'loadSession', {
+      promptContext: data.promptContext,
+      force: data.force === true,
+      ...(data.leafId !== undefined ? { leafId: data.leafId } : {}),
+      sessionExecutionLease: {
+        schemaVersion: 1,
+        sessionFile: session.canonicalSessionFile,
+        authorizedCwd: session.authorizedRoot,
+        projectIdentityDigest: project.projectIdentityDigest,
+        slotBindingDigest: slot.slotBindingDigest,
+        operationNonce: randomUUID(),
+      },
+    })
+    if (response.type === 'error') {
+      throw new Error(String(response.error || 'loadSession failed'))
+    }
+    const responseSessionFile = normalizeSessionKey(String(response.sessionFile || ''))
+    const authorizedSessionFile = normalizeSessionKey(session.canonicalSessionFile)
+    if (responseSessionFile !== authorizedSessionFile) {
+      throw new Error('SESSION_SCOPE_MISMATCH')
+    }
+    this.capabilityAuthority.inspectProject(projectBinding)
+    slot.sessionFile = authorizedSessionFile
+    if (typeof response.sessionId === 'string' && response.sessionId.trim()) {
+      slot.sessionId = response.sessionId.trim()
+    }
+    if (response.promptDiagnostics && typeof response.promptDiagnostics === 'object') {
+      slot.promptDiagnostics = response.promptDiagnostics as XiaoguiEffectivePromptDiagnosticsV1
+    }
+    slot.projectBinding = projectBinding
+    slot.sessionBinding = binding
+    return response
   }
 
-  rememberSessionWorkspace(sessionFile: string, cwd: string): void {
-    const key = normalizeSessionKey(sessionFile)
-    const workspace = String(cwd || '').trim()
-    if (!key || !workspace) return
-    const expectedRoot = canonicalWorkerProjectRootV1(workspace)
+  rememberSessionBinding(binding: TrustedSessionBindingHandleV1): void {
+    const snapshot = this.capabilityAuthority.inspectSession(binding)
+    const key = normalizeSessionKey(snapshot.canonicalSessionFile)
+    if (!key) throw new Error('TRUSTED_SESSION_BINDING_REQUIRED')
     const live = this.pool.get(key)
-    if (live && canonicalWorkerProjectRootV1(live.cwd) !== expectedRoot) {
+    if (
+      live
+      && canonicalWorkerProjectRootV1(live.cwd)
+        !== canonicalWorkerProjectRootV1(snapshot.authorizedRoot)
+    ) {
       throw new Error('SESSION_WORKSPACE_REBIND_REJECTED')
     }
-    const existing = this.sessionWorkspaceHints.get(key)
-    if (existing && canonicalWorkerProjectRootV1(existing) !== expectedRoot) {
-      throw new Error('SESSION_WORKSPACE_REBIND_REJECTED')
+    if (live) {
+      if (live.projectIdentityDigest !== snapshot.projectIdentityDigest) {
+        throw new Error('PROJECT_IDENTITY_CHANGED')
+      }
+      // A trusted Open/recovery issues a fresh in-memory handle. Replace only
+      // the Main-side authority for the exact same root/session; the Worker is
+      // still rebound separately through a one-shot execution lease.
+      live.projectBinding = this.capabilityAuthority.projectForSession(binding)
+      live.sessionBinding = binding
     }
-    if (!existing) this.sessionWorkspaceHints.set(key, workspace)
+    const existing = this.sessionBindings.get(key)
+    if (existing && existing !== binding) {
+      const previous = this.capabilityAuthority.inspectSession(existing)
+      if (
+        canonicalWorkerProjectRootV1(previous.authorizedRoot)
+          !== canonicalWorkerProjectRootV1(snapshot.authorizedRoot)
+      ) {
+        throw new Error('SESSION_WORKSPACE_REBIND_REJECTED')
+      }
+    }
+    this.sessionBindings.set(key, binding)
   }
 
-  forgetSessionWorkspace(sessionFile: string): void {
+  forgetSessionBinding(sessionFile: string): void {
     const key = normalizeSessionKey(sessionFile)
-    if (key) this.sessionWorkspaceHints.delete(key)
+    if (key) this.sessionBindings.delete(key)
   }
 
-  /** Main-recorded binding only. Unlike resolveSessionWorkspaceCwd, this never trusts a JSONL header. */
-  resolveRegisteredSessionWorkspaceCwd(sessionFile: string): string | null {
+  resolveRegisteredSessionBinding(sessionFile: string): TrustedSessionBindingHandleV1 | null {
     const key = normalizeSessionKey(sessionFile)
-    const live = key ? this.pool.get(key) : null
-    if (live && !live.stopping && live.cwd.trim()) return live.cwd
-    return findSandboxWorkspaceForSessionFile(sessionFile)
-      ?? (key ? this.sessionWorkspaceHints.get(key) : null)
-      ?? null
+    if (!key) return null
+    const live = this.pool.get(key)
+    if (live && !live.stopping && live.sessionBinding) return live.sessionBinding
+    return this.sessionBindings.get(key) ?? null
   }
 
   /** Exact live Worker proof used by steer/followUp authorization. */
   readLiveSessionBinding(
-    sessionFile: string,
-    cwd: string,
+    binding: TrustedSessionBindingHandleV1,
   ): { readonly sessionId: string; readonly agentTurnActive: boolean } | null {
-    const key = normalizeSessionKey(sessionFile)
+    const snapshot = this.capabilityAuthority.inspectSession(binding)
+    const key = normalizeSessionKey(snapshot.canonicalSessionFile)
     const slot = key ? this.pool.get(key) : null
     if (
       !slot ||
       slot.stopping ||
       !slot.sessionId ||
+      slot.sessionBinding !== binding ||
       normalizeSessionKey(slot.sessionFile ?? '') !== key ||
-      canonicalWorkerProjectRootV1(slot.cwd) !== canonicalWorkerProjectRootV1(cwd) ||
-      !this.slotMatchesCurrentRuntime(slot, cwd)
+      canonicalWorkerProjectRootV1(slot.cwd) !== canonicalWorkerProjectRootV1(snapshot.authorizedRoot) ||
+      !this.slotMatchesCurrentRuntime(slot, snapshot.authorizedRoot)
     ) return null
     return { sessionId: slot.sessionId, agentTurnActive: slot.agentTurnActive }
-  }
-
-  resolveSessionWorkspaceCwd(sessionFile: string): string | null {
-    return this.resolveRegisteredSessionWorkspaceCwd(sessionFile)
-      ?? readSessionMetaFromFile(sessionFile)?.cwd
-      ?? null
   }
 
   private async resolveSlotForRpc(sessionFile?: string | null): Promise<WorkerSlot> {
@@ -627,10 +717,9 @@ export class WorkerManager {
       ) {
         return bySession
       }
-      const sessionCwd = this.resolveSessionWorkspaceCwd(sessionFile)
-      const cwd = this.resolveWorkspaceCwd(sessionCwd)
-      if (!cwd) throw new Error('Worker not started for session')
-      await this.ensureSessionWorkerUnlocked(sessionFile, cwd)
+      const binding = this.resolveRegisteredSessionBinding(sessionFile)
+      if (!binding) throw new Error('Worker not started for session')
+      await this.ensureSessionWorkerUnlocked(binding)
       const slot = this.pool.get(sk)
       if (!slot) throw new Error('Worker not started for session')
       return slot
@@ -638,15 +727,17 @@ export class WorkerManager {
     const slot = this.foregroundSlot()
     if (!slot) throw new Error('Worker not started')
     if (this.slotMatchesCurrentRuntime(slot, slot.cwd)) return slot
-    const { cwd, sessionFile: foregroundSessionFile } = slot
+    const { sessionFile: foregroundSessionFile } = slot
     if (foregroundSessionFile) {
-      await this.ensureSessionWorkerUnlocked(foregroundSessionFile, cwd)
+      const binding = slot.sessionBinding ?? this.resolveRegisteredSessionBinding(foregroundSessionFile)
+      if (!binding) throw new Error('TRUSTED_SESSION_BINDING_REQUIRED')
+      await this.ensureSessionWorkerUnlocked(binding)
       const refreshed = this.pool.get(normalizeSessionKey(foregroundSessionFile))
       if (!refreshed) throw new Error('Worker not started for session')
       this.setForeground(refreshed)
       return refreshed
     }
-    await this.startWorkspaceUnlocked(cwd)
+    await this.startWorkspaceUnlocked(slot.projectBinding)
     const refreshed = this.foregroundSlot()
     if (!refreshed) throw new Error('Worker not started')
     return refreshed
@@ -784,17 +875,22 @@ export class WorkerManager {
     }
   }
   async newSession(
-    cwd: string,
-    options?: {
+    projectBinding: TrustedProjectBindingHandleV1,
+    options: {
       beforeActivate?: (result: { sessionId: string; sessionFile: string }) => Promise<void>
+      issueRuntimeSession: (sessionFile: string) => TrustedSessionBindingHandleV1
       mode?: XiaoguiMode
     },
-  ): Promise<{ sessionId: string; sessionFile?: string }> {
+  ): Promise<{ sessionId: string; sessionFile?: string; binding?: TrustedSessionBindingHandleV1 }> {
     const run = this.lifecycleChain.then(async () => {
+      const project = this.capabilityAuthority.inspectProject(projectBinding)
+      const cwd = project.authorizedRoot
       await this.disposeStaleSlotsForCwd(cwd)
-      const promptContext = await this.workspacePromptContext(cwd, options?.mode)
+      const promptContext = await this.workspacePromptContext(cwd, options.mode)
       const result = await createNewSessionInPool({
         cwd,
+        projectBinding,
+        projectIdentityDigest: project.projectIdentityDigest,
         pool: this.pool,
         mainWindow: this.mainWindow,
         foregroundPoolKey: () => this.foregroundPoolKey,
@@ -803,12 +899,16 @@ export class WorkerManager {
         onAppEvent: (payload) => this.forwardAppEvent(payload),
         onHostToolRequest: (payload) => this.forwardHostToolRequest(payload),
         onSlotExit: (slot, code) => this.handleSlotExit(slot, code),
-        beforeActivate: options?.beforeActivate,
+        beforeActivate: options.beforeActivate,
+        issueRuntimeSession: options.issueRuntimeSession,
+        activateSession: async (slot, binding, promptContext) => {
+          await this.loadSessionOnSlot(slot, binding, { promptContext })
+        },
         promptContext,
         finalizePromptContext: (sessionFile) =>
           this.sessionPromptContext(cwd, sessionFile),
       })
-      if (result.sessionFile) this.rememberSessionWorkspace(result.sessionFile, cwd)
+      if (result.binding) this.rememberSessionBinding(result.binding)
       return result
     })
     this.lifecycleChain = run.then(
@@ -829,10 +929,14 @@ export class WorkerManager {
   }
 
   async forkSession(opts: {
-    sessionFile: string
+    sourceBinding: TrustedSessionBindingHandleV1
     entryId: string
     position?: 'before' | 'at'
     beforeActivate?: (result: { sessionId?: string; sessionFile: string }) => Promise<void>
+    issueRuntimeSession: (
+      projectBinding: TrustedProjectBindingHandleV1,
+      sessionFile: string,
+    ) => TrustedSessionBindingHandleV1
   }): Promise<{
     cancelled?: boolean
     error?: string
@@ -841,56 +945,66 @@ export class WorkerManager {
     editorText?: string
     model?: string
     thinkingLevel?: string
+    binding?: TrustedSessionBindingHandleV1
   }> {
-    const sessionCwd = this.resolveSessionWorkspaceCwd(opts.sessionFile)
-    const cwd = this.resolveWorkspaceCwd(sessionCwd)
-    if (!cwd) return { error: 'worker_not_ready' }
-    await this.focusSessionWorker(opts.sessionFile, cwd)
-    const r = await this.request('fork', {
-      sessionFile: opts.sessionFile,
+    const source = this.capabilityAuthority.inspectSession(opts.sourceBinding)
+    const projectBinding = this.capabilityAuthority.projectForSession(opts.sourceBinding)
+    await this.focusSessionWorker(opts.sourceBinding)
+    const slot = this.pool.get(normalizeSessionKey(source.canonicalSessionFile))
+    if (!slot) return { error: 'worker_not_ready' }
+    const creation = createWorkerSessionCreationOperationV1({ slot, pool: this.pool })
+    const r = await this.requestOnSlot(slot, 'fork', {
       entryId: opts.entryId,
       position: opts.position,
+      creationOperationNonce: creation.nonce,
     })
     if (r.type === 'error') {
       return { error: String((r as { error?: string }).error || 'fork failed') }
     }
-    const sessionFile = r.sessionFile ? String(r.sessionFile) : undefined
-    if (sessionFile && opts.beforeActivate) {
+    if (r.cancelled) {
+      creation.acceptCancellation(r)
+      return { cancelled: true, sessionId: String(r.sessionId || '') }
+    }
+    const sessionFile = creation.acceptTarget(r)
+    if (sessionFile) {
       try {
-        await opts.beforeActivate({
+        await opts.beforeActivate?.({
           sessionId: r.sessionId ? String(r.sessionId) : undefined,
           sessionFile,
         })
-        const slot = this.foregroundSlot()
-        if (!slot) throw new Error('XIAOGUI_PROMPT_SESSION_SLOT_MISSING')
-        const promptContext = await this.sessionPromptContext(cwd, sessionFile)
-        await this.requestOnSlot(slot, 'loadSession', { sessionFile, promptContext })
+        const binding = opts.issueRuntimeSession(projectBinding, sessionFile)
+        const promptContext = await this.sessionPromptContext(source.authorizedRoot, sessionFile)
+        await this.loadSessionOnSlot(slot, binding, { promptContext })
         slot.promptContext = promptContext
-      } catch (error) {
-        const slot = this.foregroundSlot()
-        if (slot) {
-          const key = slot.poolKey
-          if (this.pool.get(key) === slot) this.pool.delete(key)
-          if (this.foregroundPoolKey === key) this.foregroundPoolKey = null
-          await disposeWorkerSlot(slot, this.mainWindow)
+        await this.remapForegroundSlotToSessionFile(sessionFile)
+        this.rememberSessionBinding(binding)
+        return {
+          cancelled: false,
+          sessionId: r.sessionId ? String(r.sessionId) : undefined,
+          sessionFile,
+          editorText: r.editorText as string | undefined,
+          model: r.model as string | undefined,
+          thinkingLevel: r.thinkingLevel as string | undefined,
+          binding,
         }
+      } catch (error) {
+        const key = slot.poolKey
+        if (this.pool.get(key) === slot) this.pool.delete(key)
+        if (this.foregroundPoolKey === key) this.foregroundPoolKey = null
+        await disposeWorkerSlot(slot, this.mainWindow)
         throw error
       }
     }
-    if (sessionFile) await this.remapForegroundSlotToSessionFile(sessionFile)
-    return {
-      cancelled: !!r.cancelled,
-      sessionId: r.sessionId ? String(r.sessionId) : undefined,
-      sessionFile,
-      editorText: r.editorText as string | undefined,
-      model: r.model as string | undefined,
-      thinkingLevel: r.thinkingLevel as string | undefined,
-    }
+    return { error: 'SESSION_CREATION_RECEIPT_INVALID' }
   }
 
   async cloneSession(opts: {
-    sessionFile: string
+    sourceBinding: TrustedSessionBindingHandleV1
     beforeActivate?: (result: { sessionId?: string; sessionFile: string }) => Promise<void>
+    issueRuntimeSession: (
+      projectBinding: TrustedProjectBindingHandleV1,
+      sessionFile: string,
+    ) => TrustedSessionBindingHandleV1
   }): Promise<{
     cancelled?: boolean
     error?: string
@@ -898,46 +1012,52 @@ export class WorkerManager {
     sessionFile?: string
     model?: string
     thinkingLevel?: string
+    binding?: TrustedSessionBindingHandleV1
   }> {
-    const sessionCwd = this.resolveSessionWorkspaceCwd(opts.sessionFile)
-    const cwd = this.resolveWorkspaceCwd(sessionCwd)
-    if (!cwd) return { error: 'worker_not_ready' }
-    await this.focusSessionWorker(opts.sessionFile, cwd)
-    const r = await this.request('clone', { sessionFile: opts.sessionFile })
+    const source = this.capabilityAuthority.inspectSession(opts.sourceBinding)
+    const projectBinding = this.capabilityAuthority.projectForSession(opts.sourceBinding)
+    await this.focusSessionWorker(opts.sourceBinding)
+    const slot = this.pool.get(normalizeSessionKey(source.canonicalSessionFile))
+    if (!slot) return { error: 'worker_not_ready' }
+    const creation = createWorkerSessionCreationOperationV1({ slot, pool: this.pool })
+    const r = await this.requestOnSlot(slot, 'clone', { creationOperationNonce: creation.nonce })
     if (r.type === 'error') {
       return { error: String((r as { error?: string }).error || 'clone failed') }
     }
-    const sessionFile = r.sessionFile ? String(r.sessionFile) : undefined
-    if (sessionFile && opts.beforeActivate) {
+    if (r.cancelled) {
+      creation.acceptCancellation(r)
+      return { cancelled: true, sessionId: String(r.sessionId || '') }
+    }
+    const sessionFile = creation.acceptTarget(r)
+    if (sessionFile) {
       try {
-        await opts.beforeActivate({
+        await opts.beforeActivate?.({
           sessionId: r.sessionId ? String(r.sessionId) : undefined,
           sessionFile,
         })
-        const slot = this.foregroundSlot()
-        if (!slot) throw new Error('XIAOGUI_PROMPT_SESSION_SLOT_MISSING')
-        const promptContext = await this.sessionPromptContext(cwd, sessionFile)
-        await this.requestOnSlot(slot, 'loadSession', { sessionFile, promptContext })
+        const binding = opts.issueRuntimeSession(projectBinding, sessionFile)
+        const promptContext = await this.sessionPromptContext(source.authorizedRoot, sessionFile)
+        await this.loadSessionOnSlot(slot, binding, { promptContext })
         slot.promptContext = promptContext
-      } catch (error) {
-        const slot = this.foregroundSlot()
-        if (slot) {
-          const key = slot.poolKey
-          if (this.pool.get(key) === slot) this.pool.delete(key)
-          if (this.foregroundPoolKey === key) this.foregroundPoolKey = null
-          await disposeWorkerSlot(slot, this.mainWindow)
+        await this.remapForegroundSlotToSessionFile(sessionFile)
+        this.rememberSessionBinding(binding)
+        return {
+          cancelled: false,
+          sessionId: r.sessionId ? String(r.sessionId) : undefined,
+          sessionFile,
+          model: r.model as string | undefined,
+          thinkingLevel: r.thinkingLevel as string | undefined,
+          binding,
         }
+      } catch (error) {
+        const key = slot.poolKey
+        if (this.pool.get(key) === slot) this.pool.delete(key)
+        if (this.foregroundPoolKey === key) this.foregroundPoolKey = null
+        await disposeWorkerSlot(slot, this.mainWindow)
         throw error
       }
     }
-    if (sessionFile) await this.remapForegroundSlotToSessionFile(sessionFile)
-    return {
-      cancelled: !!r.cancelled,
-      sessionId: r.sessionId ? String(r.sessionId) : undefined,
-      sessionFile,
-      model: r.model as string | undefined,
-      thinkingLevel: r.thinkingLevel as string | undefined,
-    }
+    return { error: 'SESSION_CREATION_RECEIPT_INVALID' }
   }
 
   async getForkMessages(sessionFile?: string): Promise<Array<{ entryId: string; text: string }>> {
@@ -946,24 +1066,21 @@ export class WorkerManager {
     return (r.messages as Array<{ entryId: string; text: string }>) || []
   }
 
-  async listSessions(cwd?: string): Promise<WorkerSessionOnDisk[]> {
-    const target = (cwd || '').trim()
-    const slot = await this.ensureListSlotForCwd(target)
+  async listSessions(projectBinding: TrustedProjectBindingHandleV1): Promise<WorkerSessionOnDisk[]> {
+    const project = this.capabilityAuthority.inspectProject(projectBinding)
+    const slot = this.findExistingListSlotForProject(project.authorizedRoot)
     if (!slot) return []
-    const r = await this.requestOnSlot(slot, 'listSessions', { cwd: target })
+    const r = await this.requestOnSlot(slot, 'listSessions')
     return (r.sessions as WorkerSessionOnDisk[]) || []
   }
 
   /**
-   * Resolve a worker slot able to list sessions for `cwd`. Prefers a live slot
-   * bound to the same cwd; falls back to an environment-compatible slot (WSL
-   * targets only ever use WSL workers — a host worker's SDK cannot see WSL
-   * session dirs). When the target is a WSL path and no WSL worker is alive,
-   * forks a WSL workspace worker so the list is not spuriously empty.
+   * Reuse a live Worker for list-only RPCs. List/Preview is display authority,
+   * never an execution-binding or Worker-creation seam. The production session
+   * list uses SessionPreviewProcess when no compatible Worker already exists.
    */
-  private async ensureListSlotForCwd(cwd: string): Promise<WorkerSlot | null> {
+  private findExistingListSlotForProject(cwd: string): WorkerSlot | null {
     const target = (cwd || '').trim()
-    const targetIsWsl = this.isWslTargetPath(target)
     if (target) {
       const wsKey = workspacePoolKey(target)
       const byWs = this.pool.get(wsKey)
@@ -972,65 +1089,9 @@ export class WorkerManager {
         if (!slot.stopping && slot.cwd === target && this.slotMatchesCurrentRuntime(slot)) return slot
       }
     }
-    const foreground = this.foregroundSlot()
-    if (foreground && !foreground.stopping && !targetIsWsl) return foreground
-    for (const slot of this.pool.values()) {
-      if (slot.stopping) continue
-      if (targetIsWsl && !this.isWslSlot(slot)) continue
-      if (!targetIsWsl && this.isWslSlot(slot)) continue
-      return slot
-    }
-    if (targetIsWsl) return this.forkListWorkerForWsl(target)
     return null
   }
 
-  private isWslTargetPath(cwd: string): boolean {
-    // WSL 模式下 worker 一律 fork 进 WSL（forkWorkerForCwd 按 runtime 决定），
-    // 宿主路径（含 sandbox 的 C:\...）也会被 windowsPathToWsl 转成 /mnt/c/...，
-    // 会话同样写在 WSL 内，因此 WSL 运行时下任意路径都按 WSL 目标处理。
-    // 不能再用 cwd.startsWith('/') 判 WSL：Linux/macOS 宿主下所有 POSIX 路径
-    // 都会命中，导致 listSessions 误选 slot / 误 fork。宿主下只认显式 WSL UNC 路径。
-    return isWslRuntimeActive() || isWslWindowsPath(cwd)
-  }
-
-  private isWslSlot(slot: WorkerSlot): boolean {
-    return slot.runtime.mode === 'wsl'
-  }
-
-  /** Fork a WSL workspace worker (not foreground) purely to serve listSessions. */
-  private async forkListWorkerForWsl(cwd: string): Promise<WorkerSlot | null> {
-    const key = workspacePoolKey(cwd)
-    const maxWorkers = readMaxSessionWorkers()
-    if (this.pool.size >= maxWorkers) {
-      await evictIdleWorkers(this.pool, {
-        foregroundKey: this.foregroundPoolKey,
-        maxWorkers: maxWorkers - 1,
-        mainWindow: this.mainWindow,
-      })
-    }
-    if (!canAcquireNewWorker(this.pool).ok) return null
-    try {
-      const promptContext = await this.workspacePromptContext(cwd)
-      const { slot, init } = await forkWorkerForCwd(cwd, {
-        poolKey: key,
-        sessionFile: null,
-        promptContext,
-      })
-      this.pool.set(key, slot)
-      attachWorkerHandlers(slot, slot.worker, {
-        mainWindow: this.mainWindow,
-        getForegroundPoolKey: () => this.foregroundPoolKey,
-        onAppEvent: (p) => this.forwardAppEvent(p),
-        onHostToolRequest: (p) => this.forwardHostToolRequest(p),
-        onSlotExit: (s, code) => this.handleSlotExit(s, code),
-      })
-      await init
-      return slot
-    } catch (e) {
-      console.warn('[workerManager] list worker fork failed:', e)
-      return null
-    }
-  }
   /**
    * Read-only runtime snapshot.
    * When sessionFile is set: ONLY query an existing pool slot for that session.
@@ -1131,8 +1192,15 @@ export class WorkerManager {
 
       const foreground = this.foregroundSlot()
       const foregroundBinding = foreground
-        ? { cwd: foreground.cwd, sessionFile: foreground.sessionFile }
+        ? {
+            projectBinding: foreground.projectBinding,
+            sessionBinding: foreground.sessionBinding,
+            sessionFile: foreground.sessionFile,
+          }
         : null
+      if (foregroundBinding?.sessionBinding) {
+        this.rememberSessionBinding(foregroundBinding.sessionBinding)
+      }
       for (const slot of stale) await this.disposePoolSlot(slot)
 
       // Background Sessions are recreated lazily. Rebuild only the currently
@@ -1140,14 +1208,14 @@ export class WorkerManager {
       // newly captured project/config identity.
       if (foreground && stale.includes(foreground) && foregroundBinding) {
         if (foregroundBinding.sessionFile) {
-          await this.ensureSessionWorkerUnlocked(
-            foregroundBinding.sessionFile,
-            foregroundBinding.cwd,
-          )
+          if (!foregroundBinding.sessionBinding) {
+            throw new Error('TRUSTED_SESSION_BINDING_REQUIRED')
+          }
+          await this.ensureSessionWorkerUnlocked(foregroundBinding.sessionBinding)
           const refreshed = this.pool.get(normalizeSessionKey(foregroundBinding.sessionFile))
           if (refreshed) this.setForeground(refreshed)
         } else {
-          await this.startWorkspaceUnlocked(foregroundBinding.cwd)
+          await this.startWorkspaceUnlocked(foregroundBinding.projectBinding)
         }
       }
     })
@@ -1202,8 +1270,8 @@ export class WorkerManager {
     }
   }
   async loadSession(
-    sessionFile: string,
-    opts?: { force?: boolean; cwd?: string; leafId?: string | null },
+    binding: TrustedSessionBindingHandleV1,
+    opts?: { force?: boolean; leafId?: string | null },
   ): Promise<{
     sessionId: string
     model?: string
@@ -1211,38 +1279,23 @@ export class WorkerManager {
     thinkingLevel?: string
     modelFallbackMessage?: string
   }> {
-    // The authorized Session binding owns workspace identity. Pi's header cwd is
-    // only a last-resort fallback because new Sessions can contain process.cwd().
-    const sessionCwd = this.resolveSessionWorkspaceCwd(sessionFile)
-    if (
-      opts?.cwd &&
-      sessionCwd &&
-      canonicalWorkerProjectRootV1(opts.cwd) !== canonicalWorkerProjectRootV1(sessionCwd)
-    ) {
-      throw new Error('SESSION_WORKSPACE_REBIND_REJECTED')
-    }
-    if (opts?.cwd) this.rememberSessionWorkspace(sessionFile, opts.cwd)
-    const cwd = sessionCwd || opts?.cwd || null
-    if (!cwd) throw new Error('Worker not started for session')
-    await this.ensureSessionWorker(sessionFile, cwd)
+    const session = this.capabilityAuthority.inspectSession(binding)
+    const sessionFile = session.canonicalSessionFile
     // Re-apply rewound leaf tip (main override map) so agent context matches UI.
     let leafId = opts?.leafId
     if (leafId === undefined) leafId = getSessionLeafOverride(sessionFile)
-    const r = await this.request('loadSession', {
-      sessionFile,
-      force: opts?.force === true,
-      promptContext: await this.sessionPromptContext(cwd, sessionFile),
-      ...(leafId !== undefined ? { leafId } : {}),
-    })
+    await this.ensureSessionWorker(binding, { force: opts?.force === true, leafId })
     const sk = normalizeSessionKey(sessionFile)
     const slot = this.pool.get(sk)
-    if (slot) slot.sessionFile = sk
+    if (!slot) throw new Error('Worker not started for session')
+    const r = await this.requestOnSlot(slot, 'getState')
+    const state = (r.state as WorkerState | undefined) ?? {}
     return {
-      sessionId: String(r.sessionId ?? ''),
-      model: r.model as string | undefined,
-      leafId: (r.leafId as string | null | undefined) ?? null,
-      thinkingLevel: r.thinkingLevel as string | undefined,
-      modelFallbackMessage: r.modelFallbackMessage as string | undefined,
+      sessionId: String(state.sessionId ?? slot.sessionId ?? ''),
+      model: state.model as string | undefined,
+      leafId: (state.leafId as string | null | undefined) ?? null,
+      thinkingLevel: state.thinkingLevel as string | undefined,
+      modelFallbackMessage: state.modelFallbackMessage as string | undefined,
     }
   }
 

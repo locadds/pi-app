@@ -44,7 +44,7 @@ vi.mock('../../worker-manager', () => ({
     isRunning: false,
     getState: vi.fn(async () => ({})),
     deleteSessionFile: mocks.deleteSessionFile,
-    forgetSessionWorkspace: vi.fn(),
+    forgetSessionBinding: vi.fn(),
     getSessionTree: vi.fn(),
   },
 }))
@@ -70,12 +70,12 @@ vi.mock('../../session-leaf-override', () => ({
 }))
 vi.mock('../../session-bind-state', () => ({
   ensureWorkerSessionBound: vi.fn(),
-  getPendingWorkerSessionFile: vi.fn(),
+  getPendingWorkerSessionBinding: vi.fn(),
   setPendingEphemeralSandboxDraft: vi.fn(),
-  setPendingWorkerSessionFile: vi.fn(),
+  setPendingWorkerSessionBinding: vi.fn(),
 }))
 vi.mock('../../xiaogui/scope-service', () => ({
-  sessionScopeResolverV1: { resolve: vi.fn(), registerNew: vi.fn(), derive: vi.fn() },
+  sessionScopeResolverV1: { resolveExisting: vi.fn(), resolve: vi.fn(), registerNew: vi.fn(), derive: vi.fn() },
 }))
 vi.mock('../../xiaogui/sidecar-bridge', () => ({
   xiaogui: { setMode: vi.fn(), getMode: vi.fn(() => 'WORK') },
@@ -89,6 +89,7 @@ vi.mock('../../sandbox-workspaces', () => ({
   bindSandboxSession: vi.fn(),
   findSandboxWorkspaceForSessionFile: vi.fn(() => null),
   isSandboxWorkspacePath: vi.fn(() => false),
+  sandboxOwnsSessionFile: vi.fn(() => false),
   renameSandboxWorkspace: vi.fn(),
 }))
 vi.mock('../../session-fork-candidates', () => ({ listForkCandidatesFromSessionFile: vi.fn() }))

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   steer: vi.fn(),
   followUp: vi.fn(),
   resolveContext: vi.fn(),
+  sessionBinding: Object.freeze({}),
 }))
 
 vi.mock('../registry', () => ({
@@ -30,8 +31,10 @@ vi.mock('../../worker-manager', () => ({
   },
 }))
 vi.mock('../../session-bind-state', () => ({
-  ensureWorkerSessionBound: vi.fn(async (loader: (file: string) => Promise<unknown>, options: { sessionFile: string }) =>
-    loader(options.sessionFile)),
+  ensureWorkerSessionBound: vi.fn(async (
+    loader: (binding: object) => Promise<unknown>,
+    options: { sessionBinding: object },
+  ) => loader(options.sessionBinding)),
 }))
 vi.mock('../../xiaogui/coding-extensions/context-composition', () => ({
   resolveCodingContextForPromptV1: mocks.resolveContext,
@@ -45,6 +48,7 @@ describe('prompt trusted session seam', () => {
     mocks.handlers.clear()
     vi.clearAllMocks()
     mocks.promptAccess.mockResolvedValue({
+      binding: mocks.sessionBinding,
       ref: { rootPath: 'D:/project', sessionFile: 'D:/sessions/canonical.jsonl' },
       scope: {},
     })
@@ -74,6 +78,12 @@ describe('prompt trusted session seam', () => {
       text: 'hello',
     })
     expect(mocks.sendPrompt).toHaveBeenCalledWith('hello', 'D:/sessions/canonical.jsonl', null)
+    expect(mocks.loadSession).toHaveBeenCalledWith(mocks.sessionBinding, { force: undefined })
+    expect(mocks.resolveContext).toHaveBeenCalledWith({
+      authorizedRoot: 'D:/project',
+      sessionFile: 'D:/sessions/canonical.jsonl',
+      snapshotIds: undefined,
+    })
 
     await mocks.handlers.get('ipc:prompt.steer')!({
       sessionId: 'session-1',

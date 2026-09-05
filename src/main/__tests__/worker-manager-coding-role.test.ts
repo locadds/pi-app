@@ -6,6 +6,7 @@ import { WorkerManager } from '../worker-manager'
 import { attachWorkerHandlers } from '../worker-manager-pool'
 import type { WorkerSlot } from '../worker-manager-types'
 import { readCurrentWorkerExecutionIdentityDigestV1 } from '../worker-execution-identity'
+import { createTrustedWorkerCapabilityFixtureV1 } from './trusted-worker-capability-fixture'
 
 vi.mock('electron', () => ({
   app: { getPath: vi.fn(() => process.cwd()) },
@@ -25,6 +26,8 @@ const ADDRESS = {
   projectId: `xgp1_${'a'.repeat(64)}`,
   sessionKey: `xgs1_${'b'.repeat(64)}`,
 } as SessionAddressV1
+
+const ROOT = process.cwd()
 
 const ROLE: CodingRoleAgentSnapshotV1 = {
   schemaVersion: 1,
@@ -46,6 +49,8 @@ const ROLE: CodingRoleAgentSnapshotV1 = {
   snapshotDigest: `sha256:${'2'.repeat(64)}`,
 }
 
+const trusted = createTrustedWorkerCapabilityFixtureV1()
+
 type FakeTransport = WorkerSlot['worker'] & {
   postMessage: ReturnType<typeof vi.fn>
   emitMessage: (message: Record<string, unknown>) => void
@@ -55,6 +60,8 @@ function slot(input: {
   readonly file: string
   readonly address?: SessionAddressV1
 }): WorkerSlot {
+  const projectBinding = trusted.issueProject(ROOT)
+  const project = trusted.authority.inspectProject(projectBinding)
   let onMessage: Parameters<WorkerSlot['worker']['onMessage']>[0] | null = null
   const worker: FakeTransport = {
     kind: 'utilityProcess',
@@ -68,12 +75,16 @@ function slot(input: {
   }
   return {
     poolKey: input.file,
-    cwd: '/workspace',
+    cwd: ROOT,
     runtime: { mode: 'host', distro: null },
-    executionIdentityDigest: readCurrentWorkerExecutionIdentityDigestV1('/workspace', {
+    executionIdentityDigest: readCurrentWorkerExecutionIdentityDigestV1(ROOT, {
       mode: 'host',
       distro: null,
     }),
+    projectIdentityDigest: project.projectIdentityDigest,
+    projectBinding,
+    sessionBinding: trusted.issueSession(ROOT, input.file),
+    slotBindingDigest: `slot:${input.file}`,
     sessionFile: input.file,
     sessionId: `session:${input.file}`,
     promptContext: input.address ? {
@@ -114,7 +125,7 @@ function replyFrom(target: WorkerSlot, reply: Record<string, unknown>): void {
 }
 
 function managerWith(...slots: WorkerSlot[]) {
-  const manager = new WorkerManager()
+  const manager = new WorkerManager(undefined, trusted.authority)
   const internals = manager as unknown as {
     pool: Map<string, WorkerSlot>
     foregroundPoolKey: string | null

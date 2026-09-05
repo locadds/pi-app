@@ -6,6 +6,10 @@ import type {
 } from '@shared/xiaogui-prompt-contract'
 import type { WorkerHostToolOutcomeV1, WorkerHostToolRequestV1 } from '@shared/worker-host-tools'
 import type { WorkerTransport } from './worker-transport'
+import type {
+  TrustedProjectBindingHandleV1,
+  TrustedSessionBindingHandleV1,
+} from './trusted-worker-capability'
 
 export type WorkerInitResult = {
   sessionId: string
@@ -22,6 +26,14 @@ export type WorkerSlot = {
   runtime: { mode: 'host' | 'wsl'; distro: string | null }
   /** Project root + resource configuration + runtime captured at Worker creation. */
   executionIdentityDigest: string
+  /** Main-only filesystem entity identity captured for the authorized project root. */
+  projectIdentityDigest: string
+  /** Main-owned authority for this Worker root; never serialized to Worker/Renderer. */
+  projectBinding: TrustedProjectBindingHandleV1
+  /** Main-owned authority for the loaded session, when one is active. */
+  sessionBinding: TrustedSessionBindingHandleV1 | null
+  /** Immutable per-process binding id echoed by operation-scoped Worker leases. */
+  slotBindingDigest: string
   /** Bound session file when known; null for workspace-only slots */
   sessionFile: string | null
   /** Worker 当前实际绑定的 Pi session id；与 sessionFile 一起随生命周期回包同步更新。 */

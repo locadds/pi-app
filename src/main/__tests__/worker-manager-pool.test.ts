@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
+import { utilityProcess } from 'electron'
+import { mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { WorkerResponsePayload } from '@shared/worker-rpc-types'
 import type { WorkerSlot } from '../worker-manager-types'
 import { WorkerManager } from '../worker-manager'
@@ -8,6 +12,7 @@ import {
   canAcquireNewWorker,
   evictBackgroundWorkers,
   evictIdleWorkers,
+  forkWorkerForCwd,
   pruneIdleWorkersByTimeout,
   remapSessionWorkerSlot,
   rejectPendingWorkerRequests,
@@ -21,6 +26,8 @@ import {
 } from '../worker-pool-config'
 import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
 import { readCurrentWorkerExecutionIdentityDigestV1 } from '../worker-execution-identity'
+import { createTrustedWorkerCapabilityFixtureV1 } from './trusted-worker-capability-fixture'
+import { readProjectRootIdentityV2 } from '../project-root-identity'
 
 vi.mock('electron', () => ({
   app: {
@@ -80,7 +87,19 @@ function makeFakeTransport(): WorkerTransport & { emitMessage: (m: WorkerRespons
   }
 }
 
+const trusted = createTrustedWorkerCapabilityFixtureV1()
+
+function managerForTests(): WorkerManager {
+  return new WorkerManager(undefined, trusted.authority)
+}
+
+function bindingFor(sessionFile: string, cwd: string) {
+  return trusted.issueSession(cwd, sessionFile)
+}
+
 function fakeSlot(poolKey: string, cwd: string, active: boolean, lastFg = Date.now()): WorkerSlot {
+  const projectBinding = trusted.issueProject(cwd)
+  const project = trusted.authority.inspectProject(projectBinding)
   return {
     poolKey,
     cwd,
@@ -89,6 +108,10 @@ function fakeSlot(poolKey: string, cwd: string, active: boolean, lastFg = Date.n
       mode: 'host',
       distro: null,
     }),
+    projectIdentityDigest: project.projectIdentityDigest,
+    projectBinding,
+    sessionBinding: null,
+    slotBindingDigest: `slot:${poolKey}`,
     sessionFile: poolKey.startsWith('ws:') ? null : poolKey,
     sessionId: 'session-1',
     worker: {} as WorkerSlot['worker'],
@@ -228,7 +251,7 @@ describe('pruneIdleWorkersByTimeout', () => {
 
 describe('WorkerManager active turns', () => {
   it('reports an active turn from any worker slot', () => {
-    const manager = new WorkerManager()
+    const manager = managerForTests()
     const internals = manager as unknown as { pool: Map<string, WorkerSlot> }
     internals.pool.set('/s/idle', fakeSlot('/s/idle', '/w', false))
     internals.pool.set('/s/running', fakeSlot('/s/running', '/w', true))
@@ -298,7 +321,7 @@ describe('Worker host-tool bridge', () => {
     })
   })
 
-  it('synchronizes a reused worker session before routing its first host-tool request', async () => {
+  it('does not trust an unverified creation reply to rebind the Worker slot', async () => {
     const transport = makeFakeTransport()
     const slot = fakeSlot('/sessions/previous.jsonl', '/workspace', false)
     slot.worker = transport
@@ -333,8 +356,8 @@ describe('Worker host-tool bridge', () => {
     await vi.waitFor(() => expect(onHostToolRequest).toHaveBeenCalledOnce())
     expect(onHostToolRequest).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionFile: expect.stringContaining('next.jsonl'),
-        fromSessionId: 'session-2',
+        sessionFile: expect.stringContaining('previous.jsonl'),
+        fromSessionId: 'session-1',
       }),
     )
   })
@@ -543,7 +566,7 @@ describe('WorkerManager listSessions routing', () => {
   }
 
   it('prefers a same-cwd WSL slot over a host foreground slot', async () => {
-    const manager = new WorkerManager()
+    const manager = managerForTests()
     const internals = manager as unknown as {
       pool: Map<string, WorkerSlot>
       foregroundPoolKey: string | null
@@ -554,29 +577,120 @@ describe('WorkerManager listSessions routing', () => {
     internals.pool.set('ws:C:\\host\\proj', respondingSlot('ws:C:\\host\\proj', 'C:\\host\\proj'))
     internals.foregroundPoolKey = 'ws:C:\\host\\proj'
 
-    const rows = await manager.listSessions(wslCwd)
+    const rows = await manager.listSessions(trusted.issueProject(wslCwd))
     expect(rows).toEqual([{ id: 's1', cwd: wslCwd }])
   })
 
-  it('does not route a WSL target to a host worker when no WSL slot exists', async () => {
-    const manager = new WorkerManager()
+  it('does not route or cold-start a Worker for a list-only WSL request', async () => {
+    const manager = managerForTests()
     const internals = manager as unknown as { pool: Map<string, WorkerSlot> }
     const hostSlot = respondingSlot('ws:C:\\host\\proj', 'C:\\host\\proj')
     internals.pool.set('ws:C:\\host\\proj', hostSlot)
+    const fork = utilityProcess.fork as unknown as ReturnType<typeof vi.fn>
+    fork.mockClear()
 
-    const rows = await manager.listSessions('\\\\wsl.localhost\\Debian\\root\\proj')
+    const rows = await manager.listSessions(trusted.issueProject('\\\\wsl.localhost\\Debian\\root\\proj'))
     expect(rows).toEqual([])
+    expect(hostSlot.worker.postMessage).not.toHaveBeenCalled()
+    expect(fork).not.toHaveBeenCalled()
+    expect(internals.pool.size).toBe(1)
+  })
+})
+
+describe('Worker process project identity guard', () => {
+  function fakeUtilityProcess() {
+    const listeners = new Map<string, (value: unknown) => void>()
+    const process = {
+      pid: 42,
+      stdout: null,
+      stderr: null,
+      postMessage: vi.fn(),
+      on: vi.fn((event: string, listener: (value: unknown) => void) => {
+        listeners.set(event, listener)
+        return process
+      }),
+      kill: vi.fn(),
+    }
+    return { process, listeners }
+  }
+
+  const promptContext = {
+    schemaVersion: 1 as const,
+    mode: 'CODING' as const,
+    phase: 'ASK' as const,
+    workspaceAvailable: true,
+    projectTrusted: true,
+    enabledCapabilities: [],
+    availableToolNames: ['read'],
+    projectId: `xgp1_${'1'.repeat(64)}`,
+  }
+
+  it('rejects a stale identity before creating a Worker process', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'xiaogui-worker-root-pre-'))
+    try {
+      const root = join(parent, 'project')
+      mkdirSync(root)
+      const fork = utilityProcess.fork as unknown as ReturnType<typeof vi.fn>
+      fork.mockClear()
+
+      await expect(forkWorkerForCwd(root, {
+        projectBinding: trusted.issueProject(root),
+        projectIdentityDigest: `sha256:${'0'.repeat(64)}`,
+        promptContext,
+      })).rejects.toThrow('PROJECT_IDENTITY_CHANGED')
+      expect(fork).not.toHaveBeenCalled()
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('kills the Worker when the project entity is replaced during initialization', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'xiaogui-worker-root-post-'))
+    const root = join(parent, 'project')
+    const displaced = join(parent, 'original-project')
+    mkdirSync(root)
+    const identity = readProjectRootIdentityV2(root)
+    const fake = fakeUtilityProcess()
+    const fork = utilityProcess.fork as unknown as ReturnType<typeof vi.fn>
+    fork.mockReturnValueOnce(fake.process)
+
+    try {
+      const created = await forkWorkerForCwd(root, {
+        projectBinding: trusted.issueProject(root),
+        projectIdentityDigest: identity.digest,
+        promptContext,
+      })
+      attachWorkerHandlers(created.slot, created.slot.worker, {
+        mainWindow: null,
+        onAppEvent: vi.fn(),
+        onSlotExit: vi.fn(),
+      })
+
+      renameSync(root, displaced)
+      mkdirSync(root)
+      fake.listeners.get('message')?.({ data: { type: 'init-done', sessionId: 'bootstrap' } })
+
+      await expect(created.init).rejects.toThrow('PROJECT_IDENTITY_CHANGED')
+      expect(fake.process.kill).toHaveBeenCalledOnce()
+      expect(created.slot.stopping).toBe(true)
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
   })
 })
 
 describe('WorkerManager session-worker reuse', () => {
   function boundSlot(poolKey: string, cwd: string): WorkerSlot {
     const transport = makeFakeTransport()
-    transport.postMessage = vi.fn((message: { requestId?: string }) => {
+    transport.postMessage = vi.fn((message: Record<string, unknown>) => {
+      const lease = message.sessionExecutionLease as { sessionFile?: string } | undefined
       queueMicrotask(() => {
         transport.emitMessage({
-          type: 'done',
+          type: message.type === 'loadSession' ? 'loadSession-done' : 'done',
           requestId: message.requestId,
+          ...(message.type === 'loadSession'
+            ? { sessionFile: lease?.sessionFile, sessionId: 'session-loaded' }
+            : {}),
           state: { sessionFile: poolKey, isStreaming: false },
         } as WorkerResponsePayload)
       })
@@ -592,7 +706,7 @@ describe('WorkerManager session-worker reuse', () => {
   }
 
   it('reuses an idle same-cwd session worker instead of forking a new one', async () => {
-    const manager = new WorkerManager()
+    const manager = managerForTests()
     const internals = manager as unknown as {
       pool: Map<string, WorkerSlot>
       foregroundPoolKey: string | null
@@ -604,7 +718,7 @@ describe('WorkerManager session-worker reuse', () => {
     internals.pool.set(sA, slotA)
     internals.foregroundPoolKey = sA
 
-    await manager.loadSession(sB, { cwd })
+    await manager.loadSession(bindingFor(sB, cwd))
 
     // pool 只保留一个 slot，且被 rekey 到新 session（没有 fork 新 worker）
     expect(internals.pool.size).toBe(1)
@@ -615,7 +729,7 @@ describe('WorkerManager session-worker reuse', () => {
   })
 
   it('does not steal a same-cwd slot that is mid-turn', async () => {
-    const manager = new WorkerManager()
+    const manager = managerForTests()
     const internals = manager as unknown as { pool: Map<string, WorkerSlot> }
     const cwd = '/w'
     const sA = normalizeSessionKey('/w/session-a.jsonl')
@@ -625,7 +739,7 @@ describe('WorkerManager session-worker reuse', () => {
 
     // 无空闲 slot 可复用 → 尝试 fork。此时 pool 已满且 running 不可 evict，
     // 但只验证 running slot 未被 rekey。
-    await expect(manager.loadSession(sB, { cwd })).rejects.toThrow()
+    await expect(manager.loadSession(bindingFor(sB, cwd))).rejects.toThrow()
     expect(internals.pool.has(sA)).toBe(true)
     expect(internals.pool.has(sB)).toBe(false)
     expect(runningA.sessionFile).toBe(sA)
@@ -634,7 +748,7 @@ describe('WorkerManager session-worker reuse', () => {
 
 describe('session-scoped RPC routing', () => {
   it('should_not_move_view_foreground_when_targeting_an_existing_background_worker', async () => {
-    const manager = new WorkerManager()
+    const manager = managerForTests()
     const foregroundProcess = { postMessage: vi.fn() } as unknown as WorkerSlot['worker']
     const backgroundTransport = makeFakeTransport()
     const backgroundKey = normalizeSessionKey('/s/b')
@@ -643,13 +757,15 @@ describe('session-scoped RPC routing', () => {
     const backgroundSlot = fakeSlot(backgroundKey, '/w', false)
     foregroundSlot.worker = foregroundProcess
     backgroundSlot.worker = backgroundTransport
-    backgroundTransport.postMessage = vi.fn((message: { requestId?: string }) => {
+    backgroundTransport.postMessage = vi.fn((message: Record<string, unknown>) => {
+      const lease = message.sessionExecutionLease as { sessionFile?: string } | undefined
       queueMicrotask(() => {
         backgroundTransport.emitMessage({
-          type: 'queueCleared',
+          type: message.type === 'loadSession' ? 'loadSession-done' : 'queueCleared',
           requestId: message.requestId,
-          steering: [],
-          followUp: [],
+          ...(message.type === 'loadSession'
+            ? { sessionFile: lease?.sessionFile, sessionId: 'session-background' }
+            : { steering: [], followUp: [] }),
         } as WorkerResponsePayload)
       })
     })
@@ -668,7 +784,7 @@ describe('session-scoped RPC routing', () => {
     internals.foregroundPoolKey = foregroundKey
 
     await manager.clearPromptQueue('/s/b')
-    await manager.loadSession('/s/b', { cwd: '/w' })
+    await manager.loadSession(bindingFor('/s/b', '/w'))
     const { extensionUiDialogSource } = await import('../worker-manager-pool')
     extensionUiDialogSource.set('foreground-response', foregroundSlot)
     manager.respondExtensionUI({ id: 'foreground-response', confirmed: true })

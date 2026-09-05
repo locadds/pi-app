@@ -3,7 +3,9 @@
  * Timeline preview: session.getMessages reads JSONL via buildTimelinePageFromSessionFile (main disk fallback or Worker RPC).
  * Agent turn / navigateTree: ensureWorkerSessionBound → loadSession binds the live AgentSession.
  */
-let pendingWorkerSessionFile: string | null = null
+import type { TrustedSessionBindingHandleV1 } from './trusted-worker-capability'
+
+let pendingWorkerSessionBinding: TrustedSessionBindingHandleV1 | null = null
 
 /** 首条消息前尚未创建磁盘目录的临时对话草稿 */
 let pendingEphemeralSandboxDraft = false
@@ -16,12 +18,12 @@ export function isPendingEphemeralSandboxDraft(): boolean {
   return pendingEphemeralSandboxDraft
 }
 
-export function setPendingWorkerSessionFile(file: string | null): void {
-  pendingWorkerSessionFile = file
+export function setPendingWorkerSessionBinding(binding: TrustedSessionBindingHandleV1 | null): void {
+  pendingWorkerSessionBinding = binding
 }
 
-export function getPendingWorkerSessionFile(): string | null {
-  return pendingWorkerSessionFile
+export function getPendingWorkerSessionBinding(): TrustedSessionBindingHandleV1 | null {
+  return pendingWorkerSessionBinding
 }
 
 export type WorkerSessionBindResult = {
@@ -33,17 +35,17 @@ export type WorkerSessionBindResult = {
 
 export async function ensureWorkerSessionBound(
   loadSession: (
-    sessionFile: string,
+    binding: TrustedSessionBindingHandleV1,
     opts?: { force?: boolean },
   ) => Promise<WorkerSessionBindResult>,
-  opts?: { force?: boolean; sessionFile?: string | null },
+  opts?: { force?: boolean; sessionBinding?: TrustedSessionBindingHandleV1 | null },
 ): Promise<WorkerSessionBindResult | null> {
   if (pendingEphemeralSandboxDraft) {
     throw new Error('EPHEMERAL_SANDBOX_DRAFT')
   }
-  const file = opts?.sessionFile || pendingWorkerSessionFile
-  if (!file) return null
-  const result = await loadSession(file, { force: opts?.force === true })
-  pendingWorkerSessionFile = null
+  const binding = opts?.sessionBinding || pendingWorkerSessionBinding
+  if (!binding) return null
+  const result = await loadSession(binding, { force: opts?.force === true })
+  pendingWorkerSessionBinding = null
   return result
 }

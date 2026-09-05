@@ -9,6 +9,7 @@ import {
   getSessionLeafOverride,
   setSessionLeafOverride,
 } from '../session-leaf-override'
+import { createTrustedWorkerCapabilityFixtureV1 } from './trusted-worker-capability-fixture'
 
 vi.mock('electron', () => ({
   app: { getPath: vi.fn(() => process.cwd()) },
@@ -73,7 +74,16 @@ type Internals = {
   foregroundPoolKey: string | null
 }
 
+const trusted = createTrustedWorkerCapabilityFixtureV1()
+
+function managerForTests(): WorkerManager {
+  return new WorkerManager(undefined, trusted.authority)
+}
+
 function fakeSlot(poolKey: string, active = false): WorkerSlot {
+  const projectBinding = trusted.issueProject('/workspace')
+  const project = trusted.authority.inspectProject(projectBinding)
+  const sessionFile = poolKey.startsWith('ws:') ? null : poolKey
   let onMessage: Parameters<WorkerSlot['worker']['onMessage']>[0] | null = null
   const worker: FakeTransport = {
     kind: 'utilityProcess',
@@ -95,7 +105,11 @@ function fakeSlot(poolKey: string, active = false): WorkerSlot {
       mode: 'host',
       distro: null,
     }),
-    sessionFile: poolKey.startsWith('ws:') ? null : poolKey,
+    projectIdentityDigest: project.projectIdentityDigest,
+    projectBinding,
+    sessionBinding: sessionFile ? trusted.issuer.issueSession(projectBinding, sessionFile) : null,
+    slotBindingDigest: `slot:${poolKey}`,
+    sessionFile,
     sessionId: `session:${poolKey}`,
     worker,
     pendingRequests: new Map(),
@@ -119,17 +133,56 @@ function replyFrom(slot: WorkerSlot, reply: Record<string, unknown>): void {
     onAppEvent: vi.fn(),
     onSlotExit: vi.fn(),
   })
-  worker.postMessage.mockImplementation((message: { requestId?: string }) => {
-    queueMicrotask(() => worker.emitMessage({ requestId: message.requestId, ...reply }))
+  worker.postMessage.mockImplementation((message: Record<string, unknown>) => {
+    const lease = message.sessionExecutionLease as { sessionFile?: string } | undefined
+    const response = message.type === 'loadSession'
+      ? {
+          type: 'loadSession-done',
+          sessionId: String(reply.sessionId || slot.sessionId || ''),
+          sessionFile: lease?.sessionFile,
+        }
+      : reply
+    queueMicrotask(() => worker.emitMessage({
+      requestId: message.requestId,
+      ...response,
+      ...(message.creationOperationNonce
+        ? { creationOperationNonce: message.creationOperationNonce }
+        : {}),
+    }))
   })
 }
 
 function managerWithForeground(slot: WorkerSlot): { manager: WorkerManager; internals: Internals } {
-  const manager = new WorkerManager()
+  const manager = managerForTests()
   const internals = manager as unknown as Internals
   internals.pool.set(slot.poolKey, slot)
   internals.foregroundPoolKey = slot.poolKey
   return { manager, internals }
+}
+
+function bindingFor(sessionFile: string, authorizedRoot: string) {
+  return trusted.issueSession(authorizedRoot, sessionFile)
+}
+
+function bindSlotRoot(slot: WorkerSlot, root: string, sessionFile = slot.sessionFile): void {
+  const projectBinding = trusted.issueProject(root)
+  const project = trusted.authority.inspectProject(projectBinding)
+  slot.cwd = root
+  slot.executionIdentityDigest = readCurrentWorkerExecutionIdentityDigestV1(root, slot.runtime)
+  slot.projectIdentityDigest = project.projectIdentityDigest
+  slot.projectBinding = projectBinding
+  slot.sessionFile = sessionFile
+  slot.sessionBinding = sessionFile
+    ? trusted.issuer.issueSession(projectBinding, sessionFile)
+    : null
+}
+
+function projectFor(root: string) {
+  const binding = trusted.issueProject(root)
+  return {
+    binding,
+    issueRuntimeSession: (sessionFile: string) => trusted.issuer.issueSession(binding, sessionFile),
+  }
 }
 
 describe('WorkerManager session isolation', () => {
@@ -214,11 +267,15 @@ describe('WorkerManager session isolation', () => {
     const running = fakeSlot(normalizeSessionKey('/sessions/running.jsonl'), true)
     const { manager, internals } = managerWithForeground(running)
     const created = fakeSlot(workspacePoolKey('/workspace'))
+    bindSlotRoot(created, '/workspace', normalizeSessionKey('/sessions/bootstrap.jsonl'))
     const createdFile = normalizeSessionKey('/sessions/new.jsonl')
     replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
     forkWorkerForCwd.mockResolvedValue({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
 
-    expect(await manager.newSession('/workspace')).toEqual({ sessionId: 'new', sessionFile: createdFile })
+    const project = projectFor('/workspace')
+    expect(await manager.newSession(project.binding, {
+      issueRuntimeSession: project.issueRuntimeSession,
+    })).toMatchObject({ sessionId: 'new', sessionFile: createdFile })
     expect(running.worker.postMessage).not.toHaveBeenCalled()
     expect(internals.pool.get(running.poolKey)).toBe(running)
     expect(internals.pool.get(createdFile)).toBe(created)
@@ -232,7 +289,7 @@ describe('WorkerManager session isolation', () => {
     expect(newSessionMessage.promptContext).not.toHaveProperty('sessionKey')
     expect(created.worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
       type: 'loadSession',
-      sessionFile: createdFile,
+      sessionExecutionLease: expect.objectContaining({ sessionFile: createdFile }),
       promptContext: expect.objectContaining({
         schemaVersion: 1,
         sessionKey: `xgs1_${Buffer.from(createdFile).toString('hex')}`,
@@ -241,24 +298,16 @@ describe('WorkerManager session isolation', () => {
   })
 
   it('reuses the registered workspace after a new-session worker exits even when the Pi header cwd is stale', async () => {
-    const manager = new WorkerManager()
+    const manager = managerForTests()
     const internals = manager as unknown as Internals
     const workspace = '/selected-workspace'
     const createdFile = normalizeSessionKey('/sessions/new-with-stale-header.jsonl')
     const created = fakeSlot(workspacePoolKey(workspace))
-    created.cwd = workspace
-    created.executionIdentityDigest = readCurrentWorkerExecutionIdentityDigestV1(
-      workspace,
-      created.runtime,
-    )
+    bindSlotRoot(created, workspace, normalizeSessionKey('/sessions/bootstrap.jsonl'))
     replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
 
     const reloaded = fakeSlot(createdFile)
-    reloaded.cwd = workspace
-    reloaded.executionIdentityDigest = readCurrentWorkerExecutionIdentityDigestV1(
-      workspace,
-      reloaded.runtime,
-    )
+    bindSlotRoot(reloaded, workspace, createdFile)
     replyFrom(reloaded, {
       type: 'loadSession-done',
       sessionId: 'new',
@@ -268,10 +317,13 @@ describe('WorkerManager session isolation', () => {
       .mockResolvedValueOnce({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
       .mockResolvedValueOnce({ slot: reloaded, init: Promise.resolve({ sessionId: 'bootstrap' }) })
 
-    await manager.newSession(workspace)
+    const project = projectFor(workspace)
+    const createdSession = await manager.newSession(project.binding, {
+      issueRuntimeSession: project.issueRuntimeSession,
+    })
     internals.pool.clear()
     internals.foregroundPoolKey = null
-    await manager.loadSession(createdFile)
+    await manager.loadSession(createdSession.binding!)
 
     expect(forkWorkerForCwd).toHaveBeenLastCalledWith(
       workspace,
@@ -280,7 +332,7 @@ describe('WorkerManager session isolation', () => {
   })
 
   it('bootstraps a cold Session worker without pre-binding the target Session identity', async () => {
-    const manager = new WorkerManager()
+    const manager = managerForTests()
     const targetFile = normalizeSessionKey('/sessions/cold.jsonl')
     const created = fakeSlot(targetFile)
     replyFrom(created, {
@@ -293,7 +345,7 @@ describe('WorkerManager session isolation', () => {
       init: Promise.resolve({ sessionId: 'bootstrap' }),
     })
 
-    await manager.ensureSessionWorker(targetFile, '/workspace')
+    await manager.ensureSessionWorker(bindingFor(targetFile, '/workspace'))
 
     expect(forkWorkerForCwd).toHaveBeenCalledWith('/workspace', expect.objectContaining({
       sessionFile: targetFile,
@@ -301,26 +353,57 @@ describe('WorkerManager session isolation', () => {
     }))
     expect(created.worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
       type: 'loadSession',
-      sessionFile: targetFile,
+      sessionExecutionLease: expect.objectContaining({ sessionFile: targetFile }),
       promptContext: expect.objectContaining({
         sessionKey: `xgs1_${Buffer.from(targetFile).toString('hex')}`,
       }),
     }))
   })
 
+  it('cannot cold-start a Worker from an unregistered renderer session path', async () => {
+    const manager = managerForTests()
+
+    await expect(manager.sendPrompt('hello', '/sessions/untrusted.jsonl'))
+      .rejects.toThrow('Worker not started for session')
+
+    expect(forkWorkerForCwd).not.toHaveBeenCalled()
+  })
+
+  it('does not mutate a slot when a Worker returns the wrong session target', async () => {
+    const sessionFile = normalizeSessionKey('/sessions/authorized.jsonl')
+    const slot = fakeSlot(sessionFile)
+    const { manager } = managerWithForeground(slot)
+    const worker = slot.worker as FakeTransport
+    attachWorkerHandlers(slot, worker, {
+      mainWindow: null,
+      onAppEvent: vi.fn(),
+      onSlotExit: vi.fn(),
+    })
+    worker.postMessage.mockImplementation((message: Record<string, unknown>) => {
+      queueMicrotask(() => worker.emitMessage({
+        requestId: message.requestId,
+        type: 'loadSession-done',
+        sessionId: 'forged-session',
+        sessionFile: normalizeSessionKey('/sessions/forged.jsonl'),
+      }))
+    })
+
+    await expect(manager.loadSession(bindingFor(sessionFile, '/workspace')))
+      .rejects.toThrow('SESSION_SCOPE_MISMATCH')
+
+    expect(slot.sessionFile).toBe(sessionFile)
+    expect(slot.sessionId).toBe(`session:${sessionFile}`)
+  })
+
   it('rejects rebinding an existing session to a different project cwd', async () => {
     const sessionFile = normalizeSessionKey('/sessions/project-switch.jsonl')
     const existing = fakeSlot(sessionFile)
-    existing.cwd = '/project-a'
-    existing.executionIdentityDigest = readCurrentWorkerExecutionIdentityDigestV1(
-      existing.cwd,
-      existing.runtime,
-    )
-    const manager = new WorkerManager()
+    bindSlotRoot(existing, '/project-a', sessionFile)
+    const manager = managerForTests()
     const internals = manager as unknown as Internals
     internals.pool.set(sessionFile, existing)
 
-    await expect(manager.loadSession(sessionFile, { cwd: '/project-b' }))
+    await expect(manager.loadSession(bindingFor(sessionFile, '/project-b')))
       .rejects.toThrow('SESSION_WORKSPACE_REBIND_REJECTED')
 
     expect(existing.worker.kill).not.toHaveBeenCalled()
@@ -336,7 +419,7 @@ describe('WorkerManager session isolation', () => {
     const existing = fakeSlot(sessionFile)
     existing.executionIdentityDigest = `sha256:${'0'.repeat(64)}`
     replyFrom(existing, { type: 'abort-done' })
-    const manager = new WorkerManager()
+    const manager = managerForTests()
     const internals = manager as unknown as Internals
     internals.pool.set(sessionFile, existing)
 
@@ -351,7 +434,7 @@ describe('WorkerManager session isolation', () => {
       init: Promise.resolve({ sessionId: 'bootstrap' }),
     })
 
-    await manager.ensureSessionWorker(sessionFile, '/workspace')
+    await manager.ensureSessionWorker(bindingFor(sessionFile, '/workspace'))
 
     expect(existing.worker.kill).toHaveBeenCalledOnce()
     expect(internals.pool.get(sessionFile)).toBe(created)
@@ -389,6 +472,7 @@ describe('WorkerManager session isolation', () => {
     const running = fakeSlot(normalizeSessionKey('/sessions/running.jsonl'), true)
     const { manager, internals } = managerWithForeground(running)
     const created = fakeSlot(workspacePoolKey('/workspace'))
+    bindSlotRoot(created, '/workspace', normalizeSessionKey('/sessions/bootstrap.jsonl'))
     const createdFile = normalizeSessionKey('/sessions/new.jsonl')
     replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
     forkWorkerForCwd.mockResolvedValue({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
@@ -398,7 +482,11 @@ describe('WorkerManager session isolation', () => {
       expect(created.poolKey).toBe(workspacePoolKey('/workspace'))
     })
 
-    await expect(manager.newSession('/workspace', { beforeActivate })).resolves.toEqual({
+    const project = projectFor('/workspace')
+    await expect(manager.newSession(project.binding, {
+      beforeActivate,
+      issueRuntimeSession: project.issueRuntimeSession,
+    })).resolves.toMatchObject({
       sessionId: 'new',
       sessionFile: createdFile,
     })
@@ -412,12 +500,15 @@ describe('WorkerManager session isolation', () => {
     const running = fakeSlot(normalizeSessionKey('/sessions/running.jsonl'), true)
     const { manager, internals } = managerWithForeground(running)
     const created = fakeSlot(workspacePoolKey('/workspace'))
+    bindSlotRoot(created, '/workspace', normalizeSessionKey('/sessions/bootstrap.jsonl'))
     const createdFile = normalizeSessionKey('/sessions/new.jsonl')
     replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
     forkWorkerForCwd.mockResolvedValue({ slot: created, init: Promise.resolve({ sessionId: 'temp' }) })
 
+    const project = projectFor('/workspace')
     await expect(
-      manager.newSession('/workspace', {
+      manager.newSession(project.binding, {
+        issueRuntimeSession: project.issueRuntimeSession,
         beforeActivate: async () => {
           throw new Error('SCOPE_PERSISTENCE_FAILED')
         },
@@ -434,9 +525,10 @@ describe('WorkerManager session isolation', () => {
     readMaxSessionWorkers.mockReturnValue(1)
     const idle = fakeSlot(normalizeSessionKey('/sessions/idle.jsonl'))
     idle.sessionFile = null
-    idle.cwd = '/other'
+    bindSlotRoot(idle, '/other', null)
     const { manager, internals } = managerWithForeground(idle)
     const created = fakeSlot(workspacePoolKey('/workspace'))
+    bindSlotRoot(created, '/workspace', normalizeSessionKey('/sessions/bootstrap.jsonl'))
     const createdFile = normalizeSessionKey('/sessions/new.jsonl')
     replyFrom(created, { type: 'newSession-done', sessionId: 'new', sessionFile: createdFile })
     forkWorkerForCwd.mockImplementation(async () => {
@@ -444,7 +536,10 @@ describe('WorkerManager session isolation', () => {
       return { slot: created, init: Promise.resolve({ sessionId: 'temp' }) }
     })
 
-    await expect(manager.newSession('/workspace')).resolves.toEqual({
+    const project = projectFor('/workspace')
+    await expect(manager.newSession(project.binding, {
+      issueRuntimeSession: project.issueRuntimeSession,
+    })).resolves.toMatchObject({
       sessionId: 'new',
       sessionFile: createdFile,
     })
@@ -460,6 +555,7 @@ describe('WorkerManager session isolation', () => {
     forkWorkerForCwd.mockImplementation(async (_cwd: string, options?: { poolKey?: string }) => {
       const index = ++sequence
       const slot = fakeSlot(options?.poolKey || workspacePoolKey('/workspace'))
+      bindSlotRoot(slot, '/workspace', normalizeSessionKey(`/sessions/bootstrap-${index}.jsonl`))
       replyFrom(slot, {
         type: 'newSession-done',
         sessionId: `new-${index}`,
@@ -468,7 +564,12 @@ describe('WorkerManager session isolation', () => {
       return { slot, init: Promise.resolve({ sessionId: `temp-${index}` }) }
     })
 
-    const results = await Promise.all([manager.newSession('/workspace'), manager.newSession('/workspace')])
+    const project = projectFor('/workspace')
+    const options = { issueRuntimeSession: project.issueRuntimeSession }
+    const results = await Promise.all([
+      manager.newSession(project.binding, options),
+      manager.newSession(project.binding, options),
+    ])
 
     expect(results.map((result) => result.sessionId)).toEqual(['new-1', 'new-2'])
     expect(internals.pool.has(normalizeSessionKey('/sessions/new-1.jsonl'))).toBe(true)
@@ -496,14 +597,21 @@ describe('WorkerManager session isolation', () => {
       if (kind === 'fork') {
         await expect(
           manager.forkSession({
-            sessionFile: sourceFile,
+            sourceBinding: source.sessionBinding!,
             entryId: 'entry',
             beforeActivate,
+            issueRuntimeSession: (projectBinding, sessionFile) =>
+              trusted.issuer.issueSession(projectBinding, sessionFile),
           }),
         ).resolves.toMatchObject({ sessionId: 'fork', sessionFile: targetFile })
       } else {
         await expect(
-          manager.cloneSession({ sessionFile: sourceFile, beforeActivate }),
+          manager.cloneSession({
+            sourceBinding: source.sessionBinding!,
+            beforeActivate,
+            issueRuntimeSession: (projectBinding, sessionFile) =>
+              trusted.issuer.issueSession(projectBinding, sessionFile),
+          }),
         ).resolves.toMatchObject({ sessionId: 'clone', sessionFile: targetFile })
       }
 
@@ -530,8 +638,19 @@ describe('WorkerManager session isolation', () => {
       }
 
       const operation = kind === 'fork'
-        ? manager.forkSession({ sessionFile: sourceFile, entryId: 'entry', beforeActivate })
-        : manager.cloneSession({ sessionFile: sourceFile, beforeActivate })
+        ? manager.forkSession({
+            sourceBinding: source.sessionBinding!,
+            entryId: 'entry',
+            beforeActivate,
+            issueRuntimeSession: (projectBinding, sessionFile) =>
+              trusted.issuer.issueSession(projectBinding, sessionFile),
+          })
+        : manager.cloneSession({
+            sourceBinding: source.sessionBinding!,
+            beforeActivate,
+            issueRuntimeSession: (projectBinding, sessionFile) =>
+              trusted.issuer.issueSession(projectBinding, sessionFile),
+          })
 
       await expect(operation).rejects.toThrow('SCOPE_PERSISTENCE_FAILED')
       expect(internals.foregroundPoolKey).toBeNull()

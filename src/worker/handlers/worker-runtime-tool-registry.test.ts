@@ -8,7 +8,7 @@ import type {
 
 import { workerPromptContextToolNamesForModeV1 } from '@shared/xiaogui-prompt-capabilities'
 
-import { initSession, st } from '../worker-runtime'
+import { bindWorkerExecutionIdentityV1, initSession, st } from '../worker-runtime'
 import { freezeCodingContextAgentPayloadV1 } from '../xiaogui-coding-extensions/context-extension'
 import { freezeXiaoguiPromptContextV1 } from '../xiaogui-prompt/session-binding'
 
@@ -38,6 +38,8 @@ describe('worker-runtime session tool registry whitelist', () => {
     st.modelRuntime = null
     st.runtime = null
     st.sdk = null
+    st.workerExecutionIdentity = null
+    st.consumedSessionOperationNonces.clear()
     st.sharedEventBus = null
     st.uiBridge = null
     st.widgetHost = null
@@ -144,6 +146,11 @@ describe('worker-runtime session tool registry whitelist', () => {
       }),
     } as never
     st.sharedEventBus = { on: () => () => {} } as never
+    bindWorkerExecutionIdentityV1({
+      authorizedCwd: 'D:\\ws',
+      projectIdentityDigest: `sha256:${'1'.repeat(64)}`,
+      slotBindingDigest: `sha256:${'2'.repeat(64)}`,
+    })
 
     await initSession('D:\\ws', freezeXiaoguiPromptContextV1({
       schemaVersion: 1,

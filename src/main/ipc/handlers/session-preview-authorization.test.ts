@@ -10,9 +10,11 @@ const mocks = vi.hoisted(() => ({
   getMessages: vi.fn(),
   getState: vi.fn(),
   scopeResolve: vi.fn(),
+  scopeResolveExisting: vi.fn(),
   trustedOpen: vi.fn(),
   resolvePreparedSessionFile: vi.fn(),
-  setPendingWorkerSessionFile: vi.fn(),
+  setPendingWorkerSessionBinding: vi.fn(),
+  getPendingWorkerSessionBinding: vi.fn(),
 }))
 
 vi.mock('../registry', () => ({
@@ -54,8 +56,7 @@ vi.mock('../../worker-manager', () => ({
     isRunning: false,
     getState: mocks.getState,
     deleteSessionFile: mocks.deleteSessionFile,
-    forgetSessionWorkspace: vi.fn(),
-    rememberSessionWorkspace: vi.fn(),
+    forgetSessionBinding: vi.fn(),
     getSessionTree: vi.fn(),
   },
 }))
@@ -71,12 +72,17 @@ vi.mock('../../session-leaf-override', () => ({
 
 vi.mock('../../session-bind-state', () => ({
   ensureWorkerSessionBound: vi.fn(),
-  getPendingWorkerSessionFile: vi.fn(),
+  getPendingWorkerSessionBinding: mocks.getPendingWorkerSessionBinding,
   setPendingEphemeralSandboxDraft: vi.fn(),
-  setPendingWorkerSessionFile: mocks.setPendingWorkerSessionFile,
+  setPendingWorkerSessionBinding: mocks.setPendingWorkerSessionBinding,
 }))
 vi.mock('../../xiaogui/scope-service', () => ({
-  sessionScopeResolverV1: { resolve: mocks.scopeResolve, registerNew: vi.fn(), derive: vi.fn() },
+  sessionScopeResolverV1: {
+    resolveExisting: mocks.scopeResolveExisting,
+    resolve: mocks.scopeResolve,
+    registerNew: vi.fn(),
+    derive: vi.fn(),
+  },
 }))
 vi.mock('../../xiaogui/sidecar-bridge', () => ({
   xiaogui: { setMode: vi.fn(), getMode: vi.fn(() => 'WORK') },
@@ -95,6 +101,7 @@ vi.mock('../../sandbox-workspaces', () => ({
   bindSandboxSession: vi.fn(),
   findSandboxWorkspaceForSessionFile: vi.fn(() => null),
   isSandboxWorkspacePath: vi.fn(() => false),
+  sandboxOwnsSessionFile: vi.fn(() => false),
   renameSandboxWorkspace: vi.fn(),
 }))
 vi.mock('../../session-fork-candidates', () => ({ listForkCandidatesFromSessionFile: vi.fn() }))
@@ -116,6 +123,8 @@ describe('session preview authorization', () => {
       sessionKey: `xgs1_${'2'.repeat(64)}`,
       sessionMode: 'WORK',
     })
+    mocks.scopeResolveExisting.mockReset()
+    mocks.scopeResolveExisting.mockResolvedValue(null)
     mocks.trustedOpen.mockReset()
     mocks.trustedOpen.mockImplementation(async ({ workspaceId, sessionFile }) => {
       const authorized = mocks.authorizeTrustedSessionFile(workspaceId, sessionFile)
@@ -126,7 +135,7 @@ describe('session preview authorization', () => {
       }
     })
     mocks.resolvePreparedSessionFile.mockReset()
-    mocks.setPendingWorkerSessionFile.mockReset()
+    mocks.setPendingWorkerSessionBinding.mockReset()
     mocks.deleteSessionFile.mockReset()
     mocks.deleteSessionFile.mockResolvedValue({ ok: true })
     mocks.invalidateListSessions.mockReset()
@@ -248,7 +257,7 @@ describe('session preview authorization', () => {
       sessionFile: '/sessions/renderer.jsonl',
       workspaceId: '/workspace',
     })).rejects.toThrow('session_workspace_mismatch')
-    expect(mocks.setPendingWorkerSessionFile).not.toHaveBeenCalled()
+    expect(mocks.setPendingWorkerSessionBinding).not.toHaveBeenCalled()
   })
 
   it('rejects unknown keys through strict schemas', async () => {

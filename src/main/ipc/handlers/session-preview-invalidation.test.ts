@@ -13,11 +13,14 @@ const mocks = vi.hoisted(() => ({
   setMode: vi.fn(),
   getMode: vi.fn(() => 'WORK'),
   focusExistingSession: vi.fn(() => false),
-  rememberSessionWorkspace: vi.fn(),
-  forgetSessionWorkspace: vi.fn(),
+  forgetSessionBinding: vi.fn(),
   clearForegroundSession: vi.fn(),
   loadSession: vi.fn(),
-  setPendingWorkerSessionFile: vi.fn(),
+  sendPrompt: vi.fn(),
+  resolveCodingContext: vi.fn(),
+  ensureWorkerSessionBound: vi.fn(),
+  setPendingWorkerSessionBinding: vi.fn(),
+  getPendingWorkerSessionBinding: vi.fn(),
   renamePiSessionOnDisk: vi.fn(),
   authorizeTrustedSessionFile: vi.fn((workspaceId: string, sessionFile: string) => ({
     ok: true,
@@ -25,6 +28,13 @@ const mocks = vi.hoisted(() => ({
     sessionFile,
   })),
   deleteSessionFile: vi.fn(),
+  trustedProject: vi.fn(),
+  trustedOpen: vi.fn(),
+  trustedPrompt: vi.fn(),
+  trustedRuntimeIssued: vi.fn(),
+  projectBinding: Object.freeze({}),
+  sourceBinding: Object.freeze({}),
+  targetBinding: Object.freeze({}),
 }))
 
 vi.mock('../registry', () => ({
@@ -58,10 +68,10 @@ vi.mock('../../worker-manager', () => ({
     forkSession: mocks.forkSession,
     cloneSession: mocks.cloneSession,
     focusExistingSession: mocks.focusExistingSession,
-    rememberSessionWorkspace: mocks.rememberSessionWorkspace,
-    forgetSessionWorkspace: mocks.forgetSessionWorkspace,
+    forgetSessionBinding: mocks.forgetSessionBinding,
     clearForegroundSession: mocks.clearForegroundSession,
     loadSession: mocks.loadSession,
+    sendPrompt: mocks.sendPrompt,
     deleteSessionFile: mocks.deleteSessionFile,
     getState: vi.fn(async () => ({})),
   },
@@ -71,13 +81,14 @@ vi.mock('../../config-store', () => ({
   configStore: { get: vi.fn(() => '/workspace') },
 }))
 vi.mock('../../session-bind-state', () => ({
-  ensureWorkerSessionBound: vi.fn(),
-  getPendingWorkerSessionFile: vi.fn(),
+  ensureWorkerSessionBound: mocks.ensureWorkerSessionBound,
+  getPendingWorkerSessionBinding: mocks.getPendingWorkerSessionBinding,
   setPendingEphemeralSandboxDraft: vi.fn(),
-  setPendingWorkerSessionFile: mocks.setPendingWorkerSessionFile,
+  setPendingWorkerSessionBinding: mocks.setPendingWorkerSessionBinding,
 }))
 vi.mock('../../xiaogui/scope-service', () => ({
   sessionScopeResolverV1: {
+    resolveExisting: vi.fn(async () => null),
     resolve: mocks.resolveScope,
     registerNew: mocks.registerNewScope,
     derive: mocks.deriveScope,
@@ -98,7 +109,9 @@ vi.mock('../../rename-pi-session', () => ({
 }))
 vi.mock('../../sandbox-workspaces', () => ({
   bindSandboxSession: vi.fn(),
+  findSandboxWorkspaceForSessionFile: vi.fn(() => null),
   isSandboxWorkspacePath: vi.fn(() => false),
+  sandboxOwnsSessionFile: vi.fn(() => false),
   renameSandboxWorkspace: vi.fn(),
 }))
 vi.mock('../../pi-rewind-read', () => ({ listRewindCheckpoints: vi.fn() }))
@@ -115,9 +128,23 @@ vi.mock('../../session-fork-candidates', () => ({
 }))
 vi.mock('../../trusted-workspace', () => ({
   authorizeTrustedSessionFile: mocks.authorizeTrustedSessionFile,
+  authorizeTrustedProjectRoot: vi.fn((workspaceId: string) => ({ ok: true, cwd: workspaceId })),
 }))
+vi.mock('../../trusted-session-access', () => ({
+  trustedSessionAccessV1: {
+    project: mocks.trustedProject,
+    open: mocks.trustedOpen,
+    prompt: mocks.trustedPrompt,
+    runtimeIssued: mocks.trustedRuntimeIssued,
+  },
+}))
+vi.mock('../../xiaogui/coding-extensions/context-composition', () => ({
+  resolveCodingContextForPromptV1: mocks.resolveCodingContext,
+}))
+vi.mock('../../clipboard-temp-images', () => ({ writeClipboardTempImage: vi.fn() }))
 
 import { registerSessionHandlers } from './session'
+import { registerPromptHandlers } from './prompt'
 
 describe('session list preview invalidation', () => {
   beforeEach(() => {
@@ -166,11 +193,18 @@ describe('session list preview invalidation', () => {
     mocks.getMode.mockReturnValue('WORK')
     mocks.focusExistingSession.mockReset()
     mocks.focusExistingSession.mockReturnValue(false)
-    mocks.rememberSessionWorkspace.mockReset()
-    mocks.forgetSessionWorkspace.mockReset()
+    mocks.forgetSessionBinding.mockReset()
     mocks.clearForegroundSession.mockReset()
     mocks.loadSession.mockReset()
-    mocks.setPendingWorkerSessionFile.mockReset()
+    mocks.loadSession.mockResolvedValue({ model: 'provider/model', thinkingLevel: 'medium' })
+    mocks.sendPrompt.mockReset()
+    mocks.resolveCodingContext.mockReset()
+    mocks.resolveCodingContext.mockResolvedValue(null)
+    mocks.ensureWorkerSessionBound.mockReset()
+    mocks.ensureWorkerSessionBound.mockImplementation(async (loader, options) =>
+      loader(options.sessionBinding),
+    )
+    mocks.setPendingWorkerSessionBinding.mockReset()
     mocks.renamePiSessionOnDisk.mockReset()
     mocks.renamePiSessionOnDisk.mockResolvedValue({ ok: true })
     mocks.deleteSessionFile.mockReset()
@@ -181,7 +215,28 @@ describe('session list preview invalidation', () => {
       cwd: workspaceId,
       sessionFile,
     }))
+    mocks.trustedProject.mockReset()
+    mocks.trustedProject.mockReturnValue({
+      ref: { rootPath: '/workspace' },
+      authorizedRoot: '/workspace',
+      binding: mocks.projectBinding,
+    })
+    mocks.trustedOpen.mockReset()
+    mocks.trustedOpen.mockImplementation(async ({ workspaceId, sessionFile }) => ({
+      ref: { rootPath: workspaceId, sessionFile },
+      scope: await mocks.resolveScope({ rootPath: workspaceId, sessionFile }),
+      binding: mocks.sourceBinding,
+    }))
+    mocks.trustedRuntimeIssued.mockReset()
+    mocks.trustedRuntimeIssued.mockReturnValue(mocks.targetBinding)
+    mocks.trustedPrompt.mockReset()
+    mocks.trustedPrompt.mockImplementation(async ({ workspaceId, sessionFile }) => ({
+      ref: { rootPath: workspaceId, sessionFile },
+      scope: await mocks.resolveScope({ rootPath: workspaceId, sessionFile }),
+      binding: mocks.targetBinding,
+    }))
     registerSessionHandlers()
+    registerPromptHandlers()
   })
 
   it.each([
@@ -252,15 +307,15 @@ describe('session list preview invalidation', () => {
     })
 
     expect(result).toMatchObject({ canonicalScope: { sessionMode: 'CODING' } })
-    expect(mocks.rememberSessionWorkspace).toHaveBeenCalledWith(
-      '/sessions/source.jsonl',
-      '/workspace',
-    )
+    expect(mocks.trustedOpen).toHaveBeenCalledWith({
+      workspaceId: '/workspace',
+      sessionFile: '/sessions/source.jsonl',
+    })
     expect(mocks.resolveScope.mock.invocationCallOrder[0]).toBeLessThan(mocks.setMode.mock.invocationCallOrder[0])
     expect(mocks.setMode.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.setPendingWorkerSessionFile.mock.invocationCallOrder[0],
+      mocks.setPendingWorkerSessionBinding.mock.invocationCallOrder[0],
     )
-    expect(mocks.setPendingWorkerSessionFile.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mocks.setPendingWorkerSessionBinding.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.focusExistingSession.mock.invocationCallOrder[0],
     )
   })
@@ -288,6 +343,43 @@ describe('session list preview invalidation', () => {
       session: { canonicalScope: { sessionMode: 'DESIGN' } },
     })
     expect(mocks.authorizeTrustedSessionFile).not.toHaveBeenCalled()
+  })
+
+  it('keeps the WORK new, open, and first-send flow on the trusted shared seam', async () => {
+    const created = await mocks.handlers.get('ipc:session.new')!({
+      workspaceId: '/workspace',
+      mode: 'WORK',
+    }) as { session: { sessionFile: string; canonicalScope: { sessionMode: string } } }
+    const sessionFile = created.session.sessionFile
+    mocks.trustedOpen.mockResolvedValueOnce({
+      ref: { rootPath: '/workspace', sessionFile },
+      scope: await mocks.resolveScope({ rootPath: '/workspace', sessionFile }),
+      binding: mocks.targetBinding,
+    })
+
+    const opened = await mocks.handlers.get('ipc:session.open')!({
+      sessionId: 'new',
+      workspaceId: '/workspace',
+      sessionFile,
+    }) as { session: { canonicalScope: { sessionMode: string } } }
+    await mocks.handlers.get('ipc:prompt.send')!({
+      sessionId: 'new',
+      workspaceId: '/workspace',
+      sessionFile,
+      text: '整理这份材料',
+    })
+
+    expect(created.session.canonicalScope.sessionMode).toBe('WORK')
+    expect(opened.session.canonicalScope.sessionMode).toBe('WORK')
+    expect(mocks.setPendingWorkerSessionBinding).toHaveBeenCalledWith(mocks.targetBinding)
+    expect(mocks.trustedPrompt).toHaveBeenCalledWith({
+      sessionId: 'new',
+      workspaceId: '/workspace',
+      sessionFile,
+      text: '整理这份材料',
+    })
+    expect(mocks.loadSession).toHaveBeenCalledWith(mocks.targetBinding, { force: undefined })
+    expect(mocks.sendPrompt).toHaveBeenCalledWith('整理这份材料', sessionFile, null)
   })
 
   it.each([
@@ -318,7 +410,7 @@ describe('session list preview invalidation', () => {
     expect(result).toMatchObject({
       session: { canonicalScope: { sessionMode: 'CODING' } },
     })
-    expect(mocks.authorizeTrustedSessionFile).toHaveBeenCalledTimes(1)
+    expect(mocks.trustedOpen).toHaveBeenCalledTimes(1)
   })
 
   it('rejects a relative worker-issued session target before scope persistence', async () => {
@@ -351,7 +443,7 @@ describe('session list preview invalidation', () => {
     ).rejects.toThrow('SCOPE_PERSISTENCE_FAILED')
 
     expect(mocks.setMode).not.toHaveBeenCalled()
-    expect(mocks.setPendingWorkerSessionFile).not.toHaveBeenCalled()
+    expect(mocks.setPendingWorkerSessionBinding).not.toHaveBeenCalled()
     expect(mocks.focusExistingSession).not.toHaveBeenCalled()
   })
 
@@ -369,7 +461,7 @@ describe('session list preview invalidation', () => {
       error: 'SCOPE_PERSISTENCE_FAILED',
       session: { sessionId: '', error: 'SCOPE_PERSISTENCE_FAILED' },
     })
-    expect(mocks.setPendingWorkerSessionFile).not.toHaveBeenCalled()
+    expect(mocks.setPendingWorkerSessionBinding).not.toHaveBeenCalled()
     expect(mocks.invalidateListSessions).not.toHaveBeenCalled()
   })
 })

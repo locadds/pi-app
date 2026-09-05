@@ -1,7 +1,8 @@
 import { basename } from 'path'
 import type { AppEvent, CompletionEvent } from '@shared/app-events'
 import { getMainWindow } from './window'
-import { getPendingWorkerSessionFile } from './session-bind-state'
+import { getPendingWorkerSessionBinding } from './session-bind-state'
+import { trustedWorkerCapabilityAuthorityV1 } from './trusted-worker-capability'
 import {
   bindCompletionNotificationEvents,
   currentVisibleSessionFile,
@@ -38,7 +39,17 @@ function getController(): CompletionNotificationController {
       delayMs: 2000,
       getSettings: () => readCompletionNotificationSettings(),
       getWindowState: windowState,
-      getVisibleSessionFile: () => currentVisibleSessionFile() ?? getPendingWorkerSessionFile(),
+      getVisibleSessionFile: () => {
+        const visible = currentVisibleSessionFile()
+        if (visible) return visible
+        const binding = getPendingWorkerSessionBinding()
+        if (!binding) return null
+        try {
+          return trustedWorkerCapabilityAuthorityV1.inspectSession(binding).canonicalSessionFile
+        } catch {
+          return null
+        }
+      },
       projectLabel,
       deliver: (card) => {
         void presentCompletionCard(card, readCompletionNotificationSettings().delivery)

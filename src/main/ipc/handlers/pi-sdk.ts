@@ -27,6 +27,7 @@ import { probeSelectedSdk } from '../sdk-session'
 import { getAgentRuntimeConfig } from '../../wsl/runtime-config'
 import { assertWslSdkAvailable } from '../../wsl/sdk-resolve'
 import { sessionPreviewProcess } from '../../session-preview-process'
+import { restartTrustedWorkersForProjectV1 } from '../../trusted-worker-control'
 
 function sendSdkRuntimeChanged(): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -37,8 +38,7 @@ function sendSdkRuntimeChanged(): void {
 async function restartWorkers(): Promise<void> {
   const cwd = workerManager.cwd || configStore.get('currentProject')
   if (!cwd) return
-  await workerManager.stop()
-  await workerManager.start(cwd)
+  await restartTrustedWorkersForProjectV1(cwd)
 }
 
 function rejectActiveTurns(): string | null {

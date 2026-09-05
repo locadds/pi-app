@@ -3,7 +3,7 @@ import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-
 import { xiaoguiPromptBuilderV1 } from '../xiaogui-prompt/builder'
 
 import { handleSessionEvent, st } from '../worker-runtime'
-import { handlePrompt } from './worker-handlers-turn'
+import { handleInit, handlePrompt } from './worker-handlers-turn'
 
 afterEach(() => {
   st.session = null
@@ -18,6 +18,35 @@ afterEach(() => {
   st.effectivePrompt = null
   st.agentTurnActive = false
   st.promptPreflightActive = false
+  st.workerExecutionIdentity = null
+  st.consumedSessionOperationNonces.clear()
+})
+
+describe('Worker init identity', () => {
+  it('rejects before SDK or Session initialization when Main slot identity is missing', async () => {
+    st.sdk = null
+    const reply = vi.fn()
+
+    await handleInit({
+      cwd: 'C:\\project',
+      promptContext: {
+        schemaVersion: 1,
+        mode: 'CODING',
+        phase: 'ASK',
+        workspaceAvailable: true,
+        projectTrusted: true,
+        enabledCapabilities: ['coding.workspace'],
+        availableToolNames: ['read'],
+      },
+    }, reply)
+
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      error: 'Init failed: WORKER_PROJECT_IDENTITY_REQUIRED',
+    }))
+    expect(st.sdk).toBeNull()
+    expect(st.session).toBeNull()
+  })
 })
 
 describe('Worker Prompt dispatch preflight', () => {

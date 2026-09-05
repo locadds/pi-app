@@ -37,6 +37,8 @@ import { hasPendingDirectExtensionUI, requestDirectExtensionUI } from '../direct
 import { currentVisibleSessionFile } from '../completion-notification-events'
 import { summarizeTemplateReviewActionsV2 } from '@shared/xiaogui-template-review-decisions'
 import { errorMessage } from '@shared/error-message'
+import { startTrustedWorkerForProjectV1 } from '../trusted-worker-control'
+import { trustedWorkerCapabilityAuthorityV1 } from '../trusted-worker-capability'
 
 const ModeSwitchSchema = z.object({
   mode: z.enum(['WORK', 'DESIGN', 'CODING']),
@@ -162,7 +164,7 @@ export function registerXiaoguiHandlers(): void {
     }
     try {
       await workerManager.stop()
-      await workerManager.start(cwd)
+      await startTrustedWorkerForProjectV1(cwd)
       const diagnostics = await workerManager.getEffectivePromptManifest()
       if (diagnostics?.manifest.mode !== mode) {
         throw new Error('XIAOGUI_MODE_PROMPT_CONTEXT_MISMATCH')
@@ -171,7 +173,7 @@ export function registerXiaoguiHandlers(): void {
       xiaogui.setMode(previousMode)
       try {
         await workerManager.stop()
-        await workerManager.start(cwd)
+        await startTrustedWorkerForProjectV1(cwd)
       } catch {
         // The persisted mode is rolled back even when Worker recovery fails.
       }
@@ -196,12 +198,12 @@ export function registerXiaoguiHandlers(): void {
     if (cwd) {
       try {
         await workerManager.stop()
-        await workerManager.start(cwd)
+        await startTrustedWorkerForProjectV1(cwd)
       } catch (error) {
         xiaogui.setExecutionPhase(previousPhase)
         try {
           await workerManager.stop()
-          await workerManager.start(cwd)
+          await startTrustedWorkerForProjectV1(cwd)
         } catch {
           // Phase is rolled back even if Worker recovery also fails. The caller
           // receives an explicit failure instead of observing false success.
@@ -249,7 +251,10 @@ export function registerXiaoguiHandlers(): void {
       if (!requestedSessionFile || requestedSessionFile !== visibleSessionFile) {
         return directReviewFailure('SESSION_SCOPE_MISMATCH')
       }
-      const cwd = workerManager.resolveSessionWorkspaceCwd(requestedSessionFile)
+      const binding = workerManager.resolveRegisteredSessionBinding(requestedSessionFile)
+      const cwd = binding
+        ? trustedWorkerCapabilityAuthorityV1.inspectSession(binding).authorizedRoot
+        : null
       if (!cwd) return directReviewFailure('SESSION_NOT_READY')
       const scope = await sessionScopeResolverV1.resolveExisting({
         rootPath: cwd,
@@ -379,7 +384,7 @@ export function registerXiaoguiHandlers(): void {
       const deployed = await ensureDesignExtensionDeployed(req.key).catch(() => false)
       if (deployed && workerManager.cwd === req.key && !workerManager.hasActiveTurns) {
         await workerManager.stop().catch(() => {})
-        await workerManager.start(req.key).catch(() => {})
+        await startTrustedWorkerForProjectV1(req.key).catch(() => {})
       }
     }
     return { ok: true, mode }

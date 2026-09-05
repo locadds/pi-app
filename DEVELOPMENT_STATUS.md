@@ -1,5 +1,133 @@
 # 小规开发阶段状态
 
+## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT Pi Worker 项目根唯一权威收口（阶段候选，待人工复验）
+
+### 本阶段目标
+
+只收口一个不变量：任何创建、恢复或重新绑定 Pi Worker 的操作，都必须消费 Main 内存中签发的可信能力；JSONL `cwd` 只能用于一致性比较，不能决定执行目录。保留 R3.3 已通过的 V4 授权路径、后台来源绑定权限框和 Unicode Bidi 防护，不改变 UI、OMP、权限矩阵、TaskHub V1 或 WORK 产品流程。
+
+施工基线固定为 `840a7773728830d640dd3e6da91a3f379ba9d021`。本记录随唯一追加候选提交固化；最终提交 SHA 以 Git 与交付回执为准。
+
+### 实际修改文件
+
+Main 可信能力、创建操作与 Worker 装载：
+
+- `src/main/trusted-worker-capability.ts`（新增）
+- `src/main/trusted-worker-control.ts`（新增）
+- `src/main/worker-session-creation-operation.ts`（新增）
+- `src/main/trusted-session-access.ts`
+- `src/main/trusted-workspace.ts`
+- `src/main/worker-manager.ts`
+- `src/main/worker-manager-pool.ts`
+- `src/main/worker-manager-types.ts`
+- `src/main/worker-manager-new-session.ts`
+- `src/main/session-bind-state.ts`
+- `src/main/completion-notification.ts`
+
+Main IPC 与直接 CODING / Checkpoint 接缝：
+
+- `src/main/ipc/handlers/extensions.ts`
+- `src/main/ipc/handlers/model-runtime.ts`
+- `src/main/ipc/handlers/pi-sdk.ts`
+- `src/main/ipc/handlers/prompt.ts`
+- `src/main/ipc/handlers/session.ts`
+- `src/main/ipc/handlers/skills-resources.ts`
+- `src/main/ipc/handlers/workspace.ts`
+- `src/main/xiaogui/ipc-handlers.ts`
+- `src/main/xiaogui/coding-extensions/checkpoint-default-composition.ts`
+- `src/main/xiaogui/coding-extensions/checkpoint-session-binding-registry.ts`
+- `src/main/xiaogui/coding-extensions/context-composition.ts`
+- `src/main/xiaogui/coding-extensions/plan-worker-tool.ts`
+
+Pi Worker：
+
+- `src/worker/worker-port-types.ts`
+- `src/worker/worker-path-bridge.ts`
+- `src/worker/worker-runtime.ts`
+- `src/worker/handlers/worker-handlers-session.ts`
+- `src/worker/handlers/worker-handlers-turn.ts`
+
+新增或修改的聚焦测试：
+
+- `src/main/trusted-worker-capability.test.ts`（新增）
+- `src/main/worker-session-creation-operation.test.ts`（新增）
+- `src/main/__tests__/trusted-worker-capability-fixture.ts`（新增）
+- `src/main/__tests__/trusted-worker-seam-architecture.test.ts`（新增）
+- `src/worker/worker-runtime-session-execution-lease.test.ts`（新增）
+- `src/main/trusted-session-access.test.ts`
+- `src/main/__tests__/worker-manager-coding-role.test.ts`
+- `src/main/__tests__/worker-manager-extension-ui.test.ts`
+- `src/main/__tests__/worker-manager-pool.test.ts`
+- `src/main/__tests__/worker-manager-session-isolation.test.ts`
+- `src/main/ipc/handlers/prompt-trusted-session.test.ts`
+- `src/main/ipc/handlers/session-delete-trusted-workspace.integration.test.ts`
+- `src/main/ipc/handlers/session-preview-authorization.test.ts`
+- `src/main/ipc/handlers/session-preview-invalidation.test.ts`
+- `src/main/xiaogui/coding-extensions/checkpoint-production-composition.test.ts`
+- `src/main/xiaogui/coding-extensions/checkpoint-session-binding-registry.test.ts`
+- `src/worker/handlers/worker-handlers-session.test.ts`
+- `src/worker/handlers/worker-handlers-turn.test.ts`
+- `src/worker/handlers/worker-runtime-tool-registry.test.ts`
+- `src/worker/worker-path-bridge.test.ts`
+
+阶段记录：
+
+- `DEVELOPMENT_STATUS.md`
+- `doc/README.md`
+- `doc/README.zh-CN.md`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\施工总控.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\progress.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\research\2026-09-03-CODING研究-OMP-ACP-P1C验收与P1D装配规划.md`
+
+### 已完成内容
+
+1. 新增由对象身份和 `WeakMap` 承载的 Main 内存能力。项目与会话句柄自身不含路径、摘要或可序列化授权数据；Renderer、IPC、Worker 和持久化层均不能构造或取得完整绑定。
+2. `WorkerManager` 的启动、装载、聚焦、恢复、新建、Fork 和 Clone 接口只接受 Main 内部句柄。裸 `loadSession(sessionFile)`、`ensureSessionWorker(sessionFile, cwd)`、字符串 workspace hint 和 JSONL cwd 执行兜底均已退出生产调用图。
+3. Main→Worker 使用一次性执行租约，下发本次操作的 cwd、会话文件、项目摘要、slot 摘要和 nonce。Worker 核对租约与初始化 slot，只消费一次；冷装载调用 Pi `SessionManager.open(..., cwdOverride)`，热切换调用 `switchSession(..., { cwdOverride })`。
+4. 项目实体身份只由 Main 读取和复验。Worker 不跨 Windows/WSL 重算设备号或 inode；进程创建前和初始化完成后均复验项目实体，变化时终止 Worker。
+5. New/Fork/Clone 使用一次性创建操作，把 nonce 与精确来源 Worker、slot、项目能力和预期会话目录绑定。Main 核验回执、来源及路径后原子签发新会话能力；重复、伪造、来源变化或越界回执均拒绝。
+6. Prompt、Open、Prepare、Navigate、Checkpoint 恢复及共享 WORK 底层入口统一消费可信会话能力。JSONL cwd 只作会话归属一致性比较；持久化 Checkpoint 只保存待复核证据，恢复时必须由 Main 重新检查项目和会话后签发新能力。
+7. List/Preview 保持纯展示：不会因列出或预览会话签发能力，也不会冷启动 Worker。只有可信 Open、Main 原子 New/Fork/Clone 或精确 live Worker 可以建立会话能力。
+8. 直接 CODING 上下文装配使用同一能力中的授权根；AgentSession、SessionManager、ResourceLoader、项目 Skill/规则和工具不再分别从 JSONL 或 Renderer 参数猜测 cwd。
+9. 增加最小 WORK 新建／打开／发送回归，确认共享底层接口迁移没有改变 WORK 的 UI、产品流程、状态语义和工具能力。TaskHub Attempt 工作树、Checkpoint V1、Delivery 和人工 Apply 仍保持原语义。
+
+### 未完成内容
+
+- 尚未执行“自然语言 → 外部模型 → Electron 用户界面”的人工旅程；自动证据只覆盖真实 Pi 工具生命周期、真实文件写入以及 Main/Worker/IPC 的确定性接缝。
+- 当前仍是独立 CODING 分支阶段候选，未合入 WORK、阶段线或主线，未发布、未制作 Portable。
+- 内存能力在主进程重启后按设计失效；恢复必须经过可信 Open 或重新核验，不提供静默兼容兜底。
+
+### 与规格文档存在的偏差
+
+- 无产品或架构偏差。为满足“List/Preview 不得顺便签发能力”，列表对没有精确同项目 live Worker 的会话只返回显示数据，不再为了列表冷启动 Worker。
+- 允许迁移 WORK 使用的共享 `WorkerManager` 底层接口，但没有修改 WORK 的 UI、产品流程、状态语义或工具能力。
+
+### 测试命令和测试结果
+
+~~~powershell
+npm exec vitest run -- --reporter=dot packages/shared/xiaogui-direct-coding.test.ts src/main/xiaogui/scope-resolver.test.ts src/main/xiaogui/scope-store.test.ts src/main/__tests__/worker-execution-identity.test.ts src/main/__tests__/worker-manager-session-isolation.test.ts src/main/__tests__/worker-manager-extension-ui.test.ts src/main/__tests__/worker-manager-pool.test.ts src/main/trusted-session-access.test.ts src/main/ipc/handlers/prompt-trusted-session.test.ts src/main/ipc/handlers/session-preview-authorization.test.ts src/main/direct-extension-ui.test.ts src/main/xiaogui/coding-extensions/coding-authorization-module.test.ts src/main/xiaogui/coding-extensions/direct-permission-ui-adapter.test.ts src/main/xiaogui/coding-extensions/direct-coding-worker-tool.test.ts src/main/xiaogui/coding-extensions/direct-coding-module.test.ts src/main/xiaogui/worker-host-tool-router.test.ts src/worker/worker-path-bridge-direct-coding.test.ts src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts src/renderer/src/features/extension-ui/coding-permission-dialog.test.tsx src/renderer/src/lib/extension-ui-channel.test.ts src/renderer/src/stores/__tests__/extension-ui-store.test.ts src/renderer/src/features/composer/use-composer-send.test.tsx src/renderer/src/lib/subagent-session-navigation.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts src/main/xiaogui/coding-extensions/checkpoint-module.test.ts src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/change-apply.test.ts src/main/trusted-worker-capability.test.ts src/main/worker-session-creation-operation.test.ts src/main/__tests__/trusted-worker-seam-architecture.test.ts src/worker/worker-runtime-session-execution-lease.test.ts src/main/ipc/handlers/session-preview-invalidation.test.ts src/main/ipc/handlers/session-delete-trusted-workspace.integration.test.ts src/main/xiaogui/coding-extensions/checkpoint-production-composition.test.ts src/main/xiaogui/coding-extensions/checkpoint-session-binding-registry.test.ts src/worker/handlers/worker-handlers-session.test.ts src/worker/handlers/worker-handlers-turn.test.ts src/worker/handlers/worker-runtime-tool-registry.test.ts
+npm run typecheck
+$codingFiles = @((git diff --name-only --diff-filter=ACMR); (git ls-files --others --exclude-standard)) | Where-Object { $_ -match '\.(ts|tsx)$' } | Sort-Object -Unique
+npm exec eslint -- $codingFiles
+git diff --check
+~~~
+
+结果：`38` 个聚焦测试文件、`361` 项全部通过；Node/Web TypeScript 通过；全部 `48` 个变更 TypeScript/TSX 文件定向 ESLint 通过；差异检查通过。覆盖不透明能力、租约单次消费、New/Fork/Clone 回执、冷/热 Pi cwdOverride、伪造 JSONL、登记缺失、项目实体替换、普通与 Sandbox 首条消息、WORK 新建/打开/发送、TaskHub V1 回归、真实 Pi 工具生命周期与真实文件写入及 WSL 路径接缝。
+- 按范围未运行 OMP、802 MB 装配、外部模型、Electron、Portable 或无关全量测试。
+
+### 已知风险
+
+- 没有外部模型和 Electron 人工旅程证据，不能把本阶段表述为完整用户验收。
+- Worker 内的一次性租约 nonce 只保留有界历史；达到上限后该 Worker fail-closed，需重建 Worker，不会回退到不受信路径。
+- Main 重启会丢失内存能力；这是安全边界，不是持久化恢复完成的证明。
+
+### 下一阶段计划
+
+- 推送唯一追加提交后立即停止，等待人工或审查 Agent 对固定 SHA 复验。
+- 复验通过前不得合入 WORK、阶段线或主线，不得进入发布、Portable 或下一阶段施工。
+
 ## 2026-09-05｜CODING-P1D-B-R3.3 路径、可信会话与后台授权返修（阶段候选，待人工复验）
 
 ### 本阶段目标

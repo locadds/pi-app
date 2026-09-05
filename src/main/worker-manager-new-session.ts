@@ -16,9 +16,16 @@ import type {
 } from './worker-manager-types'
 import { readMaxSessionWorkers } from './worker-pool-config'
 import { normalizeSessionKey, workspacePoolKey } from './worker-session-key'
+import type {
+  TrustedProjectBindingHandleV1,
+  TrustedSessionBindingHandleV1,
+} from './trusted-worker-capability'
+import { createWorkerSessionCreationOperationV1 } from './worker-session-creation-operation'
 
 export type NewSessionPoolOptions = {
   cwd: string
+  projectBinding: TrustedProjectBindingHandleV1
+  projectIdentityDigest: string
   pool: Map<string, WorkerSlot>
   mainWindow: BrowserWindow | null
   foregroundPoolKey: () => string | null
@@ -28,6 +35,12 @@ export type NewSessionPoolOptions = {
   onHostToolRequest?: WorkerHostToolRequestHandler
   onSlotExit: (slot: WorkerSlot, code: number) => void
   beforeActivate?: (result: { sessionId: string; sessionFile: string }) => Promise<void>
+  issueRuntimeSession: (sessionFile: string) => TrustedSessionBindingHandleV1
+  activateSession: (
+    slot: WorkerSlot,
+    binding: TrustedSessionBindingHandleV1,
+    promptContext: XiaoguiPromptContextV1,
+  ) => Promise<void>
   promptContext: XiaoguiPromptContextV1
   finalizePromptContext?: (sessionFile: string) => Promise<XiaoguiPromptContextV1>
 }
@@ -71,38 +84,45 @@ function nextWorkspacePoolKey(pool: Map<string, WorkerSlot>, cwd: string): strin
 async function runNewSession(
   slot: WorkerSlot,
   options: NewSessionPoolOptions,
-): Promise<{ sessionId: string; sessionFile?: string }> {
+): Promise<{ sessionId: string; sessionFile?: string; binding?: TrustedSessionBindingHandleV1 }> {
   if (slot.initPromise) await slot.initPromise
-  const response = await slotRequest(slot, 'newSession', { promptContext: options.promptContext })
+  const creation = createWorkerSessionCreationOperationV1({ slot, pool: options.pool })
+  const response = await slotRequest(slot, 'newSession', {
+    promptContext: options.promptContext,
+    creationOperationNonce: creation.nonce,
+  })
+  if (response.type === 'error') {
+    throw new Error(String(response.error || 'newSession failed'))
+  }
   slot.promptContext = options.promptContext
   const sessionId = String(response.sessionId ?? '')
   const sessionFile = response.sessionFile
-    ? normalizeSessionKey(String(response.sessionFile))
+    ? creation.acceptTarget(response)
     : undefined
   if (sessionFile) {
     await options.beforeActivate?.({ sessionId, sessionFile })
+    const binding = options.issueRuntimeSession(sessionFile)
     if (options.finalizePromptContext) {
       const finalContext = await options.finalizePromptContext(sessionFile)
-      await slotRequest(slot, 'loadSession', {
-        sessionFile,
-        promptContext: finalContext,
-      })
+      await options.activateSession(slot, binding, finalContext)
       slot.promptContext = finalContext
     }
     await remapSessionWorkerSlot(options.pool, slot.poolKey, sessionFile)
+    slot.sessionBinding = binding
+    options.setForeground(slot)
+    await evictIdleWorkers(options.pool, {
+      foregroundKey: slot.poolKey,
+      maxWorkers: readMaxSessionWorkers(),
+      mainWindow: options.mainWindow,
+    })
+    return { sessionId, sessionFile, binding }
   }
-  options.setForeground(slot)
-  await evictIdleWorkers(options.pool, {
-    foregroundKey: slot.poolKey,
-    maxWorkers: readMaxSessionWorkers(),
-    mainWindow: options.mainWindow,
-  })
-  return { sessionId, sessionFile }
+  throw new Error('SESSION_CREATION_RECEIPT_INVALID')
 }
 
 export async function createNewSessionInPool(
   options: NewSessionPoolOptions,
-): Promise<{ sessionId: string; sessionFile?: string }> {
+): Promise<{ sessionId: string; sessionFile?: string; binding?: TrustedSessionBindingHandleV1 }> {
   const reusable = findReusableWorkspaceSlot(options)
   if (reusable) {
     try {
@@ -126,6 +146,8 @@ export async function createNewSessionInPool(
 
   const poolKey = nextWorkspacePoolKey(options.pool, options.cwd)
   const { slot, init } = await forkWorkerForCwd(options.cwd, {
+    projectBinding: options.projectBinding,
+    projectIdentityDigest: options.projectIdentityDigest,
     poolKey,
     sessionFile: null,
     promptContext: options.promptContext,

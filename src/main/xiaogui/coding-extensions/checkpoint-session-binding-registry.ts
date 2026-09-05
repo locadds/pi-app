@@ -35,6 +35,10 @@ export interface CheckpointSessionAddressRecordV1 {
   readonly sourceSessionId: string
   /** Main-process-private. This value must never cross public IPC or receipts. */
   readonly sessionFile: string
+  /** Main-process-private trusted project root used for restore authorization. */
+  readonly authorizedRoot: string
+  /** Main-process-private project identity digest used for restore verification. */
+  readonly projectIdentityDigest: string
 }
 
 export interface CheckpointAttemptSessionBindingV1 extends CheckpointSessionAddressRecordV1 {
@@ -53,6 +57,8 @@ interface AddressRowV1 {
   readonly source_session_id: string
   readonly session_file: string
   readonly session_file_key: string
+  readonly authorized_root: string
+  readonly project_identity_digest: string
 }
 
 interface AttemptRowV1 extends AddressRowV1 {
@@ -88,6 +94,8 @@ export class CheckpointSessionBindingRegistryV1 {
           source_session_id text not null unique,
           session_file text not null,
           session_file_key text not null unique,
+          authorized_root text not null,
+          project_identity_digest text not null,
           updated_at text not null,
           primary key (project_id, session_key)
         );
@@ -111,6 +119,18 @@ export class CheckpointSessionBindingRegistryV1 {
       )
     }
     this.db = database
+    this.ensureSchema()
+  }
+
+  private ensureSchema(): void {
+    const columns = this.db.prepare(`pragma table_info('xiaogui_coding_pi_session_address_v1')`).all() as Array<{ name: string }>
+    const names = new Set(columns.map((column) => column.name))
+    if (!names.has('authorized_root')) {
+      this.db.exec("alter table xiaogui_coding_pi_session_address_v1 add column authorized_root text not null default ''")
+    }
+    if (!names.has('project_identity_digest')) {
+      this.db.exec("alter table xiaogui_coding_pi_session_address_v1 add column project_identity_digest text not null default ''")
+    }
   }
 
   recordAddress(input: CheckpointSessionAddressRecordV1): void {
@@ -121,7 +141,10 @@ export class CheckpointSessionBindingRegistryV1 {
       'CHECKPOINT_SESSION_REGISTRY_SESSION_ID_INVALID',
     )
     const sessionFile = privateAbsolutePath(input?.sessionFile)
+    const authorizedRoot = privateAbsolutePath(input?.authorizedRoot)
+    const projectIdentityDigest = privateDigest(input?.projectIdentityDigest)
     const sessionFileKey = privatePathKey(sessionFile)
+    const authorizedRootKey = privatePathKey(authorizedRoot)
     const updatedAt = timestamp(this.now())
 
     try {
@@ -134,12 +157,31 @@ export class CheckpointSessionBindingRegistryV1 {
         ) {
           conflict('CHECKPOINT_SESSION_REGISTRY_ADDRESS_CONFLICT')
         }
+        if (!existing.authorized_root && !existing.project_identity_digest) {
+          this.db.prepare(`
+            update xiaogui_coding_pi_session_address_v1
+            set authorized_root = ?, project_identity_digest = ?, updated_at = ?
+            where project_id = ? and session_key = ?
+              and authorized_root = '' and project_identity_digest = ''
+          `).run(
+            authorizedRoot,
+            projectIdentityDigest,
+            updatedAt,
+            address.projectId,
+            address.sessionKey,
+          )
+        } else if (
+          privatePathKey(existing.authorized_root) !== authorizedRootKey
+          || existing.project_identity_digest !== projectIdentityDigest
+        ) {
+          conflict('CHECKPOINT_SESSION_REGISTRY_ADDRESS_CONFLICT')
+        }
         this.db.exec('commit')
         return
       }
 
       const privateOwner = this.db.prepare(`
-        select project_id, session_key, source_session_id, session_file, session_file_key
+        select project_id, session_key, source_session_id, session_file, session_file_key, authorized_root, project_identity_digest
         from xiaogui_coding_pi_session_address_v1
         where source_session_id = ? or session_file_key = ?
         limit 1
@@ -148,14 +190,16 @@ export class CheckpointSessionBindingRegistryV1 {
 
       this.db.prepare(`
         insert into xiaogui_coding_pi_session_address_v1
-          (project_id, session_key, source_session_id, session_file, session_file_key, updated_at)
-        values (?, ?, ?, ?, ?, ?)
+          (project_id, session_key, source_session_id, session_file, session_file_key, authorized_root, project_identity_digest, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         address.projectId,
         address.sessionKey,
         sourceSessionId,
         sessionFile,
         sessionFileKey,
+        authorizedRoot,
+        projectIdentityDigest,
         updatedAt,
       )
       this.db.exec('commit')
@@ -205,6 +249,8 @@ export class CheckpointSessionBindingRegistryV1 {
         address,
         sourceSessionId: source.source_session_id,
         sessionFile: source.session_file,
+        authorizedRoot: source.authorized_root,
+        projectIdentityDigest: source.project_identity_digest,
       }
     } catch (error) {
       rollbackQuietly(this.db)
@@ -225,6 +271,11 @@ export class CheckpointSessionBindingRegistryV1 {
     const address = canonicalAddress(addressInput)
     try {
       const row = this.readAddressRow(address)
+      if (row && (!row.authorized_root || !row.project_identity_digest)) {
+        throw new CheckpointSessionBindingRegistryErrorV1(
+          'CHECKPOINT_SESSION_REGISTRY_STATE_CORRUPT',
+        )
+      }
       return row ? addressRecordFromRow(row) : null
     } catch (error) {
       if (error instanceof CheckpointSessionBindingRegistryErrorV1) throw error
@@ -259,7 +310,7 @@ export class CheckpointSessionBindingRegistryV1 {
 
   private readAddressRow(address: SessionAddressV1): AddressRowV1 | undefined {
     return this.db.prepare(`
-      select project_id, session_key, source_session_id, session_file, session_file_key
+      select project_id, session_key, source_session_id, session_file, session_file_key, authorized_root, project_identity_digest
       from xiaogui_coding_pi_session_address_v1
       where project_id = ? and session_key = ?
       limit 1
@@ -269,14 +320,14 @@ export class CheckpointSessionBindingRegistryV1 {
   private readAttemptRow(attemptId: string): AttemptRowV1 | undefined {
     const row = this.db.prepare(`
       select b.attempt_id, b.project_id, b.session_key,
-             a.source_session_id, a.session_file, a.session_file_key
+             a.source_session_id, a.session_file, a.session_file_key, a.authorized_root, a.project_identity_digest
       from xiaogui_coding_pi_attempt_address_binding_v1 b
       left join xiaogui_coding_pi_session_address_v1 a
         on a.project_id = b.project_id and a.session_key = b.session_key
       where b.attempt_id = ?
       limit 1
     `).get(attemptId) as unknown as AttemptRowV1 | undefined
-    if (row && (!row.source_session_id || !row.session_file || !row.session_file_key)) {
+    if (row && (!row.source_session_id || !row.session_file || !row.session_file_key || !row.authorized_root || !row.project_identity_digest)) {
       throw new CheckpointSessionBindingRegistryErrorV1(
         'CHECKPOINT_SESSION_REGISTRY_STATE_CORRUPT',
       )
@@ -302,6 +353,8 @@ function bindingFromRow(row: AttemptRowV1): CheckpointAttemptSessionBindingV1 {
     },
     sourceSessionId: row.source_session_id,
     sessionFile: row.session_file,
+    authorizedRoot: row.authorized_root,
+    projectIdentityDigest: row.project_identity_digest,
   }
 }
 
@@ -313,6 +366,8 @@ function addressRecordFromRow(row: AddressRowV1): CheckpointSessionAddressRecord
     },
     sourceSessionId: row.source_session_id,
     sessionFile: row.session_file,
+    authorizedRoot: row.authorized_root,
+    projectIdentityDigest: row.project_identity_digest,
   }
 }
 
@@ -356,6 +411,13 @@ function privatePathKey(path: string): string {
   if (key.startsWith('//')) key = `//${key.slice(2).replace(/\/+/g, '/')}`
   else key = key.replace(/\/+/g, '/')
   return win32.isAbsolute(path) ? key.toLowerCase() : key
+}
+
+function privateDigest(value: unknown): string {
+  if (typeof value !== 'string') invalidSessionFile()
+  const digest = value.trim()
+  if (!/^sha256:[a-f0-9]{64}$/i.test(digest)) invalidSessionFile()
+  return digest
 }
 
 function timestamp(value: string): string {

@@ -1,4 +1,5 @@
 import { utilityProcess, app, type BrowserWindow } from 'electron'
+import { randomUUID } from 'node:crypto'
 import type { AppEvent } from '@shared/app-events'
 import type { WorkerResponsePayload } from '@shared/worker-rpc-types'
 import type {
@@ -34,7 +35,12 @@ import { syncWorkerBundleToWsl } from './wsl/worker-host'
 import { resolveUtilityEntry } from './utility-entry-path'
 import { resolveBundledPiSkillsPath } from './xiaogui/bundled-skills'
 import { buildXiaoguiWorkerEnv } from './xiaogui/worker-env'
-import { readCurrentWorkerExecutionIdentityDigestV1 } from './worker-execution-identity'
+import {
+  createWorkerExecutionIdentityDigestV1,
+  readProjectRootIdentityV2,
+  readWorkerResourceConfigIdentityV1,
+} from './worker-execution-identity'
+import type { TrustedProjectBindingHandleV1 } from './trusted-worker-capability'
 
 export const extensionUiDialogSource = new Map<string, WorkerSlot>()
 const hostToolAbortControllers = new WeakMap<WorkerSlot, Map<string, AbortController>>()
@@ -95,6 +101,8 @@ function createSlot(
   cwd: string,
   runtime: { mode: 'host' | 'wsl'; distro: string | null },
   worker: WorkerTransport,
+  projectBinding: TrustedProjectBindingHandleV1,
+  projectIdentityDigest: string,
   sessionFile: string | null = null,
   promptContext: XiaoguiPromptContextV1 | null = null,
 ): WorkerSlot {
@@ -103,7 +111,16 @@ function createSlot(
     poolKey,
     cwd,
     runtime,
-    executionIdentityDigest: readCurrentWorkerExecutionIdentityDigestV1(cwd, runtime),
+    executionIdentityDigest: createWorkerExecutionIdentityDigestV1({
+      cwd,
+      runtime,
+      resources: readWorkerResourceConfigIdentityV1(),
+      projectRootIdentityDigest: projectIdentityDigest,
+    }),
+    projectIdentityDigest,
+    projectBinding,
+    sessionBinding: null,
+    slotBindingDigest: `slot:${randomUUID()}`,
     sessionFile,
     sessionId: null,
     promptContext,
@@ -133,10 +150,6 @@ function safeWrite(msg: string): void {
 
 const SESSION_IDENTITY_RESPONSE_TYPES = new Set([
   'init-done',
-  'newSession-done',
-  'loadSession-done',
-  'fork-done',
-  'clone-done',
 ])
 
 function synchronizeSlotSessionIdentity(slot: WorkerSlot, data: WorkerResponsePayload): void {
@@ -493,8 +506,13 @@ export async function forkWorkerForCwd(
     poolKey?: string
     sessionFile?: string | null
     promptContext: XiaoguiPromptContextV1
+    projectBinding: TrustedProjectBindingHandleV1
+    projectIdentityDigest: string
   },
 ): Promise<{ slot: WorkerSlot; init: Promise<WorkerInitResult> }> {
+  if (readProjectRootIdentityV2(cwd).digest !== opts.projectIdentityDigest) {
+    throw new Error('PROJECT_IDENTITY_CHANGED')
+  }
   const poolKey = opts.poolKey || workspacePoolKey(cwd)
   const runtime = getAgentRuntimeConfig()
   let transport: WorkerTransport
@@ -549,7 +567,16 @@ export async function forkWorkerForCwd(
     const activeSdk = resolveActiveSdk(app.getPath('userData'))
     sdkPath = activeSdk.kind === 'builtin' ? null : activeSdk.entryPath
   }
-  const slot = createSlot(poolKey, cwd, runtime, transport, opts.sessionFile ?? null, opts.promptContext)
+  const slot = createSlot(
+    poolKey,
+    cwd,
+    runtime,
+    transport,
+    opts.projectBinding,
+    opts.projectIdentityDigest,
+    opts.sessionFile ?? null,
+    opts.promptContext,
+  )
   const initPromise = new Promise<WorkerInitResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       if (slot.worker !== transport) return
@@ -567,15 +594,33 @@ export async function forkWorkerForCwd(
       reject(e)
     }
   })
-  slot.initPromise = initPromise
   transport.postMessage({
     type: 'init',
     cwd: workerCwd,
+    projectIdentityDigest: slot.projectIdentityDigest,
+    slotBindingDigest: slot.slotBindingDigest,
     sdkPath,
     promptContext: opts.promptContext,
     bundledSkillPaths,
   })
-  return { slot, init: initPromise }
+  const guardedInit = initPromise.then((result) => {
+      if (readProjectRootIdentityV2(cwd).digest !== slot.projectIdentityDigest) {
+        throw new Error('PROJECT_IDENTITY_CHANGED')
+      }
+      return result
+    }).catch((error) => {
+      // A replaced project root invalidates the Worker before any caller can
+      // reuse its raw init promise. Stop the process at the seam itself.
+      slot.stopping = true
+      try {
+        transport.kill()
+      } catch {
+        /* best effort; caller cleanup remains idempotent */
+      }
+      throw error
+    })
+  slot.initPromise = guardedInit
+  return { slot, init: guardedInit }
 }
 
 /**

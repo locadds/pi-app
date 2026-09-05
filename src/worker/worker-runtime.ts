@@ -14,6 +14,8 @@ import type {
 } from '@shared/xiaogui-prompt-contract'
 import type { CodingContextAgentPayloadV1 } from '@shared/xiaogui-coding-extension-pack'
 import type { CodingRoleAgentSnapshotV1 } from '@shared/xiaogui-coding-role-control'
+import { sessionFilePathsEqual } from '@shared/session-file-path'
+import { isAbsolute, resolve } from 'node:path'
 import {
   activeToolNamesForPromptContextV1,
   selectXiaoguiTurnCapabilitiesV1,
@@ -46,11 +48,18 @@ import { createXiaoguiCodingContextExtensionV1 } from './xiaogui-coding-extensio
 import { createXiaoguiCodingRoleGuardExtensionV1 } from './xiaogui-coding-extensions/role-guard-extension.js'
 import { CodingRoleRuntimeBindingV1 } from './xiaogui-coding-extensions/role-runtime-binding.js'
 import { createXiaoguiDirectCodingToolLifecycleV2 } from './xiaogui-coding-extensions/direct-coding-tool-extension.js'
+import type { WorkerSessionExecutionLeaseV1 } from './worker-port-types.js'
 
 export type WorkerModelRuntime = Pick<
   ModelRuntime,
   'getModel' | 'getModels' | 'getAvailable' | 'refresh' | 'getProviderAuthStatus' | 'listCredentials'
 >
+
+export type WorkerExecutionIdentityV1 = Readonly<{
+  authorizedCwd: string
+  projectIdentityDigest: string
+  slotBindingDigest: string
+}>
 
 export type WorkerMutableState = {
   sdk: typeof import('@earendil-works/pi-coding-agent') | null
@@ -69,6 +78,10 @@ export type WorkerMutableState = {
   currentSessionId: string
   currentRunId: string
   currentTurnId: string
+  /** Main-issued identity captured once for this Worker process. */
+  workerExecutionIdentity: WorkerExecutionIdentityV1 | null
+  /** One-shot load/switch leases consumed by this Worker process. */
+  consumedSessionOperationNonces: Set<string>
   unsubscribe: (() => void) | null
   agentTurnActive: boolean
   promptPreflightActive: boolean
@@ -118,6 +131,8 @@ export const st: WorkerMutableState = {
   currentSessionId: '',
   currentRunId: '',
   currentTurnId: '',
+  workerExecutionIdentity: null,
+  consumedSessionOperationNonces: new Set(),
   unsubscribe: null,
   agentTurnActive: false,
   promptPreflightActive: false,
@@ -139,6 +154,143 @@ export const st: WorkerMutableState = {
 }
 
 const codingRoleRuntimeBindingV1 = new CodingRoleRuntimeBindingV1()
+
+const MAX_SESSION_OPERATION_NONCES = 4_096
+
+function normalizedWorkerPath(value: string): string {
+  let normalized = resolve(value).replace(/\\/g, '/')
+  if (normalized.length > 1 && !/^[a-zA-Z]:\/$/.test(normalized)) {
+    normalized = normalized.replace(/\/+$/, '')
+  }
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+function requiredOpaqueValue(value: unknown, errorCode: string): string {
+  if (typeof value !== 'string') throw new Error(errorCode)
+  if (!value || value !== value.trim() || value.length > 1_024 || /[\u0000-\u001f\u007f\s]/u.test(value)) {
+    throw new Error(errorCode)
+  }
+  return value
+}
+
+function requiredPath(value: unknown, errorCode: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(errorCode)
+  if (/[\u0000-\u001f\u007f]/u.test(value)) throw new Error(errorCode)
+  return value
+}
+
+function requiredAbsolutePath(value: unknown, errorCode: string): string {
+  const path = requiredPath(value, errorCode)
+  if (!isAbsolute(path)) throw new Error(errorCode)
+  return path
+}
+
+/** Bind immutable Main-owned project/slot facts to this Worker process. */
+export function bindWorkerExecutionIdentityV1(value: unknown): WorkerExecutionIdentityV1 {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('WORKER_EXECUTION_IDENTITY_REQUIRED')
+  }
+  const raw = value as Record<string, unknown>
+  const next = Object.freeze({
+    authorizedCwd: requiredAbsolutePath(raw.authorizedCwd, 'WORKER_AUTHORIZED_CWD_REQUIRED'),
+    projectIdentityDigest: requiredOpaqueValue(
+      raw.projectIdentityDigest,
+      'WORKER_PROJECT_IDENTITY_REQUIRED',
+    ),
+    slotBindingDigest: requiredOpaqueValue(
+      raw.slotBindingDigest,
+      'WORKER_SLOT_BINDING_REQUIRED',
+    ),
+  })
+  const current = st.workerExecutionIdentity
+  if (current) {
+    if (
+      normalizedWorkerPath(current.authorizedCwd) !== normalizedWorkerPath(next.authorizedCwd)
+      || current.projectIdentityDigest !== next.projectIdentityDigest
+      || current.slotBindingDigest !== next.slotBindingDigest
+    ) {
+      throw new Error('WORKER_EXECUTION_IDENTITY_REBIND_DENIED')
+    }
+    return current
+  }
+  st.workerExecutionIdentity = next
+  st.consumedSessionOperationNonces.clear()
+  return next
+}
+
+/** Validate a Main lease before a handler derives its target Session. */
+export function inspectWorkerSessionExecutionLeaseV1(
+  value: unknown,
+): WorkerSessionExecutionLeaseV1 {
+  const identity = st.workerExecutionIdentity
+  if (!identity) throw new Error('WORKER_EXECUTION_IDENTITY_REQUIRED')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('SESSION_EXECUTION_LEASE_REQUIRED')
+  }
+  const raw = value as Record<string, unknown>
+  if (raw.schemaVersion !== 1) throw new Error('SESSION_EXECUTION_LEASE_INVALID')
+  const lease = Object.freeze({
+    schemaVersion: 1 as const,
+    sessionFile: requiredAbsolutePath(raw.sessionFile, 'SESSION_EXECUTION_LEASE_INVALID'),
+    authorizedCwd: requiredAbsolutePath(raw.authorizedCwd, 'SESSION_EXECUTION_LEASE_INVALID'),
+    projectIdentityDigest: requiredOpaqueValue(
+      raw.projectIdentityDigest,
+      'SESSION_EXECUTION_LEASE_INVALID',
+    ),
+    slotBindingDigest: requiredOpaqueValue(
+      raw.slotBindingDigest,
+      'SESSION_EXECUTION_LEASE_INVALID',
+    ),
+    operationNonce: requiredOpaqueValue(
+      raw.operationNonce,
+      'SESSION_EXECUTION_LEASE_INVALID',
+    ),
+  })
+  if (
+    normalizedWorkerPath(lease.authorizedCwd) !== normalizedWorkerPath(identity.authorizedCwd)
+    || lease.projectIdentityDigest !== identity.projectIdentityDigest
+    || lease.slotBindingDigest !== identity.slotBindingDigest
+  ) {
+    throw new Error('SESSION_EXECUTION_LEASE_IDENTITY_MISMATCH')
+  }
+  return lease
+}
+
+export function consumeWorkerSessionExecutionLeaseV1(
+  value: unknown,
+): WorkerSessionExecutionLeaseV1 {
+  const lease = inspectWorkerSessionExecutionLeaseV1(value)
+  if (st.consumedSessionOperationNonces.has(lease.operationNonce)) {
+    throw new Error('SESSION_EXECUTION_LEASE_REPLAYED')
+  }
+  if (st.consumedSessionOperationNonces.size >= MAX_SESSION_OPERATION_NONCES) {
+    throw new Error('SESSION_EXECUTION_LEASE_CAPACITY_EXCEEDED')
+  }
+  st.consumedSessionOperationNonces.add(lease.operationNonce)
+  return lease
+}
+
+function assertSessionUsesAuthorizedCwd(session: AgentSession): void {
+  const identity = st.workerExecutionIdentity
+  if (!identity) throw new Error('WORKER_EXECUTION_IDENTITY_REQUIRED')
+  const actual = session.sessionManager?.getCwd?.()
+  if (
+    typeof actual !== 'string'
+    || normalizedWorkerPath(actual) !== normalizedWorkerPath(identity.authorizedCwd)
+  ) {
+    throw new Error('SESSION_AUTHORIZED_CWD_MISMATCH')
+  }
+}
+
+function assertSessionMatchesExecutionLease(
+  session: AgentSession,
+  lease: WorkerSessionExecutionLeaseV1,
+): void {
+  if (!sessionFilePathsEqual(session.sessionFile, lease.sessionFile)) {
+    throw new Error('SESSION_EXECUTION_LEASE_SESSION_MISMATCH')
+  }
+  assertSessionUsesAuthorizedCwd(session)
+}
 
 function nextSeq(): number {
   return ++st.seq
@@ -424,6 +576,7 @@ function detachSessionSubscription(): void {
 
 /** After Runtime replaces the AgentSession: resubscribe + rebind desktop extensions. */
 export async function rebindAfterRuntimeReplace(session: AgentSession): Promise<void> {
+  assertSessionUsesAuthorizedCwd(session)
   detachSessionSubscription()
   resetSessionEventTracking()
   resetCompletionTurnTracking()
@@ -440,12 +593,7 @@ export async function rebindAfterRuntimeReplace(session: AgentSession): Promise<
   st.promptStickyCapabilities = []
   st.promptTurnStickyCapabilities = []
   st.promptTurnStickyToolCalls.clear()
-  try {
-    const cwd = session.sessionManager?.getCwd?.()
-    if (typeof cwd === 'string' && cwd.length > 0) st.currentCwd = cwd
-  } catch {
-    /* ignore */
-  }
+  st.currentCwd = st.workerExecutionIdentity!.authorizedCwd
   await bindDesktopExtensions(session)
   st.unsubscribe = session.subscribe((event: AgentSessionEvent) => {
     handleSessionEvent(event)
@@ -713,6 +861,11 @@ export async function initSession(
   promptContext: unknown,
   bundledSkillPaths?: readonly string[],
 ): Promise<void> {
+  const identity = st.workerExecutionIdentity
+  if (!identity) throw new Error('WORKER_EXECUTION_IDENTITY_REQUIRED')
+  if (normalizedWorkerPath(cwd) !== normalizedWorkerPath(identity.authorizedCwd)) {
+    throw new Error('WORKER_AUTHORIZED_CWD_MISMATCH')
+  }
   st.promptSent = false
   if (bundledSkillPaths) {
     st.bundledSkillPaths = [...new Set(
@@ -744,17 +897,18 @@ export async function initSession(
  * Switch live runtime to an existing session file (or apply leaf tip if already bound).
  */
 export async function switchOrLoadSession(
-  sessionFile: string,
+  rawLease: unknown,
   promptContext: unknown,
   leafOverride?: string | null,
   forceRebuild = false,
 ): Promise<void> {
+  const lease = consumeWorkerSessionExecutionLeaseV1(rawLease)
   const sdk = st.sdk!
   if (!st.runtime || forceRebuild) {
     // Cold path: build runtime opened on this file
     await disposeRuntimeOrSession()
     const agentDir = sdk.getAgentDir()
-    const sm = sdk.SessionManager.open(sessionFile)
+    const sm = sdk.SessionManager.open(lease.sessionFile, undefined, lease.authorizedCwd)
     if (leafOverride === null) sm.resetLeaf?.()
     else if (typeof leafOverride === 'string' && leafOverride.length > 0) {
       try {
@@ -766,23 +920,42 @@ export async function switchOrLoadSession(
     const createRuntime = buildRuntimeFactory()
     const runtime = await withPendingPromptContext(promptContext, () =>
       sdk.createAgentSessionRuntime(createRuntime, {
-        cwd: sm.getCwd?.() || st.currentCwd || process.cwd(),
+        cwd: lease.authorizedCwd,
         agentDir,
         sessionManager: sm,
       }),
     )
     st.runtime = runtime
     wireRuntimeCallbacks(runtime)
-    await rebindAfterRuntimeReplace(runtime.session)
+    try {
+      await rebindAfterRuntimeReplace(runtime.session)
+      assertSessionMatchesExecutionLease(runtime.session, lease)
+    } catch (error) {
+      await disposeRuntimeOrSession()
+      throw error
+    }
     noteModelFallbackFromRuntime()
     return
   }
 
-  const result = await withPendingPromptContext(promptContext, () =>
-    st.runtime!.switchSession(sessionFile),
-  )
+  let result: Awaited<ReturnType<AgentSessionRuntime['switchSession']>>
+  try {
+    result = await withPendingPromptContext(promptContext, () =>
+      st.runtime!.switchSession(lease.sessionFile, { cwdOverride: lease.authorizedCwd }),
+    )
+  } catch (error) {
+    await disposeRuntimeOrSession()
+    throw error
+  }
   if (result.cancelled) {
     throw new Error('SESSION_SWITCH_CANCELLED')
+  }
+  try {
+    if (!st.session) throw new Error('SESSION_EXECUTION_LEASE_SESSION_MISMATCH')
+    assertSessionMatchesExecutionLease(st.session, lease)
+  } catch (error) {
+    await disposeRuntimeOrSession()
+    throw error
   }
   // rebindSession already ran; apply leaf tip if requested
   if (leafOverride !== undefined && st.session) {
@@ -803,7 +976,9 @@ export async function switchOrLoadSession(
 
 export async function runtimeNewSession(promptContext: unknown): Promise<{ cancelled: boolean }> {
   if (!st.runtime) {
-    await initSession(st.currentCwd || process.cwd(), promptContext)
+    const authorizedCwd = st.workerExecutionIdentity?.authorizedCwd
+    if (!authorizedCwd) throw new Error('WORKER_EXECUTION_IDENTITY_REQUIRED')
+    await initSession(authorizedCwd, promptContext)
     return { cancelled: false }
   }
   const result = await withPendingPromptContext(promptContext, () => st.runtime!.newSession())

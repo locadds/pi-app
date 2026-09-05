@@ -1,7 +1,7 @@
 # OMP ACP Runtime P1 生产门与施工卡
 
-> [!important] 2026-09-05 产品路线已取代本文施工路线
-> 本文只保留 P0—P1D-A 的隔离研究与验收证据，不再是产品施工卡。独立 OMP Runtime、私有模型配置、设置页、启停、目录、状态和 Runtime 选择均已取消；“透明 OMP 六能力”的表述也已被人工否决。当前 R3.3 阶段候选为普通 CODING 直接写入：Pi 以不可换绑的用户项目为唯一 cwd，ASK/PLAN 只读，EXECUTE 经 V4 授权执行路径、Main 权威可信会话访问、后台来源绑定宿主授权和 V2 文件检查点后直接修改项目；TaskHub V1 工作树交付链保持不变。当前实现与验证边界见 [普通 CODING 主链](../architecture/xiaogui-oh-my-pi-acp-runtime.md#当前产品结论2026-09-05)。
+> [!important] 2026-09-06 产品路线已取代本文施工路线
+> 本文只保留 P0—P1D-A 的隔离研究与验收证据，不再是产品施工卡。独立 OMP Runtime、私有模型配置、设置页、启停、目录、状态和 Runtime 选择均已取消；“透明 OMP 六能力”的表述也已被人工否决。当前 R3.3 CLOSEOUT 阶段候选为普通 CODING 直接写入：Pi 以 Main 内存中的不透明能力确定用户项目唯一 cwd，并通过一次性租约装载 Worker；JSONL `cwd` 只作一致性比较。ASK/PLAN 只读，EXECUTE 经 V4 授权路径、后台来源绑定宿主授权和 V2 文件检查点后直接修改项目；TaskHub V1 工作树交付链保持不变。当前实现与验证边界见 [普通 CODING 主链](../architecture/xiaogui-oh-my-pi-acp-runtime.md#当前产品结论2026-09-06)。
 
 ## 状态边界
 
