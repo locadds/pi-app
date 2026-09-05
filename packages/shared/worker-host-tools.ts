@@ -47,7 +47,7 @@ import type { CodingPlanBodyV1 } from './xiaogui-coding-extension-pack'
 import type {
   DirectCodingBeginPayloadV2,
   DirectCodingBeginResultV2,
-  DirectCodingPreflightPayloadV2,
+  DirectCodingPreflightPayloadV3,
   DirectCodingPreflightResultV2,
   DirectCodingSettlePayloadV2,
   DirectCodingSettleResultV2,
@@ -73,8 +73,8 @@ export const XIAOGUI_WORK_DOCX_ADVANCED_GENERATION_METHOD_V1 =
 export const XIAOGUI_WORK_DOCUMENT_SNAPSHOT_METHOD_V1 = 'xiaogui.work.document-snapshot.v1' as const
 export const XIAOGUI_WORK_MATERIALS_METHOD_V1 = 'xiaogui.work.materials.v1' as const
 export const XIAOGUI_CODING_PLAN_DRAFT_METHOD_V1 = 'xiaogui.coding.plan-draft.v1' as const
-export const XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V2 =
-  'xiaogui.coding.direct.preflight.v2' as const
+export const XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V3 =
+  'xiaogui.coding.direct.preflight.v3' as const
 export const XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V2 =
   'xiaogui.coding.direct.begin.v2' as const
 export const XIAOGUI_DIRECT_CODING_SETTLE_METHOD_V2 =
@@ -352,8 +352,8 @@ export type WorkerHostToolRequestV1 =
   | {
       type: 'host-tool-request'
       requestId: string
-      method: typeof XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V2
-      payload: DirectCodingPreflightPayloadV2
+      method: typeof XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V3
+      payload: DirectCodingPreflightPayloadV3
     }
   | {
       type: 'host-tool-request'

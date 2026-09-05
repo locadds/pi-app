@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   existsSync,
+  createReadStream,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -10,6 +11,7 @@ import {
   statSync,
   unlinkSync,
   writeFileSync,
+  promises as fs,
 } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -26,27 +28,31 @@ import {
   type DirectCodingCheckpointPreviewOutcomeV2,
   type DirectCodingFileCheckpointV2,
   type DirectCodingOperationV2,
+  type DirectCodingPermissionOriginV3,
   type DirectCodingPreflightResultV2,
   type DirectCodingSettleResultV2,
 } from '@shared/xiaogui-direct-coding'
 
 import type { DirectCodingAuthorizationPortV2 } from './coding-authorization-module'
+import { readProjectRootIdentityV2 } from '../../project-root-identity'
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,255}$/i
 const PREVIEW_TTL_MS = 5 * 60_000
+const CHECKPOINT_MAX_BYTES = 16 * 1024 * 1024
 
-export interface DirectCodingPreflightInputV2 {
+export interface DirectCodingPreflightInputV3 {
   readonly subject: DirectCodingAuthorizationSubjectV2
   readonly rootPath: string
   readonly sourceSessionId: string
   readonly toolCallId: string
   readonly requestDigest: string
   readonly operation: DirectCodingOperationV2
-  readonly relativePath?: string
-  readonly commandPreview?: string
+  readonly path?: string
+  readonly commandText?: string
   readonly commandDigest?: string
   readonly mode: CodingPermissionModeV1
+  readonly origin: DirectCodingPermissionOriginV3
 }
 
 export interface DirectCodingLifecycleInputV2 {
@@ -71,6 +77,7 @@ interface CallRowV2 {
   operation: DirectCodingOperationV2
   root_path: string
   root_real_path: string
+  root_identity_digest: string | null
   relative_path: string | null
   state: DirectCodingCallStateV2
   initial_digest: string | null
@@ -85,6 +92,7 @@ interface CheckpointRowV2 {
   tool_call_id: string
   root_path: string
   root_real_path: string
+  root_identity_digest: string | null
   relative_path: string
   existed_before: number
   before_blob: Uint8Array | null
@@ -101,6 +109,17 @@ interface PathSnapshotV2 {
   readonly existed: boolean
   readonly bytes: Buffer | null
   readonly digest: string
+}
+
+interface PathMetadataV2 {
+  readonly rootPath: string
+  readonly relativePath: string
+  readonly absolutePath: string
+  readonly rootRealPath: string
+  readonly rootIdentityDigest: string
+  readonly existed: boolean
+  readonly size: number
+  readonly entityDigest: string | null
 }
 
 export interface DirectCodingModuleOptionsV2 {
@@ -133,6 +152,7 @@ export class DirectCodingModuleV2 {
         operation text not null,
         root_path text not null,
         root_real_path text not null,
+        root_identity_digest text,
         relative_path text,
         state text not null,
         initial_digest text,
@@ -152,6 +172,7 @@ export class DirectCodingModuleV2 {
         tool_call_id text not null,
         root_path text not null,
         root_real_path text not null,
+        root_identity_digest text,
         relative_path text not null,
         existed_before integer not null,
         before_blob blob,
@@ -169,6 +190,8 @@ export class DirectCodingModuleV2 {
       create index if not exists xiaogui_direct_coding_checkpoints_session_v2
         on xiaogui_direct_coding_checkpoints_v2 (session_key, created_at);
     `)
+    ensureColumn(this.db, 'xiaogui_direct_coding_calls_v2', 'root_identity_digest', 'text')
+    ensureColumn(this.db, 'xiaogui_direct_coding_checkpoints_v2', 'root_identity_digest', 'text')
     const updatedAt = this.now()
     this.db.prepare(`
       update xiaogui_direct_coding_calls_v2
@@ -190,29 +213,32 @@ export class DirectCodingModuleV2 {
     `).run(updatedAt)
   }
 
-  async preflight(input: DirectCodingPreflightInputV2): Promise<DirectCodingPreflightResultV2> {
+  async preflight(input: DirectCodingPreflightInputV3): Promise<DirectCodingPreflightResultV2> {
     assertLifecycleInput(input)
     const existing = this.readCall(input.subject.address.sessionKey, input.toolCallId)
     if (existing) return this.duplicatePreflight(existing, input.requestDigest)
 
-    let snapshot: PathSnapshotV2 | null = null
+    let metadata: PathMetadataV2 | null = null
     try {
-      snapshot = input.operation === 'BASH' || input.operation === 'DATA_EGRESS'
+      metadata = input.operation === 'BASH' || input.operation === 'DATA_EGRESS'
         ? null
-        : inspectProjectPath(input.rootPath, requiredRelativePath(input), input.operation)
+        : await inspectProjectPathMetadata(input.rootPath, requiredPath(input), input.operation)
+      if (input.operation === 'BASH') assertCommand(input.commandText, input.commandDigest)
     } catch (error) {
       return denied(input, pathErrorCode(error))
     }
 
-    const rootRealPath = snapshot?.rootRealPath ?? canonicalRoot(input.rootPath)
+    const rootIdentity = readProjectRootIdentityV2(input.rootPath)
+    const rootRealPath = metadata?.rootRealPath ?? rootIdentity.canonicalRoot
+    const rootIdentityDigest = metadata?.rootIdentityDigest ?? rootIdentity.digest
     const createdAt = this.now()
     this.db.prepare(`
       insert into xiaogui_direct_coding_calls_v2 (
         project_id, session_key, source_session_id, tool_call_id, request_digest,
-        operation, root_path, root_real_path, relative_path, state,
+        operation, root_path, root_real_path, root_identity_digest, relative_path, state,
         initial_digest, checkpoint_token, command_digest, exit_code, is_error,
         reason_code, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, null, ?, null, null, 'PENDING', ?, ?)
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, null, ?, null, null, 'PENDING', ?, ?)
     `).run(
       input.subject.address.projectId,
       input.subject.address.sessionKey,
@@ -222,8 +248,9 @@ export class DirectCodingModuleV2 {
       input.operation,
       resolve(input.rootPath),
       rootRealPath,
-      snapshot?.relativePath ?? null,
-      snapshot?.digest ?? null,
+      rootIdentityDigest,
+      metadata?.relativePath ?? null,
+      null,
       input.commandDigest ?? null,
       createdAt,
       createdAt,
@@ -234,9 +261,10 @@ export class DirectCodingModuleV2 {
       requestDigest: input.requestDigest,
       operation: input.operation,
       mode: input.mode,
-      existingFile: snapshot?.existed ?? false,
-      ...(snapshot ? { relativePath: snapshot.relativePath } : {}),
-      ...(input.commandPreview !== undefined ? { commandPreview: input.commandPreview } : {}),
+      existingFile: metadata?.existed ?? false,
+      ...(metadata ? { relativePath: metadata.relativePath } : {}),
+      ...(input.commandText !== undefined ? { commandText: input.commandText } : {}),
+      origin: input.origin,
     })
     if (authorization.decision !== 'ALLOW_ONCE') {
       this.setCallState(input.subject.address.sessionKey, input.toolCallId, 'SETTLED', 'USER_OR_POLICY_DENIED')
@@ -244,21 +272,17 @@ export class DirectCodingModuleV2 {
     }
 
     let checkpointToken: string | null = null
-    if (snapshot && (input.operation === 'EDIT' || input.operation === 'WRITE')) {
+    if (metadata && (input.operation === 'EDIT' || input.operation === 'WRITE')) {
       try {
-        const current = inspectProjectPath(input.rootPath, snapshot.relativePath, input.operation)
-        if (current.digest !== snapshot.digest || current.existed !== snapshot.existed) {
-          this.setCallState(input.subject.address.sessionKey, input.toolCallId, 'OUTCOME_UNKNOWN', 'PATH_CHANGED_AFTER_AUTHORIZATION')
-          return denied(input, 'PATH_CHANGED_AFTER_AUTHORIZATION', 'OUTCOME_UNKNOWN')
-        }
+        const current = await captureCheckpointSnapshot(metadata, input.operation)
         checkpointToken = this.token('xdcp')
         assertToken(checkpointToken)
         this.db.prepare(`
           insert into xiaogui_direct_coding_checkpoints_v2 (
             checkpoint_token, project_id, session_key, tool_call_id, root_path,
-            root_real_path, relative_path, existed_before, before_blob,
+            root_real_path, root_identity_digest, relative_path, existed_before, before_blob,
             before_digest, after_digest, status, created_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, 'AVAILABLE', ?)
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, 'AVAILABLE', ?)
         `).run(
           checkpointToken,
           input.subject.address.projectId,
@@ -266,12 +290,17 @@ export class DirectCodingModuleV2 {
           input.toolCallId,
           resolve(input.rootPath),
           current.rootRealPath,
+          rootIdentityDigest,
           current.relativePath,
           current.existed ? 1 : 0,
           current.bytes,
           current.digest,
           this.now(),
         )
+        this.db.prepare(`
+          update xiaogui_direct_coding_calls_v2
+          set initial_digest = ? where session_key = ? and tool_call_id = ?
+        `).run(current.digest, input.subject.address.sessionKey, input.toolCallId)
       } catch (error) {
         this.setCallState(input.subject.address.sessionKey, input.toolCallId, 'SETTLED', pathErrorCode(error))
         return denied(input, pathErrorCode(error), 'SETTLED')
@@ -292,16 +321,19 @@ export class DirectCodingModuleV2 {
     }
   }
 
-  begin(input: DirectCodingLifecycleInputV2): DirectCodingBeginResultV2 {
+  async begin(input: DirectCodingLifecycleInputV2): Promise<DirectCodingBeginResultV2> {
     assertLifecycleInput(input)
     const row = this.readCall(input.subject.address.sessionKey, input.toolCallId)
     if (!sameCall(row, input)) return beginDenied(input, row ? 'IDEMPOTENCY_KEY_CONFLICT' : 'CALL_NOT_FOUND')
     if (row.state !== 'ALLOWED') return beginDenied(input, row.state === 'OUTCOME_UNKNOWN' ? 'OUTCOME_UNKNOWN' : 'DUPLICATE_EXECUTION')
     try {
-      assertRootIdentity(row.root_path, row.root_real_path, input.rootPath)
+      assertRootIdentity(row.root_path, row.root_real_path, row.root_identity_digest, input.rootPath)
       if (row.relative_path) {
-        const current = inspectProjectPath(row.root_path, row.relative_path, row.operation)
-        if (current.digest !== row.initial_digest) throw new Error('PATH_CHANGED_AFTER_AUTHORIZATION')
+        const current = await inspectProjectPathMetadata(row.root_path, row.relative_path, row.operation)
+        if (row.operation === 'EDIT' || row.operation === 'WRITE') {
+          const digest = await digestPath(current)
+          if (digest !== row.initial_digest) throw new Error('PATH_CHANGED_AFTER_AUTHORIZATION')
+        }
       }
     } catch (error) {
       this.markUnknown(row, pathErrorCode(error))
@@ -323,7 +355,7 @@ export class DirectCodingModuleV2 {
     }
   }
 
-  settle(input: DirectCodingSettleInputV2): DirectCodingSettleResultV2 {
+  async settle(input: DirectCodingSettleInputV2): Promise<DirectCodingSettleResultV2> {
     assertLifecycleInput(input)
     const row = this.readCall(input.subject.address.sessionKey, input.toolCallId)
     if (!sameCall(row, input) || row.state === 'OUTCOME_UNKNOWN') return unknownSettle(input)
@@ -340,14 +372,15 @@ export class DirectCodingModuleV2 {
       return unknownSettle(input)
     }
     try {
-      assertRootIdentity(row.root_path, row.root_real_path, input.rootPath)
+      assertRootIdentity(row.root_path, row.root_real_path, row.root_identity_digest, input.rootPath)
       if (row.checkpoint_token && row.relative_path) {
-        const after = inspectProjectPath(row.root_path, row.relative_path, 'READ', { allowMissing: true })
+        const after = await inspectProjectPathMetadata(row.root_path, row.relative_path, 'READ', { allowMissing: true })
+        const afterDigest = await digestPath(after)
         this.db.prepare(`
           update xiaogui_direct_coding_checkpoints_v2
           set after_digest = ?, status = 'AVAILABLE'
           where checkpoint_token = ?
-        `).run(after.digest, row.checkpoint_token)
+        `).run(afterDigest, row.checkpoint_token)
       }
       this.db.prepare(`
         update xiaogui_direct_coding_calls_v2
@@ -383,7 +416,7 @@ export class DirectCodingModuleV2 {
     `).all(subject.address.projectId, subject.address.sessionKey) as unknown as CheckpointRowV2[]
     const bound = rows.filter((row) => {
       try {
-        assertRootIdentity(row.root_path, row.root_real_path, row.root_path)
+        assertRootIdentity(row.root_path, row.root_real_path, row.root_identity_digest, row.root_path)
         return true
       } catch {
         return false
@@ -406,7 +439,7 @@ export class DirectCodingModuleV2 {
     if (row.status === 'OUTCOME_UNKNOWN') return failure('OUTCOME_UNKNOWN')
     if (row.status !== 'AVAILABLE' || !row.after_digest) return failure('CHECKPOINT_CONFLICT')
     try {
-      assertRootIdentity(row.root_path, row.root_real_path, currentRootPath)
+      assertRootIdentity(row.root_path, row.root_real_path, row.root_identity_digest, currentRootPath)
     } catch {
       return failure('CHECKPOINT_CONFLICT')
     }
@@ -477,7 +510,7 @@ export class DirectCodingModuleV2 {
     if (row.status === 'OUTCOME_UNKNOWN') return failure('OUTCOME_UNKNOWN')
     if (row.status !== 'AVAILABLE' || !row.after_digest) return failure('CHECKPOINT_CONFLICT')
     try {
-      assertRootIdentity(row.root_path, row.root_real_path, currentRootPath)
+      assertRootIdentity(row.root_path, row.root_real_path, row.root_identity_digest, currentRootPath)
     } catch {
       return failure('CHECKPOINT_CONFLICT')
     }
@@ -517,7 +550,7 @@ export class DirectCodingModuleV2 {
   private readCall(sessionKey: string, toolCallId: string): CallRowV2 | undefined {
     return this.db.prepare(`
       select project_id, session_key, source_session_id, tool_call_id,
-        request_digest, operation, root_path, root_real_path, relative_path,
+        request_digest, operation, root_path, root_real_path, root_identity_digest, relative_path,
         state, initial_digest, checkpoint_token, reason_code
       from xiaogui_direct_coding_calls_v2
       where session_key = ? and tool_call_id = ? limit 1
@@ -527,7 +560,7 @@ export class DirectCodingModuleV2 {
   private readCheckpoint(checkpointToken: string): CheckpointRowV2 | undefined {
     return this.db.prepare(`
       select checkpoint_token, project_id, session_key, tool_call_id, root_path,
-        root_real_path, relative_path, existed_before, before_blob, before_digest,
+        root_real_path, root_identity_digest, relative_path, existed_before, before_blob, before_digest,
         after_digest, status, created_at
       from xiaogui_direct_coding_checkpoints_v2 where checkpoint_token = ? limit 1
     `).get(checkpointToken) as unknown as CheckpointRowV2 | undefined
@@ -569,11 +602,9 @@ export function inspectProjectPath(
   operation: DirectCodingOperationV2,
   options: { readonly allowMissing?: boolean } = {},
 ): PathSnapshotV2 {
-  const relativePath = normalizeRelativePath(rawRelativePath)
   const rootAbsolute = resolve(rootPath)
+  const { relativePath, absolutePath } = resolveProjectTarget(rootAbsolute, rawRelativePath)
   const rootRealPath = canonicalRoot(rootAbsolute)
-  const absolutePath = resolve(rootAbsolute, ...relativePath.split('/'))
-  if (!inside(rootAbsolute, absolutePath)) throw new Error('PATH_OUTSIDE_PROJECT')
 
   const segments = relativePath.split('/')
   let cursor = rootAbsolute
@@ -596,6 +627,7 @@ export function inspectProjectPath(
     if ((operation === 'EDIT' || operation === 'WRITE') && stats.nlink > 1) {
       throw new Error('PATH_HARDLINK_REJECTED')
     }
+    if (stats.size > CHECKPOINT_MAX_BYTES) throw new Error('CHECKPOINT_FILE_TOO_LARGE')
     const bytes = readFileSync(absolutePath)
     return { relativePath, absolutePath, rootRealPath, existed: true, bytes, digest: hashBytes(bytes) }
   }
@@ -622,20 +654,173 @@ export function inspectProjectPath(
   }
 }
 
-function normalizeRelativePath(value: string): string {
+async function inspectProjectPathMetadata(
+  rootPath: string,
+  rawPath: string,
+  operation: DirectCodingOperationV2,
+  options: { readonly allowMissing?: boolean } = {},
+): Promise<PathMetadataV2> {
+  const rootAbsolute = resolve(rootPath)
+  const rootIdentity = readProjectRootIdentityV2(rootAbsolute)
+  const { relativePath, absolutePath } = resolveProjectTarget(rootAbsolute, rawPath)
+  const segments = relativePath.split('/')
+  let cursor = rootAbsolute
+  for (const segment of segments) {
+    cursor = resolve(cursor, segment)
+    let info
+    try {
+      info = await fs.lstat(cursor)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') break
+      throw error
+    }
+    if (info.isSymbolicLink()) throw new Error('PATH_LINK_REJECTED')
+    const real = await fs.realpath(cursor)
+    if (!inside(rootIdentity.canonicalRoot, pathKey(real))) throw new Error('PATH_LINK_REJECTED')
+  }
+
+  let info
+  try {
+    info = await fs.lstat(absolutePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  if (info) {
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error('PATH_TYPE_REJECTED')
+    const real = await fs.realpath(absolutePath)
+    if (!inside(rootIdentity.canonicalRoot, pathKey(real))) throw new Error('PATH_LINK_REJECTED')
+    const stats = await fs.stat(absolutePath, { bigint: true })
+    if ((operation === 'EDIT' || operation === 'WRITE') && stats.nlink > 1n) {
+      throw new Error('PATH_HARDLINK_REJECTED')
+    }
+    const size = Number(stats.size)
+    if (!Number.isSafeInteger(size)) throw new Error('CHECKPOINT_FILE_TOO_LARGE')
+    return {
+      rootPath: rootAbsolute,
+      relativePath,
+      absolutePath,
+      rootRealPath: rootIdentity.canonicalRoot,
+      rootIdentityDigest: rootIdentity.digest,
+      existed: true,
+      size,
+      entityDigest: fileEntityDigest(stats),
+    }
+  }
+  if (operation === 'EDIT' || (operation === 'READ' && !options.allowMissing)) {
+    throw new Error('PATH_NOT_FOUND')
+  }
+  let parent = dirname(absolutePath)
+  while (true) {
+    try {
+      const parentInfo = await fs.lstat(parent)
+      if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory()) throw new Error('PATH_LINK_REJECTED')
+      const parentReal = await fs.realpath(parent)
+      if (!inside(rootIdentity.canonicalRoot, pathKey(parentReal))) throw new Error('PATH_LINK_REJECTED')
+      break
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      const next = dirname(parent)
+      if (next === parent) throw new Error('PATH_PARENT_INVALID')
+      parent = next
+    }
+  }
+  return {
+    rootPath: rootAbsolute,
+    relativePath,
+    absolutePath,
+    rootRealPath: rootIdentity.canonicalRoot,
+    rootIdentityDigest: rootIdentity.digest,
+    existed: false,
+    size: 0,
+    entityDigest: null,
+  }
+}
+
+async function captureCheckpointSnapshot(
+  expected: PathMetadataV2,
+  operation: DirectCodingOperationV2,
+): Promise<PathSnapshotV2> {
+  const before = await inspectProjectPathMetadata(expected.rootPath, expected.relativePath, operation)
+  if (
+    before.rootIdentityDigest !== expected.rootIdentityDigest ||
+    before.existed !== expected.existed ||
+    before.entityDigest !== expected.entityDigest ||
+    before.size !== expected.size
+  ) {
+    throw new Error('PATH_CHANGED_AFTER_AUTHORIZATION')
+  }
+  if (!before.existed) {
+    return {
+      relativePath: before.relativePath,
+      absolutePath: before.absolutePath,
+      rootRealPath: before.rootRealPath,
+      existed: false,
+      bytes: null,
+      digest: missingDigest(),
+    }
+  }
+  if (before.size > CHECKPOINT_MAX_BYTES) throw new Error('CHECKPOINT_FILE_TOO_LARGE')
+  let bytes: Buffer
+  try {
+    bytes = await fs.readFile(before.absolutePath)
+  } catch {
+    throw new Error('CHECKPOINT_CAPTURE_FAILED')
+  }
+  const after = await inspectProjectPathMetadata(expected.rootPath, expected.relativePath, operation)
+  if (!after.existed || before.entityDigest !== after.entityDigest || bytes.byteLength !== after.size) {
+    throw new Error('PATH_CHANGED_AFTER_AUTHORIZATION')
+  }
+  return {
+    relativePath: before.relativePath,
+    absolutePath: before.absolutePath,
+    rootRealPath: before.rootRealPath,
+    existed: true,
+    bytes,
+    digest: hashBytes(bytes),
+  }
+}
+
+async function digestPath(metadata: PathMetadataV2): Promise<string> {
+  if (!metadata.existed) return missingDigest()
+  const hash = createHash('sha256')
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const stream = createReadStream(metadata.absolutePath)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.once('error', rejectPromise)
+    stream.once('end', resolvePromise)
+  })
+  const after = await inspectProjectPathMetadata(
+    metadata.rootPath,
+    metadata.relativePath,
+    'READ',
+  ).catch(() => null)
+  if (!after || !after.existed || after.entityDigest !== metadata.entityDigest) {
+    throw new Error('PATH_CHANGED_AFTER_AUTHORIZATION')
+  }
+  return `sha256:${hash.digest('hex')}`
+}
+
+function resolveProjectTarget(rootPath: string, value: string): {
+  readonly relativePath: string
+  readonly absolutePath: string
+} {
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
     value !== value.trim() ||
-    value.includes('\0') ||
-    isAbsolute(value) ||
-    /^[a-z]:/i.test(value)
+    value.includes('\0')
   ) throw new Error('PATH_INVALID')
-  const segments = value.replace(/\\/g, '/').split('/')
-  if (segments.some((segment) => !segment || segment === '.' || segment === '..' || segment.toLowerCase() === '.git')) {
+  const rootAbsolute = resolve(rootPath)
+  const absolutePath = isAbsolute(value) || /^[a-z]:[\\/]/i.test(value)
+    ? resolve(value)
+    : resolve(rootAbsolute, value)
+  if (!inside(rootAbsolute, absolutePath)) throw new Error('PATH_OUTSIDE_PROJECT')
+  const relativePath = relative(rootAbsolute, absolutePath).replace(/\\/g, '/')
+  const segments = relativePath.split('/')
+  if (!relativePath || segments.some((segment) => !segment || segment === '..' || segment.toLowerCase() === '.git')) {
     throw new Error('PATH_INVALID')
   }
-  return segments.join('/')
+  return { relativePath: segments.join('/'), absolutePath }
 }
 
 function canonicalRoot(rootPath: string): string {
@@ -646,8 +831,19 @@ function canonicalRoot(rootPath: string): string {
   return realpathSync.native(absolute)
 }
 
-function assertRootIdentity(storedRoot: string, storedReal: string, suppliedRoot: string): void {
-  if (resolve(storedRoot) !== resolve(suppliedRoot) || canonicalRoot(suppliedRoot) !== storedReal) {
+function assertRootIdentity(
+  storedRoot: string,
+  storedReal: string,
+  storedIdentityDigest: string | null,
+  suppliedRoot: string,
+): void {
+  const current = readProjectRootIdentityV2(suppliedRoot)
+  if (
+    !storedIdentityDigest ||
+    resolve(storedRoot) !== resolve(suppliedRoot) ||
+    current.canonicalRoot !== pathKey(storedReal) ||
+    current.digest !== storedIdentityDigest
+  ) {
     throw new Error('PROJECT_IDENTITY_CHANGED')
   }
 }
@@ -657,9 +853,48 @@ function inside(root: string, target: string): boolean {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
 }
 
-function requiredRelativePath(input: DirectCodingPreflightInputV2): string {
-  if (!input.relativePath) throw new Error('PATH_REQUIRED')
-  return input.relativePath
+function requiredPath(input: DirectCodingPreflightInputV3): string {
+  if (!input.path) throw new Error('PATH_REQUIRED')
+  return input.path
+}
+
+function assertCommand(commandText: string | undefined, commandDigest: string | undefined): void {
+  if (typeof commandText !== 'string' || !commandText.trim()) throw new Error('COMMAND_INVALID')
+  if (Buffer.byteLength(commandText, 'utf8') > 64 * 1024) throw new Error('COMMAND_TOO_LARGE')
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(commandText)) {
+    throw new Error('COMMAND_CONTROL_REJECTED')
+  }
+  if (!commandDigest || hashBytes(Buffer.from(commandText, 'utf8')) !== commandDigest) {
+    throw new Error('COMMAND_DIGEST_MISMATCH')
+  }
+}
+
+function fileEntityDigest(stats: {
+  readonly dev: bigint
+  readonly ino: bigint
+  readonly size: bigint
+  readonly mtimeMs: bigint
+  readonly mtimeNs?: bigint
+}): string {
+  const mtimeNs = stats.mtimeNs ?? stats.mtimeMs * 1_000_000n
+  return hashJson({
+    dev: stats.dev.toString(10),
+    ino: stats.ino.toString(10),
+    size: stats.size.toString(10),
+    mtimeNs: mtimeNs.toString(10),
+  })
+}
+
+function pathKey(value: string): string {
+  const normalized = resolve(value).replace(/\\/g, '/').replace(/\/$/, '')
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+function ensureColumn(db: DatabaseSync, table: string, column: string, type: string): void {
+  const rows = db.prepare(`pragma table_info(${table})`).all() as unknown as Array<{ name: string }>
+  if (!rows.some((row) => row.name === column)) {
+    db.exec(`alter table ${table} add column ${column} ${type}`)
+  }
 }
 
 function assertSubject(subject: DirectCodingAuthorizationSubjectV2): void {
@@ -727,7 +962,7 @@ function sameCall(row: CallRowV2 | undefined, input: DirectCodingLifecycleInputV
 }
 
 function denied(
-  input: Pick<DirectCodingPreflightInputV2, 'requestDigest'>,
+  input: Pick<DirectCodingPreflightInputV3, 'requestDigest'>,
   reasonCode: string,
   state: DirectCodingCallStateV2 = 'SETTLED',
 ): DirectCodingPreflightResultV2 {

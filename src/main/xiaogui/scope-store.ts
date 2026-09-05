@@ -48,11 +48,13 @@ interface XiaoguiScopeSchema {
    * 新出现的项目才打当前模式标签——打开历史项目不静默改归属。
    */
   projectBaseline: string[]
-  canonicalScopeBindings: CanonicalScopeBindingsV1
+  canonicalScopeBindings: CanonicalScopeBindingsV2
 }
 
-interface PersistedProjectBindingV1 {
+interface PersistedProjectBindingV2 {
   canonicalInputFingerprint: CanonicalInputFingerprintV1
+  /** null only while migrating an already trusted V1 binding. */
+  rootIdentityDigest: string | null
 }
 
 interface PersistedSessionBindingV1 {
@@ -66,15 +68,15 @@ interface PersistedSandboxBindingV1 {
   canonicalInputFingerprint: CanonicalInputFingerprintV1
 }
 
-interface CanonicalScopeBindingsV1 {
-  version: 1
-  projects: Record<string, PersistedProjectBindingV1>
+interface CanonicalScopeBindingsV2 {
+  version: 2
+  projects: Record<string, PersistedProjectBindingV2>
   sessions: Record<string, PersistedSessionBindingV1>
   sandboxes: Record<string, PersistedSandboxBindingV1>
 }
 
-function emptyCanonicalScopeBindings(): CanonicalScopeBindingsV1 {
-  return { version: 1, projects: {}, sessions: {}, sandboxes: {} }
+function emptyCanonicalScopeBindings(): CanonicalScopeBindingsV2 {
+  return { version: 2, projects: {}, sessions: {}, sandboxes: {} }
 }
 
 const store = new Store<XiaoguiScopeSchema>({
@@ -96,6 +98,7 @@ const PROJECT_ID_PATTERN = /^xgp1_[0-9a-f]{64}$/
 const SESSION_KEY_PATTERN = /^xgs1_[0-9a-f]{64}$/
 const SANDBOX_KEY_PATTERN = /^xgb1_[0-9a-f]{64}$/
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/
+const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -105,14 +108,14 @@ function corruptStore(): never {
   throw new SessionScopeResolutionError('CANONICAL_SCOPE_STORE_CORRUPT')
 }
 
-function readCanonicalScopeBindings(): CanonicalScopeBindingsV1 {
+function readCanonicalScopeBindings(): CanonicalScopeBindingsV2 {
   const raw = store.get('canonicalScopeBindings') as unknown
-  if (!isRecord(raw) || raw.version !== 1) corruptStore()
+  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2)) corruptStore()
   if (!isRecord(raw.projects) || !isRecord(raw.sessions) || !isRecord(raw.sandboxes)) {
     corruptStore()
   }
 
-  const projects: CanonicalScopeBindingsV1['projects'] = {}
+  const projects: CanonicalScopeBindingsV2['projects'] = {}
   for (const [projectId, value] of Object.entries(raw.projects)) {
     if (
       !PROJECT_ID_PATTERN.test(projectId) ||
@@ -121,12 +124,15 @@ function readCanonicalScopeBindings(): CanonicalScopeBindingsV1 {
     ) {
       corruptStore()
     }
+    const rawIdentity = value.rootIdentityDigest
+    if (rawIdentity !== undefined && !DIGEST_PATTERN.test(String(rawIdentity))) corruptStore()
     projects[projectId] = {
       canonicalInputFingerprint: value.canonicalInputFingerprint as CanonicalInputFingerprintV1,
+      rootIdentityDigest: typeof rawIdentity === 'string' ? rawIdentity : null,
     }
   }
 
-  const sessions: CanonicalScopeBindingsV1['sessions'] = {}
+  const sessions: CanonicalScopeBindingsV2['sessions'] = {}
   for (const [sessionKey, value] of Object.entries(raw.sessions)) {
     if (
       !SESSION_KEY_PATTERN.test(sessionKey) ||
@@ -144,7 +150,7 @@ function readCanonicalScopeBindings(): CanonicalScopeBindingsV1 {
     }
   }
 
-  const sandboxes: CanonicalScopeBindingsV1['sandboxes'] = {}
+  const sandboxes: CanonicalScopeBindingsV2['sandboxes'] = {}
   for (const [sandboxKey, value] of Object.entries(raw.sandboxes)) {
     if (
       !SANDBOX_KEY_PATTERN.test(sandboxKey) ||
@@ -167,7 +173,7 @@ function readCanonicalScopeBindings(): CanonicalScopeBindingsV1 {
     if (!projects[sandbox.projectId]) corruptStore()
   }
 
-  return { version: 1, projects, sessions, sandboxes }
+  return { version: 2, projects, sessions, sandboxes }
 }
 
 function validateIncomingId(value: string, pattern: RegExp): void {
@@ -185,18 +191,24 @@ function validateIncomingFingerprint(value: CanonicalInputFingerprintV1): void {
 function assertProjectBinding(input: SessionBindingCommitV1['project']): void {
   validateIncomingId(input.opaqueId, PROJECT_ID_PATTERN)
   validateIncomingFingerprint(input.canonicalInputFingerprint)
+  if (!DIGEST_PATTERN.test(input.rootIdentityDigest)) {
+    throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+  }
 }
 
 function assertProjectCompatible(
-  existing: PersistedProjectBindingV1 | undefined,
+  existing: PersistedProjectBindingV2 | undefined,
   input: SessionBindingCommitV1['project'],
 ): void {
   if (existing && existing.canonicalInputFingerprint !== input.canonicalInputFingerprint) {
     throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
   }
+  if (existing?.rootIdentityDigest && existing.rootIdentityDigest !== input.rootIdentityDigest) {
+    throw new SessionScopeResolutionError('PROJECT_IDENTITY_CHANGED')
+  }
 }
 
-function writeCanonicalScopeBindings(bindings: CanonicalScopeBindingsV1): void {
+function writeCanonicalScopeBindings(bindings: CanonicalScopeBindingsV2): void {
   store.set('canonicalScopeBindings', bindings)
 }
 
@@ -228,6 +240,9 @@ function lookupCanonicalBoundSession(input: SessionBindingLookupV1): SessionScop
   const session = current.sessions[input.session.opaqueId]
   if (!session) return { kind: 'NOT_FOUND' }
   assertProjectCompatible(current.projects[input.project.opaqueId], input.project)
+  if (!current.projects[input.project.opaqueId]?.rootIdentityDigest) {
+    throw new SessionScopeResolutionError('PROJECT_IDENTITY_CHANGED')
+  }
   if (session.projectId !== input.session.projectId) return { kind: 'PROJECT_MISMATCH' }
   if (session.canonicalInputFingerprint !== input.session.canonicalInputFingerprint) {
     throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
@@ -264,15 +279,29 @@ function commitCanonicalSession(input: SessionBindingCommitV1): SessionMode {
     if (existing.canonicalInputFingerprint !== input.session.canonicalInputFingerprint) {
       throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
     }
+    const existingProject = current.projects[input.project.opaqueId]
+    if (!existingProject?.rootIdentityDigest) {
+      writeCanonicalScopeBindings({
+        ...current,
+        projects: {
+          ...current.projects,
+          [input.project.opaqueId]: {
+            canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+            rootIdentityDigest: input.project.rootIdentityDigest,
+          },
+        },
+      })
+    }
     return existing.sessionMode
   }
 
   writeCanonicalScopeBindings({
-    version: 1,
+    version: 2,
     projects: {
       ...current.projects,
       [input.project.opaqueId]: {
         canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+        rootIdentityDigest: input.project.rootIdentityDigest,
       },
     },
     sessions: {
@@ -307,15 +336,28 @@ function commitCanonicalSandbox(input: SandboxBindingCommitV1): void {
     if (existing.canonicalInputFingerprint !== input.sandbox.canonicalInputFingerprint) {
       throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
     }
+    if (!current.projects[input.project.opaqueId]?.rootIdentityDigest) {
+      writeCanonicalScopeBindings({
+        ...current,
+        projects: {
+          ...current.projects,
+          [input.project.opaqueId]: {
+            canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+            rootIdentityDigest: input.project.rootIdentityDigest,
+          },
+        },
+      })
+    }
     return
   }
 
   writeCanonicalScopeBindings({
-    version: 1,
+    version: 2,
     projects: {
       ...current.projects,
       [input.project.opaqueId]: {
         canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+        rootIdentityDigest: input.project.rootIdentityDigest,
       },
     },
     sessions: current.sessions,

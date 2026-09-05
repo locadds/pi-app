@@ -8,6 +8,7 @@ const mem = vi.hoisted(() => ({
   setCalls: [] as Array<{ key: string; value: unknown }>,
   throwOnCanonicalSet: false,
 }))
+const ROOT_IDENTITY = `sha256:${'9'.repeat(64)}`
 
 vi.mock('electron-store', () => {
   class FakeStore<T extends object> {
@@ -134,6 +135,7 @@ function sessionCommit(root: string, file: string, sessionMode: 'WORK' | 'DESIGN
       kind: 'PROJECT' as const,
       opaqueId: project.projectId,
       canonicalInputFingerprint: project.canonicalInputFingerprint,
+      rootIdentityDigest: ROOT_IDENTITY,
     },
     session: {
       kind: 'SESSION' as const,
@@ -225,6 +227,15 @@ describe('scope-store：canonical binding 原子持久化', () => {
     expect(mem.data['canonicalScopeBindings']).toEqual(snapshot)
   })
 
+  it('rejects the same project path identity after the directory entity changes', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'CODING')
+    sessionScopePersistenceV1.commitSession(input)
+    expect(() => sessionScopePersistenceV1.lookupBoundSession({
+      project: { ...input.project, rootIdentityDigest: `sha256:${'8'.repeat(64)}` },
+      session: input.session,
+    })).toThrow(expect.objectContaining({ code: 'PROJECT_IDENTITY_CHANGED' }))
+  })
+
   it('distinguishes a parent-project mismatch and keeps lookup zero-write', () => {
     const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'WORK')
     sessionScopePersistenceV1.commitSession(input)
@@ -298,6 +309,7 @@ describe('scope-store：canonical binding 原子持久化', () => {
         kind: 'PROJECT' as const,
         opaqueId: project.projectId,
         canonicalInputFingerprint: project.canonicalInputFingerprint,
+        rootIdentityDigest: ROOT_IDENTITY,
       },
       sandbox: {
         kind: 'SANDBOX' as const,

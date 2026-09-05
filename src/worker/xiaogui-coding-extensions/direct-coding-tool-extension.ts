@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { isAbsolute } from 'node:path'
 
 import type {
   ExtensionFactory,
@@ -16,11 +15,12 @@ import type {
 } from '@shared/xiaogui-direct-coding'
 import {
   XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V2,
-  XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V2,
+  XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V3,
   XIAOGUI_DIRECT_CODING_SETTLE_METHOD_V2,
 } from '@shared/worker-host-tools'
 
 import { requestWorkerHostTool } from '../worker-host-tool-channel.js'
+import { toMainPath } from '../worker-path-bridge.js'
 
 interface PendingCallV2 {
   readonly requestDigest: string
@@ -61,10 +61,10 @@ export function createXiaoguiDirectCodingToolLifecycleV2(options: {
       }
       const sourceSessionId = options.sourceSessionId()
       if (!sourceSessionId) return { block: true, reason: 'XIAOGUI_CODING_SESSION_NOT_READY', terminate: true }
-      let relativePath: string | undefined
+      let toolPath: string | undefined
       try {
-        relativePath = operation === 'READ' || operation === 'EDIT' || operation === 'WRITE'
-          ? safeRelativePath(String((event.input as { path?: unknown }).path ?? ''))
+        toolPath = operation === 'READ' || operation === 'EDIT' || operation === 'WRITE'
+          ? rawToolPath(String((event.input as { path?: unknown }).path ?? ''))
           : undefined
       } catch {
         return { block: true, reason: 'XIAOGUI_CODING_PATH_REJECTED', terminate: true }
@@ -78,21 +78,24 @@ export function createXiaoguiDirectCodingToolLifecycleV2(options: {
       const command = operation === 'BASH'
         ? String((event.input as { command?: unknown }).command ?? '')
         : undefined
-      if (operation === 'BASH' && (!command?.trim() || command.includes('\0'))) {
+      if (
+        operation === 'BASH' &&
+        (!command?.trim() || unsafeCommandControl(command) || Buffer.byteLength(command, 'utf8') > 64 * 1024)
+      ) {
         return { block: true, reason: 'XIAOGUI_CODING_COMMAND_REJECTED', terminate: true }
       }
       const outcome = await requestWorkerHostTool({
-        method: XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V2,
+        method: XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V3,
         payload: {
           sourceSessionId,
           toolCallId: event.toolCallId,
           requestDigest,
           phase: context.phase,
           operation,
-          ...(relativePath ? { relativePath } : {}),
+          ...(toolPath ? { path: toolPath } : {}),
           ...(command
             ? {
-                commandPreview: boundedCommandPreviewV2(command),
+                commandText: command,
                 commandDigest: digestText(command),
               }
             : {}),
@@ -197,15 +200,14 @@ function operationFor(toolName: string): DirectCodingOperationV2 | null {
   return null
 }
 
-function safeRelativePath(value: string): string {
-  if (!value || value !== value.trim() || value.includes('\0') || isAbsolute(value) || /^[a-z]:/i.test(value)) {
+function rawToolPath(value: string): string {
+  if (!value || value !== value.trim() || value.includes('\0') || value.length > 4096) {
     throw new Error('PATH_INVALID')
   }
-  const parts = value.replace(/\\/g, '/').split('/')
-  if (parts.some((part) => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) {
-    throw new Error('PATH_INVALID')
-  }
-  return parts.join('/')
+  // Preserve Pi's native relative/absolute path contract while translating a
+  // WSL absolute path into the Main process' Windows view. Main remains the
+  // authority that decides whether the resulting target is inside the project.
+  return toMainPath(value)
 }
 
 function digestRequest(value: unknown): string {
@@ -216,9 +218,8 @@ function digestText(value: string): string {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`
 }
 
-function boundedCommandPreviewV2(value: string): string {
-  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
-  return normalized.length <= 240 ? normalized : `${normalized.slice(0, 237)}...`
+function unsafeCommandControl(value: string): boolean {
+  return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
 }
 
 function canonicalJson(value: unknown): string {

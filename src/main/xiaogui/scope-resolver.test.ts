@@ -13,6 +13,12 @@ import {
   type SessionScopePersistenceV1,
 } from './scope-resolver'
 
+const PROJECT_ROOT_IDENTITY = `sha256:${'9'.repeat(64)}`
+
+function resolverFor(persistence: SessionScopePersistenceV1) {
+  return createSessionScopeResolverV1(persistence, undefined, () => PROJECT_ROOT_IDENTITY)
+}
+
 class FakePersistence implements SessionScopePersistenceV1 {
   readonly sessions = new Map<string, SessionBindingCommitV1>()
   readonly legacySessions = new Map<string, SessionMode>()
@@ -39,6 +45,9 @@ class FakePersistence implements SessionScopePersistenceV1 {
       binding.session.canonicalInputFingerprint !== input.session.canonicalInputFingerprint
     ) {
       throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
+    }
+    if (binding.project.rootIdentityDigest !== input.project.rootIdentityDigest) {
+      throw new SessionScopeResolutionError('PROJECT_IDENTITY_CHANGED')
     }
     return {
       kind: 'FOUND',
@@ -78,7 +87,7 @@ beforeEach(() => {
 
 describe('SessionScopeResolverV1.resolve', () => {
   it('registers a new session from an explicit creation intent', async () => {
-    const resolver = createSessionScopeResolverV1(persistence)
+    const resolver = resolverFor(persistence)
     const scope = await resolver.registerNew(
       {
         rootPath: 'D:/projects/alpha',
@@ -101,7 +110,7 @@ describe('SessionScopeResolverV1.resolve', () => {
   })
 
   it('does not let a repeated creation intent overwrite canonical mode', async () => {
-    const resolver = createSessionScopeResolverV1(persistence)
+    const resolver = resolverFor(persistence)
     const ref = {
       rootPath: 'D:/projects/alpha',
       sessionFile: 'D:/projects/alpha/new.jsonl',
@@ -113,7 +122,7 @@ describe('SessionScopeResolverV1.resolve', () => {
   })
 
   it('defaults historical sessions to WORK and persists before returning', async () => {
-    const resolver = createSessionScopeResolverV1(persistence)
+    const resolver = resolverFor(persistence)
     const scope = await resolver.resolve({
       rootPath: 'd:\\Projects\\Alpha\\',
       sessionFile: 'd:\\Projects\\Alpha\\.pi\\agent\\sessions\\one.jsonl',
@@ -142,7 +151,7 @@ describe('SessionScopeResolverV1.resolve', () => {
   it('migrates legacy session mode before project fallback', async () => {
     persistence.legacySessions.set('D:/projects/alpha/session.jsonl', 'CODING')
     persistence.legacyProjects.set('D:/projects/alpha', 'DESIGN')
-    const scope = await createSessionScopeResolverV1(persistence).resolve({
+    const scope = await resolverFor(persistence).resolve({
       rootPath: 'D:/projects/alpha',
       sessionFile: 'D:/projects/alpha/session.jsonl',
     })
@@ -151,7 +160,7 @@ describe('SessionScopeResolverV1.resolve', () => {
 
   it('uses the legacy project mode only when no session mapping exists', async () => {
     persistence.legacyProjects.set('D:/projects/alpha', 'DESIGN')
-    const scope = await createSessionScopeResolverV1(persistence).resolve({
+    const scope = await resolverFor(persistence).resolve({
       rootPath: 'D:/projects/alpha',
       sessionFile: 'D:/projects/alpha/session.jsonl',
     })
@@ -160,7 +169,7 @@ describe('SessionScopeResolverV1.resolve', () => {
 
   it('fails closed without leaking persistence error details', async () => {
     persistence.failCommit = true
-    const promise = createSessionScopeResolverV1(persistence).resolve({
+    const promise = resolverFor(persistence).resolve({
       rootPath: 'D:/projects/alpha',
       sessionFile: 'D:/projects/alpha/session.jsonl',
     })
@@ -173,7 +182,7 @@ describe('SessionScopeResolverV1.resolve', () => {
 
   it('rejects empty internal references before persistence', async () => {
     await expect(
-      createSessionScopeResolverV1(persistence).resolve({ rootPath: '', sessionFile: '' }),
+      resolverFor(persistence).resolve({ rootPath: '', sessionFile: '' }),
     ).rejects.toEqual(expect.objectContaining({ code: 'INVALID_CANONICAL_SCOPE_INPUT' }))
     expect(persistence.writes).toBe(0)
   })
@@ -181,7 +190,7 @@ describe('SessionScopeResolverV1.resolve', () => {
 
 describe('SessionScopeResolverV1 lookup and derivation', () => {
   it('resolves only an existing binding without migrating or writing', async () => {
-    const resolver = createSessionScopeResolverV1(persistence)
+    const resolver = resolverFor(persistence)
     const ref = {
       rootPath: 'D:/projects/alpha',
       sessionFile: 'D:/projects/alpha/session.jsonl',
@@ -196,8 +205,23 @@ describe('SessionScopeResolverV1 lookup and derivation', () => {
     expect(persistence.writes).toBe(writes)
   })
 
+  it('stops an existing session when the project entity changes at the same path', async () => {
+    let identity = `sha256:${'1'.repeat(64)}`
+    const resolver = createSessionScopeResolverV1(persistence, undefined, () => identity)
+    const ref = {
+      rootPath: 'D:/projects/alpha',
+      sessionFile: 'D:/projects/alpha/session.jsonl',
+    }
+    await resolver.registerNew(ref, 'CODING')
+    identity = `sha256:${'2'.repeat(64)}`
+
+    await expect(resolver.resolveExisting(ref)).rejects.toEqual(
+      expect.objectContaining({ code: 'PROJECT_IDENTITY_CHANGED' }),
+    )
+  })
+
   it('keeps lookup read-only for absence and project mismatch', async () => {
-    const resolver = createSessionScopeResolverV1(persistence)
+    const resolver = resolverFor(persistence)
     const source = await resolver.resolve({
       rootPath: 'D:/projects/alpha',
       sessionFile: 'D:/projects/alpha/source.jsonl',
@@ -215,7 +239,7 @@ describe('SessionScopeResolverV1 lookup and derivation', () => {
 
   it('derives a new key and inherits the source mode without copying other facts', async () => {
     persistence.legacySessions.set('D:/projects/alpha/source.jsonl', 'CODING')
-    const resolver = createSessionScopeResolverV1(persistence)
+    const resolver = resolverFor(persistence)
     const source = await resolver.resolve({
       rootPath: 'D:/projects/alpha',
       sessionFile: 'D:/projects/alpha/source.jsonl',
@@ -238,7 +262,7 @@ describe('SessionScopeResolverV1 lookup and derivation', () => {
   })
 
   it('rejects a pre-existing target whose mode contradicts inheritance', async () => {
-    const resolver = createSessionScopeResolverV1(persistence)
+    const resolver = resolverFor(persistence)
     const target = await resolver.resolve({
       rootPath: 'D:/projects/alpha',
       sessionFile: 'D:/projects/alpha/target.jsonl',

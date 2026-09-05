@@ -30,7 +30,7 @@
 | Pi 工具生命周期 | xiaogui-direct-coding-tool-lifecycle-v2 | 在真实 Pi read/bash/edit/write 调用前后进入 Main 权限与入账接缝，不持有策略 |
 | 授权 | CodingAuthorizationModuleV2 | 一个深层 Module；Direct Adapter 服务普通会话，TaskHub Adapter 保留 Attempt V1 |
 | 文件恢复 | DirectCodingFileCheckpointV2 | 主体固定 DIRECT_SESSION；私有保存前镜像，公开层只有令牌和摘要；不伪造 attemptId |
-| cwd 与资源身份 | WorkerExecutionIdentityV1 | AgentSession、SessionManager、ResourceLoader、Skill/规则和工具共享所选项目 cwd；项目或资源变化会重建 Worker |
+| cwd 与资源身份 | ProjectRootIdentityV2 + WorkerExecutionIdentityV1 | AgentSession、SessionManager、ResourceLoader、Skill/规则和工具共享所选项目 cwd；同路径目录实体替换、项目缺失或资源变化会停止复用 Worker |
 | TaskHub | 既有 Attempt/工作树/Checkpoint V1/Delivery/Apply | 语义不变，不复用直接会话的 V2 文件检查点 |
 
 旧 xiaogui-coding-extension-pack.ts 的六模块 Manifest 只保留历史或 TaskHub 元数据用途，不是普通 CODING 的运行时工具事实源。已删除只追加提示词的 transparent-harness-extension 及重复六字符串能力清单。
@@ -74,14 +74,22 @@ edit/write 的调用顺序固定为：
 → 记录后摘要和终态
 ~~~
 
-- 绝对路径、路径穿越、.git、symlink、junction 和 hardlink 写穿均被拒绝。
+- Pi 的普通相对路径、`./` 路径及规范化后仍位于项目内的绝对路径均可进入授权；WSL 路径通过既有边界桥转换。项目外路径、路径穿越、`.git`、symlink、junction 和 hardlink 写穿均被拒绝。
 - 新文件创建会核验最近存在父目录的真实位置。
 - toolCallId + requestDigest 是幂等键，状态为 PENDING → ALLOWED → EXECUTING → SETTLED/OUTCOME_UNKNOWN。
 - 重复请求返回原状态；进程中断后的未知结果不会自动执行第二次。
 - 撤销时只有当前摘要仍等于执行后摘要才会恢复前镜像或移除本次新文件；冲突时保持文件不变。
 - 撤销只影响文件，不倒退 Pi 对话、分支或会话历史。
 
-Bash 在所有档位都逐次确认，仅记录安全命令摘要、审计、退出码和可观察结果。它不建立可恢复文件检查点，也不承诺撤销项目外路径、网络或子进程副作用。
+Bash 在所有档位都逐次确认。授权框显示完整真实命令并保留换行和制表符，不使用截断预览；UTF-8 超过 64 KiB 或含隐藏控制字符时直接拒绝。Main 只持久化命令摘要、审计、退出码和可观察结果，不持久化命令正文。它不建立可恢复文件检查点，也不承诺撤销项目外路径、网络或子进程副作用。
+
+## R3.2 来源绑定与大文件边界
+
+- 会话的可信项目绑定不可由当前 UI 项目覆盖；同一会话传入另一个 cwd 时直接拒绝。
+- `ProjectRootIdentityV2` 将规范路径与目录实体信息写入既有 Scope 持久化；同一路径删除重建不视为原项目恢复。
+- 权限提示包含安全项目名、对话名和来源摘要，只能投递到精确发起 Worker/Session 对应的当前前台窗口；缺失或摘要回显不一致均拒绝。
+- READ 授权前 Main 只异步读取元数据；edit/write 在获批后才异步捕获不超过 16 MiB 的前镜像。不能建立检查点时不执行写入。
+- 授权后执行前再次核验目录实体、目标实体与前摘要；未知结果和重复幂等键不重放真实工具。
 
 ## Pi 原生复用与最小框架例外
 

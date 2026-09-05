@@ -62,7 +62,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
 
     requestWorkerHostToolMock.mockImplementation(async (request) => {
       trace.push(request.method)
-      if (request.method.endsWith('preflight.v2')) {
+      if (request.method.endsWith('preflight.v3')) {
         return {
           ok: true,
           value: {
@@ -125,14 +125,14 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
     } as never, {} as never)).resolves.toBeUndefined()
 
     expect(trace).toEqual([
-      'xiaogui.coding.direct.preflight.v2',
+      'xiaogui.coding.direct.preflight.v3',
       'xiaogui.coding.direct.begin.v2',
       'tool.execute',
       'xiaogui.coding.direct.settle.v2',
     ])
   })
 
-  it('rejects unsafe paths before Main and leaves read parallel', async () => {
+  it('forwards raw Pi paths to Main for canonical project-bound validation and leaves read parallel', async () => {
     const handlers = new Map<string, Handler[]>()
     const lifecycle = createXiaoguiDirectCodingToolLifecycleV2({
       context: () => context('EXECUTE'),
@@ -143,15 +143,29 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
         handlers.set(event, [...(handlers.get(event) ?? []), handler])
       }),
     } as unknown as ExtensionAPI)
+    requestWorkerHostToolMock.mockResolvedValue({
+      ok: true,
+      value: {
+        kind: 'XIAOGUI_DIRECT_CODING_PREFLIGHT',
+        subject: 'DIRECT_SESSION',
+        decision: 'DENY',
+        state: 'SETTLED',
+        requestDigest: `sha256:${'a'.repeat(64)}`,
+        reasonCode: 'PATH_OUTSIDE_PROJECT',
+      },
+    })
     await expect(handlers.get('tool_call')![0]({
       toolName: 'write',
       toolCallId: 'write-outside',
       input: { path: '../outside.txt', content: 'x' },
     } as never, {} as never)).resolves.toMatchObject({
       block: true,
-      reason: 'XIAOGUI_CODING_PATH_REJECTED',
+      reason: 'PATH_OUTSIDE_PROJECT',
     })
-    expect(requestWorkerHostToolMock).not.toHaveBeenCalled()
+    expect(requestWorkerHostToolMock).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'xiaogui.coding.direct.preflight.v3',
+      payload: expect.objectContaining({ path: '../outside.txt' }),
+    }))
     expect(lifecycle.wrapDefinition(readDefinition()).executionMode).toBeUndefined()
   })
 
@@ -178,7 +192,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
     expect(requestWorkerHostToolMock).not.toHaveBeenCalled()
   })
 
-  it('sends only a bounded single-line Bash preview while digesting the full command', async () => {
+  it('sends the exact multiline Bash command and its digest without truncation', async () => {
     const handlers = new Map<string, Handler[]>()
     const lifecycle = createXiaoguiDirectCodingToolLifecycleV2({
       context: () => context('EXECUTE'),
@@ -207,9 +221,32 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
       input: { command },
     } as never, {} as never)
     const payload = requestWorkerHostToolMock.mock.calls[0][0].payload
-    expect(payload.commandPreview).toHaveLength(240)
-    expect(payload.commandPreview).not.toMatch(/[\r\n\t]/)
+    expect(payload.commandText).toBe(command)
     expect(payload.commandDigest).toBe(digestForTest(command))
+  })
+
+  it('rejects a Bash command larger than 64 KiB before opening a permission request', async () => {
+    const handlers = new Map<string, Handler[]>()
+    const lifecycle = createXiaoguiDirectCodingToolLifecycleV2({
+      context: () => context('EXECUTE'),
+      sourceSessionId: () => 'pi-session-1',
+    })
+    await lifecycle.factory({
+      on: vi.fn((event: string, handler: Handler) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler])
+      }),
+    } as unknown as ExtensionAPI)
+
+    await expect(handlers.get('tool_call')![0]({
+      toolName: 'bash',
+      toolCallId: 'bash-too-large',
+      input: { command: 'x'.repeat(64 * 1024 + 1) },
+    } as never, {} as never)).resolves.toEqual({
+      block: true,
+      reason: 'XIAOGUI_CODING_COMMAND_REJECTED',
+      terminate: true,
+    })
+    expect(requestWorkerHostToolMock).not.toHaveBeenCalled()
   })
 
   it('runs a real Pi write definition through Main lifecycle and writes the selected project', async () => {
@@ -234,7 +271,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
       },
     })
     requestWorkerHostToolMock.mockImplementation(async (request) => {
-      if (request.method.endsWith('preflight.v2')) {
+      if (request.method.endsWith('preflight.v3')) {
         return {
           ok: true,
           value: await module.preflight({
@@ -244,17 +281,25 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
             toolCallId: request.payload.toolCallId,
             requestDigest: request.payload.requestDigest,
             operation: request.payload.operation,
-            relativePath: request.payload.relativePath,
-            commandPreview: request.payload.commandPreview,
+            path: request.payload.path,
+            commandText: request.payload.commandText,
             commandDigest: request.payload.commandDigest,
             mode: 'FULL_AUTONOMY',
+            origin: {
+              projectLabel: 'Pi smoke',
+              sessionLabel: 'Pi lifecycle',
+              fromCwd: root,
+              fromPoolKey: 'D:/session.jsonl',
+              sessionFile: 'D:/session.jsonl',
+              sourceSessionId: request.payload.sourceSessionId,
+            },
           }),
         }
       }
       if (request.method.endsWith('begin.v2')) {
         return {
           ok: true,
-          value: module.begin({
+          value: await module.begin({
             subject: directSubject,
             rootPath: root,
             ...request.payload,
@@ -263,7 +308,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
       }
       return {
         ok: true,
-        value: module.settle({
+        value: await module.settle({
           subject: directSubject,
           rootPath: root,
           ...request.payload,

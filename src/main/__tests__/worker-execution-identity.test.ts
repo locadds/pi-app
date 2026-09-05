@@ -58,5 +58,12 @@ describe('worker execution identity', () => {
       ...base,
       resources: { ...base.resources, skillOverrides: { reviewer: false } },
     })).not.toBe(digest)
+    expect(createWorkerExecutionIdentityDigestV1({
+      ...base,
+      projectRootIdentityDigest: `sha256:${'1'.repeat(64)}`,
+    })).not.toBe(createWorkerExecutionIdentityDigestV1({
+      ...base,
+      projectRootIdentityDigest: `sha256:${'2'.repeat(64)}`,
+    }))
   })
 })

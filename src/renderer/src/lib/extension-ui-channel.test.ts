@@ -101,11 +101,14 @@ describe('Main-owned Coding permission request parsing', () => {
     })).toBeNull()
   })
 
-  it('accepts the exact direct-session V2 envelope and rejects a hidden task rule', () => {
+  it('accepts the exact source-bound direct-session V3 envelope and rejects a hidden task rule', () => {
     const directPrompt = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       subject: 'DIRECT_SESSION',
       requestDigest: `sha256:${'a'.repeat(64)}`,
+      originDigest: `sha256:${'b'.repeat(64)}`,
+      projectLabel: 'alpha',
+      sessionLabel: '修复权限',
       operation: 'WRITE',
       mode: 'AUTO_APPROVE',
       relativePath: 'src/new.ts',

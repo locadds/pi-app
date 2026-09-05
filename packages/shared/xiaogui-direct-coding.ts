@@ -3,6 +3,7 @@ import type { CodingPermissionModeV1 } from './xiaogui-coding-permission'
 import type { XiaoguiExecutionPhase } from './xiaogui-prompt-contract'
 
 export const XIAOGUI_DIRECT_CODING_CONTRACT_VERSION_V2 = '2.0.0' as const
+export const XIAOGUI_DIRECT_CODING_EXECUTION_VERSION_V3 = '3.0.0' as const
 export const XIAOGUI_DIRECT_CODING_SUBJECT_V2 = 'DIRECT_SESSION' as const
 export const XIAOGUI_TASKHUB_CODING_SUBJECT_V2 = 'TASKHUB_ATTEMPT' as const
 
@@ -48,27 +49,48 @@ export type CodingAuthorizationSubjectV2 =
   | DirectCodingAuthorizationSubjectV2
   | TaskHubCodingAuthorizationSubjectV2
 
-export interface DirectCodingPermissionPromptV2 {
-  readonly schemaVersion: 2
+/** Current direct-session execution contract; older prompt/preflight variants are not supported in parallel. */
+export interface DirectCodingPermissionPromptV3 {
+  readonly schemaVersion: 3
   readonly subject: typeof XIAOGUI_DIRECT_CODING_SUBJECT_V2
   readonly requestDigest: string
+  readonly originDigest: string
+  readonly projectLabel: string
+  readonly sessionLabel: string
   readonly operation: DirectCodingOperationV2
   readonly mode: CodingPermissionModeV1
   readonly relativePath?: string
-  readonly commandPreview?: string
+  /** Exact command text shown to the user; never persisted by Main. */
+  readonly commandText?: string
   readonly warning?: string
   readonly choices: readonly ['ALLOW_ONCE', 'DENY']
 }
 
-export interface DirectCodingPreflightPayloadV2 {
+export interface DirectCodingPermissionResponseV3 {
+  readonly choice: DirectCodingPermissionChoiceV2
+  readonly requestDigest: string
+  readonly originDigest: string
+}
+
+export interface DirectCodingPermissionOriginV3 {
+  readonly projectLabel: string
+  readonly sessionLabel: string
+  readonly fromCwd: string
+  readonly fromPoolKey: string
+  readonly sessionFile: string
+  readonly sourceSessionId: string
+}
+
+export interface DirectCodingPreflightPayloadV3 {
   readonly sourceSessionId: string
   readonly toolCallId: string
   readonly requestDigest: string
   readonly phase: XiaoguiExecutionPhase
   readonly operation: DirectCodingOperationV2
-  readonly relativePath?: string
-  /** A bounded UI preview. The complete command is never persisted. */
-  readonly commandPreview?: string
+  /** Raw Pi path; Main normalizes it against the trusted project root. */
+  readonly path?: string
+  /** Exact command, capped at 64 KiB before crossing the Worker seam. */
+  readonly commandText?: string
   readonly commandDigest?: string
 }
 

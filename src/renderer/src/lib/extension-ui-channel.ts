@@ -11,7 +11,7 @@ import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draf
 import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from '@shared/xiaogui-work-template-review'
 import type { TemplateMaterializePreviewRequestV1 } from '@shared/xiaogui-work-docx-template-materialize'
 import type { CodingPermissionPromptV1 } from '@shared/xiaogui-coding-extension-pack'
-import type { DirectCodingPermissionPromptV2 } from '@shared/xiaogui-direct-coding'
+import type { DirectCodingPermissionPromptV3 } from '@shared/xiaogui-direct-coding'
 import { traceAudioRenderer } from '@renderer/lib/audio-trace'
 import { alertTrace } from '@renderer/lib/alert-trace'
 import {
@@ -105,19 +105,21 @@ function isMainPermissionPrompt(value: unknown): value is CodingPermissionPrompt
   return true
 }
 
-function isDirectPermissionPrompt(value: unknown): value is DirectCodingPermissionPromptV2 {
-  if (!isRecord(value) || value.schemaVersion !== 2 || value.subject !== 'DIRECT_SESSION') return false
+function isDirectPermissionPrompt(value: unknown): value is DirectCodingPermissionPromptV3 {
+  if (!isRecord(value) || value.schemaVersion !== 3 || value.subject !== 'DIRECT_SESSION') return false
   const operation = value.operation
   if (!['READ', 'EDIT', 'WRITE', 'BASH', 'DATA_EGRESS'].includes(String(operation))) return false
   if (!['CONFIRM_EACH', 'AUTO_APPROVE', 'FULL_AUTONOMY'].includes(String(value.mode))) return false
   const expected = new Set([
     'schemaVersion', 'subject', 'requestDigest', 'operation', 'mode', 'choices',
+    'originDigest', 'projectLabel', 'sessionLabel',
     ...(operation === 'READ' || operation === 'EDIT' || operation === 'WRITE' ? ['relativePath'] : []),
-    ...(operation === 'BASH' ? ['commandPreview', 'warning'] : []),
+    ...(operation === 'BASH' ? ['commandText', 'warning'] : []),
     ...(operation === 'DATA_EGRESS' ? ['warning'] : []),
   ])
   if (Object.keys(value).length !== expected.size || Object.keys(value).some((key) => !expected.has(key))) return false
   if (!/^sha256:[0-9a-f]{64}$/.test(String(value.requestDigest))) return false
+  if (!/^sha256:[0-9a-f]{64}$/.test(String(value.originDigest))) return false
   if (!Array.isArray(value.choices) || value.choices.length !== 2 || value.choices[0] !== 'ALLOW_ONCE' || value.choices[1] !== 'DENY') return false
   if (expected.has('relativePath')) {
     const path = value.relativePath
@@ -125,7 +127,14 @@ function isDirectPermissionPrompt(value: unknown): value is DirectCodingPermissi
     if (path.split('/').some((part) => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) return false
   }
   const safeText = (text: unknown, max: number) => typeof text === 'string' && text.length > 0 && text.length <= max && !/[\u0000-\u001f\u007f]/.test(text)
-  if (expected.has('commandPreview') && !safeText(value.commandPreview, 240)) return false
+  if (!safeText(value.projectLabel, 80) || !safeText(value.sessionLabel, 80)) return false
+  if (
+    expected.has('commandText') &&
+    (typeof value.commandText !== 'string'
+      || !value.commandText.trim()
+      || new TextEncoder().encode(value.commandText).byteLength > 64 * 1024
+      || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.commandText))
+  ) return false
   if (expected.has('warning') && !safeText(value.warning, 256)) return false
   return true
 }

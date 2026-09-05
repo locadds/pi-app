@@ -269,26 +269,24 @@ export function registerSessionHandlers(): void {
 
   registerHandlerWithSchema('ipc:session.navigateTree', sessionNavigateTreeSchema, async (req) => {
     try {
-      // Bind the *requested* session worker, then navigate on that same slot.
-      // Passing sessionFile through avoids foreground-fallback / wrong-worker races.
-      // Pass explicit cwd so rewind works after cold open without a pre-started Worker.
+      const resolved = await resolveTrustedSessionScope(req.workspaceId, req.sessionFile)
+      workerManager.rememberSessionWorkspace(resolved.ref.sessionFile, resolved.ref.rootPath)
+      xiaogui.setMode(resolved.scope.sessionMode)
+      // Bind only after the Session file has been authorized against its original
+      // workspace. The current UI project can never rewrite this binding.
       await ensureWorkerSessionBound(
-        (f, o) =>
-          workerManager.loadSession(f, {
-            force: o?.force,
-            cwd: workerManager.resolveWorkspaceCwd() || undefined,
-          }),
-        { sessionFile: req.sessionFile },
+        (f, o) => workerManager.loadSession(f, { force: o?.force }),
+        { sessionFile: resolved.ref.sessionFile },
       )
       const result = await workerManager.navigateTree(req.targetId, {
         summarize: req.summarize === true,
         label: req.label,
-        sessionFile: req.sessionFile,
+        sessionFile: resolved.ref.sessionFile,
       })
       // Persist leaf tip for disk getMessages / next loadSession (pi does not write leaf to JSONL).
-      if (!result.cancelled && req.sessionFile) {
+      if (!result.cancelled) {
         const leaf = result.leafId !== undefined ? result.leafId : req.targetId
-        setSessionLeafOverride(req.sessionFile, leaf)
+        setSessionLeafOverride(resolved.ref.sessionFile, leaf)
       }
       return result
     } catch (e: unknown) {

@@ -187,13 +187,40 @@ export class WorkerManager {
   }
 
   private slotMatchesCurrentRuntime(slot: WorkerSlot, expectedCwd = slot.cwd): boolean {
-    const runtime = getAgentRuntimeConfig()
-    return (
-      slot.runtime.mode === runtime.mode &&
-      slot.runtime.distro === runtime.distro &&
-      slot.executionIdentityDigest ===
-        readCurrentWorkerExecutionIdentityDigestV1(expectedCwd, runtime)
-    )
+    try {
+      const runtime = getAgentRuntimeConfig()
+      return (
+        slot.runtime.mode === runtime.mode &&
+        slot.runtime.distro === runtime.distro &&
+        slot.executionIdentityDigest ===
+          readCurrentWorkerExecutionIdentityDigestV1(expectedCwd, runtime)
+      )
+    } catch {
+      return false
+    }
+  }
+
+  /** Resolve the one window that owns an exact live Worker/session source. */
+  resolveHostToolRequestWindow(source: {
+    readonly fromCwd: string
+    readonly fromPoolKey: string
+    readonly sessionFile: string
+    readonly sourceSessionId: string
+  }): BrowserWindow | undefined {
+    const win = this.mainWindow
+    if (!win || win.isDestroyed()) return undefined
+    const slot = this.pool.get(source.fromPoolKey)
+    if (!slot || slot.stopping) return undefined
+    if (this.foregroundPoolKey !== slot.poolKey) return undefined
+    if (canonicalWorkerProjectRootV1(slot.cwd) !== canonicalWorkerProjectRootV1(source.fromCwd)) {
+      return undefined
+    }
+    if (normalizeSessionKey(slot.sessionFile ?? '') !== normalizeSessionKey(source.sessionFile)) {
+      return undefined
+    }
+    if (slot.sessionId !== source.sourceSessionId) return undefined
+    if (!this.slotMatchesCurrentRuntime(slot, source.fromCwd)) return undefined
+    return win
   }
 
   private async disposePoolSlot(slot: WorkerSlot): Promise<void> {
@@ -535,7 +562,17 @@ export class WorkerManager {
   rememberSessionWorkspace(sessionFile: string, cwd: string): void {
     const key = normalizeSessionKey(sessionFile)
     const workspace = String(cwd || '').trim()
-    if (key && workspace) this.sessionWorkspaceHints.set(key, workspace)
+    if (!key || !workspace) return
+    const expectedRoot = canonicalWorkerProjectRootV1(workspace)
+    const live = this.pool.get(key)
+    if (live && canonicalWorkerProjectRootV1(live.cwd) !== expectedRoot) {
+      throw new Error('SESSION_WORKSPACE_REBIND_REJECTED')
+    }
+    const existing = this.sessionWorkspaceHints.get(key)
+    if (existing && canonicalWorkerProjectRootV1(existing) !== expectedRoot) {
+      throw new Error('SESSION_WORKSPACE_REBIND_REJECTED')
+    }
+    if (!existing) this.sessionWorkspaceHints.set(key, workspace)
   }
 
   forgetSessionWorkspace(sessionFile: string): void {
@@ -1148,11 +1185,18 @@ export class WorkerManager {
     thinkingLevel?: string
     modelFallbackMessage?: string
   }> {
-    if (opts?.cwd) this.rememberSessionWorkspace(sessionFile, opts.cwd)
     // The authorized Session binding owns workspace identity. Pi's header cwd is
     // only a last-resort fallback because new Sessions can contain process.cwd().
     const sessionCwd = this.resolveSessionWorkspaceCwd(sessionFile)
-    const cwd = this.resolveWorkspaceCwd(opts?.cwd || sessionCwd)
+    if (
+      opts?.cwd &&
+      sessionCwd &&
+      canonicalWorkerProjectRootV1(opts.cwd) !== canonicalWorkerProjectRootV1(sessionCwd)
+    ) {
+      throw new Error('SESSION_WORKSPACE_REBIND_REJECTED')
+    }
+    if (opts?.cwd) this.rememberSessionWorkspace(sessionFile, opts.cwd)
+    const cwd = sessionCwd || opts?.cwd || null
     if (!cwd) throw new Error('Worker not started for session')
     await this.ensureSessionWorker(sessionFile, cwd)
     // Re-apply rewound leaf tip (main override map) so agent context matches UI.

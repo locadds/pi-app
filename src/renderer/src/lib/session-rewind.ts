@@ -36,6 +36,10 @@ export async function navigateSessionToEntry(targetId: string): Promise<boolean>
       toast.warning('未找到会话文件，无法刷新时间线')
       return false
     }
+    if (!st.currentWorkspace) {
+      toast.warning('未找到会话所属项目，无法回退')
+      return false
+    }
     if (!targetId || !String(targetId).trim()) {
       toast.warning('无法回退：缺少消息节点 id')
       return false
@@ -45,6 +49,7 @@ export async function navigateSessionToEntry(targetId: string): Promise<boolean>
     const r = (await ipcClient.invoke('session.navigateTree', {
       targetId,
       sessionFile: file,
+      workspaceId: st.currentWorkspace,
       summarize: false,
     })) as {
       cancelled?: boolean

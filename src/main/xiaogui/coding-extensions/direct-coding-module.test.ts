@@ -3,6 +3,7 @@ import {
   linkSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -51,13 +52,13 @@ describe('DirectCodingModuleV2', () => {
       ok: true,
       value: { checkpoints: [] },
     })
-    expect(module.begin(lifecycle(root, 'write-1', requestDigest))).toMatchObject({
+    await expect(module.begin(lifecycle(root, 'write-1', requestDigest))).resolves.toMatchObject({
       decision: 'ALLOW',
       state: 'EXECUTING',
     })
     writeFileSync(join(root, 'src/a.ts'), 'after\n')
-    expect(module.settle({ ...lifecycle(root, 'write-1', requestDigest), isError: false }))
-      .toMatchObject({ state: 'SETTLED' })
+    await expect(module.settle({ ...lifecycle(root, 'write-1', requestDigest), isError: false }))
+      .resolves.toMatchObject({ state: 'SETTLED' })
 
     const listed = module.list(subject)
     expect(listed.ok).toBe(true)
@@ -98,9 +99,9 @@ describe('DirectCodingModuleV2', () => {
 
     await expect(module.preflight(input(root, 'write-2', requestDigest, 'WRITE', 'FULL_AUTONOMY', 'new.txt')))
       .resolves.toMatchObject({ decision: 'ALLOW', state: 'ALLOWED' })
-    expect(module.begin(lifecycle(root, 'write-2', requestDigest)).decision).toBe('ALLOW')
+    await expect(module.begin(lifecycle(root, 'write-2', requestDigest))).resolves.toMatchObject({ decision: 'ALLOW' })
     writeFileSync(join(root, 'new.txt'), 'created')
-    module.settle({ ...lifecycle(root, 'write-2', requestDigest), isError: false })
+    await module.settle({ ...lifecycle(root, 'write-2', requestDigest), isError: false })
 
     const listed = module.list(subject)
     if (!listed.ok) throw new Error('checkpoint missing')
@@ -140,7 +141,7 @@ describe('DirectCodingModuleV2', () => {
       'a.txt',
     ))).resolves.toMatchObject({
       decision: 'DENY',
-      state: 'OUTCOME_UNKNOWN',
+      state: 'SETTLED',
       reasonCode: 'PATH_CHANGED_AFTER_AUTHORIZATION',
     })
     const listed = module.list(subject)
@@ -158,21 +159,22 @@ describe('DirectCodingModuleV2', () => {
     const requestDigest = digest('bash-call')
     const bashInput = {
       ...input(root, 'bash-1', requestDigest, 'BASH', 'FULL_AUTONOMY'),
-      commandPreview: 'git status --short',
+      commandText: 'git status --short',
       commandDigest: digest('git status --short'),
     }
     await expect(module.preflight(bashInput)).resolves.toMatchObject({ decision: 'ALLOW', state: 'ALLOWED' })
     expect(ui.request).toHaveBeenCalledWith(expect.objectContaining({
       operation: 'BASH',
       choices: ['ALLOW_ONCE', 'DENY'],
-    }))
+      commandText: 'git status --short',
+    }), expect.objectContaining({ projectLabel: '测试项目' }))
     expect(module.list(subject)).toMatchObject({ ok: true, value: { checkpoints: [] } })
-    expect(module.begin(lifecycle(root, 'bash-1', requestDigest)).state).toBe('EXECUTING')
-    expect(module.settle({
+    await expect(module.begin(lifecycle(root, 'bash-1', requestDigest))).resolves.toMatchObject({ state: 'EXECUTING' })
+    await expect(module.settle({
       ...lifecycle(root, 'bash-1', requestDigest),
       isError: false,
       exitCode: 0,
-    }).state).toBe('SETTLED')
+    })).resolves.toMatchObject({ state: 'SETTLED' })
     await expect(module.preflight(bashInput)).resolves.toMatchObject({
       decision: 'DENY',
       state: 'SETTLED',
@@ -220,11 +222,13 @@ describe('DirectCodingModuleV2', () => {
     writeFileSync(join(outside, 'external/out.txt'), 'outside')
     symlinkSync(join(outside, 'external'), join(root, 'junction'), 'junction')
 
-    expect(() => inspectProjectPath(root, '../outside.txt', 'WRITE')).toThrow('PATH_INVALID')
+    expect(() => inspectProjectPath(root, '../outside.txt', 'WRITE')).toThrow('PATH_OUTSIDE_PROJECT')
     expect(() => inspectProjectPath(root, '.git/config', 'WRITE')).toThrow('PATH_INVALID')
-    expect(() => inspectProjectPath(root, join(outside, 'external/out.txt'), 'WRITE')).toThrow('PATH_INVALID')
+    expect(() => inspectProjectPath(root, join(outside, 'external/out.txt'), 'WRITE')).toThrow('PATH_OUTSIDE_PROJECT')
     expect(() => inspectProjectPath(root, 'junction/out.txt', 'WRITE')).toThrow('PATH_LINK_REJECTED')
     expect(() => inspectProjectPath(root, 'linked.txt', 'WRITE')).toThrow('PATH_HARDLINK_REJECTED')
+    expect(inspectProjectPath(root, './alias.txt', 'READ').relativePath).toBe('alias.txt')
+    expect(inspectProjectPath(root, join(root, 'alias.txt'), 'READ').relativePath).toBe('alias.txt')
   })
 
   it('refuses restore when the file changed after the recorded tool result', async () => {
@@ -233,9 +237,9 @@ describe('DirectCodingModuleV2', () => {
     const module = moduleFor(root, allowAll())
     const requestDigest = digest('restore-conflict')
     await module.preflight(input(root, 'write-conflict', requestDigest, 'WRITE', 'AUTO_APPROVE', 'a.txt'))
-    module.begin(lifecycle(root, 'write-conflict', requestDigest))
+    await module.begin(lifecycle(root, 'write-conflict', requestDigest))
     writeFileSync(join(root, 'a.txt'), 'tool result')
-    module.settle({ ...lifecycle(root, 'write-conflict', requestDigest), isError: false })
+    await module.settle({ ...lifecycle(root, 'write-conflict', requestDigest), isError: false })
     const listed = module.list(subject)
     if (!listed.ok) throw new Error('checkpoint missing')
     writeFileSync(join(root, 'a.txt'), 'later user change')
@@ -253,9 +257,9 @@ describe('DirectCodingModuleV2', () => {
     const module = moduleFor(root, allowAll())
     const requestDigest = digest('restore-root-binding')
     await module.preflight(input(root, 'write-root-binding', requestDigest, 'WRITE', 'AUTO_APPROVE', 'a.txt'))
-    module.begin(lifecycle(root, 'write-root-binding', requestDigest))
+    await module.begin(lifecycle(root, 'write-root-binding', requestDigest))
     writeFileSync(join(root, 'a.txt'), 'tool result')
-    module.settle({ ...lifecycle(root, 'write-root-binding', requestDigest), isError: false })
+    await module.settle({ ...lifecycle(root, 'write-root-binding', requestDigest), isError: false })
     const listed = module.list(subject)
     if (!listed.ok) throw new Error('checkpoint missing')
     const checkpointToken = listed.value.checkpoints[0].checkpointToken
@@ -271,6 +275,64 @@ describe('DirectCodingModuleV2', () => {
     })).toMatchObject({ ok: false, error: { code: 'CHECKPOINT_CONFLICT' } })
     expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('tool result')
     expect(readFileSync(join(otherRoot, 'a.txt'), 'utf8')).toBe('unrelated project')
+    module.close()
+  })
+
+  it('rejects execution when the directory entity is replaced at the same path', async () => {
+    const stateRoot = await tempRoot()
+    const root = join(stateRoot, 'project')
+    mkdirSync(root)
+    writeFileSync(join(root, 'a.txt'), 'before')
+    const module = moduleFor(root, allowAll(), join(stateRoot, 'direct.sqlite'))
+    const requestDigest = digest('same-path-replacement')
+
+    await expect(module.preflight(input(
+      root,
+      'same-path-write',
+      requestDigest,
+      'WRITE',
+      'AUTO_APPROVE',
+      'a.txt',
+    ))).resolves.toMatchObject({ decision: 'ALLOW' })
+    renameSync(root, join(stateRoot, 'old-project'))
+    mkdirSync(root)
+    writeFileSync(join(root, 'a.txt'), 'replacement project')
+
+    await expect(module.begin(lifecycle(root, 'same-path-write', requestDigest))).resolves.toMatchObject({
+      decision: 'DENY',
+      state: 'OUTCOME_UNKNOWN',
+      reasonCode: 'PROJECT_IDENTITY_CHANGED',
+    })
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('replacement project')
+    module.close()
+  })
+
+  it('does not read a large file during READ authorization and refuses an uncheckpointed write', async () => {
+    const root = await tempRoot()
+    const largePath = join(root, 'large.bin')
+    writeFileSync(largePath, Buffer.alloc(16 * 1024 * 1024 + 1, 7))
+    const module = moduleFor(root, allowAll())
+
+    await expect(module.preflight(input(
+      root,
+      'large-read',
+      digest('large-read'),
+      'READ',
+      'AUTO_APPROVE',
+      largePath,
+    ))).resolves.toMatchObject({ decision: 'ALLOW', state: 'ALLOWED' })
+    await expect(module.preflight(input(
+      root,
+      'large-write',
+      digest('large-write'),
+      'WRITE',
+      'AUTO_APPROVE',
+      './large.bin',
+    ))).resolves.toMatchObject({
+      decision: 'DENY',
+      state: 'SETTLED',
+      reasonCode: 'CHECKPOINT_FILE_TOO_LARGE',
+    })
     module.close()
   })
 })
@@ -304,7 +366,7 @@ function input(
   requestDigest: string,
   operation: 'READ' | 'EDIT' | 'WRITE' | 'BASH',
   mode: 'CONFIRM_EACH' | 'AUTO_APPROVE' | 'FULL_AUTONOMY',
-  relativePath?: string,
+  path?: string,
 ) {
   return {
     subject,
@@ -314,7 +376,15 @@ function input(
     requestDigest,
     operation,
     mode,
-    ...(relativePath ? { relativePath } : {}),
+    ...(path ? { path } : {}),
+    origin: {
+      projectLabel: '测试项目',
+      sessionLabel: '测试对话',
+      fromCwd: rootPath,
+      fromPoolKey: 'D:/session.jsonl',
+      sessionFile: 'D:/session.jsonl',
+      sourceSessionId: 'pi-session-1',
+    },
   }
 }
 

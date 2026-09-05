@@ -17,6 +17,15 @@ const directSubject = {
   },
 } satisfies DirectCodingAuthorizationSubjectV2
 
+const origin = {
+  projectLabel: 'alpha',
+  sessionLabel: '修复权限',
+  fromCwd: 'D:/projects/alpha',
+  fromPoolKey: 'D:/sessions/alpha.jsonl',
+  sessionFile: 'D:/sessions/alpha.jsonl',
+  sourceSessionId: 'pi-session-1',
+} as const
+
 describe('CodingAuthorizationModuleV2', () => {
   it('implements the frozen direct-session mode matrix and always asks for Bash/egress', () => {
     expect(directPermissionEffectV2('CONFIRM_EACH', 'READ', true)).toBe('ASK')
@@ -42,15 +51,19 @@ describe('CodingAuthorizationModuleV2', () => {
       operation: 'BASH',
       mode: 'FULL_AUTONOMY',
       existingFile: false,
-      commandPreview: 'npm test',
+      commandText: 'npm test\nWrite-Output done',
+      origin,
     })).resolves.toEqual({ decision: 'ALLOW_ONCE', reasonCode: 'USER_ALLOWED_ONCE' })
     expect(directUi.request).toHaveBeenCalledWith(expect.objectContaining({
-      schemaVersion: 2,
+      schemaVersion: 3,
       subject: 'DIRECT_SESSION',
       operation: 'BASH',
+      projectLabel: 'alpha',
+      sessionLabel: '修复权限',
+      commandText: 'npm test\nWrite-Output done',
       choices: ['ALLOW_ONCE', 'DENY'],
       warning: expect.stringContaining('不能自动撤销'),
-    }))
+    }), origin)
 
     const intent = taskHubIntent()
     await expect(module.decideTaskHub({
@@ -73,6 +86,7 @@ describe('CodingAuthorizationModuleV2', () => {
       mode: 'CONFIRM_EACH',
       existingFile: false,
       relativePath: 'src/new.ts',
+      origin,
     })).resolves.toEqual({ decision: 'DENY', reasonCode: 'USER_OR_POLICY_DENIED' })
 
     const intent = taskHubIntent()

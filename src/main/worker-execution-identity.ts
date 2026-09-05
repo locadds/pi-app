@@ -3,6 +3,8 @@ import { existsSync, realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { configStore } from './config-store'
 import type { AgentRuntimeConfig } from './wsl/runtime-config'
+import { readProjectRootIdentityV2 } from './project-root-identity'
+export { readProjectRootIdentityV2, type ProjectRootIdentityV2 } from './project-root-identity'
 
 export interface WorkerResourceConfigIdentityV1 {
   readonly extensionOverrides: Readonly<Record<string, boolean>>
@@ -71,10 +73,13 @@ export function createWorkerExecutionIdentityDigestV1(input: {
   readonly cwd: string
   readonly runtime: AgentRuntimeConfig
   readonly resources: WorkerResourceConfigIdentityV1
+  readonly projectRootIdentityDigest?: string
 }): string {
   const payload = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectRoot: canonicalWorkerProjectRootV1(input.cwd),
+    projectRootIdentityDigest: input.projectRootIdentityDigest
+      ?? `path-only:${canonicalWorkerProjectRootV1(input.cwd)}`,
     runtime: {
       mode: input.runtime.mode,
       distro: input.runtime.mode === 'wsl' ? input.runtime.distro : null,
@@ -96,5 +101,6 @@ export function readCurrentWorkerExecutionIdentityDigestV1(
     cwd,
     runtime,
     resources: readWorkerResourceConfigIdentityV1(),
+    projectRootIdentityDigest: readProjectRootIdentityV2(cwd).digest,
   })
 }

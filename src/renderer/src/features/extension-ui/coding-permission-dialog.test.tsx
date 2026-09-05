@@ -4,17 +4,20 @@ import { describe, expect, it, vi } from 'vitest'
 import { CodingPermissionDialog } from './coding-permission-dialog'
 
 describe('CodingPermissionDialog', () => {
-  it('普通 Coding V2 只提供允许一次和拒绝，并提示 Bash 不可撤销', () => {
+  it('普通 Coding V3 显示来源和完整 Bash，只提供允许一次和拒绝', () => {
     const onChoose = vi.fn()
     render(
       <CodingPermissionDialog
         prompt={{
-          schemaVersion: 2,
+          schemaVersion: 3,
           subject: 'DIRECT_SESSION',
           requestDigest: `sha256:${'a'.repeat(64)}`,
+          originDigest: `sha256:${'b'.repeat(64)}`,
+          projectLabel: 'alpha',
+          sessionLabel: '修复权限',
           operation: 'BASH',
           mode: 'FULL_AUTONOMY',
-          commandPreview: 'npm run typecheck',
+          commandText: 'npm run typecheck\nWrite-Output done',
           warning: '命令可能访问项目外路径、网络或子进程，且不能自动撤销。',
           choices: ['ALLOW_ONCE', 'DENY'],
         }}
@@ -22,7 +25,9 @@ describe('CodingPermissionDialog', () => {
       />,
     )
 
-    expect(screen.getByText('npm run typecheck')).toBeTruthy()
+    expect(screen.getByText(/npm run typecheck\s+Write-Output done/)).toBeTruthy()
+    expect(screen.getByText('alpha')).toBeTruthy()
+    expect(screen.getByText('修复权限')).toBeTruthy()
     expect(screen.getByText(/不能自动撤销/)).toBeTruthy()
     expect(screen.getByRole('button', { name: '允许一次' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '允许本次任务中的相同规则' })).toBeNull()

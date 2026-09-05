@@ -57,7 +57,8 @@ import { CodingPermissionModuleV1 } from '../coding-extensions/permission-module
 import { CodingPermissionModeModuleV1 } from '../coding-extensions/permission-mode-module'
 import { MainProcessCodingPermissionUIAdapterV1 } from '../coding-extensions/permission-ui-adapter'
 import { CodingAuthorizationModuleV2 } from '../coding-extensions/coding-authorization-module'
-import { MainProcessDirectCodingPermissionUIAdapterV2 } from '../coding-extensions/direct-permission-ui-adapter'
+import { MainProcessDirectCodingPermissionUIAdapterV3 } from '../coding-extensions/direct-permission-ui-adapter'
+import { workerManager } from '../../worker-manager'
 import { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-module'
 import {
   CodingAttemptReviewModuleV1,
@@ -284,7 +285,10 @@ export function createXiaoguiRuntimeCompositionV1(
       now: options.now,
     })
     codingAuthorizationModule = new CodingAuthorizationModuleV2({
-      directUi: new MainProcessDirectCodingPermissionUIAdapterV2({ timeoutMs: 55_000 }),
+      directUi: new MainProcessDirectCodingPermissionUIAdapterV3({
+        timeoutMs: 55_000,
+        windowProvider: (origin) => workerManager.resolveHostToolRequestWindow(origin),
+      }),
       taskHub: codingPermissionModule,
     })
     codingAttemptPlanModule = new CodingAttemptPlanModuleV1({

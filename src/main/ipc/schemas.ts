@@ -41,10 +41,11 @@ export const sessionExportSchema = z.object({
 
 export const sessionNavigateTreeSchema = z.object({
   targetId: z.string().min(1),
-  sessionFile: z.string().optional(),
+  sessionFile: z.string().trim().min(1),
+  workspaceId: z.string().trim().min(1),
   summarize: z.boolean().optional(),
   label: z.string().optional(),
-})
+}).strict()
 
 export const sessionTreeSchema = z
   .object({

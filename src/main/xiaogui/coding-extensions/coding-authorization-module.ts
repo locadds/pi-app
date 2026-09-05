@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import type { CodingPermissionIntentV1 } from '@shared/xiaogui-coding-extension-pack'
 import type { CodingPermissionModeV1 } from '@shared/xiaogui-coding-permission'
 import {
@@ -5,12 +7,13 @@ import {
   XIAOGUI_TASKHUB_CODING_SUBJECT_V2,
   type DirectCodingAuthorizationSubjectV2,
   type DirectCodingOperationV2,
-  type DirectCodingPermissionPromptV2,
+  type DirectCodingPermissionOriginV3,
+  type DirectCodingPermissionPromptV3,
   type TaskHubCodingAuthorizationSubjectV2,
 } from '@shared/xiaogui-direct-coding'
 
 import type { CodingPermissionModuleV1 } from './permission-module'
-import type { DirectCodingPermissionUIPortV2 } from './direct-permission-ui-adapter'
+import type { DirectCodingPermissionUIPortV3 } from './direct-permission-ui-adapter'
 
 export interface DirectCodingAuthorizationRequestV2 {
   readonly subject: DirectCodingAuthorizationSubjectV2
@@ -19,7 +22,8 @@ export interface DirectCodingAuthorizationRequestV2 {
   readonly mode: CodingPermissionModeV1
   readonly existingFile: boolean
   readonly relativePath?: string
-  readonly commandPreview?: string
+  readonly commandText?: string
+  readonly origin: DirectCodingPermissionOriginV3
 }
 
 export interface DirectCodingAuthorizationDecisionV2 {
@@ -46,7 +50,7 @@ export interface TaskHubCodingAuthorizationPortV2 {
 export class CodingAuthorizationModuleV2
   implements DirectCodingAuthorizationPortV2, TaskHubCodingAuthorizationPortV2 {
   constructor(private readonly options: {
-    readonly directUi: DirectCodingPermissionUIPortV2
+    readonly directUi: DirectCodingPermissionUIPortV3
     readonly taskHub: Pick<CodingPermissionModuleV1, 'decide'>
   }) {}
 
@@ -61,15 +65,19 @@ export class CodingAuthorizationModuleV2
     if (directPermissionEffectV2(input.mode, input.operation, input.existingFile) === 'ALLOW') {
       return { decision: 'ALLOW_ONCE', reasonCode: 'MODE_POLICY_AUTO_ALLOWED' }
     }
-    const prompt: DirectCodingPermissionPromptV2 = Object.freeze({
-      schemaVersion: 2,
+    const originDigest = digestOrigin(input)
+    const prompt: DirectCodingPermissionPromptV3 = Object.freeze({
+      schemaVersion: 3,
       subject: XIAOGUI_DIRECT_CODING_SUBJECT_V2,
       requestDigest: input.requestDigest,
+      originDigest,
+      projectLabel: input.origin.projectLabel,
+      sessionLabel: input.origin.sessionLabel,
       operation: input.operation,
       mode: input.mode,
       ...(input.relativePath ? { relativePath: input.relativePath } : {}),
-      ...(input.commandPreview !== undefined
-        ? { commandPreview: boundedCommandPreview(input.commandPreview) }
+      ...(input.commandText !== undefined
+        ? { commandText: input.commandText }
         : {}),
       ...(input.operation === 'BASH'
         ? { warning: '命令可能访问项目外路径、网络或子进程，且不能自动撤销。' }
@@ -79,7 +87,7 @@ export class CodingAuthorizationModuleV2
       choices: Object.freeze(['ALLOW_ONCE', 'DENY'] as const),
     })
     try {
-      if (await this.options.directUi.request(prompt) === 'ALLOW_ONCE') {
+      if (await this.options.directUi.request(prompt, input.origin) === 'ALLOW_ONCE') {
         return { decision: 'ALLOW_ONCE', reasonCode: 'USER_ALLOWED_ONCE' }
       }
     } catch {
@@ -113,9 +121,12 @@ export function directPermissionEffectV2(
   return mode === 'FULL_AUTONOMY' ? 'ALLOW' : 'ASK'
 }
 
-function boundedCommandPreview(value: string): string {
-  const normalized = value
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .trim()
-  return normalized.length <= 240 ? normalized : `${normalized.slice(0, 237)}...`
+function digestOrigin(input: DirectCodingAuthorizationRequestV2): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify({
+    domain: 'xiaogui.direct-coding.permission-origin.v3',
+    projectId: input.subject.address.projectId,
+    sessionKey: input.subject.address.sessionKey,
+    sourceSessionId: input.origin.sourceSessionId,
+    fromPoolKey: input.origin.fromPoolKey,
+  })).digest('hex')}`
 }

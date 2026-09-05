@@ -4,13 +4,13 @@ import type {
 } from '@shared/xiaogui-coding-extension-pack'
 import type {
   DirectCodingPermissionChoiceV2,
-  DirectCodingPermissionPromptV2,
+  DirectCodingPermissionPromptV3,
 } from '@shared/xiaogui-direct-coding'
 
 import { ExtensionDialogShell } from './extension-dialog-shell'
 
 export interface CodingPermissionDialogProps {
-  readonly prompt: CodingPermissionPromptV1 | DirectCodingPermissionPromptV2
+  readonly prompt: CodingPermissionPromptV1 | DirectCodingPermissionPromptV3
   readonly onChoose: (choice: CodingPermissionUserChoiceV1 | DirectCodingPermissionChoiceV2) => void
 }
 
@@ -22,7 +22,7 @@ const OPERATION_LABELS: Record<CodingPermissionPromptV1['operation'], string> = 
 }
 
 export function CodingPermissionDialog({ prompt, onChoose }: CodingPermissionDialogProps) {
-  if (prompt.schemaVersion === 2) {
+  if (prompt.schemaVersion === 3) {
     const labels = {
       READ: '读取文件',
       EDIT: '修改文件',
@@ -33,10 +33,18 @@ export function CodingPermissionDialog({ prompt, onChoose }: CodingPermissionDia
     return (
       <ExtensionDialogShell title="需要你的许可" onDismiss={() => onChoose('DENY')} wide>
         <div className="space-y-4 text-[13px]">
+          <div className="grid gap-2 rounded-md border bg-muted/20 p-3 sm:grid-cols-2">
+            <div><span className="text-muted-foreground">来源项目：</span>{prompt.projectLabel}</div>
+            <div><span className="text-muted-foreground">来源对话：</span>{prompt.sessionLabel}</div>
+          </div>
           <div className="rounded-md border bg-muted/30 p-3">
             <div className="font-medium">{labels[prompt.operation]}</div>
             {prompt.relativePath && <div className="mt-2 font-mono text-[12px]">{prompt.relativePath}</div>}
-            {prompt.commandPreview && <div className="mt-2 whitespace-pre-wrap rounded border p-2 font-mono text-[12px]">{prompt.commandPreview}</div>}
+            {prompt.commandText && (
+              <pre className="mt-2 max-h-[min(45vh,420px)] overflow-auto whitespace-pre-wrap break-words rounded border p-2 font-mono text-[12px]">
+                {prompt.commandText}
+              </pre>
+            )}
           </div>
           {prompt.warning && (
             <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-amber-800 dark:text-amber-200">

@@ -1,6 +1,133 @@
 # 小规开发阶段状态
 
-## 2026-09-05｜CODING-P1D-B-R3.1 普通 CODING 直接写入闭环（阶段候选，待人工验收）
+## 2026-09-05｜CODING-P1D-B-R3.2 来源绑定与大文件安全返修（阶段候选，待人工复验）
+
+### 本阶段目标
+
+在不改变 R3.1 产品主链的前提下，关闭人工验收提出的六项缺口：会话不得换绑到另一个项目；Pi 的项目内绝对路径和 `./` 相对路径必须可用；Bash 授权必须展示完整真实命令；权限框必须绑定发起它的项目、对话和前台窗口；授权前 Main 不得同步读取整份文件；同一路径的项目目录被替换后必须停止执行。
+
+本阶段继续保持普通 CODING 直接修改用户项目、TaskHub Attempt 工作树交付链不变、OMP 不进入产品或验收范围。
+
+### 实际修改文件
+
+共享契约：
+
+- `packages/shared/worker-host-tools.ts`
+- `packages/shared/xiaogui-direct-coding.ts`
+
+Main、会话身份与授权接缝：
+
+- `src/main/project-root-identity.ts`（新增）
+- `src/main/worker-execution-identity.ts`
+- `src/main/worker-manager.ts`
+- `src/main/ipc/handlers/session.ts`
+- `src/main/ipc/schemas.ts`
+- `src/main/xiaogui/scope-resolver.ts`
+- `src/main/xiaogui/scope-store.ts`
+- `src/main/xiaogui/coding-extensions/coding-authorization-module.ts`
+- `src/main/xiaogui/coding-extensions/direct-coding-module.ts`
+- `src/main/xiaogui/coding-extensions/direct-coding-worker-tool.ts`
+- `src/main/xiaogui/coding-extensions/direct-permission-ui-adapter.ts`
+- `src/main/xiaogui/task-hub/runtime-composition.ts`
+- `src/main/xiaogui/worker-host-tool-router.ts`
+
+Pi Worker 与 Renderer：
+
+- `src/worker/worker-host-tool-channel.ts`
+- `src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.ts`
+- `src/renderer/src/features/extension-ui/coding-permission-dialog.tsx`
+- `src/renderer/src/features/extension-ui/extension-ui-host.tsx`
+- `src/renderer/src/lib/extension-ui-channel.ts`
+- `src/renderer/src/lib/session-rewind.ts`
+- `src/renderer/src/stores/extension-ui-store.ts`
+
+聚焦测试：
+
+- `src/main/__tests__/worker-execution-identity.test.ts`
+- `src/main/__tests__/worker-manager-extension-ui.test.ts`
+- `src/main/__tests__/worker-manager-pool.test.ts`
+- `src/main/__tests__/worker-manager-session-isolation.test.ts`
+- `src/main/xiaogui/scope-resolver.test.ts`
+- `src/main/xiaogui/scope-store.test.ts`
+- `src/main/xiaogui/coding-extensions/coding-authorization-module.test.ts`
+- `src/main/xiaogui/coding-extensions/direct-coding-module.test.ts`
+- `src/main/xiaogui/coding-extensions/direct-coding-worker-tool.test.ts`
+- `src/main/xiaogui/coding-extensions/direct-permission-ui-adapter.test.ts`（新增）
+- `src/main/xiaogui/worker-host-tool-router.test.ts`
+- `src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts`
+- `src/renderer/src/features/extension-ui/coding-permission-dialog.test.tsx`
+- `src/renderer/src/lib/extension-ui-channel.test.ts`
+
+阶段记录：
+
+- `DEVELOPMENT_STATUS.md`
+- `doc/README.md`
+- `doc/README.zh-CN.md`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+
+仓库外同步更新既有长期记录，不新建碎片笔记：
+
+- `D:\Codex\longtime_memory\projects\小规Agent\施工总控.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\progress.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\research\2026-09-03-CODING研究-OMP-ACP-P1C验收与P1D装配规划.md`
+
+### 已完成内容
+
+1. 会话项目绑定改为不可变：恢复时优先使用会话原有可信项目，传入的当前项目只能与原绑定一致，不能覆盖；树导航必须同时提交并校验 `sessionFile + workspaceId`。
+2. 新增 `ProjectRootIdentityV2`，以规范化 realpath、设备号、inode 和创建时间形成目录实体摘要，并写入既有 Scope 持久化；目录在同一路径被删除重建后返回 `PROJECT_IDENTITY_CHANGED`，不继续执行或恢复。
+3. Worker 复用身份同时绑定项目目录实体与资源配置；项目缺失、替换或配置变化时旧 Worker 不再复用。AgentSession、SessionManager、ResourceLoader、Skill/规则和工具仍使用同一 cwd。
+4. 路径安全门对齐 Pi 原生契约：允许普通相对路径、`./` 路径以及规范化后仍位于项目内的绝对路径；WSL 绝对路径先通过既有路径桥转换。项目外、`.git`、symlink、junction 和 hardlink 仍 fail-closed。
+5. Bash 权限提示使用 V3 窄契约传递并展示完整命令，保留换行和制表符、不截断；UTF-8 超过 64 KiB 或含隐藏控制字符时在 Worker 侧直接拒绝。Main 数据库只保存命令摘要，不保存命令正文。
+6. 权限提示加入安全项目名、对话名与来源摘要；Main 只向精确匹配 `Worker + session + cwd + runtime identity` 的当前前台窗口发送，缺失、后台或摘要回显不一致均拒绝，不再回退到任意聚焦窗口或第一个窗口。
+7. READ 授权前 Main 只异步读取文件元数据，不读取文件正文；edit/write 只有授权通过后才异步捕获前镜像，固定 16 MiB 上限，捕获失败不允许无检查点写入。
+8. 授权后、真实工具执行前再次核验目录实体、路径实体和前摘要；会话内写入/Bash 继续串行，重复请求或 `OUTCOME_UNKNOWN` 不会二次执行。
+9. `DirectCodingFileCheckpointV2` 与 TaskHub Checkpoint V1 语义均未改动；本轮只把直接会话执行、权限提示和 preflight 升级为 V3，不保留并行生产协议。
+
+### 未完成内容
+
+- 尚未覆盖“自然语言 → 外部模型 → Electron 用户界面”的完整人工旅程；自动证据只证明真实 Pi 工具生命周期、真实文件写入及 Renderer 组件行为。
+- 当前仍是独立 CODING 分支的阶段候选，未合入 WORK、阶段线或正式主线，未发布、未制作 Portable。
+- 历史 OMP Adapter/装配源码仍只作研究证据保留；本阶段没有启动、复测或重新接入。
+
+### 与规格文档存在的偏差
+
+- 无产品语义偏差。R3.1 的直接写入、ASK/PLAN 只读、Bash 逐次确认、文件检查点与 TaskHub V1 分流均保持不变。
+- 为满足 Pi 在 WSL 与 Windows 下的原生路径契约，项目内绝对路径先规范化再授权；这纠正了 R3.1 文档中“所有绝对路径均拒绝”的错误表述，但没有放宽项目边界。
+- 按“非必要不做那么多测试”的要求，未运行 OMP、802 MB 装配、外部模型、Electron、Portable、构建或无关全量测试。
+
+### 测试命令和测试结果
+
+聚焦回归与“真实 Pi 工具生命周期与真实文件写入冒烟”：
+
+~~~powershell
+npx vitest run --reporter=dot src/main/xiaogui/scope-resolver.test.ts src/main/xiaogui/scope-store.test.ts src/main/__tests__/worker-execution-identity.test.ts src/main/__tests__/worker-manager-session-isolation.test.ts src/main/__tests__/worker-manager-extension-ui.test.ts src/main/__tests__/worker-manager-pool.test.ts src/main/xiaogui/coding-extensions/coding-authorization-module.test.ts src/main/xiaogui/coding-extensions/direct-permission-ui-adapter.test.ts src/main/xiaogui/coding-extensions/direct-coding-worker-tool.test.ts src/main/xiaogui/coding-extensions/direct-coding-module.test.ts src/main/xiaogui/worker-host-tool-router.test.ts src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts src/renderer/src/features/extension-ui/coding-permission-dialog.test.tsx src/renderer/src/lib/extension-ui-channel.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts src/main/xiaogui/coding-extensions/checkpoint-module.test.ts src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/change-apply.test.ts
+~~~
+
+结果：`18` 个测试文件、`172` 项测试全部通过。覆盖六项人工阻断、64 KiB 命令门、真实 Pi write 工具写入、直接检查点，以及 TaskHub V1 权限/检查点/工作树/Apply 聚焦回归。
+
+~~~powershell
+npx tsc --noEmit -p tsconfig.node.json
+npx tsc --noEmit -p tsconfig.web.json
+$codingFiles = @(git diff --name-only --diff-filter=ACMR | Where-Object { $_ -match '\.(ts|tsx)$' })
+npx eslint -- $codingFiles
+git diff --check
+~~~
+
+结果：Node/Web TypeScript 与定向 ESLint 通过；差异检查通过。没有把本结果命名为外部模型或 Electron 完整旅程。
+
+### 已知风险
+
+1. Bash 仍不是 OS 沙箱；完整命令由用户逐次确认，但项目外文件、网络和子进程副作用不承诺回滚。
+2. 16 MiB 以上文件允许 READ，但 edit/write 因无法建立受控前镜像而拒绝；后续如要提高上限，需另行评估主进程内存和私有存储占用。
+3. 目录实体身份依赖操作系统提供的设备号、inode 和创建时间；不支持这些字段的特殊文件系统仍可能 fail-closed，需要在对应环境单独验收。
+4. 真实多窗口 Electron 来源绑定和真实模型生成项目内绝对路径仍待人工旅程验证。
+
+### 下一阶段计划
+
+提交并推送当前隔离分支后立即停止，等待人工或审查 Agent 复验。通过也不自动授权合入 WORK、阶段线、正式主线、发布或 Portable。
+
+## 2026-09-05｜CODING-P1D-B-R3.1 普通 CODING 直接写入闭环（人工验收未通过，已由上方 R3.2 返修）
 
 ### 本阶段目标
 

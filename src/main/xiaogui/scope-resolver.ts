@@ -15,8 +15,11 @@ import {
   type SessionDerivationKind,
 } from './scope-derive'
 import { normalizePathKey } from './path-key'
+import { readProjectRootIdentityV2 } from '../project-root-identity'
 
-export type ProjectIdentityBindingV1 = Extract<OpaqueIdentityBindingV1, { kind: 'PROJECT' }>
+export type ProjectIdentityBindingV1 = Extract<OpaqueIdentityBindingV1, { kind: 'PROJECT' }> & {
+  readonly rootIdentityDigest: string
+}
 export type SessionIdentityBindingV1 = Extract<OpaqueIdentityBindingV1, { kind: 'SESSION' }>
 export type SandboxIdentityBindingV1 = Extract<OpaqueIdentityBindingV1, { kind: 'SANDBOX' }>
 
@@ -64,6 +67,7 @@ export type SessionScopeResolutionErrorCode =
   | 'CANONICAL_INPUT_MISMATCH'
   | 'CANONICAL_SCOPE_STORE_CORRUPT'
   | 'SCOPE_PERSISTENCE_FAILED'
+  | 'PROJECT_IDENTITY_CHANGED'
 
 export class SessionScopeResolutionError extends Error {
   constructor(readonly code: SessionScopeResolutionErrorCode) {
@@ -84,8 +88,9 @@ function normalizeSessionRef(session: PiSessionRefV1): PiSessionRefV1 {
 function projectBinding(
   projectId: ProjectId,
   canonicalInputFingerprint: ProjectIdentityBindingV1['canonicalInputFingerprint'],
+  rootIdentityDigest: string,
 ): ProjectIdentityBindingV1 {
-  return { kind: 'PROJECT', opaqueId: projectId, canonicalInputFingerprint }
+  return { kind: 'PROJECT', opaqueId: projectId, canonicalInputFingerprint, rootIdentityDigest }
 }
 
 function safePersistenceCall<T>(operation: () => T): T {
@@ -100,6 +105,8 @@ function safePersistenceCall<T>(operation: () => T): T {
 export function createSessionScopeResolverV1(
   persistence: SessionScopePersistenceV1,
   idDeriver: OpaqueScopeIdDeriverV1 = opaqueScopeIdDeriverV1,
+  projectRootIdentity: (rootPath: string) => string = (rootPath) =>
+    readProjectRootIdentityV2(rootPath).digest,
 ): SessionScopeResolverV1 & SessionScopeRegistrarV1 {
   function bindSession(
     session: PiSessionRefV1,
@@ -107,10 +114,15 @@ export function createSessionScopeResolverV1(
   ): PiSessionScopeV1 {
     const normalized = normalizeSessionRef(session)
     const project = idDeriver.deriveProject(normalized.rootPath)
+    const rootIdentityDigest = projectRootIdentity(normalized.rootPath)
     const derivedSession = idDeriver.deriveSession(project.projectId, normalized.sessionFile)
     const effectiveMode = safePersistenceCall(() =>
       persistence.commitSession({
-        project: projectBinding(project.projectId, project.canonicalInputFingerprint),
+        project: projectBinding(
+          project.projectId,
+          project.canonicalInputFingerprint,
+          rootIdentityDigest,
+        ),
         session: {
           kind: 'SESSION',
           opaqueId: derivedSession.sessionKey,
@@ -143,10 +155,15 @@ export function createSessionScopeResolverV1(
   async function resolveExistingSession(session: PiSessionRefV1): Promise<PiSessionScopeV1 | null> {
     const normalized = normalizeSessionRef(session)
     const project = idDeriver.deriveProject(normalized.rootPath)
+    const rootIdentityDigest = projectRootIdentity(normalized.rootPath)
     const derivedSession = idDeriver.deriveSession(project.projectId, normalized.sessionFile)
     const result = safePersistenceCall(() =>
       persistence.lookupBoundSession({
-        project: projectBinding(project.projectId, project.canonicalInputFingerprint),
+        project: projectBinding(
+          project.projectId,
+          project.canonicalInputFingerprint,
+          rootIdentityDigest,
+        ),
         session: {
           kind: 'SESSION',
           opaqueId: derivedSession.sessionKey,

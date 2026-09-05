@@ -6,6 +6,16 @@ import type { WorkerTransport } from '../worker-transport'
 vi.mock('../config-store', () => ({
   configStore: { get: vi.fn(() => undefined) },
 }))
+vi.mock('../worker-execution-identity', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../worker-execution-identity')>()
+  return {
+    ...actual,
+    readCurrentWorkerExecutionIdentityDigestV1: vi.fn((cwd: string) => {
+      const value = Buffer.from(cwd, 'utf8').toString('hex').padEnd(64, '0').slice(0, 64)
+      return `sha256:${value}`
+    }),
+  }
+})
 
 import {
   attachWorkerHandlers,
@@ -78,6 +88,33 @@ describe('extension UI source routing', () => {
       response: { id: 'dialog-b', confirmed: true },
     })
     expect(foreground.worker.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('resolves a permission window only for the exact foreground Worker and session source', () => {
+    const foreground = slot('/s/foreground')
+    const background = slot('/s/background')
+    const manager = managerWithSlots(foreground, background)
+    const mainWindow = { isDestroyed: () => false, webContents: { send: vi.fn() } }
+    ;(manager as unknown as { mainWindow: typeof mainWindow }).mainWindow = mainWindow
+
+    expect(manager.resolveHostToolRequestWindow({
+      fromCwd: foreground.cwd,
+      fromPoolKey: foreground.poolKey,
+      sessionFile: foreground.sessionFile!,
+      sourceSessionId: foreground.sessionId!,
+    })).toBe(mainWindow)
+    expect(manager.resolveHostToolRequestWindow({
+      fromCwd: background.cwd,
+      fromPoolKey: background.poolKey,
+      sessionFile: background.sessionFile!,
+      sourceSessionId: background.sessionId!,
+    })).toBeUndefined()
+    expect(manager.resolveHostToolRequestWindow({
+      fromCwd: foreground.cwd,
+      fromPoolKey: foreground.poolKey,
+      sessionFile: foreground.sessionFile!,
+      sourceSessionId: 'wrong-session',
+    })).toBeUndefined()
   })
 
   it('should_drop_stale_sources_instead_of_falling_back_to_foreground', () => {

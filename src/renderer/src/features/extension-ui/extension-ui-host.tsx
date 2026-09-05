@@ -178,7 +178,16 @@ export function ExtensionUIHost() {
         <CodingPermissionDialog
           prompt={pending.prompt}
           onChoose={(choice) => {
-            respond({ id: pending.id, result: { choice } })
+            respond({
+              id: pending.id,
+              result: pending.prompt.schemaVersion === 3
+                ? {
+                    choice,
+                    requestDigest: pending.prompt.requestDigest,
+                    originDigest: pending.prompt.originDigest,
+                  }
+                : { choice },
+            })
             clearAfterRespond()
           }}
         />

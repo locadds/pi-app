@@ -38,6 +38,16 @@ vi.mock('../config-store', () => ({
     get: vi.fn(() => undefined),
   },
 }))
+vi.mock('../worker-execution-identity', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../worker-execution-identity')>()
+  return {
+    ...actual,
+    readCurrentWorkerExecutionIdentityDigestV1: vi.fn((cwd: string) => {
+      const value = Buffer.from(cwd, 'utf8').toString('hex').padEnd(64, '0').slice(0, 64)
+      return `sha256:${value}`
+    }),
+  }
+})
 vi.mock('../xiaogui/prompt-context-runtime', () => ({
   xiaoguiPromptContextResolverV1: {
     forWorkspace: vi.fn(async (_cwd: string, mode = 'WORK') => ({

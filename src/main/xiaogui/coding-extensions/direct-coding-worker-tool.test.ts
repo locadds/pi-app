@@ -1,7 +1,12 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { SessionScopeResolverV1 } from '../scope-resolver'
 import { createDirectCodingWorkerToolHandlerV2 } from './direct-coding-worker-tool'
+
+vi.mock('../../session-display-names', () => ({
+  resolveSessionListTitle: vi.fn((_path: string, fallback: string) => fallback),
+}))
 
 const digest = `sha256:${'a'.repeat(64)}`
 
@@ -61,14 +66,14 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
     const request = {
       type: 'host-tool-request',
       requestId: 'request-1',
-      method: 'xiaogui.coding.direct.preflight.v2',
+      method: 'xiaogui.coding.direct.preflight.v3',
       payload: {
         sourceSessionId: 'session-1',
         toolCallId: 'write-1',
         requestDigest: digest,
         phase: 'EXECUTE',
         operation: 'WRITE',
-        relativePath: 'src/a.ts',
+        path: 'D:/project/src/a.ts',
       },
     }
     await expect(handler(metadata(request) as never)).resolves.toMatchObject({
@@ -86,8 +91,12 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
       },
       rootPath: 'D:/project',
       operation: 'WRITE',
-      relativePath: 'src/a.ts',
+      path: 'D:/project/src/a.ts',
       mode: 'AUTO_APPROVE',
+      origin: expect.objectContaining({
+        projectLabel: 'project',
+        sourceSessionId: 'session-1',
+      }),
     }))
   })
 
@@ -96,14 +105,14 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
     const request = {
       type: 'host-tool-request',
       requestId: 'request-2',
-      method: 'xiaogui.coding.direct.preflight.v2',
+      method: 'xiaogui.coding.direct.preflight.v3',
       payload: {
         sourceSessionId: 'session-1',
         toolCallId: 'write-ask',
         requestDigest: digest,
         phase: 'ASK',
         operation: 'WRITE',
-        relativePath: 'src/a.ts',
+        path: './src/a.ts',
       },
     }
     await expect(ask.handler(metadata(request) as never)).resolves.toMatchObject({
@@ -151,12 +160,12 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
     })
   })
 
-  it('rejects a Bash request without the bounded preview and full-command digest', async () => {
+  it('rejects a Bash request without the exact command and full-command digest', async () => {
     const { handler, module } = setup()
     await expect(handler(metadata({
       type: 'host-tool-request',
       requestId: 'bash-invalid',
-      method: 'xiaogui.coding.direct.preflight.v2',
+      method: 'xiaogui.coding.direct.preflight.v3',
       payload: {
         sourceSessionId: 'session-1',
         toolCallId: 'bash-1',
@@ -169,5 +178,34 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
       error: { code: 'DIRECT_CODING_REQUEST_INVALID' },
     })
     expect(module.preflight).not.toHaveBeenCalled()
+  })
+
+  it('preserves the complete multiline Bash command and binds its source labels', async () => {
+    const { handler, module } = setup()
+    const commandText = 'Write-Output first\nWrite-Output second\t# visible'
+    const commandDigest = `sha256:${createHash('sha256').update(commandText, 'utf8').digest('hex')}`
+    await expect(handler(metadata({
+      type: 'host-tool-request',
+      requestId: 'bash-complete',
+      method: 'xiaogui.coding.direct.preflight.v3',
+      payload: {
+        sourceSessionId: 'session-1',
+        toolCallId: 'bash-complete',
+        requestDigest: digest,
+        phase: 'EXECUTE',
+        operation: 'BASH',
+        commandText,
+        commandDigest,
+      },
+    }) as never)).resolves.toMatchObject({ ok: true })
+    expect(module.preflight).toHaveBeenCalledWith(expect.objectContaining({
+      commandText,
+      commandDigest,
+      origin: expect.objectContaining({
+        projectLabel: 'project',
+        sessionLabel: expect.any(String),
+        fromPoolKey: 'D:/session.jsonl',
+      }),
+    }))
   })
 })

@@ -117,14 +117,14 @@ describe('xiaogui Worker host-tool router', () => {
     const directCodingRequest: WorkerHostToolRequestV1 = {
       type: 'host-tool-request',
       requestId: 'direct-coding-1',
-      method: 'xiaogui.coding.direct.preflight.v2',
+      method: 'xiaogui.coding.direct.preflight.v3',
       payload: {
         sourceSessionId: 'session-1',
         toolCallId: 'call-direct-1',
         requestDigest: `sha256:${'a'.repeat(64)}`,
         phase: 'EXECUTE',
         operation: 'WRITE',
-        relativePath: 'src/a.ts',
+        path: './src/a.ts',
       },
     }
     const workRequest: WorkerHostToolRequestV1 = {

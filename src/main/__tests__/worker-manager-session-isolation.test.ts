@@ -18,6 +18,16 @@ vi.mock('electron', () => ({
 vi.mock('../config-store', () => ({
   configStore: { get: vi.fn(() => undefined) },
 }))
+vi.mock('../worker-execution-identity', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../worker-execution-identity')>()
+  return {
+    ...actual,
+    readCurrentWorkerExecutionIdentityDigestV1: vi.fn((cwd: string) => {
+      const value = Buffer.from(cwd, 'utf8').toString('hex').padEnd(64, '0').slice(0, 64)
+      return `sha256:${value}`
+    }),
+  }
+})
 vi.mock('../session-file-meta', () => ({
   readSessionMetaFromFile: vi.fn(() => ({ cwd: '/workspace' })),
 }))
@@ -298,7 +308,7 @@ describe('WorkerManager session isolation', () => {
     }))
   })
 
-  it('replaces a session Worker instead of loading it under a different project cwd', async () => {
+  it('rejects rebinding an existing session to a different project cwd', async () => {
     const sessionFile = normalizeSessionKey('/sessions/project-switch.jsonl')
     const existing = fakeSlot(sessionFile)
     existing.cwd = '/project-a'
@@ -306,35 +316,16 @@ describe('WorkerManager session isolation', () => {
       existing.cwd,
       existing.runtime,
     )
-    replyFrom(existing, { type: 'abort-done' })
     const manager = new WorkerManager()
     const internals = manager as unknown as Internals
     internals.pool.set(sessionFile, existing)
 
-    const created = fakeSlot(sessionFile)
-    created.cwd = '/project-b'
-    created.executionIdentityDigest = readCurrentWorkerExecutionIdentityDigestV1(
-      created.cwd,
-      created.runtime,
-    )
-    replyFrom(created, {
-      type: 'loadSession-done',
-      sessionId: 'project-b-session',
-      sessionFile,
-    })
-    forkWorkerForCwd.mockResolvedValue({
-      slot: created,
-      init: Promise.resolve({ sessionId: 'bootstrap' }),
-    })
+    await expect(manager.loadSession(sessionFile, { cwd: '/project-b' }))
+      .rejects.toThrow('SESSION_WORKSPACE_REBIND_REJECTED')
 
-    await manager.loadSession(sessionFile, { cwd: '/project-b' })
-
-    expect(existing.worker.kill).toHaveBeenCalledOnce()
-    expect(forkWorkerForCwd).toHaveBeenCalledWith(
-      '/project-b',
-      expect.objectContaining({ sessionFile }),
-    )
-    expect(internals.pool.get(sessionFile)).toBe(created)
+    expect(existing.worker.kill).not.toHaveBeenCalled()
+    expect(forkWorkerForCwd).not.toHaveBeenCalled()
+    expect(internals.pool.get(sessionFile)).toBe(existing)
     expect(existing.worker.postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'loadSession' }),
     )
