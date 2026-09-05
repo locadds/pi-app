@@ -8,23 +8,25 @@ import type {
 import type { TSchema } from 'typebox'
 import type { XiaoguiPromptContextV1 } from '@shared/xiaogui-prompt-contract'
 import type {
-  DirectCodingBeginResultV2,
+  DirectCodingBeginResultV4,
   DirectCodingOperationV2,
-  DirectCodingPreflightResultV2,
+  DirectCodingPreflightResultV4,
   DirectCodingSettleResultV2,
 } from '@shared/xiaogui-direct-coding'
+import { hasUnsafeDirectCodingCommandTextV1 } from '@shared/xiaogui-direct-coding'
 import {
-  XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V2,
-  XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V3,
+  XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V4,
+  XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V4,
   XIAOGUI_DIRECT_CODING_SETTLE_METHOD_V2,
 } from '@shared/worker-host-tools'
 
 import { requestWorkerHostTool } from '../worker-host-tool-channel.js'
-import { toMainPath } from '../worker-path-bridge.js'
+import { toMainToolPath } from '../worker-path-bridge.js'
 
 interface PendingCallV2 {
   readonly requestDigest: string
   readonly operation: DirectCodingOperationV2
+  readonly authorizedRelativePath?: string
   exitCode?: number | null
 }
 
@@ -85,7 +87,7 @@ export function createXiaoguiDirectCodingToolLifecycleV2(options: {
         return { block: true, reason: 'XIAOGUI_CODING_COMMAND_REJECTED', terminate: true }
       }
       const outcome = await requestWorkerHostTool({
-        method: XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V3,
+        method: XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V4,
         payload: {
           sourceSessionId,
           toolCallId: event.toolCallId,
@@ -101,7 +103,7 @@ export function createXiaoguiDirectCodingToolLifecycleV2(options: {
             : {}),
         },
       })
-      const value = outcome.ok ? outcome.value as DirectCodingPreflightResultV2 : null
+      const value = outcome.ok ? outcome.value as DirectCodingPreflightResultV4 : null
       if (
         !value ||
         value.kind !== 'XIAOGUI_DIRECT_CODING_PREFLIGHT' ||
@@ -111,7 +113,15 @@ export function createXiaoguiDirectCodingToolLifecycleV2(options: {
       ) {
         return { block: true, reason: value?.reasonCode ?? 'XIAOGUI_CODING_PERMISSION_DENIED', terminate: true }
       }
-      calls.set(event.toolCallId, { requestDigest, operation })
+      const authorizedRelativePath = authorizedPath(value.authorizedRelativePath, operation)
+      if (authorizedRelativePath === null) {
+        return { block: true, reason: 'XIAOGUI_CODING_AUTHORIZED_PATH_INVALID', terminate: true }
+      }
+      calls.set(event.toolCallId, {
+        requestDigest,
+        operation,
+        ...(authorizedRelativePath ? { authorizedRelativePath } : {}),
+      })
       return undefined
     })
 
@@ -157,10 +167,10 @@ export function createXiaoguiDirectCodingToolLifecycleV2(options: {
           throw new Error('XIAOGUI_CODING_SESSION_NOT_READY')
         }
         const outcome = await requestWorkerHostTool({
-          method: XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V2,
+          method: XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V4,
           payload: { sourceSessionId, toolCallId, requestDigest: call.requestDigest },
         })
-        const value = outcome.ok ? outcome.value as DirectCodingBeginResultV2 : null
+        const value = outcome.ok ? outcome.value as DirectCodingBeginResultV4 : null
         if (
           !value ||
           value.kind !== 'XIAOGUI_DIRECT_CODING_BEGIN' ||
@@ -171,8 +181,16 @@ export function createXiaoguiDirectCodingToolLifecycleV2(options: {
           calls.delete(toolCallId)
           throw new Error(value?.reasonCode ?? 'XIAOGUI_CODING_EXECUTION_NOT_AUTHORIZED')
         }
+        const beginAuthorizedPath = authorizedPath(value.authorizedRelativePath, operation)
+        if (beginAuthorizedPath === null || beginAuthorizedPath !== call.authorizedRelativePath) {
+          calls.delete(toolCallId)
+          throw new Error('XIAOGUI_CODING_AUTHORIZED_PATH_MISMATCH')
+        }
+        const executionParams = beginAuthorizedPath
+          ? { ...(params as Record<string, unknown>), path: beginAuthorizedPath } as typeof params
+          : params
         try {
-          const result = await execute(toolCallId, params, signal, onUpdate, ctx)
+          const result = await execute(toolCallId, executionParams, signal, onUpdate, ctx)
           if (operation === 'BASH') call.exitCode = 0
           return result
         } catch (error) {
@@ -207,7 +225,7 @@ function rawToolPath(value: string): string {
   // Preserve Pi's native relative/absolute path contract while translating a
   // WSL absolute path into the Main process' Windows view. Main remains the
   // authority that decides whether the resulting target is inside the project.
-  return toMainPath(value)
+  return toMainToolPath(value)
 }
 
 function digestRequest(value: unknown): string {
@@ -218,8 +236,24 @@ function digestText(value: string): string {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`
 }
 
-function unsafeCommandControl(value: string): boolean {
-  return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
+const unsafeCommandControl = hasUnsafeDirectCodingCommandTextV1
+
+function authorizedPath(
+  value: string | undefined,
+  operation: DirectCodingOperationV2,
+): string | undefined | null {
+  const isFileOperation = operation === 'READ' || operation === 'EDIT' || operation === 'WRITE'
+  if (!isFileOperation) return value === undefined ? undefined : null
+  if (
+    typeof value !== 'string' ||
+    !value ||
+    value.length > 4096 ||
+    value.includes('\\') ||
+    value.startsWith('/') ||
+    /^[a-z]:/i.test(value) ||
+    value.split('/').some((part) => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')
+  ) return null
+  return value
 }
 
 function canonicalJson(value: unknown): string {

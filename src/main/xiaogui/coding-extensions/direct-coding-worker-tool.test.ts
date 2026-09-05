@@ -66,7 +66,7 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
     const request = {
       type: 'host-tool-request',
       requestId: 'request-1',
-      method: 'xiaogui.coding.direct.preflight.v3',
+      method: 'xiaogui.coding.direct.preflight.v4',
       payload: {
         sourceSessionId: 'session-1',
         toolCallId: 'write-1',
@@ -105,7 +105,7 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
     const request = {
       type: 'host-tool-request',
       requestId: 'request-2',
-      method: 'xiaogui.coding.direct.preflight.v3',
+      method: 'xiaogui.coding.direct.preflight.v4',
       payload: {
         sourceSessionId: 'session-1',
         toolCallId: 'write-ask',
@@ -137,7 +137,7 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
     await handler(metadata({
       type: 'host-tool-request',
       requestId: 'begin-1',
-      method: 'xiaogui.coding.direct.begin.v2',
+      method: 'xiaogui.coding.direct.begin.v4',
       payload: base,
     }) as never)
     await handler(metadata({
@@ -152,7 +152,7 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
     await expect(handler(metadata({
       type: 'host-tool-request',
       requestId: 'unsafe-1',
-      method: 'xiaogui.coding.direct.begin.v2',
+      method: 'xiaogui.coding.direct.begin.v4',
       payload: { ...base, attemptId: 'forged', rootPath: 'D:/secret' },
     }) as never)).resolves.toMatchObject({
       ok: false,
@@ -165,7 +165,7 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
     await expect(handler(metadata({
       type: 'host-tool-request',
       requestId: 'bash-invalid',
-      method: 'xiaogui.coding.direct.preflight.v3',
+      method: 'xiaogui.coding.direct.preflight.v4',
       payload: {
         sourceSessionId: 'session-1',
         toolCallId: 'bash-1',
@@ -187,7 +187,7 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
     await expect(handler(metadata({
       type: 'host-tool-request',
       requestId: 'bash-complete',
-      method: 'xiaogui.coding.direct.preflight.v3',
+      method: 'xiaogui.coding.direct.preflight.v4',
       payload: {
         sourceSessionId: 'session-1',
         toolCallId: 'bash-complete',
@@ -208,4 +208,30 @@ describe('Direct CODING Worker-to-Main Adapter V2', () => {
       }),
     }))
   })
+
+  it.each(['\u061c', '\u200e', '\u200f', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069'])(
+    'rejects Unicode direction control %s before Module access',
+    async (control) => {
+      const { handler, module } = setup()
+      const commandText = `echo safe${control}dangerous`
+      await expect(handler(metadata({
+        type: 'host-tool-request',
+        requestId: `bash-bidi-${control.codePointAt(0)}`,
+        method: 'xiaogui.coding.direct.preflight.v4',
+        payload: {
+          sourceSessionId: 'session-1',
+          toolCallId: 'bash-bidi',
+          requestDigest: digest,
+          phase: 'EXECUTE',
+          operation: 'BASH',
+          commandText,
+          commandDigest: `sha256:${createHash('sha256').update(commandText, 'utf8').digest('hex')}`,
+        },
+      }) as never)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'DIRECT_CODING_REQUEST_INVALID' },
+      })
+      expect(module.preflight).not.toHaveBeenCalled()
+    },
+  )
 })

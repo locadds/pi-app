@@ -38,6 +38,14 @@ export function toMainPath(p: string | null | undefined): string {
   return wslPathToWindows(workerDistro, p)
 }
 
+/** Pi file tools keep relative paths project-relative; only native WSL absolute paths cross the bridge. */
+export function toMainToolPath(
+  path: string,
+  distro: string | null = workerDistro,
+): string {
+  return distro && path.startsWith('/') ? wslPathToWindows(distro, path) : path
+}
+
 const INCOMING_PATH_KEYS = new Set(['cwd', 'sessionFile'])
 const OUTGOING_PATH_KEYS = new Set(['sessionFile', 'busySessionFile'])
 

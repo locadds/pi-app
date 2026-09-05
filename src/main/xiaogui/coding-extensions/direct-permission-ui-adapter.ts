@@ -36,9 +36,13 @@ export class MainProcessDirectCodingPermissionUIAdapterV3
     const response = await requestDirectExtensionUI(
       win,
       { method: 'custom', kind: 'coding_permission', payload: prompt },
-      { timeoutMs: this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS },
+      {
+        timeoutMs: this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        source: { poolKey: origin.fromPoolKey, sessionId: origin.sourceSessionId },
+      },
     )
     if (response.cancelled) return 'DENY'
+    if (this.options.windowProvider(origin) !== win) return 'DENY'
     const result = response.result as DirectCodingPermissionResponseV3 | undefined
     return result?.choice === 'ALLOW_ONCE'
       && result.requestDigest === prompt.requestDigest

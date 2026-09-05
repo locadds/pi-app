@@ -19,8 +19,9 @@ import { DatabaseSync } from 'node:sqlite'
 import type { CodingPermissionModeV1 } from '@shared/xiaogui-coding-permission'
 import {
   XIAOGUI_DIRECT_CODING_SUBJECT_V2,
+  hasUnsafeDirectCodingCommandTextV1,
   type DirectCodingAuthorizationSubjectV2,
-  type DirectCodingBeginResultV2,
+  type DirectCodingBeginResultV4,
   type DirectCodingCallStateV2,
   type DirectCodingCheckpointConfirmOutcomeV2,
   type DirectCodingCheckpointErrorCodeV2,
@@ -29,7 +30,7 @@ import {
   type DirectCodingFileCheckpointV2,
   type DirectCodingOperationV2,
   type DirectCodingPermissionOriginV3,
-  type DirectCodingPreflightResultV2,
+  type DirectCodingPreflightResultV4,
   type DirectCodingSettleResultV2,
 } from '@shared/xiaogui-direct-coding'
 
@@ -41,7 +42,7 @@ const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,255}$/i
 const PREVIEW_TTL_MS = 5 * 60_000
 const CHECKPOINT_MAX_BYTES = 16 * 1024 * 1024
 
-export interface DirectCodingPreflightInputV3 {
+export interface DirectCodingPreflightInputV4 {
   readonly subject: DirectCodingAuthorizationSubjectV2
   readonly rootPath: string
   readonly sourceSessionId: string
@@ -213,7 +214,7 @@ export class DirectCodingModuleV2 {
     `).run(updatedAt)
   }
 
-  async preflight(input: DirectCodingPreflightInputV3): Promise<DirectCodingPreflightResultV2> {
+  async preflight(input: DirectCodingPreflightInputV4): Promise<DirectCodingPreflightResultV4> {
     assertLifecycleInput(input)
     const existing = this.readCall(input.subject.address.sessionKey, input.toolCallId)
     if (existing) return this.duplicatePreflight(existing, input.requestDigest)
@@ -318,10 +319,11 @@ export class DirectCodingModuleV2 {
       state: 'ALLOWED',
       requestDigest: input.requestDigest,
       reasonCode: authorization.reasonCode,
+      ...(metadata ? { authorizedRelativePath: metadata.relativePath } : {}),
     }
   }
 
-  async begin(input: DirectCodingLifecycleInputV2): Promise<DirectCodingBeginResultV2> {
+  async begin(input: DirectCodingLifecycleInputV2): Promise<DirectCodingBeginResultV4> {
     assertLifecycleInput(input)
     const row = this.readCall(input.subject.address.sessionKey, input.toolCallId)
     if (!sameCall(row, input)) return beginDenied(input, row ? 'IDEMPOTENCY_KEY_CONFLICT' : 'CALL_NOT_FOUND')
@@ -352,6 +354,7 @@ export class DirectCodingModuleV2 {
       state: 'EXECUTING',
       requestDigest: input.requestDigest,
       reasonCode: 'EXECUTION_STARTED',
+      ...(row.relative_path ? { authorizedRelativePath: row.relative_path } : {}),
     }
   }
 
@@ -566,7 +569,7 @@ export class DirectCodingModuleV2 {
     `).get(checkpointToken) as unknown as CheckpointRowV2 | undefined
   }
 
-  private duplicatePreflight(row: CallRowV2, requestDigest: string): DirectCodingPreflightResultV2 {
+  private duplicatePreflight(row: CallRowV2, requestDigest: string): DirectCodingPreflightResultV4 {
     const sameDigest = row.request_digest === requestDigest
     return {
       kind: 'XIAOGUI_DIRECT_CODING_PREFLIGHT',
@@ -853,7 +856,7 @@ function inside(root: string, target: string): boolean {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
 }
 
-function requiredPath(input: DirectCodingPreflightInputV3): string {
+function requiredPath(input: DirectCodingPreflightInputV4): string {
   if (!input.path) throw new Error('PATH_REQUIRED')
   return input.path
 }
@@ -861,7 +864,7 @@ function requiredPath(input: DirectCodingPreflightInputV3): string {
 function assertCommand(commandText: string | undefined, commandDigest: string | undefined): void {
   if (typeof commandText !== 'string' || !commandText.trim()) throw new Error('COMMAND_INVALID')
   if (Buffer.byteLength(commandText, 'utf8') > 64 * 1024) throw new Error('COMMAND_TOO_LARGE')
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(commandText)) {
+  if (hasUnsafeDirectCodingCommandTextV1(commandText)) {
     throw new Error('COMMAND_CONTROL_REJECTED')
   }
   if (!commandDigest || hashBytes(Buffer.from(commandText, 'utf8')) !== commandDigest) {
@@ -962,10 +965,10 @@ function sameCall(row: CallRowV2 | undefined, input: DirectCodingLifecycleInputV
 }
 
 function denied(
-  input: Pick<DirectCodingPreflightInputV3, 'requestDigest'>,
+  input: Pick<DirectCodingPreflightInputV4, 'requestDigest'>,
   reasonCode: string,
   state: DirectCodingCallStateV2 = 'SETTLED',
-): DirectCodingPreflightResultV2 {
+): DirectCodingPreflightResultV4 {
   return {
     kind: 'XIAOGUI_DIRECT_CODING_PREFLIGHT',
     subject: XIAOGUI_DIRECT_CODING_SUBJECT_V2,
@@ -976,7 +979,7 @@ function denied(
   }
 }
 
-function beginDenied(input: DirectCodingLifecycleInputV2, reasonCode: string): DirectCodingBeginResultV2 {
+function beginDenied(input: DirectCodingLifecycleInputV2, reasonCode: string): DirectCodingBeginResultV4 {
   return {
     kind: 'XIAOGUI_DIRECT_CODING_BEGIN',
     subject: XIAOGUI_DIRECT_CODING_SUBJECT_V2,

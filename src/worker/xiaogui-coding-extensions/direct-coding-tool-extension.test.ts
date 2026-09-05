@@ -62,7 +62,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
 
     requestWorkerHostToolMock.mockImplementation(async (request) => {
       trace.push(request.method)
-      if (request.method.endsWith('preflight.v3')) {
+      if (request.method.endsWith('preflight.v4')) {
         return {
           ok: true,
           value: {
@@ -72,10 +72,11 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
             state: 'ALLOWED',
             requestDigest: request.payload.requestDigest,
             reasonCode: 'USER_ALLOWED_ONCE',
+            authorizedRelativePath: 'src/a.ts',
           },
         }
       }
-      if (request.method.endsWith('begin.v2')) {
+      if (request.method.endsWith('begin.v4')) {
         return {
           ok: true,
           value: {
@@ -85,6 +86,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
             state: 'EXECUTING',
             requestDigest: request.payload.requestDigest,
             reasonCode: 'EXECUTION_STARTED',
+            authorizedRelativePath: 'src/a.ts',
           },
         }
       }
@@ -103,30 +105,32 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
     await expect(toolCall({
       toolName: 'write',
       toolCallId: 'write-execute',
-      input: { path: 'src/a.ts', content: 'after' },
+      input: { path: './src/a.ts', content: 'after' },
     } as never, {} as never)).resolves.toBeUndefined()
 
-    const wrapped = lifecycle.wrapDefinition(writeDefinition(trace))
+    const executedParams: Array<Record<string, unknown>> = []
+    const wrapped = lifecycle.wrapDefinition(writeDefinition(trace, executedParams))
     expect(wrapped.executionMode).toBe('sequential')
     await expect(wrapped.execute(
       'write-execute',
-      { path: 'src/a.ts', content: 'after' },
+      { path: './src/a.ts', content: 'after' },
       undefined,
       undefined,
       {} as never,
     )).resolves.toMatchObject({ content: [{ type: 'text', text: 'wrote' }] })
+    expect(executedParams).toEqual([{ path: 'src/a.ts', content: 'after' }])
     await expect(handlers.get('tool_result')![0]({
       toolCallId: 'write-execute',
       toolName: 'write',
-      input: { path: 'src/a.ts', content: 'after' },
+      input: { path: './src/a.ts', content: 'after' },
       content: [{ type: 'text', text: 'wrote' }],
       details: undefined,
       isError: false,
     } as never, {} as never)).resolves.toBeUndefined()
 
     expect(trace).toEqual([
-      'xiaogui.coding.direct.preflight.v3',
-      'xiaogui.coding.direct.begin.v2',
+      'xiaogui.coding.direct.preflight.v4',
+      'xiaogui.coding.direct.begin.v4',
       'tool.execute',
       'xiaogui.coding.direct.settle.v2',
     ])
@@ -163,7 +167,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
       reason: 'PATH_OUTSIDE_PROJECT',
     })
     expect(requestWorkerHostToolMock).toHaveBeenCalledWith(expect.objectContaining({
-      method: 'xiaogui.coding.direct.preflight.v3',
+      method: 'xiaogui.coding.direct.preflight.v4',
       payload: expect.objectContaining({ path: '../outside.txt' }),
     }))
     expect(lifecycle.wrapDefinition(readDefinition()).executionMode).toBeUndefined()
@@ -249,6 +253,83 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
     expect(requestWorkerHostToolMock).not.toHaveBeenCalled()
   })
 
+  it.each(['\u061c', '\u200e', '\u200f', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069'])(
+    'rejects Unicode direction control %s before Main',
+    async (control) => {
+      const handlers = new Map<string, Handler[]>()
+      const lifecycle = createXiaoguiDirectCodingToolLifecycleV2({
+        context: () => context('EXECUTE'),
+        sourceSessionId: () => 'pi-session-1',
+      })
+      await lifecycle.factory({
+        on: vi.fn((event: string, handler: Handler) => {
+          handlers.set(event, [...(handlers.get(event) ?? []), handler])
+        }),
+      } as unknown as ExtensionAPI)
+
+      await expect(handlers.get('tool_call')![0]({
+        toolName: 'bash',
+        toolCallId: `bash-bidi-${control.codePointAt(0)}`,
+        input: { command: `echo safe${control}dangerous` },
+      } as never, {} as never)).resolves.toEqual({
+        block: true,
+        reason: 'XIAOGUI_CODING_COMMAND_REJECTED',
+        terminate: true,
+      })
+      expect(requestWorkerHostToolMock).not.toHaveBeenCalled()
+    },
+  )
+
+  it('refuses execution when begin returns a different authorized path', async () => {
+    const handlers = new Map<string, Handler[]>()
+    const lifecycle = createXiaoguiDirectCodingToolLifecycleV2({
+      context: () => context('EXECUTE'),
+      sourceSessionId: () => 'pi-session-1',
+    })
+    await lifecycle.factory({
+      on: vi.fn((event: string, handler: Handler) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler])
+      }),
+    } as unknown as ExtensionAPI)
+    requestWorkerHostToolMock.mockImplementation(async (request) => ({
+      ok: true,
+      value: request.method.endsWith('preflight.v4')
+        ? {
+            kind: 'XIAOGUI_DIRECT_CODING_PREFLIGHT',
+            subject: 'DIRECT_SESSION',
+            decision: 'ALLOW',
+            state: 'ALLOWED',
+            requestDigest: request.payload.requestDigest,
+            reasonCode: 'USER_ALLOWED_ONCE',
+            authorizedRelativePath: 'src/a.ts',
+          }
+        : {
+            kind: 'XIAOGUI_DIRECT_CODING_BEGIN',
+            subject: 'DIRECT_SESSION',
+            decision: 'ALLOW',
+            state: 'EXECUTING',
+            requestDigest: request.payload.requestDigest,
+            reasonCode: 'EXECUTION_STARTED',
+            authorizedRelativePath: 'src/other.ts',
+          },
+    }))
+    const input = { path: './src/a.ts', content: 'after' }
+    await expect(handlers.get('tool_call')![0]({
+      toolName: 'write',
+      toolCallId: 'write-path-mismatch',
+      input,
+    } as never, {} as never)).resolves.toBeUndefined()
+    const execute = vi.fn()
+    const wrapped = lifecycle.wrapDefinition({
+      ...writeDefinition([]),
+      execute,
+    })
+    await expect(wrapped.execute('write-path-mismatch', input, undefined, undefined, {} as never))
+      .rejects.toThrow('XIAOGUI_CODING_AUTHORIZED_PATH_MISMATCH')
+    expect(execute).not.toHaveBeenCalled()
+    expect(input).toEqual({ path: './src/a.ts', content: 'after' })
+  })
+
   it('runs a real Pi write definition through Main lifecycle and writes the selected project', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xiaogui-pi-write-smoke-'))
     roots.push(root)
@@ -271,7 +352,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
       },
     })
     requestWorkerHostToolMock.mockImplementation(async (request) => {
-      if (request.method.endsWith('preflight.v3')) {
+      if (request.method.endsWith('preflight.v4')) {
         return {
           ok: true,
           value: await module.preflight({
@@ -296,7 +377,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
           }),
         }
       }
-      if (request.method.endsWith('begin.v2')) {
+      if (request.method.endsWith('begin.v4')) {
         return {
           ok: true,
           value: await module.begin({
@@ -381,14 +462,18 @@ function context(phase: XiaoguiPromptContextV1['phase']): XiaoguiPromptContextV1
   }
 }
 
-function writeDefinition(trace: string[]): ToolDefinition<ReturnType<typeof Type.Object>> {
+function writeDefinition(
+  trace: string[],
+  executedParams?: Array<Record<string, unknown>>,
+): ToolDefinition<ReturnType<typeof Type.Object>> {
   return {
     name: 'write',
     label: 'write',
     description: 'write',
     parameters: Type.Object({ path: Type.String(), content: Type.String() }),
-    async execute() {
+    async execute(_toolCallId, params) {
       trace.push('tool.execute')
+      executedParams?.push(params as Record<string, unknown>)
       return { content: [{ type: 'text', text: 'wrote' }], details: undefined }
     },
   }

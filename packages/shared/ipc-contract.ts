@@ -189,13 +189,14 @@ export interface ContextPreviewResponse { preview: SessionContextPreview | null 
 export interface PromptSendRequest {
   sessionId: string
   text: string
-  sessionFile?: string
+  workspaceId: string
+  sessionFile: string
   codingContextSnapshotIds?: readonly string[]
 }
 export interface PromptSendResponse { messageId: string }
-export interface PromptSteerRequest { sessionId: string; text: string }
+export interface PromptSteerRequest { sessionId: string; text: string; workspaceId: string; sessionFile: string }
 export interface PromptSteerResponse { steered: boolean }
-export interface PromptFollowUpRequest { sessionId: string; text: string }
+export interface PromptFollowUpRequest { sessionId: string; text: string; workspaceId: string; sessionFile: string }
 export interface PromptFollowUpResponse { messageId: string }
 export interface PromptAbortRequest { sessionId: string; sessionFile: string }
 export interface PromptAbortResponse { aborted: boolean; ignored?: boolean; reason?: string; noWorker?: boolean }

@@ -11,7 +11,11 @@ import type { TemplateDraftReviewRequestV2 } from '@shared/xiaogui-template-draf
 import type { TemplateReviewRequestV2, TemplateReviewRequestV3 } from '@shared/xiaogui-work-template-review'
 import type { TemplateMaterializePreviewRequestV1 } from '@shared/xiaogui-work-docx-template-materialize'
 import type { CodingPermissionPromptV1 } from '@shared/xiaogui-coding-extension-pack'
-import type { DirectCodingPermissionPromptV3 } from '@shared/xiaogui-direct-coding'
+import {
+  hasUnsafeDirectCodingCommandTextV1,
+  isSafeDirectCodingDisplayLabelV1,
+  type DirectCodingPermissionPromptV3,
+} from '@shared/xiaogui-direct-coding'
 import { traceAudioRenderer } from '@renderer/lib/audio-trace'
 import { alertTrace } from '@renderer/lib/alert-trace'
 import {
@@ -126,14 +130,19 @@ function isDirectPermissionPrompt(value: unknown): value is DirectCodingPermissi
     if (typeof path !== 'string' || !path || path.length > 1024 || path.includes('\\') || /^[a-z]:/i.test(path) || path.startsWith('/')) return false
     if (path.split('/').some((part) => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) return false
   }
-  const safeText = (text: unknown, max: number) => typeof text === 'string' && text.length > 0 && text.length <= max && !/[\u0000-\u001f\u007f]/.test(text)
-  if (!safeText(value.projectLabel, 80) || !safeText(value.sessionLabel, 80)) return false
+  const safeText = (text: unknown, max: number) => typeof text === 'string' && text.length > 0 && text.length <= max && !/[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(text)
+  if (
+    typeof value.projectLabel !== 'string' ||
+    typeof value.sessionLabel !== 'string' ||
+    !isSafeDirectCodingDisplayLabelV1(value.projectLabel) ||
+    !isSafeDirectCodingDisplayLabelV1(value.sessionLabel)
+  ) return false
   if (
     expected.has('commandText') &&
     (typeof value.commandText !== 'string'
       || !value.commandText.trim()
       || new TextEncoder().encode(value.commandText).byteLength > 64 * 1024
-      || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.commandText))
+      || hasUnsafeDirectCodingCommandTextV1(value.commandText))
   ) return false
   if (expected.has('warning') && !safeText(value.warning, 256)) return false
   return true
@@ -232,6 +241,11 @@ export function parseExtensionUIRequestV1(raw: Record<string, unknown>): Extensi
 
 export function clearExtensionDialogDedupe(): void {
   seenDialogIds.clear()
+}
+
+export function resetExtensionDialogDedupe(retainedIds: ReadonlySet<string>): void {
+  seenDialogIds.clear()
+  for (const id of retainedIds) seenDialogIds.add(id)
 }
 
 /** Worker 侧对话框超时/中止或 compaction 开始时，清理 Renderer 悬挂状态 */

@@ -37,6 +37,7 @@ import type { PiSessionRefV1, PiSessionScopeV1 } from '../../xiaogui/scope-deriv
 import { sessionScopeResolverV1 } from '../../xiaogui/scope-service'
 import { xiaogui } from '../../xiaogui/sidecar-bridge'
 import { recordDefaultCodingCheckpointSessionAddressV1 } from '../../xiaogui/coding-extensions/checkpoint-default-composition'
+import { trustedSessionAccessV1 } from '../../trusted-session-access'
 
 function publicSessionScope(scope: PiSessionScopeV1): CanonicalSessionAddressScopeV1 {
   return {
@@ -73,8 +74,7 @@ async function resolveTrustedSessionScope(
   workspaceId: string,
   sessionFile: string,
 ): Promise<{ ref: PiSessionRefV1; scope: PiSessionScopeV1 }> {
-  const ref = trustedSessionRef(workspaceId, sessionFile)
-  const scope = await sessionScopeResolverV1.resolve(ref)
+  const { ref, scope } = await trustedSessionAccessV1.open({ workspaceId, sessionFile })
   if (scope.sessionMode === 'CODING') {
     const sourceSessionId = readSessionIdFromFile(ref.sessionFile)
     if (sourceSessionId) {
@@ -137,8 +137,8 @@ export function registerSessionHandlers(): void {
       canonicalScope = publicSessionScope(resolved.scope)
       workerManager.rememberSessionWorkspace(resolved.ref.sessionFile, resolved.ref.rootPath)
       xiaogui.setMode(resolved.scope.sessionMode)
-      setPendingWorkerSessionFile(req.sessionFile)
-      workerManager.focusExistingSession(req.sessionFile)
+      setPendingWorkerSessionFile(resolved.ref.sessionFile)
+      workerManager.focusExistingSession(resolved.ref.sessionFile)
     }
     return {
       session: {
@@ -156,24 +156,26 @@ export function registerSessionHandlers(): void {
 
   registerHandler('ipc:session.setPendingBind', async (req) => {
     const sessionFile = req.sessionFile ?? null
+    let canonicalSessionFile: string | null = null
     let canonicalScope: CanonicalSessionAddressScopeV1 | undefined
     if (sessionFile) {
       const workspaceId = String(req.workspaceId || workerManager.cwd || configStore.get('currentProject') || '')
       const resolved = await resolveTrustedSessionScope(workspaceId, sessionFile)
       canonicalScope = publicSessionScope(resolved.scope)
+      canonicalSessionFile = resolved.ref.sessionFile
       workerManager.rememberSessionWorkspace(resolved.ref.sessionFile, resolved.ref.rootPath)
       xiaogui.setMode(resolved.scope.sessionMode)
     }
-    setPendingWorkerSessionFile(sessionFile)
-    if (sessionFile) {
-      const hasLiveSlot = workerManager.focusExistingSession(sessionFile)
+    setPendingWorkerSessionFile(canonicalSessionFile)
+    if (canonicalSessionFile) {
+      const hasLiveSlot = workerManager.focusExistingSession(canonicalSessionFile)
       // Eagerly load only when the session already has a live worker slot so the
       // composer model/context refresh from the correct runtime state after switching.
       // Otherwise defer to first-prompt lazy load — never block UI switching on a
       // WSL worker fork (which takes seconds).
       if (hasLiveSlot && workerManager.isRunning && workerManager.cwd) {
         try {
-          await workerManager.loadSession(sessionFile)
+          await workerManager.loadSession(canonicalSessionFile)
         } catch (e) {
           console.warn('[session.setPendingBind] loadSession failed:', e)
         }
@@ -191,21 +193,21 @@ export function registerSessionHandlers(): void {
 
   registerHandlerWithSchema('ipc:session.prepare', sessionPrepareSchema, async (req) => {
     const sessionFile = req.sessionFile
-    if (!sessionFile) {
-      if (req.bind !== false) setPendingWorkerSessionFile(null)
-      return { bound: false, sessionId: null as string | null }
-    }
-    if (req.bind !== false) setPendingWorkerSessionFile(sessionFile)
     const prepared = await resolvePreparedSessionFile(sessionFile, (workspaceId) =>
       sessionPreviewProcess.listSessions(workspaceId),
     )
-    if (req.bind !== false && prepared?.sessionFile && prepared.sessionFile !== sessionFile) {
-      setPendingWorkerSessionFile(prepared.sessionFile)
+    if (!prepared) {
+      return { bound: false, sessionId: null as string | null, sessionFile }
     }
+    const authorized = await trustedSessionAccessV1.open({
+      workspaceId: req.workspaceId,
+      sessionFile: prepared.sessionFile,
+    })
+    if (req.bind !== false) setPendingWorkerSessionFile(authorized.ref.sessionFile)
     return {
       bound: false,
-      sessionId: prepared?.sessionId ?? null,
-      sessionFile: prepared?.sessionFile ?? sessionFile,
+      sessionId: prepared.sessionId,
+      sessionFile: authorized.ref.sessionFile,
     }
   })
 

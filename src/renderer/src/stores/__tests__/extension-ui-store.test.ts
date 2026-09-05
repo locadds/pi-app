@@ -75,4 +75,42 @@ describe('extension UI cancellation', () => {
     useExtensionUIStore.getState().clearAfterRespond()
     expect(useExtensionUIStore.getState().activePending?.id).toBe('dialog-3')
   })
+
+  it('keeps only structured direct-session V3 permissions across a session switch', async () => {
+    const direct = (id: string) => ({
+      id,
+      method: 'coding_permission' as const,
+      prompt: {
+        schemaVersion: 3 as const,
+        subject: 'DIRECT_SESSION' as const,
+        requestDigest: `sha256:${'a'.repeat(64)}`,
+        originDigest: `sha256:${'b'.repeat(64)}`,
+        projectLabel: '项目 A',
+        sessionLabel: '后台任务',
+        operation: 'WRITE' as const,
+        mode: 'CONFIRM_EACH' as const,
+        relativePath: 'src/a.ts',
+        choices: ['ALLOW_ONCE', 'DENY'] as const,
+      },
+    })
+    const store = useExtensionUIStore.getState()
+    store.setActivePending(direct('direct-active') as never)
+    store.setActivePending(pending)
+    store.setActivePending(direct('direct-queued') as never)
+
+    useExtensionUIStore.getState().resetForSessionContext()
+    await Promise.resolve()
+
+    const state = useExtensionUIStore.getState()
+    expect(state.activePending?.id).toBe('direct-active')
+    expect(state.queuedPending.map((entry) => entry.id)).toEqual(['direct-queued'])
+    expect(invoke).toHaveBeenCalledWith('extension.cancelUI', {
+      id: 'dialog-1',
+      reason: 'session-reset',
+    })
+    expect(invoke).not.toHaveBeenCalledWith('extension.cancelUI', {
+      id: 'direct-active',
+      reason: 'session-reset',
+    })
+  })
 })

@@ -79,6 +79,7 @@ export const sessionDeleteSchema = z
 
 export const sessionPrepareSchema = z.object({
   sessionFile: z.string().min(1),
+  workspaceId: z.string().min(1),
   bind: z.boolean().optional(),
 })
 
@@ -99,10 +100,12 @@ export const workspaceSandboxDeleteSchema = z.object({
 })
 
 export const promptTextSchema = z.object({
+  sessionId: z.string(),
   text: z.string(),
-  sessionFile: z.string().optional(),
+  workspaceId: z.string().trim().min(1),
+  sessionFile: z.string().trim().min(1),
   codingContextSnapshotIds: z.array(z.string().regex(/^xgctx_[0-9a-f-]{36}$/i)).max(20).optional(),
-})
+}).strict()
 
 const CLIPBOARD_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 

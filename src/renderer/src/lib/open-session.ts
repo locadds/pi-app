@@ -37,7 +37,9 @@ async function openExistingSessionView(
   if (navToken != null && !assertSessionNavigation(navToken)) return
 
   if (bindWorker) {
-    void ipcClient.invoke('session.setPendingBind', { sessionFile: sessionKey }).catch(() => {})
+    const workspaceId = useUIStore.getState().currentWorkspace
+    if (!workspaceId) throw new Error('trusted_workspace_required')
+    await ipcClient.invoke('session.setPendingBind', { sessionFile: sessionKey, workspaceId })
   }
   void refreshSessionTree(sessionFile)
 

@@ -90,7 +90,7 @@ describe('extension UI source routing', () => {
     expect(foreground.worker.postMessage).not.toHaveBeenCalled()
   })
 
-  it('resolves a permission window only for the exact foreground Worker and session source', () => {
+  it('resolves a permission window for an exact live foreground or background Worker source', () => {
     const foreground = slot('/s/foreground')
     const background = slot('/s/background')
     const manager = managerWithSlots(foreground, background)
@@ -108,7 +108,7 @@ describe('extension UI source routing', () => {
       fromPoolKey: background.poolKey,
       sessionFile: background.sessionFile!,
       sourceSessionId: background.sessionId!,
-    })).toBeUndefined()
+    })).toBe(mainWindow)
     expect(manager.resolveHostToolRequestWindow({
       fromCwd: foreground.cwd,
       fromPoolKey: foreground.poolKey,

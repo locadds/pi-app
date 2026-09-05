@@ -87,6 +87,7 @@ describe('subagent session navigation', () => {
 
     expect(mocks.invoke).toHaveBeenCalledWith('session.prepare', {
       sessionFile: '/sessions/parent/run-1/session.jsonl',
+      workspaceId: '/workspace',
       bind: false,
     })
     expect(useUIStore.getState().subagentSessionGroup).toMatchObject({

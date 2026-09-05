@@ -81,7 +81,7 @@ export interface DirectCodingPermissionOriginV3 {
   readonly sourceSessionId: string
 }
 
-export interface DirectCodingPreflightPayloadV3 {
+export interface DirectCodingPreflightPayloadV4 {
   readonly sourceSessionId: string
   readonly toolCallId: string
   readonly requestDigest: string
@@ -102,20 +102,31 @@ export interface DirectCodingSettlePayloadV2 {
   readonly exitCode?: number | null
 }
 
-export interface DirectCodingBeginPayloadV2 {
+export interface DirectCodingBeginPayloadV4 {
   readonly sourceSessionId: string
   readonly toolCallId: string
   readonly requestDigest: string
 }
 
-export type DirectCodingPreflightResultV2 = {
-  readonly kind: 'XIAOGUI_DIRECT_CODING_PREFLIGHT'
+type DirectCodingLifecycleResultBaseV4 = {
   readonly subject: typeof XIAOGUI_DIRECT_CODING_SUBJECT_V2
-  readonly decision: 'ALLOW' | 'DENY'
-  readonly state: DirectCodingCallStateV2
   readonly requestDigest: string
   readonly reasonCode: string
 }
+
+export type DirectCodingPreflightResultV4 =
+  | (DirectCodingLifecycleResultBaseV4 & {
+      readonly kind: 'XIAOGUI_DIRECT_CODING_PREFLIGHT'
+      readonly decision: 'ALLOW'
+      readonly state: 'ALLOWED'
+      /** Present only for READ/EDIT/WRITE. This is the sole path Pi may execute. */
+      readonly authorizedRelativePath?: string
+    })
+  | (DirectCodingLifecycleResultBaseV4 & {
+      readonly kind: 'XIAOGUI_DIRECT_CODING_PREFLIGHT'
+      readonly decision: 'DENY'
+      readonly state: DirectCodingCallStateV2
+    })
 
 export type DirectCodingSettleResultV2 = {
   readonly kind: 'XIAOGUI_DIRECT_CODING_SETTLED'
@@ -124,13 +135,43 @@ export type DirectCodingSettleResultV2 = {
   readonly requestDigest: string
 }
 
-export type DirectCodingBeginResultV2 = {
-  readonly kind: 'XIAOGUI_DIRECT_CODING_BEGIN'
-  readonly subject: typeof XIAOGUI_DIRECT_CODING_SUBJECT_V2
-  readonly decision: 'ALLOW' | 'DENY'
-  readonly state: Extract<DirectCodingCallStateV2, 'EXECUTING' | 'OUTCOME_UNKNOWN'>
-  readonly requestDigest: string
-  readonly reasonCode: string
+export type DirectCodingBeginResultV4 =
+  | (DirectCodingLifecycleResultBaseV4 & {
+      readonly kind: 'XIAOGUI_DIRECT_CODING_BEGIN'
+      readonly decision: 'ALLOW'
+      readonly state: 'EXECUTING'
+      /** Present only for READ/EDIT/WRITE and must equal the preflight value. */
+      readonly authorizedRelativePath?: string
+    })
+  | (DirectCodingLifecycleResultBaseV4 & {
+      readonly kind: 'XIAOGUI_DIRECT_CODING_BEGIN'
+      readonly decision: 'DENY'
+      readonly state: 'OUTCOME_UNKNOWN'
+    })
+
+const DIRECT_CODING_COMMAND_UNSAFE_RE =
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+const DIRECT_CODING_LABEL_UNSAFE_RE =
+  /[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+
+/** Shared Worker/Main/Renderer display-safety guard. Newlines and tabs remain valid command text. */
+export function hasUnsafeDirectCodingCommandTextV1(value: string): boolean {
+  return DIRECT_CODING_COMMAND_UNSAFE_RE.test(value)
+}
+
+/** Labels are display-only and never participate in authorization identity. */
+export function sanitizeDirectCodingDisplayLabelV1(value: string, maxLength = 80): string {
+  const normalized = value
+    .replace(DIRECT_CODING_LABEL_UNSAFE_RE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return (normalized || '未命名').slice(0, maxLength)
+}
+
+export function isSafeDirectCodingDisplayLabelV1(value: string, maxLength = 80): boolean {
+  return value.length > 0
+    && value.length <= maxLength
+    && sanitizeDirectCodingDisplayLabelV1(value, maxLength) === value
 }
 
 export const DIRECT_CODING_CHECKPOINT_STATUSES_V2 = [

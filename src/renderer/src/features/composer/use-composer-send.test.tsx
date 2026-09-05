@@ -190,9 +190,10 @@ describe('useComposerSend submission arbitration', () => {
     })
     expect(send?.[1]).toMatchObject({
       text: expect.stringContaining('@src/a.ts'),
+      workspaceId: 'D:/workspace',
+      sessionFile: 'C:/sessions/current.jsonl',
       codingContextSnapshotIds: ['xgctx_fresh-1234-1234-1234-123456789abc'],
     })
-    expect(JSON.stringify(send?.[1])).not.toContain('D:/workspace')
   })
 
   it('resolves a pre-session @ chip after the Coding session has materialized', async () => {

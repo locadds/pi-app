@@ -45,17 +45,46 @@ describe('DirectCodingModuleV2', () => {
     }))
 
     const requestDigest = digest('modify-existing')
-    await expect(module.preflight(input(root, 'write-1', requestDigest, 'WRITE', 'AUTO_APPROVE', 'src/a.ts')))
-      .resolves.toMatchObject({ decision: 'ALLOW', state: 'ALLOWED', reasonCode: 'MODE_POLICY_AUTO_ALLOWED' })
+    const firstPreflight = await module.preflight(
+      input(root, 'write-1', requestDigest, 'WRITE', 'AUTO_APPROVE', join(root, 'src/a.ts')),
+    )
+    expect(firstPreflight).toMatchObject({
+      decision: 'ALLOW',
+      state: 'ALLOWED',
+      reasonCode: 'MODE_POLICY_AUTO_ALLOWED',
+      authorizedRelativePath: 'src/a.ts',
+    })
     expect(ui.request).not.toHaveBeenCalled()
     expect(module.list(subject)).toMatchObject({
       ok: true,
       value: { checkpoints: [] },
     })
-    await expect(module.begin(lifecycle(root, 'write-1', requestDigest))).resolves.toMatchObject({
+    const firstBegin = await module.begin(lifecycle(root, 'write-1', requestDigest))
+    expect(firstBegin).toMatchObject({
       decision: 'ALLOW',
       state: 'EXECUTING',
+      authorizedRelativePath: 'src/a.ts',
     })
+    if (firstPreflight.decision !== 'ALLOW' || firstBegin.decision !== 'ALLOW') {
+      throw new Error('first lifecycle request should be allowed')
+    }
+    expect(firstBegin.authorizedRelativePath).toBe(firstPreflight.authorizedRelativePath)
+    await expect(module.preflight(
+      input(root, 'write-1', requestDigest, 'WRITE', 'AUTO_APPROVE', join(root, 'src/a.ts')),
+    )).resolves.toEqual(expect.objectContaining({
+      decision: 'DENY',
+      reasonCode: 'DUPLICATE_REQUEST_NOT_REPLAYED',
+    }))
+    const duplicatePreflight = await module.preflight(
+      input(root, 'write-1', requestDigest, 'WRITE', 'AUTO_APPROVE', join(root, 'src/a.ts')),
+    )
+    const duplicateBegin = await module.begin(lifecycle(root, 'write-1', requestDigest))
+    expect(duplicatePreflight).not.toHaveProperty('authorizedRelativePath')
+    expect(duplicateBegin).toMatchObject({
+      decision: 'DENY',
+      reasonCode: 'DUPLICATE_EXECUTION',
+    })
+    expect(duplicateBegin).not.toHaveProperty('authorizedRelativePath')
     writeFileSync(join(root, 'src/a.ts'), 'after\n')
     await expect(module.settle({ ...lifecycle(root, 'write-1', requestDigest), isError: false }))
       .resolves.toMatchObject({ state: 'SETTLED' })

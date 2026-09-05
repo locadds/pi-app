@@ -63,6 +63,7 @@ import {
   canonicalWorkerProjectRootV1,
   readCurrentWorkerExecutionIdentityDigestV1,
 } from './worker-execution-identity'
+import { cancelDirectExtensionUIForSource } from './direct-extension-ui'
 
 interface InitResult extends WorkerInitResult {}
 
@@ -200,7 +201,7 @@ export class WorkerManager {
     }
   }
 
-  /** Resolve the one window that owns an exact live Worker/session source. */
+  /** Resolve the app window for an exact live Worker/session source, foreground or background. */
   resolveHostToolRequestWindow(source: {
     readonly fromCwd: string
     readonly fromPoolKey: string
@@ -211,7 +212,6 @@ export class WorkerManager {
     if (!win || win.isDestroyed()) return undefined
     const slot = this.pool.get(source.fromPoolKey)
     if (!slot || slot.stopping) return undefined
-    if (this.foregroundPoolKey !== slot.poolKey) return undefined
     if (canonicalWorkerProjectRootV1(slot.cwd) !== canonicalWorkerProjectRootV1(source.fromCwd)) {
       return undefined
     }
@@ -224,6 +224,7 @@ export class WorkerManager {
   }
 
   private async disposePoolSlot(slot: WorkerSlot): Promise<void> {
+    cancelDirectExtensionUIForSource(slot.poolKey, slot.sessionId)
     for (const [key, candidate] of this.pool) {
       if (candidate !== slot) continue
       this.pool.delete(key)
@@ -481,6 +482,7 @@ export class WorkerManager {
 
   private handleSlotExit(slot: WorkerSlot, code: number): void {
     const key = slot.poolKey
+    cancelDirectExtensionUIForSource(key, slot.sessionId)
     if (this.pool.get(key) === slot) this.pool.delete(key)
     if (this.foregroundPoolKey === key) this.foregroundPoolKey = null
     slot.initPromise = null
@@ -580,12 +582,36 @@ export class WorkerManager {
     if (key) this.sessionWorkspaceHints.delete(key)
   }
 
-  resolveSessionWorkspaceCwd(sessionFile: string): string | null {
+  /** Main-recorded binding only. Unlike resolveSessionWorkspaceCwd, this never trusts a JSONL header. */
+  resolveRegisteredSessionWorkspaceCwd(sessionFile: string): string | null {
     const key = normalizeSessionKey(sessionFile)
     const live = key ? this.pool.get(key) : null
     if (live && !live.stopping && live.cwd.trim()) return live.cwd
     return findSandboxWorkspaceForSessionFile(sessionFile)
       ?? (key ? this.sessionWorkspaceHints.get(key) : null)
+      ?? null
+  }
+
+  /** Exact live Worker proof used by steer/followUp authorization. */
+  readLiveSessionBinding(
+    sessionFile: string,
+    cwd: string,
+  ): { readonly sessionId: string; readonly agentTurnActive: boolean } | null {
+    const key = normalizeSessionKey(sessionFile)
+    const slot = key ? this.pool.get(key) : null
+    if (
+      !slot ||
+      slot.stopping ||
+      !slot.sessionId ||
+      normalizeSessionKey(slot.sessionFile ?? '') !== key ||
+      canonicalWorkerProjectRootV1(slot.cwd) !== canonicalWorkerProjectRootV1(cwd) ||
+      !this.slotMatchesCurrentRuntime(slot, cwd)
+    ) return null
+    return { sessionId: slot.sessionId, agentTurnActive: slot.agentTurnActive }
+  }
+
+  resolveSessionWorkspaceCwd(sessionFile: string): string | null {
+    return this.resolveRegisteredSessionWorkspaceCwd(sessionFile)
       ?? readSessionMetaFromFile(sessionFile)?.cwd
       ?? null
   }

@@ -75,13 +75,13 @@ function pruneStaleSuspension(): void {
   }
 }
 
-function cancelPendingDialogs(reason: string): void {
-  const { activePending, queuedPending, suspended } = useExtensionUIStore.getState()
-  const ids = new Set([
-    activePending?.id,
-    suspended?.requestId,
-    ...queuedPending.map((entry) => entry.id),
-  ].filter((id): id is string => !!id))
+function isDirectCodingPermissionV3(pending: ExtensionUIPending | null | undefined): boolean {
+  return pending?.method === 'coding_permission'
+    && pending.prompt.schemaVersion === 3
+    && pending.prompt.subject === 'DIRECT_SESSION'
+}
+
+function cancelPendingDialogs(ids: ReadonlySet<string>, reason: string): void {
   for (const id of ids) {
     void ipcClient.invoke('extension.cancelUI', { id, reason }).catch(() => {})
   }
@@ -153,9 +153,32 @@ export const useExtensionUIStore = create<ExtensionUIState>((set, get) => ({
   pruneStaleSuspension: () => pruneStaleSuspension(),
 
   resetForSessionContext: () => {
-    cancelPendingDialogs('session-reset')
-    set({ activePending: null, queuedPending: [], suspended: null })
-    void import('@renderer/lib/extension-ui-channel').then((m) => m.clearExtensionDialogDedupe())
+    const state = get()
+    const retainedActive = isDirectCodingPermissionV3(state.activePending)
+      ? state.activePending
+      : null
+    const retainedSuspended = isDirectCodingPermissionV3(state.suspended?.pending)
+      ? state.suspended
+      : null
+    const retainedQueue = state.queuedPending.filter(isDirectCodingPermissionV3)
+    let activePending = retainedActive
+    const suspended = retainedSuspended
+    if (!activePending && !suspended) activePending = retainedQueue.shift() ?? null
+
+    const retainedIds = new Set([
+      activePending?.id,
+      suspended?.requestId,
+      ...retainedQueue.map((entry) => entry.id),
+    ].filter((id): id is string => !!id))
+    const cancelledIds = new Set([
+      state.activePending?.id,
+      state.suspended?.requestId,
+      ...state.queuedPending.map((entry) => entry.id),
+    ].filter((id): id is string => !!id && !retainedIds.has(id)))
+    cancelPendingDialogs(cancelledIds, 'session-reset')
+    set({ activePending, queuedPending: retainedQueue, suspended })
+    void import('@renderer/lib/extension-ui-channel')
+      .then((m) => m.resetExtensionDialogDedupe(retainedIds))
   },
 }))
 

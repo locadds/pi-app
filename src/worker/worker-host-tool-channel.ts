@@ -52,7 +52,7 @@ function finish(requestId: string, outcome: WorkerHostToolOutcomeV1): boolean {
 }
 
 function requestTimeoutMs(request: WorkerHostToolRequestInputV1): number | null {
-  if (request.method === 'xiaogui.coding.direct.preflight.v3') {
+  if (request.method === 'xiaogui.coding.direct.preflight.v4') {
     return INTERACTIVE_DIRECT_CODING_PERMISSION_TIMEOUT_MS
   }
   if (

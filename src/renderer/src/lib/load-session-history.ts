@@ -1,5 +1,6 @@
 import { ipcClient } from '@renderer/lib/ipc-client'
 import { assertSessionNavigation } from '@renderer/lib/session-navigation'
+import { useUIStore } from '@renderer/stores/ui-store'
 import {
   clearSessionHistoryCache,
   fetchSessionHistoryTail,
@@ -43,7 +44,10 @@ export async function loadSessionHistoryWithRetry(
   checkNav(opts?.navToken)
 
   if (bindPending) {
-    await ipcClient.invoke('session.setPendingBind', { sessionFile }).catch(() => {})
+    const workspaceId = useUIStore.getState().currentWorkspace
+    if (workspaceId) {
+      await ipcClient.invoke('session.setPendingBind', { sessionFile, workspaceId }).catch(() => {})
+    }
   }
 
   clearSessionHistoryCache(sessionFile)
@@ -56,7 +60,10 @@ export async function loadSessionHistoryWithRetry(
     if (delay > 0) await sleep(delay)
 
     if (alignWorkerOnRetry && attempt >= 2) {
-      const prepared = await ipcClient.invoke('session.prepare', { sessionFile }).catch(() => null)
+      const workspaceId = useUIStore.getState().currentWorkspace
+      const prepared = workspaceId
+        ? await ipcClient.invoke('session.prepare', { sessionFile, workspaceId }).catch(() => null)
+        : null
       if (prepared?.bound) {
         const { applyWorkerBoundModelDisplay } = await import('@renderer/lib/session-display-meta')
         applyWorkerBoundModelDisplay({

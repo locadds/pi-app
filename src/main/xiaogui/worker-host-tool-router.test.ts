@@ -117,7 +117,7 @@ describe('xiaogui Worker host-tool router', () => {
     const directCodingRequest: WorkerHostToolRequestV1 = {
       type: 'host-tool-request',
       requestId: 'direct-coding-1',
-      method: 'xiaogui.coding.direct.preflight.v3',
+      method: 'xiaogui.coding.direct.preflight.v4',
       payload: {
         sourceSessionId: 'session-1',
         toolCallId: 'call-direct-1',

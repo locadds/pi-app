@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   __test,
   cancelDirectExtensionUI,
+  cancelDirectExtensionUIForSource,
   hasPendingDirectExtensionUI,
   requestDirectExtensionUI,
   respondDirectExtensionUI,
@@ -95,5 +96,27 @@ describe('direct extension UI bridge', () => {
     expect(__test.pendingCount()).toBe(0)
     expect(win.listenerCount('closed')).toBe(0)
     vi.useRealTimers()
+  })
+
+  it('来源 Worker 结束时只关闭该来源请求，不影响其他来源队列', async () => {
+    const win = new FakeWindow()
+    const sourceA = requestDirectExtensionUI(
+      win as unknown as BrowserWindow,
+      { method: 'custom', kind: 'coding_permission' },
+      { source: { poolKey: 'pool-a', sessionId: 'session-a' } },
+    )
+    const sourceB = requestDirectExtensionUI(
+      win as unknown as BrowserWindow,
+      { method: 'custom', kind: 'coding_permission' },
+      { source: { poolKey: 'pool-b', sessionId: 'session-b' } },
+    )
+    const requestB = win.webContents.send.mock.calls[1][1]
+
+    expect(cancelDirectExtensionUIForSource('pool-a', 'session-a')).toBe(1)
+    await expect(sourceA).resolves.toMatchObject({ cancelled: true, reason: 'source-ended' })
+    expect(__test.pendingCount()).toBe(1)
+    expect(respondDirectExtensionUI({ id: requestB.id, result: { choice: 'DENY' } })).toBe(true)
+    await expect(sourceB).resolves.toMatchObject({ id: requestB.id })
+    expect(__test.pendingCount()).toBe(0)
   })
 })

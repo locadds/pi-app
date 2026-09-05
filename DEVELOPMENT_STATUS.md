@@ -1,5 +1,127 @@
 # 小规开发阶段状态
 
+## 2026-09-05｜CODING-P1D-B-R3.3 路径、可信会话与后台授权返修（阶段候选，待人工复验）
+
+### 本阶段目标
+
+在 R3.2 阶段候选上只追加一个整改提交，关闭人工复验提出的四项阻断：WSL 相对路径不得被错误转换到发行版根目录；授权路径必须成为 Pi 的唯一实际执行路径；后台 CODING 权限请求应携带真实来源并可在当前窗口确认；Prompt、Session Open、Prepare 和 Navigate 必须共用 Main 权威的可信会话访问；Bash 命令中的 Unicode 双向控制字符必须在 Worker、Main 和 Renderer 三层拒绝。
+
+产品边界不变：普通 CODING 仍由单一 Pi Harness 直接修改用户项目；TaskHub 仍使用 Attempt 工作树、Delivery 和人工 Apply；不接入 OMP 产品表面、独立配置或第二模型体系。
+
+### 实际修改文件
+
+共享契约与安全校验：
+
+- `packages/shared/ipc-contract.ts`
+- `packages/shared/worker-host-tools.ts`
+- `packages/shared/xiaogui-direct-coding.ts`
+- `packages/shared/xiaogui-direct-coding.test.ts`（新增）
+
+Main、可信会话与后台权限：
+
+- `src/main/trusted-session-access.ts`（新增）
+- `src/main/trusted-session-access.test.ts`（新增）
+- `src/main/direct-extension-ui.ts`
+- `src/main/direct-extension-ui.test.ts`
+- `src/main/worker-manager.ts`
+- `src/main/__tests__/worker-manager-extension-ui.test.ts`
+- `src/main/ipc/schemas.ts`
+- `src/main/ipc/handlers/prompt.ts`
+- `src/main/ipc/handlers/prompt-trusted-session.test.ts`（新增）
+- `src/main/ipc/handlers/session.ts`
+- `src/main/ipc/handlers/session-preview-authorization.test.ts`
+- `src/main/xiaogui/coding-extensions/direct-coding-module.ts`
+- `src/main/xiaogui/coding-extensions/direct-coding-module.test.ts`
+- `src/main/xiaogui/coding-extensions/direct-coding-worker-tool.ts`
+- `src/main/xiaogui/coding-extensions/direct-coding-worker-tool.test.ts`
+- `src/main/xiaogui/coding-extensions/direct-permission-ui-adapter.ts`
+- `src/main/xiaogui/coding-extensions/direct-permission-ui-adapter.test.ts`
+- `src/main/xiaogui/worker-host-tool-router.ts`
+- `src/main/xiaogui/worker-host-tool-router.test.ts`
+
+Pi Worker 与 Renderer：
+
+- `src/worker/worker-host-tool-channel.ts`
+- `src/worker/worker-path-bridge.ts`
+- `src/worker/worker-path-bridge-direct-coding.test.ts`（新增）
+- `src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.ts`
+- `src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts`
+- `src/renderer/src/features/composer/use-composer-send.ts`
+- `src/renderer/src/features/composer/use-composer-send.test.tsx`
+- `src/renderer/src/lib/extension-ui-channel.ts`
+- `src/renderer/src/lib/extension-ui-channel.test.ts`
+- `src/renderer/src/lib/load-session-history.ts`
+- `src/renderer/src/lib/open-session.ts`
+- `src/renderer/src/lib/subagent-session-navigation.ts`
+- `src/renderer/src/lib/subagent-session-navigation.test.ts`
+- `src/renderer/src/stores/extension-ui-store.ts`
+- `src/renderer/src/stores/__tests__/extension-ui-store.test.ts`
+
+阶段记录：
+
+- `DEVELOPMENT_STATUS.md`
+- `doc/README.md`
+- `doc/README.zh-CN.md`
+- `doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`
+- `doc/runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\施工总控.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\progress.md`
+- `D:\Codex\longtime_memory\projects\小规Agent\research\2026-09-03-CODING研究-OMP-ACP-P1C验收与P1D装配规划.md`
+
+### 已完成内容
+
+1. 新增独立 V4 preflight/begin 契约。只有首次 `preflight ALLOW` 与首次 `begin EXECUTING` 返回同一 `authorizedRelativePath`；重复调用统一拒绝且不返回路径，不重复询问、不创建检查点、不再次执行 Pi。
+2. Worker 不再把授权只当提示。它比较两阶段规范路径，并以复制后的参数调用 Pi；原始参数不原地修改。项目内绝对路径由 Main 规范成相对路径后执行。
+3. WSL 路径桥只转换 Linux 绝对路径；`src/a.ts` 与 `./src/a.ts` 保持项目相对语义。
+4. 新增 `TrustedSessionAccessModuleV1` 作为 Prompt、Session Open、Prepare 和 Navigate 共用 Seam。Renderer 的 `workspaceId + sessionFile` 不能互相证明可信；Prompt 只能消费 Main 已登记的新建、可信打开、Sandbox 或 live Worker 绑定，JSONL cwd 不再作为 Prompt 冷绑定依据。
+5. `session.prepare` 只有解析并授权成功后才写 pending bind；`prompt.send` 在 Worker 创建、上下文装配和消息提交之前完成可信访问检查；`steer/followUp` 还要求精确的活动 Worker。
+6. 新会话 JSONL 尚未落盘时，普通项目和临时 Sandbox 可依靠 Main 新建登记及既有 scope 发送首条消息。
+7. 后台直接 CODING Worker 可在当前小规窗口发起权限请求。权限框显示安全处理后的来源项目和来源对话，不自动切换会话；用户响应后再次核验精确 Worker、session、cwd 和运行时身份。
+8. 切换会话时只保留具有结构化 `DIRECT_SESSION + schemaVersion: 3` 身份的直接权限请求；其他 Extension 请求仍取消。来源 Worker 退出只关闭自身直接权限请求，不影响其他来源队列。
+9. Worker、Main 与 Renderer 共用命令安全校验，拒绝非法 ASCII 控制字符及 U+061C、U+200E–U+200F、U+202A–U+202E、U+2066–U+2069；正常换行、制表符、完整命令和 64 KiB 上限保持不变。项目名、对话名仅作安全显示清理，不参与权限身份判断。
+
+### 未完成内容
+
+- 尚未运行“自然语言 → 外部模型 → Electron 用户界面”的完整人工旅程；自动证据仅覆盖真实 Pi 工具生命周期、真实文件写入、Main/Worker/Renderer 接缝和确定性组件行为。
+- 当前仍是独立 CODING 分支阶段候选，未合入 WORK、阶段线或主线，未发布、未制作 Portable。
+- 历史 OMP 研究源码仍只作隔离证据保留；本阶段没有启动、装配、复测或接入。
+
+### 与规格文档存在的偏差
+
+- 无产品或架构偏差。普通 CODING、TaskHub V1、统一模型配置及 OMP 产品边界保持冻结。
+- V4 是替换生产调用的窄契约，不向 V2/V3 类型偷加执行路径，也不建立平行权限或工作树系统。
+- 按“非必要不要做那么多测试”的要求，没有运行 OMP、802 MB 装配、外部模型、Electron、Portable、完整构建或无关全量测试。
+
+### 测试命令和测试结果
+
+聚焦回归、无外部模型的 WSL 路径接缝、TaskHub V1 回归及“真实 Pi 工具生命周期与真实文件写入冒烟”：
+
+~~~powershell
+npm exec vitest run -- --reporter=dot packages/shared/xiaogui-direct-coding.test.ts src/main/xiaogui/scope-resolver.test.ts src/main/xiaogui/scope-store.test.ts src/main/__tests__/worker-execution-identity.test.ts src/main/__tests__/worker-manager-session-isolation.test.ts src/main/__tests__/worker-manager-extension-ui.test.ts src/main/__tests__/worker-manager-pool.test.ts src/main/trusted-session-access.test.ts src/main/ipc/handlers/prompt-trusted-session.test.ts src/main/ipc/handlers/session-preview-authorization.test.ts src/main/direct-extension-ui.test.ts src/main/xiaogui/coding-extensions/coding-authorization-module.test.ts src/main/xiaogui/coding-extensions/direct-permission-ui-adapter.test.ts src/main/xiaogui/coding-extensions/direct-coding-worker-tool.test.ts src/main/xiaogui/coding-extensions/direct-coding-module.test.ts src/main/xiaogui/worker-host-tool-router.test.ts src/worker/worker-path-bridge-direct-coding.test.ts src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts src/renderer/src/features/extension-ui/coding-permission-dialog.test.tsx src/renderer/src/lib/extension-ui-channel.test.ts src/renderer/src/stores/__tests__/extension-ui-store.test.ts src/renderer/src/features/composer/use-composer-send.test.tsx src/renderer/src/lib/subagent-session-navigation.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts src/main/xiaogui/coding-extensions/checkpoint-module.test.ts src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/change-apply.test.ts
+~~~
+
+结果：`27` 个测试文件、`268` 项全部通过。覆盖 V4 授权路径、重复调用拒绝、WSL 路径、可信会话、后台来源、Bidi 三层拒绝、真实 Pi write、直接文件检查点，以及 TaskHub V1 权限/检查点/工作树/Apply。
+
+~~~powershell
+npm run typecheck
+$codingFiles = @(git diff --name-only --diff-filter=ACMR | Where-Object { $_ -match '\.(ts|tsx)$' })
+npm exec eslint -- $codingFiles
+git diff --check
+~~~
+
+结果：Node/Web TypeScript、定向 ESLint 和差异检查通过。
+
+### 已知风险
+
+1. 真实多窗口 Electron 的后台权限框显示、会话切换保留和来源退出关闭仍待人工旅程确认。
+2. Bash 仍不是 OS 沙箱；本阶段只保证完整命令可见、逐次确认、Bidi/控制字符拒绝和审计，不承诺撤销外部副作用。
+3. Main 内存中的可信会话登记在应用重启后不会自动信任旧 JSONL；旧会话必须通过可信打开流程重新登记，这是预期的 fail-closed 行为。
+4. V4 生产契约已替换旧 direct preflight/begin 通道；未来升级必须保持“授权路径等于实际执行路径”和重复调用不执行。
+
+### 下一阶段计划
+
+提交并推送当前隔离分支后立即停止，等待人工或审查 Agent 复验。通过也不自动授权真实模型/Electron 旅程、合入 WORK、阶段线、主线、发布或 Portable。
+
 ## 2026-09-05｜CODING-P1D-B-R3.2 来源绑定与大文件安全返修（阶段候选，待人工复验）
 
 ### 本阶段目标

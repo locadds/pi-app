@@ -124,7 +124,11 @@ export async function openSubagentSessionPreview(sessionFile: string): Promise<v
   const navToken = beginSessionNavigation()
 
   const prepared = await ipcClient
-    .invoke('session.prepare', { sessionFile, bind: false })
+    .invoke('session.prepare', {
+      sessionFile,
+      workspaceId: navigationGroup.workspacePath,
+      bind: false,
+    })
     .catch(() => null)
   if (!prepared?.sessionId || !assertSessionNavigation(navToken)) return
 

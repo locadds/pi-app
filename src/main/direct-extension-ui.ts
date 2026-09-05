@@ -4,13 +4,14 @@ import type { BrowserWindow } from 'electron'
 export interface DirectExtensionUIResponse {
   id: string
   cancelled?: boolean
-  reason?: 'timeout'
+  reason?: 'timeout' | 'source-ended'
   result?: unknown
 }
 
 interface DirectPending {
   resolve: (response: DirectExtensionUIResponse) => void
   cleanup: () => void
+  source?: { readonly poolKey: string; readonly sessionId: string }
 }
 
 const pending = new Map<string, DirectPending>()
@@ -19,7 +20,10 @@ const pending = new Map<string, DirectPending>()
 export function requestDirectExtensionUI(
   win: BrowserWindow,
   request: Record<string, unknown>,
-  options: { timeoutMs?: number } = {},
+  options: {
+    timeoutMs?: number
+    source?: { readonly poolKey: string; readonly sessionId: string }
+  } = {},
 ): Promise<DirectExtensionUIResponse> {
   const id = `xiaogui-direct-${randomUUID()}`
   return new Promise((resolve) => {
@@ -33,7 +37,7 @@ export function requestDirectExtensionUI(
     const finish = (response: DirectExtensionUIResponse) => {
       const active = pending.get(id)
       if (!active) return
-      const shouldDismiss = response.reason === 'timeout' && !win.isDestroyed()
+      const shouldDismiss = (response.reason === 'timeout' || response.reason === 'source-ended') && !win.isDestroyed()
       active.cleanup()
       if (shouldDismiss) {
         try {
@@ -49,7 +53,7 @@ export function requestDirectExtensionUI(
       resolve(response)
     }
 
-    pending.set(id, { resolve: finish, cleanup })
+    pending.set(id, { resolve: finish, cleanup, source: options.source })
     win.once('closed', onClosed)
     if (win.isDestroyed()) {
       finish({ id, cancelled: true })
@@ -83,6 +87,21 @@ export function cancelDirectExtensionUI(id: string | undefined): boolean {
   if (!current) return false
   current.resolve({ id, cancelled: true })
   return true
+}
+
+/** Close only direct dialogs owned by one exact Worker generation. */
+export function cancelDirectExtensionUIForSource(
+  poolKey: string,
+  sessionId: string | null,
+): number {
+  if (!sessionId) return 0
+  const matches = [...pending.entries()].filter(([, value]) => (
+    value.source?.poolKey === poolKey && value.source.sessionId === sessionId
+  ))
+  for (const [id, value] of matches) {
+    value.resolve({ id, cancelled: true, reason: 'source-ended' })
+  }
+  return matches.length
 }
 
 export function hasPendingDirectExtensionUI(): boolean {

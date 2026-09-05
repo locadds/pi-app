@@ -103,7 +103,8 @@ export function useComposerSend(opts: {
         }
         const promptPayload = () => ({
           sessionId: '',
-          sessionFile: useUIStore.getState().historySessionFile ?? undefined,
+          workspaceId: useUIStore.getState().currentWorkspace ?? '',
+          sessionFile: useUIStore.getState().historySessionFile ?? '',
           text: payload,
           ...(codingContextSnapshotIds.length > 0 ? { codingContextSnapshotIds } : {}),
         })

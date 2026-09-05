@@ -1,17 +1,19 @@
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import {
-  XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V2,
-  XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V3,
+  XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V4,
+  XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V4,
   XIAOGUI_DIRECT_CODING_SETTLE_METHOD_V2,
   type WorkerHostToolOutcomeV1,
 } from '@shared/worker-host-tools'
 import {
   DIRECT_CODING_OPERATIONS_V2,
   XIAOGUI_DIRECT_CODING_SUBJECT_V2,
-  type DirectCodingBeginPayloadV2,
+  hasUnsafeDirectCodingCommandTextV1,
+  sanitizeDirectCodingDisplayLabelV1,
+  type DirectCodingBeginPayloadV4,
   type DirectCodingPermissionOriginV3,
-  type DirectCodingPreflightPayloadV3,
+  type DirectCodingPreflightPayloadV4,
   type DirectCodingSettlePayloadV2,
 } from '@shared/xiaogui-direct-coding'
 import type { CodingPermissionModeV1 } from '@shared/xiaogui-coding-permission'
@@ -54,7 +56,7 @@ export function createDirectCodingWorkerToolHandlerV2(
     }
 
     try {
-      if (request.method === XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V3) {
+      if (request.method === XIAOGUI_DIRECT_CODING_PREFLIGHT_METHOD_V4) {
         const payload = parsePreflight(request.payload)
         if (payload.sourceSessionId !== fromSessionId) return failed('SESSION_SCOPE_MISMATCH', '会话已切换，操作已停止')
         const trustedPhase = options.readPhase()
@@ -77,7 +79,7 @@ export function createDirectCodingWorkerToolHandlerV2(
         })
         return { ok: true, value }
       }
-      if (request.method === XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V2) {
+      if (request.method === XIAOGUI_DIRECT_CODING_BEGIN_METHOD_V4) {
         const payload = parseBegin(request.payload)
         if (payload.sourceSessionId !== fromSessionId) return failed('SESSION_SCOPE_MISMATCH', '会话已切换，操作已停止')
         return {
@@ -114,7 +116,7 @@ export function createDirectCodingWorkerToolHandlerV2(
   }
 }
 
-function parsePreflight(value: unknown): DirectCodingPreflightPayloadV3 {
+function parsePreflight(value: unknown): DirectCodingPreflightPayloadV4 {
   const input = record(value)
   exactKeys(input, ['sourceSessionId', 'toolCallId', 'requestDigest', 'phase', 'operation', 'path', 'commandText', 'commandDigest'])
   assertBase(input)
@@ -131,13 +133,13 @@ function parsePreflight(value: unknown): DirectCodingPreflightPayloadV3 {
       typeof input.commandText !== 'string' ||
       input.commandText.trim().length === 0 ||
       Buffer.byteLength(input.commandText, 'utf8') > 64 * 1024 ||
-      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(input.commandText) ||
+      hasUnsafeDirectCodingCommandTextV1(input.commandText) ||
       typeof input.commandDigest !== 'string'
     ) invalid()
     if (input.commandDigest !== digestText(input.commandText)) invalid()
     if (input.path !== undefined) invalid()
   }
-  return input as unknown as DirectCodingPreflightPayloadV3
+  return input as unknown as DirectCodingPreflightPayloadV4
 }
 
 function permissionOrigin(
@@ -157,20 +159,17 @@ function permissionOrigin(
   })
 }
 
-function safeLabel(value: string): string {
-  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
-  return (normalized || '未命名').slice(0, 80)
-}
+const safeLabel = (value: string): string => sanitizeDirectCodingDisplayLabelV1(value)
 
 function digestText(value: string): string {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`
 }
 
-function parseBegin(value: unknown): DirectCodingBeginPayloadV2 {
+function parseBegin(value: unknown): DirectCodingBeginPayloadV4 {
   const input = record(value)
   exactKeys(input, ['sourceSessionId', 'toolCallId', 'requestDigest'])
   assertBase(input)
-  return input as unknown as DirectCodingBeginPayloadV2
+  return input as unknown as DirectCodingBeginPayloadV4
 }
 
 function parseSettle(value: unknown): DirectCodingSettlePayloadV2 {

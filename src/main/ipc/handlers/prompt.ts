@@ -5,16 +5,23 @@ import { registerHandler, registerHandlerWithSchema } from '../registry'
 import { writeClipboardTempImage } from '../../clipboard-temp-images'
 import { clipboardWriteTempImageSchema, promptTextSchema } from '../schemas'
 import { resolveCodingContextForPromptV1 } from '../../xiaogui/coding-extensions/context-composition'
+import { trustedSessionAccessV1 } from '../../trusted-session-access'
 
 export function registerPromptHandlers(): void {
-  const bindBeforePrompt = async (sessionFile?: string) => {
-    return ensureWorkerSessionBound(
+  const bindBeforePrompt = async (input: {
+    workspaceId: string
+    sessionFile: string
+    requireRunningWorker?: boolean
+  }) => {
+    const access = await trustedSessionAccessV1.prompt(input)
+    const bind = await ensureWorkerSessionBound(
       (f, o) =>
         workerManager.loadSession(f, {
           force: o?.force,
         }),
-      { sessionFile },
+      { sessionFile: access.ref.sessionFile },
     )
+    return { access, bind }
   }
 
   /** Path-normalize before compare — UI keys and worker state often differ by slash/case. */
@@ -33,12 +40,12 @@ export function registerPromptHandlers(): void {
   }
 
   registerHandlerWithSchema('ipc:prompt.send', promptTextSchema, async (req) => {
-    const bind = await bindBeforePrompt(req.sessionFile)
+    const { access, bind } = await bindBeforePrompt(req)
     const codingContext = await resolveCodingContextForPromptV1(
-      req.sessionFile,
+      access.ref.sessionFile,
       req.codingContextSnapshotIds,
     )
-    await workerManager.sendPrompt(req.text, req.sessionFile, codingContext)
+    await workerManager.sendPrompt(req.text, access.ref.sessionFile, codingContext)
     // Keep clipboard images on disk for the agent turn (tools like `read` use the path).
     // Cleanup is TTL/startup prune + optional quit, not immediate delete-on-send.
     return {
@@ -65,8 +72,8 @@ export function registerPromptHandlers(): void {
   })
 
   registerHandlerWithSchema('ipc:prompt.steer', promptTextSchema, async (req) => {
-    const bind = await bindBeforePrompt(req.sessionFile)
-    await workerManager.steer(req.text, req.sessionFile)
+    const { access, bind } = await bindBeforePrompt({ ...req, requireRunningWorker: true })
+    await workerManager.steer(req.text, access.ref.sessionFile)
     return {
       steered: true,
       model: bind?.model,
@@ -76,8 +83,8 @@ export function registerPromptHandlers(): void {
   })
 
   registerHandlerWithSchema('ipc:prompt.followUp', promptTextSchema, async (req) => {
-    const bind = await bindBeforePrompt(req.sessionFile)
-    await workerManager.followUp(req.text, req.sessionFile)
+    const { access, bind } = await bindBeforePrompt({ ...req, requireRunningWorker: true })
+    await workerManager.followUp(req.text, access.ref.sessionFile)
     return {
       messageId: `msg-${Date.now()}`,
       model: bind?.model,

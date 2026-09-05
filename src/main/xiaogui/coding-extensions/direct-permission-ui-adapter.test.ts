@@ -52,6 +52,13 @@ describe('MainProcessDirectCodingPermissionUIAdapterV3', () => {
       },
     })
     await expect(adapter.request(prompt, origin)).resolves.toBe('ALLOW_ONCE')
+    expect(requestDirectExtensionUI).toHaveBeenLastCalledWith(
+      win,
+      expect.objectContaining({ kind: 'coding_permission', payload: prompt }),
+      expect.objectContaining({
+        source: { poolKey: origin.fromPoolKey, sessionId: origin.sourceSessionId },
+      }),
+    )
 
     requestDirectExtensionUI.mockResolvedValueOnce({
       id: 'permission-2',
@@ -62,5 +69,27 @@ describe('MainProcessDirectCodingPermissionUIAdapterV3', () => {
       },
     })
     await expect(adapter.request(prompt, origin)).resolves.toBe('DENY')
+  })
+
+  it('revalidates the exact source after the user responds', async () => {
+    requestDirectExtensionUI.mockReset()
+    const win = { isDestroyed: () => false }
+    const windowProvider = vi.fn()
+      .mockReturnValueOnce(win)
+      .mockReturnValueOnce(undefined)
+    const adapter = new MainProcessDirectCodingPermissionUIAdapterV3({
+      windowProvider,
+    })
+    requestDirectExtensionUI.mockResolvedValueOnce({
+      id: 'permission-1',
+      result: {
+        choice: 'ALLOW_ONCE',
+        requestDigest: prompt.requestDigest,
+        originDigest: prompt.originDigest,
+      },
+    })
+
+    await expect(adapter.request(prompt, origin)).resolves.toBe('DENY')
+    expect(windowProvider).toHaveBeenCalledTimes(2)
   })
 })

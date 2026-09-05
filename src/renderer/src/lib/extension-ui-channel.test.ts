@@ -128,4 +128,29 @@ describe('Main-owned Coding permission request parsing', () => {
       payload: { ...directPrompt, choices: ['ALLOW_ONCE', 'ALLOW_TASK_RULE', 'DENY'] },
     })).toBeNull()
   })
+
+  it.each(['\u061c', '\u200e', '\u200f', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069'])(
+    'rejects direct Bash command containing Unicode direction control %s',
+    (control) => {
+      expect(parseExtensionUIRequestV1({
+        id: 'xiaogui-direct-123e4567-e89b-42d3-a456-426614174000',
+        method: 'custom',
+        kind: 'coding_permission',
+        origin: 'xiaogui-direct',
+        payload: {
+          schemaVersion: 3,
+          subject: 'DIRECT_SESSION',
+          requestDigest: `sha256:${'a'.repeat(64)}`,
+          originDigest: `sha256:${'b'.repeat(64)}`,
+          projectLabel: 'alpha',
+          sessionLabel: '后台任务',
+          operation: 'BASH',
+          mode: 'CONFIRM_EACH',
+          commandText: `echo safe${control}dangerous`,
+          warning: '命令可能访问项目外路径、网络或子进程，且不承诺自动撤销副作用。',
+          choices: ['ALLOW_ONCE', 'DENY'],
+        },
+      })).toBeNull()
+    },
+  )
 })

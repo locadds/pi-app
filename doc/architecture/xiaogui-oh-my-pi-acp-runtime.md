@@ -27,7 +27,7 @@
 | 责任 | 当前生产事实源或接缝 | 说明 |
 |---|---|---|
 | 阶段可用工具 | packages/shared/xiaogui-prompt-matrix.ts 与 xiaogui-prompt-capabilities.ts | ASK 仅 read；PLAN 为 read + plan；EXECUTE 普通会话或实现角色才有 read/bash/edit/write |
-| Pi 工具生命周期 | xiaogui-direct-coding-tool-lifecycle-v2 | 在真实 Pi read/bash/edit/write 调用前后进入 Main 权限与入账接缝，不持有策略 |
+| Pi 工具生命周期 | xiaogui-direct-coding-tool-lifecycle-v2 + V4 preflight/begin | 在真实 Pi read/bash/edit/write 调用前后进入 Main 权限与入账接缝；Main 返回的规范相对路径是 Pi 的唯一执行路径 |
 | 授权 | CodingAuthorizationModuleV2 | 一个深层 Module；Direct Adapter 服务普通会话，TaskHub Adapter 保留 Attempt V1 |
 | 文件恢复 | DirectCodingFileCheckpointV2 | 主体固定 DIRECT_SESSION；私有保存前镜像，公开层只有令牌和摘要；不伪造 attemptId |
 | cwd 与资源身份 | ProjectRootIdentityV2 + WorkerExecutionIdentityV1 | AgentSession、SessionManager、ResourceLoader、Skill/规则和工具共享所选项目 cwd；同路径目录实体替换、项目缺失或资源变化会停止复用 Worker |
@@ -77,17 +77,20 @@ edit/write 的调用顺序固定为：
 - Pi 的普通相对路径、`./` 路径及规范化后仍位于项目内的绝对路径均可进入授权；WSL 路径通过既有边界桥转换。项目外路径、路径穿越、`.git`、symlink、junction 和 hardlink 写穿均被拒绝。
 - 新文件创建会核验最近存在父目录的真实位置。
 - toolCallId + requestDigest 是幂等键，状态为 PENDING → ALLOWED → EXECUTING → SETTLED/OUTCOME_UNKNOWN。
-- 重复请求返回原状态；进程中断后的未知结果不会自动执行第二次。
+- 只有首次 preflight 和首次 begin 返回同一规范执行路径；重复请求统一拒绝且不返回路径、不重新询问、不新建检查点、不自动执行第二次。
 - 撤销时只有当前摘要仍等于执行后摘要才会恢复前镜像或移除本次新文件；冲突时保持文件不变。
 - 撤销只影响文件，不倒退 Pi 对话、分支或会话历史。
 
 Bash 在所有档位都逐次确认。授权框显示完整真实命令并保留换行和制表符，不使用截断预览；UTF-8 超过 64 KiB 或含隐藏控制字符时直接拒绝。Main 只持久化命令摘要、审计、退出码和可观察结果，不持久化命令正文。它不建立可恢复文件检查点，也不承诺撤销项目外路径、网络或子进程副作用。
 
-## R3.2 来源绑定与大文件边界
+## R3.3 授权路径、可信会话与后台权限
 
 - 会话的可信项目绑定不可由当前 UI 项目覆盖；同一会话传入另一个 cwd 时直接拒绝。
 - `ProjectRootIdentityV2` 将规范路径与目录实体信息写入既有 Scope 持久化；同一路径删除重建不视为原项目恢复。
-- 权限提示包含安全项目名、对话名和来源摘要，只能投递到精确发起 Worker/Session 对应的当前前台窗口；缺失或摘要回显不一致均拒绝。
+- WSL 只转换 Linux 绝对路径；普通相对路径与 `./` 路径保持项目相对语义。Main 规范化项目内绝对路径，V4 preflight/begin 两次返回同一相对路径，Worker 复制参数后用该路径执行 Pi。
+- `TrustedSessionAccessModuleV1` 统一 Prompt、Session Open、Prepare 和 Navigate 的可信访问。Renderer 参数不能互相证明可信；Prompt 只消费 Main 已登记的新建、可信打开、Sandbox 或 live Worker 绑定，`steer/followUp` 还要求精确活动 Worker。
+- 权限提示包含安全项目名、对话名和来源摘要。精确匹配来源的后台 CODING Worker 也可在当前窗口请求权限，不自动切换会话；响应后再次核验来源。切换会话只保留结构化的 DIRECT_SESSION V3 权限请求，来源 Worker 退出只关闭自身请求。
+- Bash 命令在 Worker、Main 和 Renderer 共用控制字符与 Unicode Bidi 安全门；正常换行、制表符、完整命令及 64 KiB 上限保持不变。
 - READ 授权前 Main 只异步读取元数据；edit/write 在获批后才异步捕获不超过 16 MiB 的前镜像。不能建立检查点时不执行写入。
 - 授权后执行前再次核验目录实体、目标实体与前摘要；未知结果和重复幂等键不重放真实工具。
 
