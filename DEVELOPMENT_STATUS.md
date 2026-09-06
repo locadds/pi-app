@@ -1,6 +1,6 @@
 # 小规开发阶段状态
 
-## 2026-09-06｜CODING-C-01 默认工作区能力（阶段候选，待定向复验）
+## 2026-09-06｜CODING-C-01 默认工作区能力（测试契约返修候选，待定向复验）
 
 ### 本阶段目标
 
@@ -9,7 +9,7 @@
 ### 实际修改文件
 
 - 生产事实源：`packages/shared/xiaogui-prompt-matrix.ts`、`packages/shared/xiaogui-prompt-capabilities.ts`
-- 契约与默认上下文回归：`packages/shared/xiaogui-prompt-matrix.test.ts`、`packages/shared/xiaogui-prompt-capabilities.test.ts`、`src/main/xiaogui/prompt-context.test.ts`
+- 契约与默认上下文回归：`packages/shared/xiaogui-prompt-matrix.test.ts`、`packages/shared/xiaogui-prompt-capabilities.test.ts`、`src/main/xiaogui/prompt-context.test.ts`、`src/worker/xiaogui-prompt/behavior-fixtures.test.ts`
 - 真实回合／工具生命周期回归：`src/worker/handlers/worker-handlers-turn.test.ts`、`src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts`
 - 阶段记录：`DEVELOPMENT_STATUS.md` 及既有 Obsidian 总控、进度和 CODING 研究记录
 
@@ -19,6 +19,7 @@
 2. Main 创建 CODING Prompt Context 时直接携带 `coding.workspace`。Worker 每回合的既有选择器也会从同一 Matrix 得到 `MODE_DEFAULT`，因此中性表达不再让能力掉回 `NO_MATCH`。
 3. EXECUTE 的 Provider-facing active tools 固定为已注册集合与既有阶段／角色策略的交集；在当前 Pi 核心工具全集下为 `bash/edit/read/write`。ASK 仍只有 `read`，PLAN 仍只允许 `read` 和既有计划工具，写入与命令仍经过原 Main 权限链。
 4. 使用此前真实失败表达“做一个单文件 HTML 贪吃蛇，直接写到项目中”验证：默认选择得到 `coding.workspace`，四个工具真实激活，随后真实 `tool_call` 进入既有 Direct Coding preflight／begin／settle 生命周期并由 Pi `write` 写入临时项目；无外部模型。
+5. 首次定向复验发现既有 P08 跨模式行为夹具仍保留 C-01 前的断言。本次只同步该契约：`MODE_BLOCKED` 继续保留，`work.template-intake` 继续不激活，同时默认 `coding.workspace` 和 `bash/edit/read/write` 不再消失；另将错误描述 CODING 的 WORK 测试标题改回其真实语义。生产文件未再修改。
 
 ### 未完成内容
 
@@ -42,6 +43,9 @@ npm exec vitest run src/worker/xiaogui-coding-extensions/direct-coding-tool-exte
 
 # 最终聚焦门
 npm exec vitest run packages/shared/xiaogui-prompt-matrix.test.ts packages/shared/xiaogui-prompt-capabilities.test.ts src/main/xiaogui/prompt-context.test.ts src/worker/handlers/worker-handlers-turn.test.ts src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts
+
+# 首次定向复验后的测试契约返修门
+npm exec vitest run packages/shared/xiaogui-prompt-matrix.test.ts packages/shared/xiaogui-prompt-capabilities.test.ts src/main/xiaogui/prompt-context.test.ts src/worker/handlers/worker-handlers-turn.test.ts src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts src/worker/xiaogui-prompt/behavior-fixtures.test.ts
 npm run typecheck
 $changedTs = @(git diff --name-only --diff-filter=ACMR) | Where-Object { $_ -match '\.(ts|tsx)$' } | Sort-Object -Unique
 npm exec eslint -- $changedTs
@@ -50,7 +54,8 @@ git diff --check
 
 - 红灯：`1 file / 1 failed / 18 passed`；真实失败表达被选为 `NO_MATCH`，实际 `capabilityIds=[]`。
 - 最小 Matrix 修改后单文件 `19/19 passed`；最终聚焦门 `5 files / 87 tests passed`。
-- Node/Web typecheck、7 个变更 TS／TSX 文件定向 ESLint及 `git diff --check` 通过。
+- 首次定向复验单跑遗漏的行为夹具得到 `1 failed / 15 passed`；只修正测试断言和测试标题后，规定的返修门为 `6 files / 103 tests passed`。
+- Node/Web typecheck、两处返修测试文件定向 ESLint及 `git diff --check` 通过。
 - 按范围未运行 TaskHub 回归、WORK 回归、外部模型、Electron、OMP、802 MB 装配、Portable 或无关全量测试。
 
 ### 已知风险

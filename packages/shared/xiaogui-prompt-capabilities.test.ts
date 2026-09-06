@@ -173,7 +173,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       .not.toContain('xiaogui_work_docx_template_intake')
   })
 
-  it('uses the CODING default Capability while keeping PLAN read-only and EXECUTE writable', () => {
+  it('uses explicit WORK Capability facts for Worker built-in tool policy', () => {
     const work = {
       mode: 'WORK' as const,
       phase: 'EXECUTE' as const,

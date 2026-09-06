@@ -131,8 +131,9 @@ describe('P01-P16 offline Prompt behavior fixtures', () => {
   it('P08 raw input: template intent in CODING is blocked locally', () => {
     const fixture = turn('CODING', 'EXECUTE', '把这个 Word 整理成模板')
     expect(fixture.selection.reasonCodes).toContain('MODE_BLOCKED')
-    expect(fixture.selection.capabilityIds).toEqual([])
-    expect(fixture.activeTools).toEqual(['read'])
+    expect(fixture.selection.capabilityIds).toEqual(['coding.workspace'])
+    expect(fixture.selection.capabilityIds).not.toContain('work.template-intake')
+    expect(fixture.activeTools).toEqual(['bash', 'edit', 'read', 'write'])
   })
 
   it('P09 raw input: unavailable DESIGN tools do not enter Capability or claims', () => {
