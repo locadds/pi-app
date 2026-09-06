@@ -17,7 +17,7 @@ export function readProjectRootIdentityV2(cwd: string): ProjectRootIdentityV2 {
   if (!existsSync(lexical)) throw new Error('PROJECT_ROOT_MISSING')
   const linkInfo = lstatSync(lexical)
   if (linkInfo.isSymbolicLink() || !linkInfo.isDirectory()) throw new Error('PROJECT_ROOT_INVALID')
-  const canonicalRoot = normalizeExecutionRoot(realpathSync.native(lexical))
+  const canonicalRoot = filesystemExecutionPathV2(realpathSync.native(lexical))
   const stats = statSync(lexical, { bigint: true })
   if (!stats.isDirectory()) throw new Error('PROJECT_ROOT_INVALID')
   const birthtimeNs = (stats as unknown as { birthtimeNs?: bigint }).birthtimeNs
@@ -42,7 +42,8 @@ export function readProjectRootIdentityV2(cwd: string): ProjectRootIdentityV2 {
   })
 }
 
-function normalizeExecutionRoot(value: string): string {
+/** Execution path spelling. It must never be replaced by a comparison key. */
+export function filesystemExecutionPathV2(value: string): string {
   const raw = String(value || '').trim()
   if (!raw) return ''
   let normalized = resolve(raw).replace(/\\/g, '/')
@@ -52,7 +53,7 @@ function normalizeExecutionRoot(value: string): string {
 
 /** Comparison-only key. Never use this value as an execution cwd. */
 export function projectRootComparisonKeyV2(value: string): string {
-  const normalized = normalizeExecutionRoot(value)
+  const normalized = filesystemExecutionPathV2(value)
   if (process.platform !== 'win32') return normalized
   if (!/^\/\/(?:wsl\.localhost|wsl\$)\//i.test(normalized)) return normalized.toLowerCase()
 

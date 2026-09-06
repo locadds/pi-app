@@ -18,6 +18,12 @@ describe('session-file-key', () => {
     expect(normalizeSessionFileKey('\\\\Server\\Share\\a.jsonl')).toBe('//server/share/a.jsonl')
   })
 
+  it('preserves the case-sensitive Linux path body of WSL UNC keys', () => {
+    expect(normalizeSessionFileKey('\\\\WSL$\\Debian\\tmp\\CaseRoot\\Session.jsonl')).toBe(
+      '//wsl.localhost/debian/tmp/CaseRoot/Session.jsonl',
+    )
+  })
+
   it('strips trailing slashes but keeps drive/UNC roots', () => {
     expect(normalizeSessionFileKey('D:/proj/')).toBe('D:/proj')
     expect(normalizeSessionFileKey('D:/proj//')).toBe('D:/proj')

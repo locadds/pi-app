@@ -119,6 +119,8 @@ export class TrustedSessionAccessModuleV1 {
     readonly projectIdentityDigest: string
     readonly sessionId: string
     readonly canonicalSessionFile: string
+    readonly source: 'LISTED' | 'DERIVED'
+    readonly parentSessionKey?: string
   }>()
 
   constructor(private readonly options: TrustedSessionAccessOptionsV1) {}
@@ -164,6 +166,12 @@ export class TrustedSessionAccessModuleV1 {
   }): readonly string[] {
     const project = this.options.authority.inspectProject(input.projectBinding)
     const projectRootKey = canonicalWorkerProjectRootV1(project.authorizedRoot)
+    const retainedDerived = [...this.listedSessions.entries()]
+      .filter(([, row]) => (
+        canonicalWorkerProjectRootV1(row.authorizedRoot) === projectRootKey
+        && row.projectIdentityDigest === project.projectIdentityDigest
+        && row.source === 'DERIVED'
+      ))
     for (const [key, row] of this.listedSessions) {
       if (canonicalWorkerProjectRootV1(row.authorizedRoot) === projectRootKey) {
         this.listedSessions.delete(key)
@@ -172,18 +180,48 @@ export class TrustedSessionAccessModuleV1 {
 
     const accepted: string[] = []
     for (const candidate of input.sessions) {
-      const recorded = this.recordSessionCandidate(project, projectRootKey, candidate)
+      const recorded = this.recordSessionCandidate(project, projectRootKey, candidate, {
+        source: 'LISTED',
+      })
       if (recorded) accepted.push(recorded)
+    }
+
+    // SessionManager only lists top-level sessions. Rebuild previously
+    // validated descendant evidence from that fresh root set, rechecking every
+    // file, metadata header and parent-owned artifact edge. This preserves
+    // arbitrary nesting without allowing stale or orphaned descendants.
+    const pending = new Map(retainedDerived)
+    let progressed = true
+    while (progressed && pending.size > 0) {
+      progressed = false
+      for (const [key, row] of pending) {
+        const parentKey = row.parentSessionKey
+        const parent = parentKey ? this.listedSessions.get(parentKey) : null
+        if (
+          !parent
+          || canonicalWorkerProjectRootV1(parent.authorizedRoot) !== projectRootKey
+          || parent.projectIdentityDigest !== project.projectIdentityDigest
+          || !childArtifactPathOwnedByParent(parent.canonicalSessionFile, row.canonicalSessionFile)
+        ) continue
+        const recorded = this.recordSessionCandidate(
+          project,
+          projectRootKey,
+          { id: row.sessionId, path: row.canonicalSessionFile },
+          { source: 'DERIVED', parentSessionKey: parentKey },
+        )
+        pending.delete(key)
+        if (recorded) progressed = true
+      }
     }
     this.options.authority.inspectProject(input.projectBinding)
     return Object.freeze(accepted)
   }
 
   /**
-   * Record a nested Pi child only when its exact top-level parent was produced
-   * by the current Main SessionManager listing and its real path remains inside
-   * that parent's private artifact tree. This records evidence; it does not
-   * mint a session capability.
+   * Record a nested Pi child only when its exact parent is current listed or
+   * revalidated derived evidence and its real path remains inside that parent's
+   * private artifact tree. This records evidence; it does not mint a session
+   * capability.
    */
   recordDerivedSession(input: {
     readonly projectBinding: TrustedProjectBindingHandleV1
@@ -192,7 +230,8 @@ export class TrustedSessionAccessModuleV1 {
   }): string | null {
     const project = this.options.authority.inspectProject(input.projectBinding)
     const projectRootKey = canonicalWorkerProjectRootV1(project.authorizedRoot)
-    const parent = this.listedSessions.get(normalizePathKey(input.parentSessionFile))
+    const parentSessionKey = normalizePathKey(input.parentSessionFile)
+    const parent = this.listedSessions.get(parentSessionKey)
     if (
       !parent
       || canonicalWorkerProjectRootV1(parent.authorizedRoot) !== projectRootKey
@@ -200,7 +239,10 @@ export class TrustedSessionAccessModuleV1 {
       || !childArtifactPathOwnedByParent(parent.canonicalSessionFile, input.session.path)
     ) return null
 
-    const recorded = this.recordSessionCandidate(project, projectRootKey, input.session)
+    const recorded = this.recordSessionCandidate(project, projectRootKey, input.session, {
+      source: 'DERIVED',
+      parentSessionKey,
+    })
     this.options.authority.inspectProject(input.projectBinding)
     return recorded
   }
@@ -209,6 +251,10 @@ export class TrustedSessionAccessModuleV1 {
     project: TrustedProjectBindingSnapshotV1,
     projectRootKey: string,
     candidate: { readonly id: string; readonly path: string },
+    provenance: {
+      readonly source: 'LISTED' | 'DERIVED'
+      readonly parentSessionKey?: string
+    },
   ): string | null {
     const sessionId = String(candidate.id || '').trim()
     const requestedPath = String(candidate.path || '').trim()
@@ -236,6 +282,10 @@ export class TrustedSessionAccessModuleV1 {
       projectIdentityDigest: project.projectIdentityDigest,
       sessionId,
       canonicalSessionFile: authorized.sessionFile,
+      source: provenance.source,
+      ...(provenance.parentSessionKey
+        ? { parentSessionKey: provenance.parentSessionKey }
+        : {}),
     }))
     return authorized.sessionFile
   }

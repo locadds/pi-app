@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import type {
@@ -14,6 +17,25 @@ import {
 } from './scope-resolver'
 
 const PROJECT_ROOT_IDENTITY = `sha256:${'9'.repeat(64)}`
+
+function availableWslTempRoot(): string | null {
+  if (process.platform !== 'win32') return null
+  try {
+    const distro = execFileSync('wsl.exe', ['-l', '-q'])
+      .toString('utf16le')
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .find(Boolean)
+    if (!distro) return null
+    execFileSync('wsl.exe', ['-d', distro, '--', 'sh', '-lc', 'mkdir -p /tmp'])
+    const tempRoot = `\\\\wsl.localhost\\${distro}\\tmp`
+    return existsSync(tempRoot) ? tempRoot : null
+  } catch {
+    return null
+  }
+}
+
+const wslTempRoot = availableWslTempRoot()
 
 function resolverFor(persistence: SessionScopePersistenceV1) {
   return createSessionScopeResolverV1(persistence, undefined, () => PROJECT_ROOT_IDENTITY)
@@ -86,6 +108,27 @@ beforeEach(() => {
 })
 
 describe('SessionScopeResolverV1.resolve', () => {
+  it.skipIf(!wslTempRoot)(
+    'keeps a real mixed-case WSL execution root intact through session.new scope registration',
+    async () => {
+      const wslRoot = mkdtempSync(join(wslTempRoot!, 'XiaoguiScopeCase-'))
+      try {
+        const expectedRoot = realpathSync.native(wslRoot).replace(/\\/g, '/')
+        const sessionFile = join(wslRoot, '.pi', 'agent', 'sessions', 'new.jsonl')
+        const scope = await createSessionScopeResolverV1(persistence).registerNew(
+          { rootPath: wslRoot, sessionFile },
+          'CODING',
+        )
+
+        expect(scope.rootPath).toBe(expectedRoot)
+        expect(existsSync(scope.rootPath)).toBe(true)
+        expect(scope.sessionMode).toBe('CODING')
+      } finally {
+        rmSync(wslRoot, { recursive: true, force: true })
+      }
+    },
+  )
+
   it('registers a new session from an explicit creation intent', async () => {
     const resolver = resolverFor(persistence)
     const scope = await resolver.registerNew(
@@ -130,8 +173,8 @@ describe('SessionScopeResolverV1.resolve', () => {
 
     expect(scope).toEqual(
       expect.objectContaining({
-        rootPath: 'D:/projects/alpha',
-        sessionFile: 'D:/projects/alpha/.pi/agent/sessions/one.jsonl',
+        rootPath: 'd:/Projects/Alpha',
+        sessionFile: 'd:/Projects/Alpha/.pi/agent/sessions/one.jsonl',
         sessionMode: 'WORK',
       }),
     )

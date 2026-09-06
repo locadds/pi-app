@@ -35,7 +35,10 @@ import {
 } from '@shared/xiaogui-direct-coding'
 
 import type { DirectCodingAuthorizationPortV2 } from './coding-authorization-module'
-import { readProjectRootIdentityV2 } from '../../project-root-identity'
+import {
+  projectRootComparisonKeyV2,
+  readProjectRootIdentityV2,
+} from '../../project-root-identity'
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,255}$/i
@@ -679,7 +682,7 @@ async function inspectProjectPathMetadata(
     }
     if (info.isSymbolicLink()) throw new Error('PATH_LINK_REJECTED')
     const real = await fs.realpath(cursor)
-    if (!inside(rootIdentity.canonicalRoot, pathKey(real))) throw new Error('PATH_LINK_REJECTED')
+    if (!inside(rootIdentity.canonicalRoot, real)) throw new Error('PATH_LINK_REJECTED')
   }
 
   let info
@@ -691,7 +694,7 @@ async function inspectProjectPathMetadata(
   if (info) {
     if (info.isSymbolicLink() || !info.isFile()) throw new Error('PATH_TYPE_REJECTED')
     const real = await fs.realpath(absolutePath)
-    if (!inside(rootIdentity.canonicalRoot, pathKey(real))) throw new Error('PATH_LINK_REJECTED')
+    if (!inside(rootIdentity.canonicalRoot, real)) throw new Error('PATH_LINK_REJECTED')
     const stats = await fs.stat(absolutePath, { bigint: true })
     if ((operation === 'EDIT' || operation === 'WRITE') && stats.nlink > 1n) {
       throw new Error('PATH_HARDLINK_REJECTED')
@@ -718,7 +721,7 @@ async function inspectProjectPathMetadata(
       const parentInfo = await fs.lstat(parent)
       if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory()) throw new Error('PATH_LINK_REJECTED')
       const parentReal = await fs.realpath(parent)
-      if (!inside(rootIdentity.canonicalRoot, pathKey(parentReal))) throw new Error('PATH_LINK_REJECTED')
+      if (!inside(rootIdentity.canonicalRoot, parentReal)) throw new Error('PATH_LINK_REJECTED')
       break
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
@@ -843,8 +846,8 @@ function assertRootIdentity(
   const current = readProjectRootIdentityV2(suppliedRoot)
   if (
     !storedIdentityDigest ||
-    resolve(storedRoot) !== resolve(suppliedRoot) ||
-    current.canonicalRoot !== pathKey(storedReal) ||
+    projectRootComparisonKeyV2(storedRoot) !== projectRootComparisonKeyV2(suppliedRoot) ||
+    projectRootComparisonKeyV2(current.canonicalRoot) !== projectRootComparisonKeyV2(storedReal) ||
     current.digest !== storedIdentityDigest
   ) {
     throw new Error('PROJECT_IDENTITY_CHANGED')
@@ -886,11 +889,6 @@ function fileEntityDigest(stats: {
     size: stats.size.toString(10),
     mtimeNs: mtimeNs.toString(10),
   })
-}
-
-function pathKey(value: string): string {
-  const normalized = resolve(value).replace(/\\/g, '/').replace(/\/$/, '')
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
 
 function ensureColumn(db: DatabaseSync, table: string, column: string, type: string): void {

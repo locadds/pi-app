@@ -25,6 +25,15 @@ describe('normalizePathKey（与渲染层 normalizeSessionFileKey 逐条等价�
     expect(normalizePathKey('D:/proj/sub') === normalizePathKey('d:/PROJ/SUB')).toBe(true)
   })
 
+  it('保留 WSL UNC 中 Linux 路径主体的大小写', () => {
+    expect(normalizePathKey('\\\\WSL$\\Debian\\tmp\\CaseRoot\\Session.jsonl')).toBe(
+      '//wsl.localhost/debian/tmp/CaseRoot/Session.jsonl',
+    )
+    expect(normalizePathKey('//wsl.localhost/DEBIAN/tmp/caseroot/session.jsonl')).toBe(
+      '//wsl.localhost/debian/tmp/caseroot/session.jsonl',
+    )
+  })
+
   it('剥离尾部斜杠（保留盘符根与 UNC 共享根）', () => {
     expect(normalizePathKey('D:/proj/')).toBe('D:/proj')
     expect(normalizePathKey('D:/proj///')).toBe('D:/proj')

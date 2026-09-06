@@ -90,4 +90,15 @@ describe('trusted Pi Worker seam architecture gate', () => {
     expect(handlers).toContain('const targetFile = executionLease.sessionFile')
     expect(handlers).not.toMatch(/const\s+targetFile\s*=\s*String\(msg\.sessionFile/)
   })
+
+  it('keeps execution paths separate from comparison keys at scope and direct-write consumers', () => {
+    const scopeResolver = source('src/main/xiaogui/scope-resolver.ts')
+    const directCoding = source('src/main/xiaogui/coding-extensions/direct-coding-module.ts')
+
+    expect(scopeResolver).toContain('projectRootIdentity(normalized.execution.rootPath)')
+    expect(scopeResolver).not.toContain('projectRootIdentity(normalized.comparison.rootPath)')
+    expect(scopeResolver).toContain('rootPath: normalized.execution.rootPath')
+    expect(directCoding).toContain('projectRootComparisonKeyV2(current.canonicalRoot)')
+    expect(directCoding).not.toMatch(/function\s+pathKey\s*\(/)
+  })
 })

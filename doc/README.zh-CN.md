@@ -10,7 +10,7 @@
 
 第一批安装包内置 Skill 及其 Pi 原生加载边界见 [architecture/xiaogui-bundled-pi-skills.md](./architecture/xiaogui-bundled-pi-skills.md)。
 
-普通 CODING 当前直接写入生命周期、V4 授权执行路径、Main 内存中的不透明项目／会话能力、Main→Worker 一次性执行租约、后台来源绑定权限框和真实 Pi/Main/Renderer 接缝见 [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md)。项目授权只能来自 Main 原生目录选择或 Main 受管 Sandbox；UI 配置仅用于显示。会话必须命中 Main 发现的列表项、原子创建回执、已登记父会话的受约束嵌套子会话或精确 live binding。WSL 执行根保留 Linux 路径大小写，JSONL `cwd` 只作一致性比较，不能选择 Worker 执行根。不存在“透明 OMP 能力包”或独立 OMP 产品表面。旧 P1 Runtime 生产门仅作为历史研究证据保留在 [runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md](./runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md)，不是当前施工队列。
+普通 CODING 当前直接写入生命周期、V4 授权执行路径、Main 内存中的不透明项目／会话能力、Main→Worker 一次性执行租约、后台来源绑定权限框和真实 Pi/Main/Renderer 接缝见 [architecture/xiaogui-oh-my-pi-acp-runtime.md](./architecture/xiaogui-oh-my-pi-acp-runtime.md)。项目授权只能来自 Main 原生目录选择或 Main 受管 Sandbox；UI 配置仅用于显示。会话必须命中 Main 发现的列表项、原子创建回执、以本次新鲜顶层列表项为根的受约束嵌套后代链或精确 live binding。WSL 执行根保留 Linux 路径大小写，比较键不得成为执行路径，JSONL `cwd` 只作一致性比较。不存在“透明 OMP 能力包”或独立 OMP 产品表面。旧 P1 Runtime 生产门仅作为历史研究证据保留在 [runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md](./runtime-r4/OMP-ACP-P1-EXECUTION-GATES.md)，不是当前施工队列。
 
 ## 用户指南（安装、快捷键、适配器列表）
 

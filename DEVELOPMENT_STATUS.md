@@ -1,5 +1,67 @@
 # 小规开发阶段状态
 
+## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT 路径全消费者与多级子会话收口（阶段候选，待人工复验）
+
+### 本阶段目标
+
+只整改 `d795bde501124c974ce77a9b97d25e3318fd670b` 人工复验确认的三个遗漏消费者：恢复普通 CODING 的 DirectCodingModuleV2 真实执行链；让 WSL 混合大小写项目完成 `session.new` Scope 注册；让已验证的嵌套子 Agent 会话在顶层列表刷新后继续作为下一层子会话的可信父项。普通 CODING、TaskHub、WORK、权限矩阵、UI、OMP 和统一模型配置均不改变。
+
+### 实际修改文件
+
+- 执行路径与比较键：`src/main/project-root-identity.ts`、`src/main/xiaogui/path-key.ts`、`src/main/xiaogui/scope-resolver.ts`、`src/main/xiaogui/coding-extensions/direct-coding-module.ts`、`src/renderer/src/lib/session-file-key.ts`
+- 多级子会话信任链：`src/main/trusted-session-access.ts`
+- 聚焦回归：`src/main/xiaogui/scope-resolver.test.ts`、`src/main/xiaogui/path-key.test.ts`、`src/main/xiaogui/scope-derive.test.ts`、`src/renderer/src/lib/__tests__/session-file-key.test.ts`、`src/main/ipc/handlers/trusted-open-handler-chain.test.ts`、`src/main/__tests__/trusted-worker-seam-architecture.test.ts`
+- 阶段记录：`DEVELOPMENT_STATUS.md`、`doc/README.md`、`doc/README.zh-CN.md`、`doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`，以及既有 Obsidian 总控、进度和 CODING 研究记录
+
+### 已完成内容
+
+1. `DirectCodingModuleV2` 删除本地旧 `pathKey`，目录归属继续使用真实执行路径，项目身份相等判断统一使用 `projectRootComparisonKeyV2`。人工复验发现的已有文件、新文件、Bash、未知结果和检查点恢复六项失败已恢复。
+2. `SessionScopeResolverV1` 明确分离 `execution` 与 `comparison`：目录实体核验和返回给会话的 cwd 使用保留真实大小写的执行路径；Opaque ID、旧模式查找和相等判断只使用比较键。比较键不会再反向进入 `readProjectRootIdentityV2`。
+3. Main 与 Renderer 的会话路径键同步支持 WSL UNC：只统一 `wsl.localhost/wsl$` 和发行版选择器，Linux 路径主体保留大小写；普通 Windows 盘符和 UNC 的既有大小写不敏感语义不变。
+4. 顶层 SessionManager 列表刷新时，只保留能从本次新鲜顶层列表逐边重新验证的派生后代。每一层都重新核对项目身份、JSONL 元数据、`realpath` 和父项固定私有产物树；孤立、过期或结构不合法的派生证据自动丢弃，不会因为历史记录获得能力。
+5. 新增架构门，防止 Scope 再用比较键核验实体，也防止 DirectCodingModule 再引入局部 `pathKey`。新增两级子会话真实 Handler `prepare → open` 回归及真实 WSL 混合大小写 Scope 回归。
+
+### 未完成内容
+
+- 尚未运行外部模型或 Electron 人工旅程；自动证据不能替代真实用户界面验收。
+- 当前仍是独立 CODING 分支阶段候选，未合入 WORK、阶段线或主线，未发布、未制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 无新增产品或架构偏差。本轮只原子迁移 `canonicalRoot` 的遗漏生产消费者并修复多级合法会话，不降低 Main 唯一权威，不恢复 Renderer／JSONL 自证，不改变 List/Preview 不签发能力、TaskHub V1 或 OMP 边界。
+- `d795bde` 的阶段记录曾将“一层嵌套通过”和“项目登记保留大小写”误述为完整链路通过；本记录明确更正为必须同时覆盖 DirectCodingModuleV2、真实 WSL Scope 和两级 Handler 链。
+
+### 测试命令和测试结果
+
+~~~powershell
+npm exec vitest run src/main/xiaogui/coding-extensions/direct-coding-module.test.ts
+npm exec vitest run src/main/xiaogui/scope-resolver.test.ts src/main/xiaogui/path-key.test.ts src/renderer/src/lib/__tests__/session-file-key.test.ts
+npm exec vitest run src/main/ipc/handlers/trusted-open-handler-chain.test.ts
+npm exec vitest run <12 个路径、Scope、会话与 DirectCoding 受影响测试文件>
+npm exec vitest run <6 个 Worker／Handler 回归文件>
+npm exec vitest run src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/change-apply.test.ts src/main/xiaogui/coding-extensions/checkpoint-module.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts
+npm exec vitest run src/main/xiaogui/scope-derive.test.ts src/main/__tests__/trusted-worker-seam-architecture.test.ts
+npm run typecheck
+$changedTs = @(git diff --name-only --diff-filter=ACMR) | Where-Object { $_ -match '\.(ts|tsx)$' } | Sort-Object -Unique
+npm exec eslint -- $changedTs
+git diff --check
+~~~
+
+TDD 红灯分别为：DirectCodingModuleV2 `6 failed / 4 passed`；真实 WSL Scope `1 failed / 12 passed`，错误为 `PROJECT_ROOT_MISSING`；两级子会话 Handler `1 failed / 2 passed`，错误为 `trusted_session_not_listed`。修复后 DirectCodingModuleV2 `10/10`、WSL/路径键 `3 files / 26 tests`、两级 Handler `3/3` 通过；合并受影响链 `12 files / 89 tests`、Worker/Handler `6 files / 83 tests`、TaskHub V1 `4 files / 45 tests`、架构与 Scope ID `2 files / 12 tests` 全部通过。Node/Web typecheck、`12` 个变更 TS/TSX 文件定向 ESLint及差异检查通过。
+
+按范围未运行 OMP、802 MB 装配、外部模型、Electron、Portable 或无关全量测试。
+
+### 已知风险
+
+1. 标准嵌套目录仍绑定 Pi 0.84.1 当前的 `parent/run-id/run-N/session.jsonl` 结构；上游布局变化时会安全拒绝，需要先更新契约和回归。
+2. WSL 自动回归依赖本机存在可访问发行版；本轮测试实际执行而非跳过，但其他无 WSL 环境会跳过该单条平台用例。
+3. 没有外部模型和 Electron 证据，不能把本阶段表述为完整用户验收。
+
+### 下一阶段计划
+
+- 完成固定差异审查、唯一追加提交和推送后立即停止，等待人工或审查 Agent 复验。
+- 复验通过前不得合入 WORK、阶段线或主线，不进入发布、Portable 或其他施工阶段。
+
 ## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT 合法 WSL／嵌套会话回归补正（阶段候选，待人工复验）
 
 ### 本阶段目标

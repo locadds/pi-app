@@ -48,6 +48,21 @@ describe('opaqueScopeIdDeriverV1', () => {
     expect(leftSession).toEqual(rightSession)
   })
 
+  it('normalizes the WSL selector without folding the Linux path body', () => {
+    const mixedCase = opaqueScopeIdDeriverV1.deriveProject(
+      '//wsl.localhost/Ubuntu/tmp/CaseSensitiveRoot',
+    )
+    const selectorAlias = opaqueScopeIdDeriverV1.deriveProject(
+      '//WSL$/ubuntu/tmp/CaseSensitiveRoot',
+    )
+    const differentLinuxPath = opaqueScopeIdDeriverV1.deriveProject(
+      '//wsl.localhost/ubuntu/tmp/casesensitiveroot',
+    )
+
+    expect(selectorAlias).toEqual(mixedCase)
+    expect(differentLinuxPath).not.toEqual(mixedCase)
+  })
+
   it('binds session and sandbox identities to their parent project', () => {
     const first = opaqueScopeIdDeriverV1.deriveProject('D:/projects/first')
     const second = opaqueScopeIdDeriverV1.deriveProject('D:/projects/second')

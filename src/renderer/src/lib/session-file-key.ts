@@ -16,8 +16,12 @@ export function normalizeSessionFileKey(sessionFile: string | null | undefined):
   } else {
     key = key.replace(/\/+/g, '/')
   }
-  // 目录段大小写归一：Windows 路径大小写不敏感，整体小写避免同目录两种写法
-  key = key.toLowerCase()
+  const wslMatch = /^\/\/(wsl\.localhost|wsl\$)\/([^/]+)(.*)$/i.exec(key)
+  if (wslMatch) {
+    key = `//wsl.localhost/${wslMatch[2].toLowerCase()}${wslMatch[3]}`
+  } else {
+    key = key.toLowerCase()
+  }
   // Windows drive letter → uppercase for stable keys
   if (/^[a-z]:\//.test(key)) {
     key = key.charAt(0).toUpperCase() + key.slice(1)

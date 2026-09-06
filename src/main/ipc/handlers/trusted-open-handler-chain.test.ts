@@ -325,7 +325,21 @@ describe('trusted project and session handler chain', () => {
       'run-0',
       'session.jsonl',
     )
+    const grandchildSessionFile = join(
+      sessionsDir,
+      'nested-parent',
+      'run-live',
+      'run-0',
+      'session',
+      'run-deeper',
+      'run-0',
+      'session.jsonl',
+    )
     mkdirSync(join(sessionsDir, 'nested-parent', 'run-live', 'run-0'), { recursive: true })
+    mkdirSync(
+      join(sessionsDir, 'nested-parent', 'run-live', 'run-0', 'session', 'run-deeper', 'run-0'),
+      { recursive: true },
+    )
     writeFileSync(parentSessionFile, `${JSON.stringify({
       type: 'session',
       id: 'nested-parent-id',
@@ -334,6 +348,11 @@ describe('trusted project and session handler chain', () => {
     writeFileSync(childSessionFile, `${JSON.stringify({
       type: 'session',
       id: 'nested-child-id',
+      cwd: trustedProject,
+    })}\n`, 'utf8')
+    writeFileSync(grandchildSessionFile, `${JSON.stringify({
+      type: 'session',
+      id: 'nested-grandchild-id',
       cwd: trustedProject,
     })}\n`, 'utf8')
 
@@ -369,5 +388,23 @@ describe('trusted project and session handler chain', () => {
     expect(mocks.listSessions).toHaveBeenCalledWith(resolve(trustedProject))
     expect(mocks.setPendingWorkerSessionBinding).toHaveBeenCalled()
     expect(mocks.focusExistingSession).toHaveBeenCalledWith(childSessionFile)
+
+    // A fresh top-level discovery must preserve the validated child lineage so
+    // that a child can itself be the exact parent of the next nested session.
+    mocks.rememberedBinding = null
+    await expect(mocks.handlers.get('ipc:session.prepare')!({
+      workspaceId: trustedProject,
+      sessionFile: grandchildSessionFile,
+      bind: true,
+    })).resolves.toEqual({
+      bound: false,
+      sessionId: 'nested-grandchild-id',
+      sessionFile: grandchildSessionFile,
+    })
+    await expect(mocks.handlers.get('ipc:session.open')!({
+      sessionId: 'nested-grandchild-id',
+      workspaceId: trustedProject,
+      sessionFile: grandchildSessionFile,
+    })).resolves.toMatchObject({ session: { sessionId: 'nested-grandchild-id' } })
   })
 })

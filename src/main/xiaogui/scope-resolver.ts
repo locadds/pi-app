@@ -15,7 +15,10 @@ import {
   type SessionDerivationKind,
 } from './scope-derive'
 import { normalizePathKey } from './path-key'
-import { readProjectRootIdentityV2 } from '../project-root-identity'
+import {
+  filesystemExecutionPathV2,
+  readProjectRootIdentityV2,
+} from '../project-root-identity'
 
 export type ProjectIdentityBindingV1 = Extract<OpaqueIdentityBindingV1, { kind: 'PROJECT' }> & {
   readonly rootIdentityDigest: string
@@ -76,13 +79,24 @@ export class SessionScopeResolutionError extends Error {
   }
 }
 
-function normalizeSessionRef(session: PiSessionRefV1): PiSessionRefV1 {
-  const rootPath = normalizePathKey(session.rootPath)
-  const sessionFile = normalizePathKey(session.sessionFile)
-  if (!rootPath || !sessionFile) {
+interface NormalizedSessionRefV1 {
+  readonly execution: PiSessionRefV1
+  readonly comparison: PiSessionRefV1
+}
+
+function normalizeSessionRef(session: PiSessionRefV1): NormalizedSessionRefV1 {
+  const execution = {
+    rootPath: filesystemExecutionPathV2(session.rootPath),
+    sessionFile: filesystemExecutionPathV2(session.sessionFile),
+  }
+  const comparison = {
+    rootPath: normalizePathKey(execution.rootPath),
+    sessionFile: normalizePathKey(execution.sessionFile),
+  }
+  if (!comparison.rootPath || !comparison.sessionFile) {
     throw new SessionScopeResolutionError('INVALID_CANONICAL_SCOPE_INPUT')
   }
-  return { rootPath, sessionFile }
+  return { execution, comparison }
 }
 
 function projectBinding(
@@ -113,9 +127,12 @@ export function createSessionScopeResolverV1(
     requestedMode: SessionMode,
   ): PiSessionScopeV1 {
     const normalized = normalizeSessionRef(session)
-    const project = idDeriver.deriveProject(normalized.rootPath)
-    const rootIdentityDigest = projectRootIdentity(normalized.rootPath)
-    const derivedSession = idDeriver.deriveSession(project.projectId, normalized.sessionFile)
+    const project = idDeriver.deriveProject(normalized.comparison.rootPath)
+    const rootIdentityDigest = projectRootIdentity(normalized.execution.rootPath)
+    const derivedSession = idDeriver.deriveSession(
+      project.projectId,
+      normalized.comparison.sessionFile,
+    )
     const effectiveMode = safePersistenceCall(() =>
       persistence.commitSession({
         project: projectBinding(
@@ -136,8 +153,8 @@ export function createSessionScopeResolverV1(
       projectId: project.projectId,
       sessionKey: derivedSession.sessionKey,
       sessionMode: effectiveMode,
-      rootPath: normalized.rootPath,
-      sessionFile: normalized.sessionFile,
+      rootPath: normalized.execution.rootPath,
+      sessionFile: normalized.execution.sessionFile,
     }
   }
 
@@ -145,18 +162,21 @@ export function createSessionScopeResolverV1(
     const normalized = normalizeSessionRef(session)
     const requestedMode = safePersistenceCall(
       () =>
-        persistence.getLegacySessionMode(normalized.sessionFile) ??
-        persistence.getLegacyProjectMode(normalized.rootPath) ??
+        persistence.getLegacySessionMode(normalized.comparison.sessionFile) ??
+        persistence.getLegacyProjectMode(normalized.comparison.rootPath) ??
         'WORK',
     )
-    return bindSession(normalized, requestedMode)
+    return bindSession(normalized.execution, requestedMode)
   }
 
   async function resolveExistingSession(session: PiSessionRefV1): Promise<PiSessionScopeV1 | null> {
     const normalized = normalizeSessionRef(session)
-    const project = idDeriver.deriveProject(normalized.rootPath)
-    const rootIdentityDigest = projectRootIdentity(normalized.rootPath)
-    const derivedSession = idDeriver.deriveSession(project.projectId, normalized.sessionFile)
+    const project = idDeriver.deriveProject(normalized.comparison.rootPath)
+    const rootIdentityDigest = projectRootIdentity(normalized.execution.rootPath)
+    const derivedSession = idDeriver.deriveSession(
+      project.projectId,
+      normalized.comparison.sessionFile,
+    )
     const result = safePersistenceCall(() =>
       persistence.lookupBoundSession({
         project: projectBinding(
@@ -175,8 +195,8 @@ export function createSessionScopeResolverV1(
     if (result.kind !== 'FOUND') return null
     return {
       ...result.scope,
-      rootPath: normalized.rootPath,
-      sessionFile: normalized.sessionFile,
+      rootPath: normalized.execution.rootPath,
+      sessionFile: normalized.execution.sessionFile,
     }
   }
 
