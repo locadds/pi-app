@@ -2,7 +2,7 @@
 
 更新时间：2026-09-06
 阶段：`TASKHUB-H1-4C-J1-REMEDIATION` — 两机 J1 失败后的桌面最小整改候选
-状态：R0 已确认故障属于 `CHECKOUT_FILTER_EQUIVALENT`；跨 checkout 精确字节播种、终态收敛与聚焦自动化验证已完成，等待固定提交的独立只读复验。尚未启动新的两机验收现场；未进入 C3、Renderer/Web 前端、Apply、正式主线合并或发布。
+状态：R0 已确认故障属于 `CHECKOUT_FILTER_EQUIVALENT`；桌面产品提交 `b12a4b5b098a5d88d947864edf5f4e32f661c796` 已完成跨 checkout 精确字节播种与终态收敛，并通过固定 SHA 的 Standards/Spec 双轴只读复验。尚未启动新的两机验收现场；下一门仍需用户明确授权，且未进入 C3、Renderer/Web 前端、Apply、正式主线合并或发布。
 
 ## H1-4C J1 最小整改（2026-09-06）
 
@@ -65,6 +65,13 @@
 - Scripted Runtime 仍只证明控制链路与产品状态，不证明真实模型质量。
 - 下一门是固定提交与独立只读代码/规格双轴复验；只有复验 `APPROVE` 且用户再次明确授权后，才可启动新的两机人工验收。
 - 不授权 C3、Renderer/Web 前端、Apply、正式主线合并或发布。
+
+### 固定 SHA 独立复验
+
+- 复验对象：桌面产品提交 `b12a4b5b098a5d88d947864edf5f4e32f661c796`；复验时本地、`planning-agent/agent/taskhub-h1-4c-j1-remediation-v1` 远端一致且工作树 clean。
+- Standards：`PASS / CLEAR / APPROVE`，无 blocker。确认没有 Main/Renderer 边界违规、第二套状态机、危险类型逃逸或 C3/前端/Apply 越界。
+- Spec：`PASS`。确认权威 checkout 原始字节播种且摘要护栏保持、协调入口单一且可等待、开始证据先于终态、Delivery → UNKNOWN → FAILED 优先级与 flow/taskRun/Attempt 限定正确、失败/未知信封脱敏。
+- 两名审查 Agent 均保持只读，没有创建 `.omo`、修改源码或运行两机现场。该结论只放行候选进入下一人工授权门，不等于两机 J1 已通过。
 
 ## H1-4C 阶段 B 第三轮最小整改（2026-09-05）
 

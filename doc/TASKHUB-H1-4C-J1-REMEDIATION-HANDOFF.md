@@ -1,6 +1,6 @@
 # TASKHUB-H1-4C J1 最小整改交接
 
-状态：桌面代码候选，待固定 SHA 的独立只读复验；未启动两机复验。
+状态：桌面产品提交 `b12a4b5b098a5d88d947864edf5f4e32f661c796` 已通过固定 SHA 的 Standards/Spec 双轴只读复验；未启动两机复验。
 
 ## 1. 固定范围
 
@@ -86,3 +86,10 @@ R0 证据：`D:\CodexTemp\xiaogui-h1-4c-j1-remediation\evidence\r0-digest-probe.
 人工两机 QA：**NOT RUN**。只有固定提交复审 `APPROVE` 且用户明确再授权后，才能在全新隔离现场使用新数据库、新 `userData`、新证据目录、新任务和新 `runId` 重跑 J1；旧 `D:\CodexTemp\xiaogui-h1-4c-lan\` 继续只读保留。
 
 本交接不授权 C3、Renderer/Web 前端、Apply、正式主线合并或发布。
+
+## 7. 固定提交复验结果
+
+- Standards：`PASS / CLEAR / APPROVE`，无 blocker。
+- Spec：`PASS`；精确字节、单一协调入口、start-before-terminal、Delivery → UNKNOWN → FAILED、flow/taskRun/Attempt 限定与固定脱敏信封全部符合冻结口径。
+- 复验对象为产品提交 `b12a4b5b098a5d88d947864edf5f4e32f661c796`；两名审查 Agent 只读操作，没有创建 `.omo`、修改代码或启动两机现场。
+- 下一步仍必须由用户另行明确授权新的隔离两机 J1；本次复验本身不构成该授权。
