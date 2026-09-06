@@ -479,7 +479,7 @@ export const DESIGN_ANALYSIS_CAPABILITY_V1 = {
 
 export const CODING_WORKSPACE_CAPABILITY_V1 = {
   id: 'coding.workspace',
-  version: '1.0.0',
+  version: '1.1.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['coding.workspace'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['coding.workspace'].tools,
   requiresWorkspace: true,

@@ -1,5 +1,68 @@
 # 小规开发阶段状态
 
+## 2026-09-06｜CODING-C-01 默认工作区能力（阶段候选，待定向复验）
+
+### 本阶段目标
+
+只让既有 `coding.workspace` 成为 CODING 的默认 Capability，使普通 CODING 在每个 EXECUTE 回合都向 Pi Provider 暴露真实 `read/bash/edit/write` active tools，不再依赖用户输入命中代码关键词。保持 ASK／PLAN 阶段门、Main 权限、普通 CODING 直接写入、TaskHub Attempt、WORK、WSL、检查点、UI、OMP 和统一模型配置不变。
+
+### 实际修改文件
+
+- 生产事实源：`packages/shared/xiaogui-prompt-matrix.ts`、`packages/shared/xiaogui-prompt-capabilities.ts`
+- 契约与默认上下文回归：`packages/shared/xiaogui-prompt-matrix.test.ts`、`packages/shared/xiaogui-prompt-capabilities.test.ts`、`src/main/xiaogui/prompt-context.test.ts`
+- 真实回合／工具生命周期回归：`src/worker/handlers/worker-handlers-turn.test.ts`、`src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts`
+- 阶段记录：`DEVELOPMENT_STATUS.md` 及既有 Obsidian 总控、进度和 CODING 研究记录
+
+### 已完成内容
+
+1. Prompt Matrix `1.1.0` 将 `coding.workspace` 在 CODING 中由 `ALLOWED` 改为 `DEFAULT`，并将其加入既有 `XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1.CODING`；没有新增能力表、选择器或 Runtime。
+2. Main 创建 CODING Prompt Context 时直接携带 `coding.workspace`。Worker 每回合的既有选择器也会从同一 Matrix 得到 `MODE_DEFAULT`，因此中性表达不再让能力掉回 `NO_MATCH`。
+3. EXECUTE 的 Provider-facing active tools 固定为已注册集合与既有阶段／角色策略的交集；在当前 Pi 核心工具全集下为 `bash/edit/read/write`。ASK 仍只有 `read`，PLAN 仍只允许 `read` 和既有计划工具，写入与命令仍经过原 Main 权限链。
+4. 使用此前真实失败表达“做一个单文件 HTML 贪吃蛇，直接写到项目中”验证：默认选择得到 `coding.workspace`，四个工具真实激活，随后真实 `tool_call` 进入既有 Direct Coding preflight／begin／settle 生命周期并由 Pi `write` 写入临时项目；无外部模型。
+
+### 未完成内容
+
+- 尚未运行 Windows Host 外部模型＋Electron 人工旅程；本轮自动证据只证明真实 Pi 工具生命周期和文件写入，不证明模型一定选择工具或 UI 交互已经通过。
+- 当前仍为隔离分支阶段候选，未合入 WORK、阶段线或主线。
+
+### 与规格文档存在的偏差
+
+- 无。C-01 只调整已冻结 Prompt Matrix 的 CODING 默认策略；没有改变 ASK／PLAN、授权、检查点、TaskHub 或其他一级模式的产品语义。
+
+### Pi／Skill／插件复用调查
+
+- 当前锁定的 `@earendil-works/pi-coding-agent@0.84.1` 原生提供 `read/bash/edit/write`、`getAllTools()`、`setActiveToolsByName()` 和真实 Extension `tool_call` 生命周期，已满足 C-01；本轮直接复用这些接口及既有小规 Direct Coding Extension。
+- 缺口只在小规既有 Prompt Matrix 把 `coding.workspace` 标为非默认，Skill 或第三方插件无法在 Provider schema 冻结前可靠补回被隐藏的 Host Tools。Pi 原生已经满足后即停止候选链，不新增 Skill、插件、依赖或框架。
+
+### 测试命令和测试结果
+
+~~~powershell
+# TDD 红灯与单文件绿灯
+npm exec vitest run src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts
+
+# 最终聚焦门
+npm exec vitest run packages/shared/xiaogui-prompt-matrix.test.ts packages/shared/xiaogui-prompt-capabilities.test.ts src/main/xiaogui/prompt-context.test.ts src/worker/handlers/worker-handlers-turn.test.ts src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts
+npm run typecheck
+$changedTs = @(git diff --name-only --diff-filter=ACMR) | Where-Object { $_ -match '\.(ts|tsx)$' } | Sort-Object -Unique
+npm exec eslint -- $changedTs
+git diff --check
+~~~
+
+- 红灯：`1 file / 1 failed / 18 passed`；真实失败表达被选为 `NO_MATCH`，实际 `capabilityIds=[]`。
+- 最小 Matrix 修改后单文件 `19/19 passed`；最终聚焦门 `5 files / 87 tests passed`。
+- Node/Web typecheck、7 个变更 TS／TSX 文件定向 ESLint及 `git diff --check` 通过。
+- 按范围未运行 TaskHub 回归、WORK 回归、外部模型、Electron、OMP、802 MB 装配、Portable 或无关全量测试。
+
+### 已知风险
+
+1. 自动测试没有调用外部模型，因此只能证明 Provider 每轮可见工具及真实 Pi 工具调用链；自然语言模型是否发起预期 `tool_call` 留给下一道人工门。
+2. C-01 让 CODING/EXECUTE 始终暴露四个工作区工具，但 Bash、写入和删除的权限与恢复风险没有放宽，继续受 R3.3 已有硬门约束。
+
+### 下一阶段计划
+
+- 完成唯一追加提交并推送当前隔离分支后立即停止，等待一次 C-01 定向代码复验。
+- 只有定向复验通过，才进入 Windows Host 真实模型＋Electron 人工验收；此前不合入 WORK、阶段线或主线。
+
 ## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT TaskHub 旧 ProjectId 定向兼容（阶段候选，待人工复验）
 
 ### 本阶段目标

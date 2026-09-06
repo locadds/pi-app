@@ -5,7 +5,7 @@ import type {
 } from './xiaogui-prompt-contract'
 
 export const XIAOGUI_PROMPT_MATRIX_ID_V1 = 'xiaogui.prompt-matrix.v1' as const
-export const XIAOGUI_PROMPT_MATRIX_VERSION_V1 = '1.0.0' as const
+export const XIAOGUI_PROMPT_MATRIX_VERSION_V1 = '1.1.0' as const
 
 export type XiaoguiModeCapabilityPolicyV1 =
   | 'DEFAULT'
@@ -142,11 +142,11 @@ export const XIAOGUI_CAPABILITY_MATRIX_V1 = {
     ],
   },
   'coding.workspace': {
-    version: '1.0.0',
+    version: '1.1.0',
     modes: {
       WORK: 'RECOMMEND_SWITCH',
       DESIGN: 'RECOMMEND_SWITCH',
-      CODING: 'ALLOWED',
+      CODING: 'DEFAULT',
     },
     tools: [
       { name: 'read', source: 'PI_CORE' },
@@ -175,5 +175,5 @@ export function workerBuiltinToolNamesFromPromptMatrixV1(): readonly string[] {
 export const XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1 = {
   WORK: ['work.file-organize'],
   DESIGN: [],
-  CODING: [],
+  CODING: ['coding.workspace'],
 } as const satisfies Readonly<Record<XiaoguiMode, readonly XiaoguiCapabilityId[]>>

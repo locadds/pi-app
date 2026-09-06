@@ -8,6 +8,7 @@ import {
 import {
   workerBuiltinToolNamesFromPromptMatrixV1,
   XIAOGUI_CAPABILITY_MATRIX_V1,
+  XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1,
   XIAOGUI_PHASE_POLICY_MATRIX_V1,
   XIAOGUI_PROMPT_MATRIX_ID_V1,
   XIAOGUI_PROMPT_MATRIX_VERSION_V1,
@@ -17,7 +18,7 @@ import {
 describe('Xiaogui Prompt Mode / Phase / Capability / Tool Matrix V1', () => {
   it('is versioned and covers every declared mode, phase and capability once', () => {
     expect(XIAOGUI_PROMPT_MATRIX_ID_V1).toBe('xiaogui.prompt-matrix.v1')
-    expect(XIAOGUI_PROMPT_MATRIX_VERSION_V1).toBe('1.0.0')
+    expect(XIAOGUI_PROMPT_MATRIX_VERSION_V1).toBe('1.1.0')
     expect(Object.keys(XIAOGUI_CAPABILITY_MATRIX_V1).sort())
       .toEqual([...XIAOGUI_CAPABILITY_IDS_V1].sort())
     expect(Object.keys(XIAOGUI_PHASE_POLICY_MATRIX_V1)).toEqual(XIAOGUI_PROMPT_PHASES_V1)
@@ -40,8 +41,9 @@ describe('Xiaogui Prompt Mode / Phase / Capability / Tool Matrix V1', () => {
     expect(XIAOGUI_CAPABILITY_MATRIX_V1['coding.workspace'].modes).toEqual({
       WORK: 'RECOMMEND_SWITCH',
       DESIGN: 'RECOMMEND_SWITCH',
-      CODING: 'ALLOWED',
+      CODING: 'DEFAULT',
     })
+    expect(XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1.CODING).toEqual(['coding.workspace'])
     expect(JSON.stringify(XIAOGUI_CAPABILITY_MATRIX_V1)).not.toContain('AUTO')
   })
 

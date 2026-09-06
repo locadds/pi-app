@@ -12,6 +12,10 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent'
 import type { XiaoguiPromptContextV1 } from '@shared/xiaogui-prompt-contract'
+import {
+  activeToolNamesForPromptContextV1,
+  selectXiaoguiTurnCapabilitiesV1,
+} from '@shared/xiaogui-prompt-capabilities'
 import type { DirectCodingAuthorizationSubjectV2 } from '@shared/xiaogui-direct-coding'
 import type { ProjectId, SessionKey } from '@shared/xiaogui-session-scope'
 import { DirectCodingModuleV2 } from '../../main/xiaogui/coding-extensions/direct-coding-module'
@@ -330,10 +334,28 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
     expect(input).toEqual({ path: './src/a.ts', content: 'after' })
   })
 
-  it('runs a real Pi write definition through Main lifecycle and writes the selected project', async () => {
+  it('keeps CODING workspace tools active for a neutral EXECUTE turn and runs its real Pi write call', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xiaogui-pi-write-smoke-'))
     roots.push(root)
     writeFileSync(join(root, 'unrelated.txt'), 'keep me')
+    const selection = selectXiaoguiTurnCapabilitiesV1({
+      mode: 'CODING',
+      enabledCapabilities: [],
+    }, '做一个单文件 HTML 贪吃蛇，直接写到项目中')
+    const turnContext = {
+      ...context('EXECUTE'),
+      enabledCapabilities: selection.capabilityIds,
+      availableToolNames: activeToolNamesForPromptContextV1({
+        ...context('EXECUTE'),
+        enabledCapabilities: selection.capabilityIds,
+      }, ['read', 'bash', 'edit', 'write']),
+    }
+    expect(selection).toMatchObject({
+      decision: 'DEFAULT_ONLY',
+      capabilityIds: ['coding.workspace'],
+      reasonCodes: expect.arrayContaining(['MODE_DEFAULT']),
+    })
+    expect(turnContext.availableToolNames).toEqual(['bash', 'edit', 'read', 'write'])
     const directSubject = {
       schemaVersion: 2 as const,
       kind: 'DIRECT_SESSION' as const,
@@ -399,7 +421,7 @@ describe('Xiaogui direct CODING Pi tool lifecycle', () => {
 
     const handlers = new Map<string, Handler[]>()
     const lifecycle = createXiaoguiDirectCodingToolLifecycleV2({
-      context: () => context('EXECUTE'),
+      context: () => turnContext,
       sourceSessionId: () => 'pi-session-1',
     })
     await lifecycle.factory({

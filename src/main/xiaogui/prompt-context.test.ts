@@ -34,7 +34,7 @@ describe('Main Xiaogui Prompt Context Resolver V1', () => {
       projectTrusted: true,
       projectId: 'xgp1_project',
       sessionKey: 'xgs1_session',
-      enabledCapabilities: [],
+      enabledCapabilities: ['coding.workspace'],
     })
     expect(JSON.stringify(result)).not.toContain('D:/project')
     expect(JSON.stringify(result)).not.toContain('D:/sessions')

@@ -407,7 +407,7 @@ describe('Worker Prompt dispatch preflight', () => {
     ]))
   })
 
-  it('P16 reuses a Worker while active tools and Prompt manifest follow each frozen turn', async () => {
+  it('P16 reuses a Worker while a neutral CODING EXECUTE turn gets the default workspace tools', async () => {
     const registered = [
       'read',
       'bash',
@@ -469,7 +469,7 @@ describe('Worker Prompt dispatch preflight', () => {
       mode: 'CODING',
       phase: 'EXECUTE',
     }
-    await handlePrompt({ text: '修复并测试' }, vi.fn())
+    await handlePrompt({ text: '做一个单文件 HTML 贪吃蛇，直接写到项目中' }, vi.fn())
     await vi.waitFor(() => expect(st.promptTurnContext).toBeNull())
 
     expect(manifests).toEqual([

@@ -173,7 +173,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       .not.toContain('xiaogui_work_docx_template_intake')
   })
 
-  it('uses immutable Mode + Phase + explicit Capability facts for Worker Host Tool Policy', () => {
+  it('uses the CODING default Capability while keeping PLAN read-only and EXECUTE writable', () => {
     const work = {
       mode: 'WORK' as const,
       phase: 'EXECUTE' as const,
@@ -199,7 +199,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       mode: 'CODING' as const,
       phase: 'PLAN' as const,
       workspaceAvailable: true,
-      enabledCapabilities: ['coding.workspace' as const],
+      enabledCapabilities: [],
     }
     expect(activeToolNamesForPromptContextV1(plan, registered)).toEqual(['read'])
     expect(activeToolNamesForPromptContextV1({
