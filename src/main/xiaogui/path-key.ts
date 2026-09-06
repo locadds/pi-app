@@ -9,7 +9,10 @@
  * 根 //server/share）。两份实现分属不同构建目标（node/web），无法共享源码，
  * 修改任一侧时务必同步另一侧。
  */
-export function normalizePathKey(path: string | null | undefined): string {
+function normalizePathKeyVersion(
+  path: string | null | undefined,
+  preserveWslLinuxCase: boolean,
+): string {
   const raw = String(path || '').trim()
   if (!raw) return ''
   let key = raw.replace(/\\/g, '/')
@@ -20,7 +23,7 @@ export function normalizePathKey(path: string | null | undefined): string {
     key = key.replace(/\/+/g, '/')
   }
   const wslMatch = /^\/\/(wsl\.localhost|wsl\$)\/([^/]+)(.*)$/i.exec(key)
-  if (wslMatch) {
+  if (wslMatch && preserveWslLinuxCase) {
     // Server and distro are Windows-side identifiers. The remaining path is
     // handled by Linux and must retain its case-sensitive spelling.
     key = `//wsl.localhost/${wslMatch[2].toLowerCase()}${wslMatch[3]}`
@@ -37,4 +40,29 @@ export function normalizePathKey(path: string | null | undefined): string {
     key = key.slice(0, -1)
   }
   return key
+}
+
+/** Current V2 comparison key. WSL's Linux path body remains case-sensitive. */
+export function normalizePathKey(path: string | null | undefined): string {
+  return normalizePathKeyVersion(path, true)
+}
+
+/**
+ * Historical V1 comparison key, used only to recognize already-persisted WSL
+ * identities. It must never be returned as a filesystem execution path.
+ */
+export function normalizeLegacyPathKeyV1(path: string | null | undefined): string {
+  return normalizePathKeyVersion(path, false)
+}
+
+export interface VersionedPathKeysV2 {
+  readonly current: string
+  readonly legacyV1: string | null
+}
+
+/** Return the current key plus the distinct legacy key, when migration is required. */
+export function versionedPathKeysV2(path: string | null | undefined): VersionedPathKeysV2 {
+  const current = normalizePathKey(path)
+  const legacy = normalizeLegacyPathKeyV1(path)
+  return { current, legacyV1: legacy && legacy !== current ? legacy : null }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizePathKey } from './path-key'
+import { normalizeLegacyPathKeyV1, normalizePathKey, versionedPathKeysV2 } from './path-key'
 
 describe('normalizePathKey（与渲染层 normalizeSessionFileKey 逐条等价）', () => {
   it('反斜杠归一为正斜杠', () => {
@@ -32,6 +32,21 @@ describe('normalizePathKey（与渲染层 normalizeSessionFileKey 逐条等价�
     expect(normalizePathKey('//wsl.localhost/DEBIAN/tmp/caseroot/session.jsonl')).toBe(
       '//wsl.localhost/debian/tmp/caseroot/session.jsonl',
     )
+  })
+
+  it('只为旧持久化身份生成全小写 WSL V1 key', () => {
+    const path = '//wsl.localhost/Ubuntu/home/User/CaseProject'
+    expect(normalizeLegacyPathKeyV1(path)).toBe(
+      '//wsl.localhost/ubuntu/home/user/caseproject',
+    )
+    expect(versionedPathKeysV2(path)).toEqual({
+      current: '//wsl.localhost/ubuntu/home/User/CaseProject',
+      legacyV1: '//wsl.localhost/ubuntu/home/user/caseproject',
+    })
+    expect(versionedPathKeysV2('D:/Project')).toEqual({
+      current: 'D:/project',
+      legacyV1: null,
+    })
   })
 
   it('剥离尾部斜杠（保留盘符根与 UNC 共享根）', () => {

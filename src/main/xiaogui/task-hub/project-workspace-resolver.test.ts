@@ -48,6 +48,35 @@ describe('MainProjectWorkspaceResolverV1', () => {
     ).resolves.toBe(await realpath(recentProject))
   })
 
+  it('resolves an existing TaskHub attempt that carries the legacy lowercase WSL project id', async () => {
+    const currentPath = '//wsl.localhost/Ubuntu/home/User/CaseProject'
+    const legacyPath = '//wsl.localhost/ubuntu/home/user/caseproject'
+    const subject = new MainProjectWorkspaceResolverV1({
+      source: () => ({ currentProject: currentPath, recentProjects: [] }),
+      fileSystem: {
+        realpath: async (path) => path,
+        stat: async () => ({ isDirectory: () => true }),
+      },
+    })
+
+    await expect(subject.resolveProjectRoot(projectId(legacyPath))).resolves.toBe(currentPath)
+  })
+
+  it('fails closed when two WSL roots collide under one legacy lowercase project id', async () => {
+    const upper = '//wsl.localhost/Ubuntu/home/User/CaseProject'
+    const lower = '//wsl.localhost/ubuntu/home/user/caseproject'
+    const subject = new MainProjectWorkspaceResolverV1({
+      source: () => ({ currentProject: upper, recentProjects: [lower] }),
+      fileSystem: {
+        realpath: async (path) => path,
+        stat: async () => ({ isDirectory: () => true }),
+      },
+    })
+
+    await expect(subject.resolveProjectRoot(projectId(lower)))
+      .rejects.toEqual(new ProjectWorkspaceResolutionErrorV1('PROJECT_AMBIGUOUS'))
+  })
+
   it('fails closed when no candidate derives the requested ProjectId', async () => {
     const currentProject = await tempRoot('xiaogui-current-miss-')
 

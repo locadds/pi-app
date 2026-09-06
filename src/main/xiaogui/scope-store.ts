@@ -25,8 +25,8 @@ import type {
 } from '@shared/xiaogui-session-scope'
 
 import { isXiaoguiMode, type XiaoguiMode } from './config'
-import { normalizePathKey } from './path-key'
-import type { CanonicalInputFingerprintV1 } from './scope-derive'
+import { normalizeLegacyPathKeyV1, normalizePathKey, versionedPathKeysV2 } from './path-key'
+import { opaqueScopeIdDeriverV1, type CanonicalInputFingerprintV1 } from './scope-derive'
 import {
   SessionScopeResolutionError,
   type SandboxBindingCommitV1,
@@ -48,7 +48,7 @@ interface XiaoguiScopeSchema {
    * 新出现的项目才打当前模式标签——打开历史项目不静默改归属。
    */
   projectBaseline: string[]
-  canonicalScopeBindings: CanonicalScopeBindingsV2
+  canonicalScopeBindings: CanonicalScopeBindingsV3
 }
 
 interface PersistedProjectBindingV2 {
@@ -68,15 +68,45 @@ interface PersistedSandboxBindingV1 {
   canonicalInputFingerprint: CanonicalInputFingerprintV1
 }
 
-interface CanonicalScopeBindingsV2 {
-  version: 2
+interface PersistedLegacyWslProjectMigrationV1 {
+  currentProjectId: ProjectId
+  legacyPathKey: string
+  currentPathKey: string
+}
+
+interface PersistedLegacyWslSessionMigrationV1 {
+  currentSessionKey: SessionKey
+  legacyProjectId: ProjectId
+  currentProjectId: ProjectId
+  legacyPathKey: string
+  currentPathKey: string
+}
+
+interface PersistedLegacyWslMigrationsV1 {
+  projects: Record<string, PersistedLegacyWslProjectMigrationV1>
+  sessions: Record<string, PersistedLegacyWslSessionMigrationV1>
+}
+
+interface CanonicalScopeBindingsV3 {
+  version: 3
   projects: Record<string, PersistedProjectBindingV2>
   sessions: Record<string, PersistedSessionBindingV1>
   sandboxes: Record<string, PersistedSandboxBindingV1>
+  legacyWslMigrations: PersistedLegacyWslMigrationsV1
 }
 
-function emptyCanonicalScopeBindings(): CanonicalScopeBindingsV2 {
-  return { version: 2, projects: {}, sessions: {}, sandboxes: {} }
+function emptyLegacyWslMigrations(): PersistedLegacyWslMigrationsV1 {
+  return { projects: {}, sessions: {} }
+}
+
+function emptyCanonicalScopeBindings(): CanonicalScopeBindingsV3 {
+  return {
+    version: 3,
+    projects: {},
+    sessions: {},
+    sandboxes: {},
+    legacyWslMigrations: emptyLegacyWslMigrations(),
+  }
 }
 
 const store = new Store<XiaoguiScopeSchema>({
@@ -108,14 +138,103 @@ function corruptStore(): never {
   throw new SessionScopeResolutionError('CANONICAL_SCOPE_STORE_CORRUPT')
 }
 
-function readCanonicalScopeBindings(): CanonicalScopeBindingsV2 {
+function readLegacyWslMigrations(raw: Record<string, unknown>): PersistedLegacyWslMigrationsV1 {
+  if (raw.version !== 3) return emptyLegacyWslMigrations()
+  const value = raw.legacyWslMigrations
+  if (!isRecord(value) || !isRecord(value.projects) || !isRecord(value.sessions)) corruptStore()
+
+  const projects: PersistedLegacyWslMigrationsV1['projects'] = {}
+  for (const [legacyProjectId, candidate] of Object.entries(value.projects)) {
+    if (
+      !PROJECT_ID_PATTERN.test(legacyProjectId) ||
+      !isRecord(candidate) ||
+      !PROJECT_ID_PATTERN.test(String(candidate.currentProjectId ?? '')) ||
+      typeof candidate.legacyPathKey !== 'string' ||
+      typeof candidate.currentPathKey !== 'string'
+    ) {
+      corruptStore()
+    }
+    const legacyPathKey = normalizeLegacyPathKeyV1(candidate.legacyPathKey)
+    const currentPathKey = normalizePathKey(candidate.currentPathKey)
+    const keys = versionedPathKeysV2(currentPathKey)
+    if (
+      !legacyPathKey ||
+      !currentPathKey ||
+      candidate.legacyPathKey !== legacyPathKey ||
+      candidate.currentPathKey !== currentPathKey ||
+      keys.legacyV1 !== legacyPathKey ||
+      opaqueScopeIdDeriverV1.deriveProject(legacyPathKey).projectId !== legacyProjectId ||
+      opaqueScopeIdDeriverV1.deriveProject(currentPathKey).projectId !== candidate.currentProjectId
+    ) {
+      corruptStore()
+    }
+    projects[legacyProjectId] = {
+      currentProjectId: candidate.currentProjectId as ProjectId,
+      legacyPathKey,
+      currentPathKey,
+    }
+  }
+
+  const sessions: PersistedLegacyWslMigrationsV1['sessions'] = {}
+  for (const [legacySessionKey, candidate] of Object.entries(value.sessions)) {
+    if (
+      !SESSION_KEY_PATTERN.test(legacySessionKey) ||
+      !isRecord(candidate) ||
+      !SESSION_KEY_PATTERN.test(String(candidate.currentSessionKey ?? '')) ||
+      !PROJECT_ID_PATTERN.test(String(candidate.legacyProjectId ?? '')) ||
+      !PROJECT_ID_PATTERN.test(String(candidate.currentProjectId ?? '')) ||
+      typeof candidate.legacyPathKey !== 'string' ||
+      typeof candidate.currentPathKey !== 'string'
+    ) {
+      corruptStore()
+    }
+    const legacyPathKey = normalizeLegacyPathKeyV1(candidate.legacyPathKey)
+    const currentPathKey = normalizePathKey(candidate.currentPathKey)
+    const keys = versionedPathKeysV2(currentPathKey)
+    if (
+      !legacyPathKey ||
+      !currentPathKey ||
+      candidate.legacyPathKey !== legacyPathKey ||
+      candidate.currentPathKey !== currentPathKey ||
+      keys.legacyV1 !== legacyPathKey ||
+      opaqueScopeIdDeriverV1.deriveSession(
+        candidate.legacyProjectId as ProjectId,
+        legacyPathKey,
+      ).sessionKey !== legacySessionKey ||
+      opaqueScopeIdDeriverV1.deriveSession(
+        candidate.currentProjectId as ProjectId,
+        currentPathKey,
+      ).sessionKey !== candidate.currentSessionKey
+    ) {
+      corruptStore()
+    }
+    sessions[legacySessionKey] = {
+      currentSessionKey: candidate.currentSessionKey as SessionKey,
+      legacyProjectId: candidate.legacyProjectId as ProjectId,
+      currentProjectId: candidate.currentProjectId as ProjectId,
+      legacyPathKey,
+      currentPathKey,
+    }
+  }
+
+  for (const migration of Object.values(sessions)) {
+    if (migration.legacyProjectId === migration.currentProjectId) continue
+    const project = projects[migration.legacyProjectId]
+    if (!project || project.currentProjectId !== migration.currentProjectId) corruptStore()
+  }
+  return { projects, sessions }
+}
+
+function readCanonicalScopeBindings(): CanonicalScopeBindingsV3 {
   const raw = store.get('canonicalScopeBindings') as unknown
-  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2)) corruptStore()
+  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2 && raw.version !== 3)) {
+    corruptStore()
+  }
   if (!isRecord(raw.projects) || !isRecord(raw.sessions) || !isRecord(raw.sandboxes)) {
     corruptStore()
   }
 
-  const projects: CanonicalScopeBindingsV2['projects'] = {}
+  const projects: CanonicalScopeBindingsV3['projects'] = {}
   for (const [projectId, value] of Object.entries(raw.projects)) {
     if (
       !PROJECT_ID_PATTERN.test(projectId) ||
@@ -125,14 +244,20 @@ function readCanonicalScopeBindings(): CanonicalScopeBindingsV2 {
       corruptStore()
     }
     const rawIdentity = value.rootIdentityDigest
-    if (rawIdentity !== undefined && !DIGEST_PATTERN.test(String(rawIdentity))) corruptStore()
+    if (
+      rawIdentity !== undefined &&
+      rawIdentity !== null &&
+      !DIGEST_PATTERN.test(String(rawIdentity))
+    ) {
+      corruptStore()
+    }
     projects[projectId] = {
       canonicalInputFingerprint: value.canonicalInputFingerprint as CanonicalInputFingerprintV1,
       rootIdentityDigest: typeof rawIdentity === 'string' ? rawIdentity : null,
     }
   }
 
-  const sessions: CanonicalScopeBindingsV2['sessions'] = {}
+  const sessions: CanonicalScopeBindingsV3['sessions'] = {}
   for (const [sessionKey, value] of Object.entries(raw.sessions)) {
     if (
       !SESSION_KEY_PATTERN.test(sessionKey) ||
@@ -150,7 +275,7 @@ function readCanonicalScopeBindings(): CanonicalScopeBindingsV2 {
     }
   }
 
-  const sandboxes: CanonicalScopeBindingsV2['sandboxes'] = {}
+  const sandboxes: CanonicalScopeBindingsV3['sandboxes'] = {}
   for (const [sandboxKey, value] of Object.entries(raw.sandboxes)) {
     if (
       !SANDBOX_KEY_PATTERN.test(sandboxKey) ||
@@ -173,7 +298,13 @@ function readCanonicalScopeBindings(): CanonicalScopeBindingsV2 {
     if (!projects[sandbox.projectId]) corruptStore()
   }
 
-  return { version: 2, projects, sessions, sandboxes }
+  return {
+    version: 3,
+    projects,
+    sessions,
+    sandboxes,
+    legacyWslMigrations: readLegacyWslMigrations(raw),
+  }
 }
 
 function validateIncomingId(value: string, pattern: RegExp): void {
@@ -208,7 +339,162 @@ function assertProjectCompatible(
   }
 }
 
-function writeCanonicalScopeBindings(bindings: CanonicalScopeBindingsV2): void {
+function assertNotClaimedLegacyIdentity(
+  current: CanonicalScopeBindingsV3,
+  projectId: ProjectId,
+  sessionKey?: SessionKey,
+): void {
+  const projectClaim = current.legacyWslMigrations.projects[projectId]
+  if (projectClaim && projectClaim.currentProjectId !== projectId) {
+    throw new SessionScopeResolutionError('LEGACY_SCOPE_AMBIGUOUS')
+  }
+  if (!sessionKey) return
+  const sessionClaim = current.legacyWslMigrations.sessions[sessionKey]
+  if (sessionClaim && sessionClaim.currentSessionKey !== sessionKey) {
+    throw new SessionScopeResolutionError('LEGACY_SCOPE_AMBIGUOUS')
+  }
+}
+
+function assertLegacyWslMigration(input: SessionBindingCommitV1): void {
+  const migration = input.legacyWslMigration
+  if (!migration) return
+  validateIncomingId(migration.project.opaqueId, PROJECT_ID_PATTERN)
+  validateIncomingFingerprint(migration.project.canonicalInputFingerprint)
+  validateIncomingId(migration.session.opaqueId, SESSION_KEY_PATTERN)
+  validateIncomingId(migration.session.projectId, PROJECT_ID_PATTERN)
+  validateIncomingFingerprint(migration.session.canonicalInputFingerprint)
+  if (migration.session.projectId !== migration.project.opaqueId) {
+    throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+  }
+
+  const projectKeys = versionedPathKeysV2(migration.currentProjectPathKey)
+  const sessionKeys = versionedPathKeysV2(migration.currentSessionPathKey)
+  const expectedLegacyProjectPath = projectKeys.legacyV1 ?? projectKeys.current
+  const expectedLegacySessionPath = sessionKeys.legacyV1 ?? sessionKeys.current
+  const currentProject = opaqueScopeIdDeriverV1.deriveProject(projectKeys.current)
+  const legacyProject = opaqueScopeIdDeriverV1.deriveProject(expectedLegacyProjectPath)
+  const currentSession = opaqueScopeIdDeriverV1.deriveSession(
+    currentProject.projectId,
+    sessionKeys.current,
+  )
+  const legacySession = opaqueScopeIdDeriverV1.deriveSession(
+    legacyProject.projectId,
+    expectedLegacySessionPath,
+  )
+  if (
+    !projectKeys.current ||
+    !sessionKeys.current ||
+    (!projectKeys.legacyV1 && !sessionKeys.legacyV1) ||
+    migration.currentProjectPathKey !== projectKeys.current ||
+    migration.currentSessionPathKey !== sessionKeys.current ||
+    migration.legacyProjectPathKey !== expectedLegacyProjectPath ||
+    migration.legacySessionPathKey !== expectedLegacySessionPath ||
+    input.project.opaqueId !== currentProject.projectId ||
+    input.project.canonicalInputFingerprint !== currentProject.canonicalInputFingerprint ||
+    input.session.opaqueId !== currentSession.sessionKey ||
+    input.session.canonicalInputFingerprint !== currentSession.canonicalInputFingerprint ||
+    migration.project.opaqueId !== legacyProject.projectId ||
+    migration.project.canonicalInputFingerprint !== legacyProject.canonicalInputFingerprint ||
+    migration.session.opaqueId !== legacySession.sessionKey ||
+    migration.session.canonicalInputFingerprint !== legacySession.canonicalInputFingerprint
+  ) {
+    throw new SessionScopeResolutionError('CANONICAL_INPUT_MISMATCH')
+  }
+}
+
+interface PreparedLegacyWslMigrationV1 {
+  readonly migrations: PersistedLegacyWslMigrationsV1
+  readonly legacySessionMode: SessionMode | null
+  readonly changed: boolean
+}
+
+function prepareLegacyWslMigration(
+  current: CanonicalScopeBindingsV3,
+  input: SessionBindingCommitV1,
+): PreparedLegacyWslMigrationV1 {
+  assertNotClaimedLegacyIdentity(current, input.project.opaqueId, input.session.opaqueId)
+  const migration = input.legacyWslMigration
+  if (!migration) {
+    return { migrations: current.legacyWslMigrations, legacySessionMode: null, changed: false }
+  }
+  assertLegacyWslMigration(input)
+
+  const legacyProjectId = migration.project.opaqueId
+  const legacySessionKey = migration.session.opaqueId
+  const existingProjectClaim = current.legacyWslMigrations.projects[legacyProjectId]
+  const projectClaim: PersistedLegacyWslProjectMigrationV1 = {
+    currentProjectId: input.project.opaqueId,
+    legacyPathKey: migration.legacyProjectPathKey,
+    currentPathKey: migration.currentProjectPathKey,
+  }
+  if (
+    existingProjectClaim &&
+    (existingProjectClaim.currentProjectId !== projectClaim.currentProjectId ||
+      existingProjectClaim.legacyPathKey !== projectClaim.legacyPathKey ||
+      existingProjectClaim.currentPathKey !== projectClaim.currentPathKey)
+  ) {
+    throw new SessionScopeResolutionError('LEGACY_SCOPE_AMBIGUOUS')
+  }
+
+  const existingSessionClaim = current.legacyWslMigrations.sessions[legacySessionKey]
+  const sessionClaim: PersistedLegacyWslSessionMigrationV1 = {
+    currentSessionKey: input.session.opaqueId,
+    legacyProjectId,
+    currentProjectId: input.project.opaqueId,
+    legacyPathKey: migration.legacySessionPathKey,
+    currentPathKey: migration.currentSessionPathKey,
+  }
+  if (
+    existingSessionClaim &&
+    (existingSessionClaim.currentSessionKey !== sessionClaim.currentSessionKey ||
+      existingSessionClaim.legacyProjectId !== sessionClaim.legacyProjectId ||
+      existingSessionClaim.currentProjectId !== sessionClaim.currentProjectId ||
+      existingSessionClaim.legacyPathKey !== sessionClaim.legacyPathKey ||
+      existingSessionClaim.currentPathKey !== sessionClaim.currentPathKey)
+  ) {
+    throw new SessionScopeResolutionError('LEGACY_SCOPE_AMBIGUOUS')
+  }
+
+  const legacyProject = current.projects[legacyProjectId]
+  if (
+    legacyProject &&
+    legacyProject.canonicalInputFingerprint !== migration.project.canonicalInputFingerprint
+  ) {
+    throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
+  }
+  if (
+    legacyProject?.rootIdentityDigest &&
+    legacyProject.rootIdentityDigest !== input.project.rootIdentityDigest
+  ) {
+    throw new SessionScopeResolutionError('PROJECT_IDENTITY_CHANGED')
+  }
+  const legacySession = current.sessions[legacySessionKey]
+  if (
+    legacySession &&
+    (legacySession.projectId !== legacyProjectId ||
+      legacySession.canonicalInputFingerprint !== migration.session.canonicalInputFingerprint)
+  ) {
+    throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
+  }
+
+  const projectChanged = legacyProjectId !== input.project.opaqueId && !existingProjectClaim
+  const sessionChanged = legacySessionKey !== input.session.opaqueId && !existingSessionClaim
+  return {
+    migrations: {
+      projects: projectChanged
+        ? { ...current.legacyWslMigrations.projects, [legacyProjectId]: projectClaim }
+        : current.legacyWslMigrations.projects,
+      sessions: sessionChanged
+        ? { ...current.legacyWslMigrations.sessions, [legacySessionKey]: sessionClaim }
+        : current.legacyWslMigrations.sessions,
+    },
+    legacySessionMode:
+      legacySessionKey !== input.session.opaqueId ? legacySession?.sessionMode ?? null : null,
+    changed: projectChanged || sessionChanged,
+  }
+}
+
+function writeCanonicalScopeBindings(bindings: CanonicalScopeBindingsV3): void {
   store.set('canonicalScopeBindings', bindings)
 }
 
@@ -237,6 +523,7 @@ function lookupCanonicalBoundSession(input: SessionBindingLookupV1): SessionScop
   }
 
   const current = readCanonicalScopeBindings()
+  assertNotClaimedLegacyIdentity(current, input.project.opaqueId, input.session.opaqueId)
   const session = current.sessions[input.session.opaqueId]
   if (!session) return { kind: 'NOT_FOUND' }
   assertProjectCompatible(current.projects[input.project.opaqueId], input.project)
@@ -270,6 +557,7 @@ function commitCanonicalSession(input: SessionBindingCommitV1): SessionMode {
   }
 
   const current = readCanonicalScopeBindings()
+  const preparedMigration = prepareLegacyWslMigration(current, input)
   assertProjectCompatible(current.projects[input.project.opaqueId], input.project)
   const existing = current.sessions[input.session.opaqueId]
   if (existing) {
@@ -279,24 +567,24 @@ function commitCanonicalSession(input: SessionBindingCommitV1): SessionMode {
     if (existing.canonicalInputFingerprint !== input.session.canonicalInputFingerprint) {
       throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
     }
-    const existingProject = current.projects[input.project.opaqueId]
-    if (!existingProject?.rootIdentityDigest) {
-      writeCanonicalScopeBindings({
-        ...current,
-        projects: {
-          ...current.projects,
-          [input.project.opaqueId]: {
-            canonicalInputFingerprint: input.project.canonicalInputFingerprint,
-            rootIdentityDigest: input.project.rootIdentityDigest,
-          },
-        },
-      })
+    if (
+      preparedMigration.legacySessionMode &&
+      preparedMigration.legacySessionMode !== existing.sessionMode
+    ) {
+      throw new SessionScopeResolutionError('LEGACY_SCOPE_AMBIGUOUS')
     }
-    return existing.sessionMode
+  }
+
+  const effectiveMode = existing?.sessionMode ?? preparedMigration.legacySessionMode ?? input.sessionMode
+  const existingProject = current.projects[input.project.opaqueId]
+  const projectNeedsWrite = !existingProject?.rootIdentityDigest
+  const sessionNeedsWrite = !existing
+  if (!projectNeedsWrite && !sessionNeedsWrite && !preparedMigration.changed) {
+    return effectiveMode
   }
 
   writeCanonicalScopeBindings({
-    version: 2,
+    version: 3,
     projects: {
       ...current.projects,
       [input.project.opaqueId]: {
@@ -309,12 +597,13 @@ function commitCanonicalSession(input: SessionBindingCommitV1): SessionMode {
       [input.session.opaqueId]: {
         projectId: input.session.projectId,
         canonicalInputFingerprint: input.session.canonicalInputFingerprint,
-        sessionMode: input.sessionMode,
+        sessionMode: effectiveMode,
       },
     },
     sandboxes: current.sandboxes,
+    legacyWslMigrations: preparedMigration.migrations,
   })
-  return input.sessionMode
+  return effectiveMode
 }
 
 function commitCanonicalSandbox(input: SandboxBindingCommitV1): void {
@@ -352,7 +641,7 @@ function commitCanonicalSandbox(input: SandboxBindingCommitV1): void {
   }
 
   writeCanonicalScopeBindings({
-    version: 2,
+    version: 3,
     projects: {
       ...current.projects,
       [input.project.opaqueId]: {
@@ -368,14 +657,17 @@ function commitCanonicalSandbox(input: SandboxBindingCommitV1): void {
         canonicalInputFingerprint: input.sandbox.canonicalInputFingerprint,
       },
     },
+    legacyWslMigrations: current.legacyWslMigrations,
   })
 }
 
 export const sessionScopePersistenceV1: SessionScopePersistenceV1 = {
   lookup: lookupCanonicalSession,
   lookupBoundSession: lookupCanonicalBoundSession,
-  getLegacySessionMode: (normalizedSessionFile) => getScope('session', normalizedSessionFile),
-  getLegacyProjectMode: (normalizedProjectRoot) => getScope('project', normalizedProjectRoot),
+  getLegacySessionMode: (normalizedSessionFile, legacyNormalizedSessionFile) =>
+    getScopeAtVersionedKey('session', normalizedSessionFile, legacyNormalizedSessionFile),
+  getLegacyProjectMode: (normalizedProjectRoot, legacyNormalizedProjectRoot) =>
+    getScopeAtVersionedKey('project', normalizedProjectRoot, legacyNormalizedProjectRoot),
   commitSession: commitCanonicalSession,
   commitSandbox: commitCanonicalSandbox,
 }
@@ -390,12 +682,65 @@ function sanitizeMap(raw: Record<string, unknown> | undefined): Record<string, X
   return out
 }
 
-function mapFor(kind: ScopeKind): Record<string, XiaoguiMode> {
+function rawMapFor(kind: ScopeKind): Record<string, XiaoguiMode> {
   const raw =
     kind === 'session'
       ? (store.get('sessionModeMap') as Record<string, unknown>)
       : (store.get('projectModeMap') as Record<string, unknown>)
   return sanitizeMap(raw)
+}
+
+function matchingPathMigration(
+  kind: ScopeKind,
+  legacyPathKey: string,
+): { legacyPathKey: string; currentPathKey: string } | null {
+  const migrations = readCanonicalScopeBindings().legacyWslMigrations
+  const candidates = kind === 'session'
+    ? Object.values(migrations.sessions)
+    : Object.values(migrations.projects)
+  return candidates.find((candidate) => candidate.legacyPathKey === legacyPathKey) ?? null
+}
+
+function getScopeAtVersionedKey(
+  kind: ScopeKind,
+  currentPathKey: string,
+  legacyPathKey?: string,
+): XiaoguiMode | null {
+  const current = normalizePathKey(currentPathKey)
+  if (!current) return null
+  const map = rawMapFor(kind)
+  const currentMode = map[current]
+  const legacy = legacyPathKey ? normalizeLegacyPathKeyV1(legacyPathKey) : null
+  if (!legacy || legacy === current) return currentMode ?? null
+
+  const claim = matchingPathMigration(kind, legacy)
+  if (claim && claim.currentPathKey !== current) {
+    throw new SessionScopeResolutionError('LEGACY_SCOPE_AMBIGUOUS')
+  }
+  const legacyMode = map[legacy]
+  if (currentMode && legacyMode && currentMode !== legacyMode) {
+    throw new SessionScopeResolutionError('LEGACY_SCOPE_AMBIGUOUS')
+  }
+  return currentMode ?? legacyMode ?? null
+}
+
+function mapFor(kind: ScopeKind): Record<string, XiaoguiMode> {
+  const map = rawMapFor(kind)
+  const migrations = readCanonicalScopeBindings().legacyWslMigrations
+  const candidates = kind === 'session'
+    ? Object.values(migrations.sessions)
+    : Object.values(migrations.projects)
+  for (const migration of candidates) {
+    const legacyMode = map[migration.legacyPathKey]
+    if (!legacyMode) continue
+    const currentMode = map[migration.currentPathKey]
+    if (currentMode && currentMode !== legacyMode) {
+      throw new SessionScopeResolutionError('LEGACY_SCOPE_AMBIGUOUS')
+    }
+    map[migration.currentPathKey] = currentMode ?? legacyMode
+    if (migration.currentPathKey !== migration.legacyPathKey) delete map[migration.legacyPathKey]
+  }
+  return map
 }
 
 function writeMap(kind: ScopeKind, map: Record<string, XiaoguiMode>): void {
@@ -418,9 +763,8 @@ export function persistMode(mode: XiaoguiMode): void {
 
 /** 查不到返回 null（渲染层将 null 视为历史数据 = WORK）。 */
 export function getScope(kind: ScopeKind, key: string): XiaoguiMode | null {
-  const normalized = normalizePathKey(key)
-  if (!normalized) return null
-  return mapFor(kind)[normalized] ?? null
+  const keys = versionedPathKeysV2(key)
+  return getScopeAtVersionedKey(kind, keys.current, keys.legacyV1 ?? undefined)
 }
 
 /**
@@ -436,7 +780,7 @@ export function setScope(
   const normalized = normalizePathKey(key)
   if (!normalized) return mode
   const map = mapFor(kind)
-  const existing = map[normalized]
+  const existing = getScope(kind, key)
   if (options?.ifAbsent && existing) return existing
   map[normalized] = mode
   writeMap(kind, map)
@@ -469,12 +813,23 @@ function sanitizeList(raw: unknown): string[] {
   return out
 }
 
+function migratedProjectBaseline(): string[] {
+  const keys = new Set(sanitizeList(store.get('projectBaseline')))
+  const migrations = readCanonicalScopeBindings().legacyWslMigrations.projects
+  for (const migration of Object.values(migrations)) {
+    if (!keys.has(migration.legacyPathKey)) continue
+    keys.delete(migration.legacyPathKey)
+    keys.add(migration.currentPathKey)
+  }
+  return [...keys]
+}
+
 /**
  * 记录项目基线（功能上线时的存量 recentProjects）。
  * 与已有基线取并集（规范化去重）；幂等，重复上报安全。
  */
 export function recordProjectBaseline(paths: string[]): number {
-  const existing = sanitizeList(store.get('projectBaseline'))
+  const existing = migratedProjectBaseline()
   const merged = new Set(existing)
   for (const p of paths) {
     const key = normalizePathKey(p)
@@ -486,7 +841,7 @@ export function recordProjectBaseline(paths: string[]): number {
 }
 
 export function getProjectBaseline(): string[] {
-  return sanitizeList(store.get('projectBaseline'))
+  return migratedProjectBaseline()
 }
 
 /** Test-only：清空 scope 存储内容（恢复默认值）。 */

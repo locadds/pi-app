@@ -43,7 +43,8 @@ import {
   setScope,
 } from './scope-store'
 import { opaqueScopeIdDeriverV1 } from './scope-derive'
-import { SessionScopeResolutionError } from './scope-resolver'
+import { normalizePathKey } from './path-key'
+import { createSessionScopeResolverV1, SessionScopeResolutionError } from './scope-resolver'
 
 beforeEach(() => {
   mem.data = {}
@@ -148,6 +149,88 @@ function sessionCommit(root: string, file: string, sessionMode: 'WORK' | 'DESIGN
 }
 
 describe('scope-store：canonical binding 原子持久化', () => {
+  it('migrates legacy lowercase WSL identities and mode maps without using them as cwd', async () => {
+    const currentRoot = '//wsl.localhost/Ubuntu/home/User/CaseProject'
+    const currentFile = `${currentRoot}/.pi/agent/sessions/CaseSession.jsonl`
+    const legacyRoot = '//wsl.localhost/ubuntu/home/user/caseproject'
+    const legacyFile = `${legacyRoot}/.pi/agent/sessions/casesession.jsonl`
+    const legacy = sessionCommit(legacyRoot, legacyFile, 'CODING')
+    const current = sessionCommit(currentRoot, currentFile, 'WORK')
+
+    mem.data['sessionModeMap'] = { [legacyFile]: 'CODING' }
+    mem.data['projectModeMap'] = { [legacyRoot]: 'DESIGN' }
+    mem.data['projectBaseline'] = [legacyRoot]
+    mem.data['canonicalScopeBindings'] = {
+      version: 2,
+      projects: {
+        [legacy.project.opaqueId]: {
+          canonicalInputFingerprint: legacy.project.canonicalInputFingerprint,
+          rootIdentityDigest: ROOT_IDENTITY,
+        },
+      },
+      sessions: {
+        [legacy.session.opaqueId]: {
+          projectId: legacy.project.opaqueId,
+          canonicalInputFingerprint: legacy.session.canonicalInputFingerprint,
+          sessionMode: 'CODING',
+        },
+      },
+      sandboxes: {},
+    }
+    mem.setCalls = []
+
+    const scope = await createSessionScopeResolverV1(
+      sessionScopePersistenceV1,
+      undefined,
+      () => ROOT_IDENTITY,
+    ).resolve({ rootPath: currentRoot, sessionFile: currentFile })
+
+    expect(scope).toMatchObject({
+      projectId: current.project.opaqueId,
+      sessionKey: current.session.opaqueId,
+      sessionMode: 'CODING',
+      rootPath: currentRoot,
+      sessionFile: currentFile,
+    })
+    expect(getScope('session', currentFile)).toBe('CODING')
+    expect(getScope('project', currentRoot)).toBe('DESIGN')
+    expect(listScopes().sessionModeMap[normalizePathKey(currentFile)]).toBe('CODING')
+    expect(listScopes().projectModeMap[normalizePathKey(currentRoot)]).toBe('DESIGN')
+    expect(getProjectBaseline()).toContain(normalizePathKey(currentRoot))
+
+    const migrated = mem.data['canonicalScopeBindings'] as {
+      version: number
+      projects: Record<string, unknown>
+      sessions: Record<string, unknown>
+    }
+    expect(migrated.version).toBe(3)
+    expect(migrated.projects[current.project.opaqueId]).toBeDefined()
+    expect(migrated.sessions[current.session.opaqueId]).toMatchObject({ sessionMode: 'CODING' })
+    expect(mem.setCalls.filter((call) => call.key === 'canonicalScopeBindings')).toHaveLength(1)
+  })
+
+  it('stops a second WSL path that collides with an already claimed legacy lowercase identity', async () => {
+    const firstRoot = '//wsl.localhost/Ubuntu/home/User/CaseProject'
+    const firstFile = `${firstRoot}/.pi/agent/sessions/CaseSession.jsonl`
+    const collidingRoot = '//wsl.localhost/ubuntu/home/user/caseproject'
+    const collidingFile = `${collidingRoot}/.pi/agent/sessions/casesession.jsonl`
+    mem.data['sessionModeMap'] = { [collidingFile]: 'CODING' }
+    mem.data['projectModeMap'] = { [collidingRoot]: 'CODING' }
+
+    const resolver = createSessionScopeResolverV1(
+      sessionScopePersistenceV1,
+      undefined,
+      (root) => root === firstRoot ? ROOT_IDENTITY : `sha256:${'8'.repeat(64)}`,
+    )
+    await expect(resolver.resolve({ rootPath: firstRoot, sessionFile: firstFile }))
+      .resolves.toMatchObject({ sessionMode: 'CODING' })
+    const afterFirst = structuredClone(mem.data['canonicalScopeBindings'])
+
+    await expect(resolver.resolve({ rootPath: collidingRoot, sessionFile: collidingFile }))
+      .rejects.toEqual(expect.objectContaining({ code: 'LEGACY_SCOPE_AMBIGUOUS' }))
+    expect(mem.data['canonicalScopeBindings']).toEqual(afterFirst)
+  })
+
   it('一次写入 project + session，并以无路径 DTO 只读查询', () => {
     const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'CODING')
     expect(sessionScopePersistenceV1.commitSession(input)).toBe('CODING')

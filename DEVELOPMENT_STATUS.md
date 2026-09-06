@@ -1,5 +1,82 @@
 # 小规开发阶段状态
 
+## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT 旧 WSL 身份兼容迁移（阶段候选，待人工复验）
+
+### 本阶段目标
+
+只关闭 `2b599a8640e31f28f99ee42c900863e1c9f5120b` 人工复验发现的旧 WSL 持久化兼容缺口：在 Main 已可信发现／打开混合大小写 WSL 项目时，识别旧版“全路径小写”Scope 身份，保留既有一级模式和 TaskHub Attempt 的项目归属；发生大小写碰撞时安全停止。旧 key 只用于身份兼容，绝不作为执行 cwd。同步把上一阶段无法执行的测试占位命令改成完整、固定基线命令。
+
+### 实际修改文件
+
+- 版本化路径身份：`src/main/xiaogui/path-key.ts`、`src/main/xiaogui/path-key.test.ts`
+- Scope 兼容迁移：`src/main/xiaogui/scope-resolver.ts`、`src/main/xiaogui/scope-store.ts`、`src/main/xiaogui/scope-store.test.ts`
+- TaskHub 旧 ProjectId 兼容：`src/main/xiaogui/task-hub/project-workspace-resolver.ts`、`src/main/xiaogui/task-hub/project-workspace-resolver.test.ts`
+- 阶段记录：`DEVELOPMENT_STATUS.md`、`doc/README.md`、`doc/README.zh-CN.md`、`doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`，以及既有 Obsidian 总控、进度和 CODING 研究记录
+
+### 已完成内容
+
+1. 路径键契约显式版本化：V2 继续保留 WSL Linux 路径主体大小写；新增只读兼容用的 V1 全小写键。V1 key 只参与旧身份查找和碰撞判断，所有 Scope、Worker 与 TaskHub 返回的执行路径仍取真实 `realpath`／保留大小写路径。
+2. Main 可信 Scope 打开时，同时推导当前和旧版 ProjectId／SessionKey。发现唯一旧绑定时，在一次 `canonicalScopeBindings` 写入中登记 V3 迁移声明、新项目、新会话及原会话模式；不会把旧键当作 cwd，也不会删掉尚未迁移的同项目其他旧会话。
+3. `sessionModeMap`、`projectModeMap` 和 `projectBaseline` 通过已登记迁移声明向当前 key 提供兼容视图。当前与旧值冲突、旧身份已被另一大小写实体认领或实体摘要变化时，返回 `LEGACY_SCOPE_AMBIGUOUS`／既有 fail-closed 错误，不覆盖任何记录。
+4. TaskHub 工作区解析器同时识别当前和旧版 opaque `projectId`。既有 Attempt 不需要改写外键即可继续解析到唯一真实项目；同一旧 ProjectId 匹配两个真实根时返回 `PROJECT_AMBIGUOUS`，不猜测归属。
+5. 上一阶段 `DEVELOPMENT_STATUS.md` 中两条占位测试命令和无固定基线的 ESLint 命令已被完整可执行命令替换；原 `89/83` 不可复核分组数字不再作为证据。
+
+### 未完成内容
+
+- 尚未运行外部模型或 Electron 人工旅程；自动证据不能替代真实用户界面验收。
+- 当前仍是独立 CODING 分支阶段候选，未合入 WORK、阶段线或主线，未发布、未制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 无新增产品或架构偏差。TaskHub Attempt 的旧 opaque `projectId` 采用只读兼容解析而不是批量改写 Attempt 数据，避免改变 V1 审计摘要；其归属仍由唯一真实项目匹配决定。
+- 旧 WSL 键只有在 Main 已经可信取得当前项目与会话执行路径后才能被认领；历史配置、旧 key 或 JSONL 仍不能自行签发项目能力。
+
+### Pi／Skill／插件复用调查
+
+- 检索对象：Pi 0.84.1 `SessionManager`／Session Scope 接口、仓库既有 ScopeStore 与 TaskHub `ProjectWorkspaceResolverV1`、仓库内 Pi Skills 及 `pi-package-manager` 已登记 Extension。
+- 结论：该缺口是小规自身从旧路径键 V1 到 V2 的持久化身份迁移，Pi、Skill 和插件均不掌握小规的 `sessionModeMap`、`canonicalScopeBindings` 或 TaskHub opaque ProjectId，不能安全代替迁移。实现因此复用既有 ScopeStore 和 ProjectWorkspaceResolver 接缝，没有引入新框架、插件或第二套存储。
+
+### 测试命令和测试结果
+
+~~~powershell
+# TDD 红灯：旧模式错误回落 WORK、旧 Attempt 找不到项目、碰撞未拒绝
+npm exec vitest run src/main/xiaogui/scope-store.test.ts src/main/xiaogui/task-hub/project-workspace-resolver.test.ts
+
+# 路径身份与迁移直接回归
+npm exec vitest run src/main/xiaogui/scope-store.test.ts src/main/xiaogui/task-hub/project-workspace-resolver.test.ts src/main/xiaogui/path-key.test.ts
+
+# Scope、Direct CODING 与 TaskHub 工作区聚焦链
+npm exec vitest run src/main/xiaogui/scope-store.test.ts src/main/xiaogui/scope-resolver.test.ts src/main/xiaogui/scope-derive.test.ts src/main/xiaogui/path-key.test.ts src/main/xiaogui/task-hub/project-workspace-resolver.test.ts src/main/xiaogui/coding-extensions/direct-coding-module.test.ts src/main/xiaogui/task-hub/attempt-workspace.test.ts
+
+# 上一阶段占位分组的完整可执行复跑命令
+npm exec vitest run src/main/xiaogui/coding-extensions/direct-coding-module.test.ts src/main/xiaogui/scope-resolver.test.ts src/main/xiaogui/scope-store.test.ts src/main/xiaogui/path-key.test.ts src/main/xiaogui/scope-derive.test.ts src/main/xiaogui/task-hub/project-workspace-resolver.test.ts src/main/trusted-session-access.test.ts src/main/trusted-project-registration.test.ts src/main/session-prepare.test.ts src/main/ipc/handlers/trusted-open-handler-chain.test.ts src/main/__tests__/trusted-worker-seam-architecture.test.ts src/renderer/src/lib/__tests__/session-file-key.test.ts
+npm exec vitest run src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts src/worker/worker-path-bridge-direct-coding.test.ts src/worker/handlers/worker-runtime-tool-registry.test.ts src/main/ipc/handlers/prompt-trusted-session.test.ts src/main/ipc/handlers/trusted-open-handler-chain.test.ts src/main/__tests__/worker-manager-session-isolation.test.ts
+
+# TaskHub V1 核心回归
+npm exec vitest run src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/change-apply.test.ts src/main/xiaogui/coding-extensions/checkpoint-module.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts
+npm exec vitest run -- src/main/xiaogui/task-hub/attempt-workspace.test.ts --testNamePattern "compares MODIFY baselines using checkout-filtered bytes"
+
+npm run typecheck
+$changedTs = @((git diff --name-only --diff-filter=ACMR 2b599a8640e31f28f99ee42c900863e1c9f5120b HEAD); (git diff --name-only --diff-filter=ACMR); (git ls-files --others --exclude-standard)) | Where-Object { $_ -match '\.(ts|tsx)$' } | Sort-Object -Unique
+npm exec eslint -- $changedTs
+git diff --check
+~~~
+
+TDD 红灯为 `2 files / 4 failed / 26 passed`。修复后迁移直接回归 `3 files / 39 passed`，Scope／Direct CODING／TaskHub 聚焦链 `7 files / 86 passed`；完整列名复跑分别为 `12 files / 100 passed` 和 `6 files / 46 passed`。TaskHub V1 首次组合复跑为 `44 passed / 1 timeout`，唯一超时发生在既有 Git checkout-filter 用例的 5 秒环境门；随即按上方精确命令单独复跑该用例为 `1 passed / 17 skipped`，断言通过，未扩大超时或改测试。Node/Web typecheck、当前 `7` 个变更 TS 文件定向 ESLint和差异检查通过。
+
+按范围未运行 OMP、802 MB 装配、外部模型、Electron、Portable 或无关全量测试。
+
+### 已知风险
+
+1. 旧 WSL 全小写键天然丢失大小写信息，因此只有唯一可信实体可自动认领；真实存在大小写碰撞时必须人工选择／处理，系统按设计停止。
+2. TaskHub 旧 Attempt 通过兼容别名维持归属，没有批量改写历史 ProjectId；移除兼容层前必须另做有审计的持久化迁移，当前阶段不扩大范围。
+3. 没有外部模型和 Electron 证据，不能把本阶段表述为完整用户验收。
+
+### 下一阶段计划
+
+- 完成固定差异审查、唯一追加提交和推送后立即停止，等待人工或审查 Agent 复验。
+- 复验通过前不得合入 WORK、阶段线或主线，不进入发布、Portable 或其他施工阶段。
+
 ## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT 路径全消费者与多级子会话收口（阶段候选，待人工复验）
 
 ### 本阶段目标
@@ -37,17 +114,17 @@
 npm exec vitest run src/main/xiaogui/coding-extensions/direct-coding-module.test.ts
 npm exec vitest run src/main/xiaogui/scope-resolver.test.ts src/main/xiaogui/path-key.test.ts src/renderer/src/lib/__tests__/session-file-key.test.ts
 npm exec vitest run src/main/ipc/handlers/trusted-open-handler-chain.test.ts
-npm exec vitest run <12 个路径、Scope、会话与 DirectCoding 受影响测试文件>
-npm exec vitest run <6 个 Worker／Handler 回归文件>
+npm exec vitest run src/main/xiaogui/coding-extensions/direct-coding-module.test.ts src/main/xiaogui/scope-resolver.test.ts src/main/xiaogui/scope-store.test.ts src/main/xiaogui/path-key.test.ts src/main/xiaogui/scope-derive.test.ts src/main/xiaogui/task-hub/project-workspace-resolver.test.ts src/main/trusted-session-access.test.ts src/main/trusted-project-registration.test.ts src/main/session-prepare.test.ts src/main/ipc/handlers/trusted-open-handler-chain.test.ts src/main/__tests__/trusted-worker-seam-architecture.test.ts src/renderer/src/lib/__tests__/session-file-key.test.ts
+npm exec vitest run src/worker/xiaogui-coding-extensions/direct-coding-tool-extension.test.ts src/worker/worker-path-bridge-direct-coding.test.ts src/worker/handlers/worker-runtime-tool-registry.test.ts src/main/ipc/handlers/prompt-trusted-session.test.ts src/main/ipc/handlers/trusted-open-handler-chain.test.ts src/main/__tests__/worker-manager-session-isolation.test.ts
 npm exec vitest run src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/change-apply.test.ts src/main/xiaogui/coding-extensions/checkpoint-module.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts
 npm exec vitest run src/main/xiaogui/scope-derive.test.ts src/main/__tests__/trusted-worker-seam-architecture.test.ts
 npm run typecheck
-$changedTs = @(git diff --name-only --diff-filter=ACMR) | Where-Object { $_ -match '\.(ts|tsx)$' } | Sort-Object -Unique
+$changedTs = @(git diff --name-only --diff-filter=ACMR d795bde501124c974ce77a9b97d25e3318fd670b 2b599a8640e31f28f99ee42c900863e1c9f5120b) | Where-Object { $_ -match '\.(ts|tsx)$' } | Sort-Object -Unique
 npm exec eslint -- $changedTs
-git diff --check
+git diff --check d795bde501124c974ce77a9b97d25e3318fd670b 2b599a8640e31f28f99ee42c900863e1c9f5120b
 ~~~
 
-TDD 红灯分别为：DirectCodingModuleV2 `6 failed / 4 passed`；真实 WSL Scope `1 failed / 12 passed`，错误为 `PROJECT_ROOT_MISSING`；两级子会话 Handler `1 failed / 2 passed`，错误为 `trusted_session_not_listed`。修复后 DirectCodingModuleV2 `10/10`、WSL/路径键 `3 files / 26 tests`、两级 Handler `3/3` 通过；合并受影响链 `12 files / 89 tests`、Worker/Handler `6 files / 83 tests`、TaskHub V1 `4 files / 45 tests`、架构与 Scope ID `2 files / 12 tests` 全部通过。Node/Web typecheck、`12` 个变更 TS/TSX 文件定向 ESLint及差异检查通过。
+TDD 红灯分别为：DirectCodingModuleV2 `6 failed / 4 passed`；真实 WSL Scope `1 failed / 12 passed`，错误为 `PROJECT_ROOT_MISSING`；两级子会话 Handler `1 failed / 2 passed`，错误为 `trusted_session_not_listed`。修复后 DirectCodingModuleV2 `10/10`、WSL/路径键 `3 files / 26 tests`、两级 Handler `3/3` 通过；TaskHub V1 `4 files / 45 tests`、架构与 Scope ID `2 files / 12 tests` 全部通过。原先写作 `12 files / 89 tests` 和 `6 files / 83 tests` 的两个占位分组无法由记录复现，已撤销其证据资格；上方现列出的完整命令在本次候选上复跑结果分别为 `12 files / 100 passed`、`6 files / 46 passed`。Node/Web typecheck、固定 `d795bde5..2b599a86` 的 `12` 个变更 TS/TSX 文件定向 ESLint及差异检查通过。
 
 按范围未运行 OMP、802 MB 装配、外部模型、Electron、Portable 或无关全量测试。
 
