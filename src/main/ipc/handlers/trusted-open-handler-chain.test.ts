@@ -315,4 +315,59 @@ describe('trusted project and session handler chain', () => {
     expect(mocks.setPendingWorkerSessionBinding).toHaveBeenCalledOnce()
     expect(mocks.focusExistingSession).toHaveBeenCalledWith(legitimateFile)
   })
+
+  it('trusts a real nested child only through its discovered parent during prepare then open', async () => {
+    const parentSessionFile = join(sessionsDir, 'nested-parent.jsonl')
+    const childSessionFile = join(
+      sessionsDir,
+      'nested-parent',
+      'run-live',
+      'run-0',
+      'session.jsonl',
+    )
+    mkdirSync(join(sessionsDir, 'nested-parent', 'run-live', 'run-0'), { recursive: true })
+    writeFileSync(parentSessionFile, `${JSON.stringify({
+      type: 'session',
+      id: 'nested-parent-id',
+      cwd: trustedProject,
+    })}\n`, 'utf8')
+    writeFileSync(childSessionFile, `${JSON.stringify({
+      type: 'session',
+      id: 'nested-child-id',
+      cwd: trustedProject,
+    })}\n`, 'utf8')
+
+    await mocks.handlers.get('ipc:dialog:openDirectory')!({})
+    await mocks.handlers.get('ipc:workspace.open')!({ path: trustedProject, awaitWorker: false })
+    mocks.listSessions.mockResolvedValue([])
+    await expect(mocks.handlers.get('ipc:session.prepare')!({
+      workspaceId: trustedProject,
+      sessionFile: childSessionFile,
+      bind: true,
+    })).rejects.toThrow('trusted_session_not_listed')
+
+    mocks.listSessions.mockResolvedValue([{
+      id: 'nested-parent-id',
+      path: parentSessionFile,
+      cwd: trustedProject,
+    }])
+
+    await expect(mocks.handlers.get('ipc:session.prepare')!({
+      workspaceId: trustedProject,
+      sessionFile: childSessionFile,
+      bind: true,
+    })).resolves.toEqual({
+      bound: false,
+      sessionId: 'nested-child-id',
+      sessionFile: childSessionFile,
+    })
+    await expect(mocks.handlers.get('ipc:session.open')!({
+      sessionId: 'nested-child-id',
+      workspaceId: trustedProject,
+      sessionFile: childSessionFile,
+    })).resolves.toMatchObject({ session: { sessionId: 'nested-child-id' } })
+    expect(mocks.listSessions).toHaveBeenCalledWith(resolve(trustedProject))
+    expect(mocks.setPendingWorkerSessionBinding).toHaveBeenCalled()
+    expect(mocks.focusExistingSession).toHaveBeenCalledWith(childSessionFile)
+  })
 })

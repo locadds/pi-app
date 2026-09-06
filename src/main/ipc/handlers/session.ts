@@ -40,6 +40,7 @@ import { recordDefaultCodingCheckpointSessionAddressV1 } from '../../xiaogui/cod
 import { trustedSessionAccessV1 } from '../../trusted-session-access'
 import {
   trustedWorkerCapabilityAuthorityV1,
+  type TrustedProjectBindingHandleV1,
   type TrustedSessionBindingHandleV1,
 } from '../../trusted-worker-capability'
 
@@ -106,7 +107,11 @@ async function resolveDisplaySessionScope(
 async function discoverTrustedSessions(
   workspaceId: string,
   refresh = false,
-): Promise<{ readonly authorizedRoot: string; readonly sessions: SessionOnDiskRow[] }> {
+): Promise<{
+  readonly authorizedRoot: string
+  readonly projectBinding: TrustedProjectBindingHandleV1
+  readonly sessions: SessionOnDiskRow[]
+}> {
   const project = trustedSessionAccessV1.project({ workspaceId })
   const authorizedRoot = project.authorizedRoot
   if (refresh) await sessionPreviewProcess.invalidateListSessions(authorizedRoot)
@@ -117,6 +122,7 @@ async function discoverTrustedSessions(
   }))
   return {
     authorizedRoot,
+    projectBinding: project.binding,
     sessions: discovered.filter((session) => accepted.has(session.path)),
   }
 }
@@ -231,6 +237,14 @@ export function registerSessionHandlers(): void {
     const prepared = await resolvePreparedSessionFile(sessionFile, async () => discovery.sessions)
     if (!prepared) {
       return { bound: false, sessionId: null as string | null, sessionFile }
+    }
+    if (prepared.parentSessionFile) {
+      const recordedChild = trustedSessionAccessV1.recordDerivedSession({
+        projectBinding: discovery.projectBinding,
+        parentSessionFile: prepared.parentSessionFile,
+        session: { id: prepared.sessionId, path: prepared.sessionFile },
+      })
+      if (!recordedChild) throw new Error('trusted_session_not_listed')
     }
     const authorized = await trustedSessionAccessV1.open({
       workspaceId: req.workspaceId,

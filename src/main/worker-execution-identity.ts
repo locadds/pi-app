@@ -3,21 +3,16 @@ import { existsSync, realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { configStore } from './config-store'
 import type { AgentRuntimeConfig } from './wsl/runtime-config'
-import { readProjectRootIdentityV2 } from './project-root-identity'
+import {
+  projectRootComparisonKeyV2,
+  readProjectRootIdentityV2,
+} from './project-root-identity'
 export { readProjectRootIdentityV2, type ProjectRootIdentityV2 } from './project-root-identity'
 
 export interface WorkerResourceConfigIdentityV1 {
   readonly extensionOverrides: Readonly<Record<string, boolean>>
   readonly skillOverrides: Readonly<Record<string, boolean>>
   readonly skillPresentation: Readonly<Record<string, { alias?: string; icon?: string }>>
-}
-
-function pathKey(path: string): string {
-  let normalized = path.replace(/\\/g, '/')
-  if (normalized.length > 1 && !/^[a-zA-Z]:\/$/.test(normalized)) {
-    normalized = normalized.replace(/\/$/, '')
-  }
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
 
 function compareKey(left: string, right: string): number {
@@ -27,11 +22,11 @@ function compareKey(left: string, right: string): number {
 /** Stable project-root identity used by Main before a Worker is reused. */
 export function canonicalWorkerProjectRootV1(cwd: string): string {
   const lexical = resolve(String(cwd || '').trim())
-  if (!existsSync(lexical)) return pathKey(lexical)
+  if (!existsSync(lexical)) return projectRootComparisonKeyV2(lexical)
   try {
-    return pathKey(realpathSync.native(lexical))
+    return projectRootComparisonKeyV2(realpathSync.native(lexical))
   } catch {
-    return pathKey(lexical)
+    return projectRootComparisonKeyV2(lexical)
   }
 }
 

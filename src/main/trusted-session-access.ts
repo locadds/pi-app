@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { extname, isAbsolute } from 'node:path'
 
 import { isWslWindowsPath, wslPathToWindows, wslWindowsPathDistro } from '@shared/wsl-path'
 
@@ -20,6 +20,7 @@ import {
 } from './trusted-worker-capability'
 import { authorizeTrustedProjectRoot, authorizeTrustedSessionFile } from './trusted-workspace'
 import { canonicalWorkerProjectRootV1 } from './worker-execution-identity'
+import { projectRootComparisonKeyV2 } from './project-root-identity'
 import { workerManager } from './worker-manager'
 import type { PiSessionRefV1, PiSessionScopeV1 } from './xiaogui/scope-derive'
 import { normalizePathKey } from './xiaogui/path-key'
@@ -88,6 +89,29 @@ function comparableProjectRoot(sessionFile: string, cwd: string): string {
   return canonicalWorkerProjectRootV1(hostPath)
 }
 
+function realPortablePath(value: string): string | null {
+  try {
+    return realpathSync.native(sessionFileForFs(value)).replace(/\\/g, '/')
+  } catch {
+    return null
+  }
+}
+
+function childArtifactPathOwnedByParent(
+  parentSessionFile: string,
+  childSessionFile: string,
+): boolean {
+  const realParent = realPortablePath(parentSessionFile)
+  const realChild = realPortablePath(childSessionFile)
+  if (!realParent || !realChild || extname(realParent).toLowerCase() !== '.jsonl') return false
+  const parentArtifactRoot = realParent.slice(0, -extname(realParent).length)
+  const artifactKey = `${projectRootComparisonKeyV2(parentArtifactRoot)}/`
+  const childKey = projectRootComparisonKeyV2(realChild)
+  if (!childKey.startsWith(artifactKey)) return false
+  const relativeArtifactPath = childKey.slice(artifactKey.length)
+  return /^[A-Za-z0-9._-]+\/run-\d+\/session\.jsonl$/.test(relativeArtifactPath)
+}
+
 export class TrustedSessionAccessModuleV1 {
   private readonly materializedSessions = new WeakSet<object>()
   private readonly listedSessions = new Map<string, {
@@ -148,37 +172,72 @@ export class TrustedSessionAccessModuleV1 {
 
     const accepted: string[] = []
     for (const candidate of input.sessions) {
-      const sessionId = String(candidate.id || '').trim()
-      const requestedPath = String(candidate.path || '').trim()
-      if (!sessionId || !requestedPath) continue
-      const authorized = this.options.authorizeFile(project.authorizedRoot, requestedPath)
-      if (!authorized.ok) continue
-      if (
-        canonicalWorkerProjectRootV1(authorized.cwd) !== projectRootKey
-        || !this.options.sessionFileExists(sessionFileForFs(authorized.sessionFile))
-      ) continue
-      const metadata = this.options.readSessionMeta(authorized.sessionFile)
-      if (!metadata || metadata.sessionId !== sessionId) continue
-      const metadataRoot = metadata.cwd
-        ? comparableProjectRoot(authorized.sessionFile, metadata.cwd)
-        : ''
-      const sandboxException = this.options.sandboxOwnsSession(
-        project.authorizedRoot,
-        authorized.sessionFile,
-      )
-      if (metadataRoot !== projectRootKey && !sandboxException) continue
-
-      const key = normalizePathKey(authorized.sessionFile)
-      this.listedSessions.set(key, Object.freeze({
-        authorizedRoot: project.authorizedRoot,
-        projectIdentityDigest: project.projectIdentityDigest,
-        sessionId,
-        canonicalSessionFile: authorized.sessionFile,
-      }))
-      accepted.push(authorized.sessionFile)
+      const recorded = this.recordSessionCandidate(project, projectRootKey, candidate)
+      if (recorded) accepted.push(recorded)
     }
     this.options.authority.inspectProject(input.projectBinding)
     return Object.freeze(accepted)
+  }
+
+  /**
+   * Record a nested Pi child only when its exact top-level parent was produced
+   * by the current Main SessionManager listing and its real path remains inside
+   * that parent's private artifact tree. This records evidence; it does not
+   * mint a session capability.
+   */
+  recordDerivedSession(input: {
+    readonly projectBinding: TrustedProjectBindingHandleV1
+    readonly parentSessionFile: string
+    readonly session: { readonly id: string; readonly path: string }
+  }): string | null {
+    const project = this.options.authority.inspectProject(input.projectBinding)
+    const projectRootKey = canonicalWorkerProjectRootV1(project.authorizedRoot)
+    const parent = this.listedSessions.get(normalizePathKey(input.parentSessionFile))
+    if (
+      !parent
+      || canonicalWorkerProjectRootV1(parent.authorizedRoot) !== projectRootKey
+      || parent.projectIdentityDigest !== project.projectIdentityDigest
+      || !childArtifactPathOwnedByParent(parent.canonicalSessionFile, input.session.path)
+    ) return null
+
+    const recorded = this.recordSessionCandidate(project, projectRootKey, input.session)
+    this.options.authority.inspectProject(input.projectBinding)
+    return recorded
+  }
+
+  private recordSessionCandidate(
+    project: TrustedProjectBindingSnapshotV1,
+    projectRootKey: string,
+    candidate: { readonly id: string; readonly path: string },
+  ): string | null {
+    const sessionId = String(candidate.id || '').trim()
+    const requestedPath = String(candidate.path || '').trim()
+    if (!sessionId || !requestedPath) return null
+    const authorized = this.options.authorizeFile(project.authorizedRoot, requestedPath)
+    if (!authorized.ok) return null
+    if (
+      canonicalWorkerProjectRootV1(authorized.cwd) !== projectRootKey
+      || !this.options.sessionFileExists(sessionFileForFs(authorized.sessionFile))
+    ) return null
+    const metadata = this.options.readSessionMeta(authorized.sessionFile)
+    if (!metadata || metadata.sessionId !== sessionId) return null
+    const metadataRoot = metadata.cwd
+      ? comparableProjectRoot(authorized.sessionFile, metadata.cwd)
+      : ''
+    const sandboxException = this.options.sandboxOwnsSession(
+      project.authorizedRoot,
+      authorized.sessionFile,
+    )
+    if (metadataRoot !== projectRootKey && !sandboxException) return null
+
+    const key = normalizePathKey(authorized.sessionFile)
+    this.listedSessions.set(key, Object.freeze({
+      authorizedRoot: project.authorizedRoot,
+      projectIdentityDigest: project.projectIdentityDigest,
+      sessionId,
+      canonicalSessionFile: authorized.sessionFile,
+    }))
+    return authorized.sessionFile
   }
 
   private async prepareOpen(

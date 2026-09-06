@@ -7,6 +7,8 @@ type ListSessions = (workspaceId: string) => Promise<SessionOnDiskRow[]>
 type PreparedSession = {
   sessionId: string
   sessionFile: string
+  /** Exact top-level Pi session whose private artifact tree owns this child. */
+  parentSessionFile?: string
 }
 
 type DerivedChildSessionLocator = {
@@ -53,9 +55,11 @@ export async function resolvePreparedSessionFile(
 ): Promise<PreparedSession | null> {
   const directMeta = readSessionMetaFromFile(candidateSessionFile)
   if (directMeta) {
+    const locator = parseDerivedChildSessionLocator(candidateSessionFile)
     return {
       sessionId: directMeta.sessionId,
       sessionFile: candidateSessionFile,
+      ...(locator ? { parentSessionFile: locator.parentSessionFile } : {}),
     }
   }
 

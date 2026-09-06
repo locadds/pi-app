@@ -1,5 +1,58 @@
 # 小规开发阶段状态
 
+## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT 合法 WSL／嵌套会话回归补正（阶段候选，待人工复验）
+
+### 本阶段目标
+
+只修复 `f45371cf866c8cb8995abb8871d25da6ff0b4046` 人工复验发现的两条合法流程回归：WSL 项目执行路径不得被比较键改成小写；Pi 顶层列表未递归返回的合法嵌套子 Agent 会话，必须能通过已登记父会话完成 `prepare → open`。不修改普通 CODING 产品主链、UI、权限矩阵、OMP、TaskHub 或 WORK 行为。
+
+### 实际修改文件
+
+- WSL 执行路径与比较键：`src/main/project-root-identity.ts`、`src/main/trusted-project-registration-core.ts`、`src/main/worker-execution-identity.ts`、`src/main/trusted-project-registration.test.ts`
+- 嵌套子会话来源证明：`src/main/session-prepare.ts`、`src/main/trusted-session-access.ts`、`src/main/ipc/handlers/session.ts`、`src/main/ipc/handlers/trusted-open-handler-chain.test.ts`
+- 阶段记录：`DEVELOPMENT_STATUS.md`、`doc/README.md`、`doc/README.zh-CN.md`、`doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`，以及既有 Obsidian 总控、进度和 CODING 研究记录
+
+### 已完成内容
+
+1. `ProjectRootIdentityV2.canonicalRoot` 现在只保存 `realpath` 返回的、保留真实大小写的执行路径；新增比较专用 key，Windows 本地路径按大小写不敏感比较，WSL 只统一 UNC server／distro，Linux 路径主体继续区分大小写。比较 key 不再作为 Worker cwd 返回。
+2. 项目登记和 Worker 复用比较统一消费比较专用 key，实际启动、打开和授权仍使用保留大小写的执行根。当前机器通过真实 `\\wsl.localhost\Ubuntu\tmp\XiaoguiCaseRoot-*` 目录证明返回 cwd 可实际访问。
+3. `resolvePreparedSessionFile` 对标准 Pi 子 Agent 产物路径同时返回精确父会话证据。Main 只有在该父会话已由 SessionManager 顶层列表登记、项目身份一致，并且子会话 `realpath` 位于父会话私有产物树的固定 `run-id/run-N/session.jsonl` 形状内时，才登记该子会话。
+4. 派生登记仍只是 Open 前证据，不在 List/Preview 中签发会话能力；任意 JSONL、伪造父路径、越界或链接写穿不能借此获得 Worker 启动权。合法嵌套子会话已通过真实 handler 级 `prepare → open` 回归。
+
+### 未完成内容
+
+- 尚未执行外部模型或 Electron 人工旅程；本阶段自动证据只覆盖真实 WSL 文件系统、Main handler、会话信任模块及既有 TaskHub 回归。
+- 当前仍是独立 CODING 分支阶段候选，未合入 WORK、阶段线或主线，未发布、未制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 无新增产品或架构偏差。本轮只恢复两条被 CLOSEOUT 安全收口误伤的合法流程，不降低“Main 是 Worker 项目根唯一权威”、不恢复 Renderer／JSONL 自证，也不改变 List/Preview 不签发能力的冻结边界。
+- WSL 真实回归在本机固定 Ubuntu 发行版上执行；无该发行版的环境会跳过此单条平台测试，但本轮人工证据中的该用例实际执行并通过。
+
+### 测试命令和测试结果
+
+~~~powershell
+npm exec vitest run src/main/trusted-project-registration.test.ts src/main/ipc/handlers/trusted-open-handler-chain.test.ts
+npm exec vitest run src/main/trusted-project-registration.test.ts src/main/trusted-session-access.test.ts src/main/session-prepare.test.ts src/main/ipc/handlers/trusted-open-handler-chain.test.ts src/main/ipc/handlers/session-preview-authorization.test.ts src/main/ipc/handlers/session-preview-invalidation.test.ts src/main/__tests__/worker-manager-pool.test.ts
+npm exec vitest run src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/change-apply.test.ts src/main/xiaogui/coding-extensions/checkpoint-module.test.ts src/main/xiaogui/coding-extensions/permission-module.test.ts
+npm run typecheck
+$changedTs = @((git diff --name-only --diff-filter=ACMR); (git ls-files --others --exclude-standard)) | Where-Object { $_ -match '\.(ts|tsx)$' } | Sort-Object -Unique
+npm exec eslint -- $changedTs
+git diff --check
+~~~
+
+红灯先稳定复现两项失败：WSL 注册返回全小写且目标不存在；嵌套子会话被 `trusted_session_not_listed` 拒绝。修复后两条直接回归 `2 files / 6 tests` 通过；受影响链 `7 files / 78 tests` 通过；TaskHub V1 核心回归 `4 files / 45 tests` 通过；Node/Web typecheck 和 `8` 个变更 TS 文件定向 ESLint 通过。最终差异检查在提交前再次执行。按范围未运行 OMP、802 MB 装配、外部模型、Electron、Portable 或无关全量测试。
+
+### 已知风险
+
+- 标准子 Agent 目录形状仍由 Pi 0.84.1 当前 `parent/run-id/run-N/session.jsonl` 约定决定；未来 Pi 改变产物布局时会安全拒绝，需要先更新契约与回归，不会退回任意递归信任。
+- 没有外部模型和 Electron 人工旅程证据，不能把本候选表述为完整用户验收。
+
+### 下一阶段计划
+
+- 完成差异审查、唯一追加提交和推送后立即停止，等待人工或审查 Agent 复验。
+- 复验通过前不得合入 WORK、阶段线或主线，不得进入发布、Portable 或下一阶段施工。
+
 ## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT 信任来源补正（阶段候选，待人工复验）
 
 ### 本阶段目标

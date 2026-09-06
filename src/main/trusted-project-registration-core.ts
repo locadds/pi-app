@@ -1,4 +1,7 @@
-import type { ProjectRootIdentityV2 } from './project-root-identity'
+import {
+  projectRootComparisonKeyV2,
+  type ProjectRootIdentityV2,
+} from './project-root-identity'
 
 export type TrustedProjectRegistrationSourceV1 =
   | 'NATIVE_DIRECTORY_PICKER'
@@ -28,8 +31,7 @@ interface TrustedProjectRegistrationOptionsV1 {
 }
 
 function registrationKey(root: string): string {
-  const normalized = String(root || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
-  return /^[a-zA-Z]:\//.test(normalized) ? normalized.toLowerCase() : normalized
+  return projectRootComparisonKeyV2(String(root || '').trim())
 }
 
 /** Main-only, revalidated evidence that a project was selected by a native Main action. */
