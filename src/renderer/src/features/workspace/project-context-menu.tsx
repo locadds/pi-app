@@ -66,7 +66,6 @@ export function ProjectContextMenuPortal({
           store.clearTimeline()
           store.setHistoryMeta(0, 0, null)
           store.setSessions([])
-          await ipcClient.invoke('settings.set', { key: 'currentProject', value: null }).catch(() => {})
         }
       }
       toast.success(t('common:sidebar.removed'))

@@ -1,5 +1,4 @@
-import { isAbsolute, posix, resolve } from 'path'
-import { existsSync } from 'fs'
+import { isAbsolute, posix } from 'path'
 import { isWslWindowsPath, wslPathToWindows, wslWindowsPathDistro } from '@shared/wsl-path'
 import { configStore } from './config-store'
 import {
@@ -10,22 +9,41 @@ import {
 import { readSessionMetaFromFile } from './session-file-meta'
 import { workerManager } from './worker-manager'
 import { getAgentRuntimeConfig } from './wsl/runtime-config'
+import {
+  trustedProjectRegistrationV1,
+  type TrustedProjectRegistrationSourceV1,
+} from './trusted-project-registration'
 
 /** Active workspace root for capability-bound IPC (git mutations, image preview). */
 export function getTrustedWorkspaceRoot(): string | null {
-  const raw = workerManager.cwd || configStore.get('currentProject')
-  const t = typeof raw === 'string' ? raw.trim() : ''
-  return t || null
+  for (const raw of [workerManager.cwd, configStore.get('currentProject')]) {
+    const authorized = trustedProjectRegistrationV1.authorize(
+      typeof raw === 'string' ? raw : undefined,
+    )
+    if (authorized.ok) return authorized.cwd
+  }
+  return null
+}
+
+/** Main-owned native-picker or managed-sandbox registration. */
+export function registerTrustedProjectRoot(
+  path: string,
+  source: TrustedProjectRegistrationSourceV1,
+): { ok: true; cwd: string } | { ok: false; error: string } {
+  return trustedProjectRegistrationV1.register(path, source)
+}
+
+export function revokeTrustedProjectRoot(path: string): void {
+  trustedProjectRegistrationV1.revoke(path)
 }
 
 export function authorizeTrustedCwd(reqCwd: string | undefined): { ok: true; cwd: string } | { ok: false; error: string } {
+  const requested = String(reqCwd || '').trim()
+  if (requested) return trustedProjectRegistrationV1.authorize(requested)
   const trusted = getTrustedWorkspaceRoot()
-  if (!trusted) return { ok: false, error: 'no_trusted_workspace' }
-  if (!reqCwd || !String(reqCwd).trim()) return { ok: true, cwd: trusted }
-  const a = resolve(trusted)
-  const b = resolve(String(reqCwd).trim())
-  if (a !== b) return { ok: false, error: 'cwd_not_trusted' }
-  return { ok: true, cwd: trusted }
+  return trusted
+    ? { ok: true, cwd: trusted }
+    : { ok: false, error: 'no_trusted_workspace' }
 }
 
 type TrustedSessionFileResult =
@@ -51,18 +69,10 @@ function workspacePathsEqual(a: string, b: string): boolean {
 function resolveTrustedSessionCwd(reqCwd: string | undefined): { ok: true; cwd: string } | { ok: false; error: string } {
   const target = String(reqCwd || '').trim()
   if (!target) return authorizeTrustedCwd(reqCwd)
-  const trusted = [
-    getTrustedWorkspaceRoot(),
-    ...(configStore.get('recentProjects') || []),
-  ].find((workspace) => workspace && workspacePathsEqual(workspace, target))
-  if (trusted) return { ok: true, cwd: trusted }
-  if (isPortableAbsolutePath(target) && isSandboxWorkspacePath(target) && existsSync(target)) {
-    return { ok: true, cwd: target }
-  }
-  return { ok: false, error: 'cwd_not_trusted' }
+  return trustedProjectRegistrationV1.authorize(target)
 }
 
-/** Main-owned project grant: active/recent project or a managed sandbox. */
+/** Main-owned project grant: a native-picker or managed-sandbox registration. */
 export function authorizeTrustedProjectRoot(
   reqCwd: string | undefined,
 ): { ok: true; cwd: string } | { ok: false; error: string } {

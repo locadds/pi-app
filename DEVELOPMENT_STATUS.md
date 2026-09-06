@@ -1,5 +1,62 @@
 # 小规开发阶段状态
 
+## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT 信任来源补正（阶段候选，待人工复验）
+
+### 本阶段目标
+
+只关闭 `fed469a` 人工复验发现的两条能力签发旁路：Renderer 可写的 `currentProject`／`recentProjects` 不得成为项目授权；任意自报 cwd 的 JSONL 不得成为会话授权。普通 CODING、TaskHub、WORK、OMP、权限矩阵和界面产品定义均不改变。
+
+### 实际修改文件
+
+- 项目信任登记：`src/main/trusted-project-registration-core.ts`（新增）、`src/main/trusted-project-registration.ts`（新增）、`src/main/trusted-project-registration.test.ts`（新增）、`src/main/trusted-workspace.ts`、`src/main/__tests__/trusted-workspace.test.ts`
+- Main 原生选择与项目入口：`src/main/ipc/handlers/dialog.ts`、`src/main/ipc/handlers/workspace.ts`、`src/main/ipc/schemas.ts`
+- Main 会话发现与能力签发：`src/main/trusted-session-access.ts`、`src/main/trusted-session-access.test.ts`、`src/main/ipc/handlers/session.ts`、`src/main/ipc/handlers/session-preview-authorization.test.ts`、`src/main/ipc/handlers/session-preview-invalidation.test.ts`、`src/main/xiaogui/coding-extensions/checkpoint-default-composition.ts`
+- 真实 Handler 攻击链：`src/main/ipc/handlers/trusted-open-handler-chain.test.ts`（新增）、`src/main/__tests__/trusted-worker-seam-architecture.test.ts`
+- Renderer 消费迁移：`src/renderer/src/lib/activate-workspace.ts`、`src/renderer/src/lib/ensure-workspace-worker.ts`、`src/renderer/src/features/workspace/project-context-menu.tsx`
+- 阶段记录：`DEVELOPMENT_STATUS.md`、`doc/README.md`、`doc/README.zh-CN.md`、`doc/architecture/xiaogui-oh-my-pi-acp-runtime.md`，以及既有 Obsidian 总控、进度和 CODING 研究记录
+
+### 已完成内容
+
+1. 新增 Main 私有项目登记。只有原生目录选择器的实际选择结果和 Main 创建／验证的受管 Sandbox 可以写入登记；登记只保存来源、规范根和目录实体摘要，每次签发内存能力前重新核验实体。
+2. `settings.set` 不再接受 `currentProject` 或 `recentProjects`。这两项继续可用于 UI 显示和候选排序，但不能注册项目，也不能签发能力。
+3. `workspace.open`、`workspace.switch` 和 `workspace.ensureWorker` 改为只消费既有 Main 登记；未登记路径在修改配置、创建 Worker 或装配上下文前失败。应用启动遇到仅存在于旧 UI 配置的路径时安全回到空白会话，不静默升级授权。
+4. Main 会话列表在已授权项目根下发现会话，并记录精确 `session id + session file + project identity` 作为显示后可打开证据；列举本身不签发会话能力或启动 Agent Worker。
+5. `session.open`、`setPendingBind`、`prepare`、`navigateTree` 只有命中 Main 列表登记、原子 New/Fork/Clone 回执或精确 live binding 时才能继续。Checkpoint 的持久化记录仍只是待复核证据，恢复前重新执行项目授权和 Main 会话发现。
+6. 新增真实 handler 级负例，串起 `settings.set → workspace.open/switch/ensureWorker` 和 `sessionFile → open/prepare/navigate/prompt`。伪造请求不会创建 Worker、聚焦会话、装配 CODING 上下文、调用模型或提交消息；合法原生选择与 Main 列举后的打开路径仍可通过。
+
+### 未完成内容
+
+- 尚未运行“自然语言 → 外部模型 → Electron 用户界面”的人工旅程；自动证据只覆盖 Main/IPC/Worker 的确定性信任接缝和既有真实 Pi 工具生命周期。
+- 当前仍是独立 CODING 分支的阶段候选，未合入 WORK、阶段线或主线，未发布或制作 Portable。
+
+### 与规格文档存在的偏差
+
+- 无新增产品或架构偏差。`fed469a` 中“Renderer／IPC 不能取得能力”只约束了句柄形态、未约束签发来源，本轮已将该表述补正为“句柄不可构造且签发依据只能来自 Main 原生选择、受管 Sandbox、Main 会话列表、原子创建回执或 live binding”。
+- 首次使用本轮实现时，只有旧 `currentProject/recentProjects`、没有 Main 登记的历史项目不会被静默打开；用户需通过既有原生目录选择器重新确认一次。这是 fail-closed 迁移，不新增界面或模式。
+
+### 测试命令和测试结果
+
+~~~powershell
+npm exec vitest run -- --reporter=dot src/main/ipc/handlers/trusted-open-handler-chain.test.ts src/main/trusted-project-registration.test.ts src/main/trusted-session-access.test.ts src/main/__tests__/trusted-workspace.test.ts src/main/ipc/handlers/prompt-trusted-session.test.ts src/main/ipc/handlers/session-preview-authorization.test.ts src/main/ipc/handlers/session-preview-invalidation.test.ts src/main/xiaogui/coding-extensions/checkpoint-production-composition.test.ts src/main/xiaogui/coding-extensions/checkpoint-session-binding-registry.test.ts src/main/xiaogui/coding-extensions/checkpoint-module.test.ts src/main/__tests__/worker-manager-session-isolation.test.ts src/main/__tests__/worker-manager-pool.test.ts src/main/__tests__/trusted-worker-seam-architecture.test.ts src/worker/worker-runtime-session-execution-lease.test.ts src/worker/handlers/worker-handlers-session.test.ts src/worker/handlers/worker-handlers-turn.test.ts src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/change-apply.test.ts src/renderer/src/lib/activate-workspace.test.ts src/renderer/src/lib/__tests__/activate-workspace-switch.test.ts
+npm run typecheck
+$changedTs = @((git diff --name-only --diff-filter=ACMR); (git ls-files --others --exclude-standard)) | Where-Object { $_ -match '\.(ts|tsx)$' } | Sort-Object -Unique
+npm exec eslint -- $changedTs
+git diff --check
+~~~
+
+结果：TDD 红灯先证明未登记 JSONL 仍可打开且项目登记模块缺失；实现后最终聚焦回归 `20 files / 190 tests` 全部通过，Node/Web TypeScript 通过，`19` 个变更 TS/TSX 文件定向 ESLint 通过，最终差异检查通过。按范围未运行 OMP、802 MB 装配、外部模型、Electron、Portable 或无关全量测试。
+
+### 已知风险
+
+- Main 项目登记是本机私有证据，不是跨设备凭据；主进程仍会在每次能力签发时重验目录实体。
+- Main 会话列表登记只在当前进程内有效；重启后必须重新列举或走原子创建／live binding，不能依靠 Renderer 缓存恢复执行权。
+- 没有外部模型和 Electron 人工旅程证据，不能把本候选表述为完整用户验收。
+
+### 下一阶段计划
+
+- 完成定向 lint、差异审查、唯一追加提交和远端一致性核对后立即停止，等待人工或审查 Agent 复验。
+- 复验通过前不得合入 WORK、阶段线或主线，不得进入发布、Portable 或下一阶段施工。
+
 ## 2026-09-06｜CODING-P1D-B-R3.3-CLOSEOUT Pi Worker 项目根唯一权威收口（阶段候选，待人工复验）
 
 ### 本阶段目标

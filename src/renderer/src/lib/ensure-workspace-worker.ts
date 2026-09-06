@@ -17,7 +17,6 @@ export function ensureWorkspaceWorkerOnBoot(): Promise<void> {
     const persisted = useUIStore.getState().currentWorkspace
     const boot = resolveBootWorkspaceState(persisted)
     if (boot.ephemeralDraft) {
-      void ipcClient.invoke('settings.set', { key: 'currentProject', value: null }).catch(() => {})
       enterBlankSession('ephemeral-sandbox')
       queueMicrotask(() => void refreshComposerRunDisplay())
       return
@@ -25,8 +24,17 @@ export function ensureWorkspaceWorkerOnBoot(): Promise<void> {
     const path = boot.workspace
     if (!path) return
     useUIStore.getState().setWorkspace(path)
-    // Persist selection without forking a pi Worker; prompt/session.new/model ops start it lazily.
-    void ipcClient.invoke('settings.set', { key: 'currentProject', value: path }).catch(() => {})
+    // Re-open only a Main-authenticated project registration; this never starts
+    // a Worker until a Worker-required action occurs.
+    try {
+      await ipcClient.invoke('workspace.open', { path, awaitWorker: false })
+    } catch (error) {
+      console.error('[ensureWorkspaceWorkerOnBoot] trusted project reopen failed:', error)
+      useUIStore.getState().setWorkspace(null)
+      enterBlankSession('ephemeral-sandbox')
+      queueMicrotask(() => void refreshComposerRunDisplay())
+      return
+    }
     try {
       await refreshComposerRunDisplay()
     } catch (error) {

@@ -90,6 +90,12 @@ function comparableProjectRoot(sessionFile: string, cwd: string): string {
 
 export class TrustedSessionAccessModuleV1 {
   private readonly materializedSessions = new WeakSet<object>()
+  private readonly listedSessions = new Map<string, {
+    readonly authorizedRoot: string
+    readonly projectIdentityDigest: string
+    readonly sessionId: string
+    readonly canonicalSessionFile: string
+  }>()
 
   constructor(private readonly options: TrustedSessionAccessOptionsV1) {}
 
@@ -106,9 +112,73 @@ export class TrustedSessionAccessModuleV1 {
     readonly workspaceId: string
     readonly sessionFile: string
   }): Promise<TrustedSessionAccessV1> {
-    const access = await this.prepareOpen(input)
+    const registered = this.options.bindings.resolveRegisteredSessionBinding(input.sessionFile)
+    if (registered) return this.accessFromRegisteredBinding(registered, input)
+
+    const project = this.project({ workspaceId: input.workspaceId })
+    const listed = this.listedSessions.get(normalizePathKey(input.sessionFile))
+    if (
+      !listed
+      || canonicalWorkerProjectRootV1(listed.authorizedRoot)
+        !== canonicalWorkerProjectRootV1(project.authorizedRoot)
+      || listed.projectIdentityDigest !== project.projectIdentityDigest
+    ) {
+      throw new Error('trusted_session_not_listed')
+    }
+    const access = await this.prepareOpen(input, undefined, project.binding, listed.sessionId)
     this.options.bindings.rememberSessionBinding(access.binding)
     return access
+  }
+
+  /**
+   * Record Main SessionManager discovery output without issuing a session
+   * capability. Renderer selectors can only consume an exact recorded item.
+   */
+  recordListedSessions(input: {
+    readonly projectBinding: TrustedProjectBindingHandleV1
+    readonly sessions: readonly { readonly id: string; readonly path: string }[]
+  }): readonly string[] {
+    const project = this.options.authority.inspectProject(input.projectBinding)
+    const projectRootKey = canonicalWorkerProjectRootV1(project.authorizedRoot)
+    for (const [key, row] of this.listedSessions) {
+      if (canonicalWorkerProjectRootV1(row.authorizedRoot) === projectRootKey) {
+        this.listedSessions.delete(key)
+      }
+    }
+
+    const accepted: string[] = []
+    for (const candidate of input.sessions) {
+      const sessionId = String(candidate.id || '').trim()
+      const requestedPath = String(candidate.path || '').trim()
+      if (!sessionId || !requestedPath) continue
+      const authorized = this.options.authorizeFile(project.authorizedRoot, requestedPath)
+      if (!authorized.ok) continue
+      if (
+        canonicalWorkerProjectRootV1(authorized.cwd) !== projectRootKey
+        || !this.options.sessionFileExists(sessionFileForFs(authorized.sessionFile))
+      ) continue
+      const metadata = this.options.readSessionMeta(authorized.sessionFile)
+      if (!metadata || metadata.sessionId !== sessionId) continue
+      const metadataRoot = metadata.cwd
+        ? comparableProjectRoot(authorized.sessionFile, metadata.cwd)
+        : ''
+      const sandboxException = this.options.sandboxOwnsSession(
+        project.authorizedRoot,
+        authorized.sessionFile,
+      )
+      if (metadataRoot !== projectRootKey && !sandboxException) continue
+
+      const key = normalizePathKey(authorized.sessionFile)
+      this.listedSessions.set(key, Object.freeze({
+        authorizedRoot: project.authorizedRoot,
+        projectIdentityDigest: project.projectIdentityDigest,
+        sessionId,
+        canonicalSessionFile: authorized.sessionFile,
+      }))
+      accepted.push(authorized.sessionFile)
+    }
+    this.options.authority.inspectProject(input.projectBinding)
+    return Object.freeze(accepted)
   }
 
   private async prepareOpen(
@@ -117,12 +187,17 @@ export class TrustedSessionAccessModuleV1 {
       readonly sessionFile: string
     },
     expectedProjectIdentityDigest?: string,
+    existingProjectBinding?: TrustedProjectBindingHandleV1,
+    expectedSessionId?: string,
   ): Promise<TrustedSessionAccessV1> {
     const authorized = this.options.authorizeFile(input.workspaceId, input.sessionFile)
     if (!authorized.ok) throw new Error(authorized.error)
     const ref = { rootPath: authorized.cwd, sessionFile: authorized.sessionFile }
-    const projectBinding = this.options.issuer.issueProject(ref.rootPath)
+    const projectBinding = existingProjectBinding ?? this.options.issuer.issueProject(ref.rootPath)
     const project = this.options.authority.inspectProject(projectBinding)
+    if (canonicalWorkerProjectRootV1(project.authorizedRoot) !== canonicalWorkerProjectRootV1(ref.rootPath)) {
+      throw new Error('trusted_session_binding_mismatch')
+    }
     if (
       expectedProjectIdentityDigest
       && project.projectIdentityDigest !== expectedProjectIdentityDigest
@@ -132,12 +207,38 @@ export class TrustedSessionAccessModuleV1 {
     const scope = await this.options.scopeResolver.resolveExisting(ref)
       ?? await this.options.scopeResolver.resolve(ref)
 
+    if (expectedSessionId) {
+      const metadata = this.options.readSessionMeta(ref.sessionFile)
+      if (!metadata || metadata.sessionId !== expectedSessionId) {
+        throw new Error('trusted_session_listing_changed')
+      }
+    }
+
     // A root replacement during scope resolution must fail before a session
     // capability is issued or registered.
     this.options.authority.inspectProject(projectBinding)
     const binding = this.options.issuer.issueSession(projectBinding, ref.sessionFile)
     this.materializedSessions.add(binding as object)
     this.assertSessionMetadata(binding)
+    return Object.freeze({ binding, ref, scope })
+  }
+
+  private async accessFromRegisteredBinding(
+    binding: TrustedSessionBindingHandleV1,
+    input: { readonly workspaceId: string; readonly sessionFile: string },
+  ): Promise<TrustedSessionAccessV1> {
+    const snapshot = this.inspectSession(binding)
+    if (
+      canonicalWorkerProjectRootV1(snapshot.authorizedRoot)
+        !== canonicalWorkerProjectRootV1(input.workspaceId)
+      || normalizePathKey(snapshot.canonicalSessionFile) !== normalizePathKey(input.sessionFile)
+    ) throw new Error('trusted_session_binding_mismatch')
+    const ref = {
+      rootPath: snapshot.authorizedRoot,
+      sessionFile: snapshot.canonicalSessionFile,
+    }
+    const scope = await this.options.scopeResolver.resolveExisting(ref)
+    if (!scope) throw new Error('trusted_session_scope_missing')
     return Object.freeze({ binding, ref, scope })
   }
 
@@ -203,12 +304,24 @@ export class TrustedSessionAccessModuleV1 {
     readonly projectIdentityDigest: string
     readonly sessionFile: string
   }): Promise<TrustedSessionAccessV1> {
+    const project = this.project({ workspaceId: input.authorizedRoot })
+    if (project.projectIdentityDigest !== input.projectIdentityDigest) {
+      throw new Error('PROJECT_IDENTITY_CHANGED')
+    }
+    const listed = this.listedSessions.get(normalizePathKey(input.sessionFile))
+    if (
+      !listed
+      || listed.projectIdentityDigest !== input.projectIdentityDigest
+      || listed.projectIdentityDigest !== project.projectIdentityDigest
+    ) throw new Error('trusted_session_not_listed')
     const opened = await this.prepareOpen(
       {
         workspaceId: input.authorizedRoot,
         sessionFile: input.sessionFile,
       },
       input.projectIdentityDigest,
+      project.binding,
+      listed.sessionId,
     )
     this.options.bindings.rememberSessionBinding(opened.binding)
     return opened

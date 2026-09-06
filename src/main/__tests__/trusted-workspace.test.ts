@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   cwd: '/workspace' as string | null,
   currentProject: null as string | null,
   recentProjects: [] as string[],
+  registeredProjects: new Set<string>(),
   sandboxPath: '' as string,
   sandboxOwnsSession: false,
   sandboxBinding: null as string | null,
@@ -44,6 +45,27 @@ vi.mock('../session-file-meta', () => ({
   readSessionMetaFromFile: mocks.readSessionMetaFromFile,
 }))
 
+vi.mock('../trusted-project-registration', () => ({
+  trustedProjectRegistrationV1: {
+    authorize: vi.fn((path: string | undefined) => {
+      const candidate = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '')
+      const key = /^[a-zA-Z]:\//.test(candidate) ? candidate.toLowerCase() : candidate
+      const found = [...mocks.registeredProjects].find((registered) => {
+        const normalized = registered.replace(/\\/g, '/').replace(/\/+$/, '')
+        const registeredKey = /^[a-zA-Z]:\//.test(normalized)
+          ? normalized.toLowerCase()
+          : normalized
+        return registeredKey === key
+      })
+      return found
+        ? { ok: true as const, cwd: found }
+        : { ok: false as const, error: 'trusted_project_open_required' }
+    }),
+    register: vi.fn(),
+    revoke: vi.fn(),
+  },
+}))
+
 import { authorizeTrustedSessionFile } from '../trusted-workspace'
 
 describe('authorizeTrustedSessionFile', () => {
@@ -51,6 +73,7 @@ describe('authorizeTrustedSessionFile', () => {
     mocks.cwd = '/workspace'
     mocks.currentProject = null
     mocks.recentProjects = []
+    mocks.registeredProjects = new Set(['/workspace'])
     mocks.sandboxPath = join(sandboxRoot, 'managed')
     mocks.sandboxOwnsSession = false
     mocks.sandboxBinding = null
@@ -73,7 +96,7 @@ describe('authorizeTrustedSessionFile', () => {
   it('rejects another workspace, a relative path, and a mismatched session header', () => {
     expect(authorizeTrustedSessionFile('/other', '/sessions/a.jsonl')).toEqual({
       ok: false,
-      error: 'cwd_not_trusted',
+      error: 'trusted_project_open_required',
     })
     expect(authorizeTrustedSessionFile('/workspace', 'session.jsonl')).toEqual({
       ok: false,
@@ -87,15 +110,22 @@ describe('authorizeTrustedSessionFile', () => {
     })
   })
 
-  it('accepts a persisted recent project and a managed sandbox but rejects arbitrary renderer cwd', () => {
+  it('does not trust a recent-project preference until Main registered it', () => {
     mocks.recentProjects = ['/background']
     mocks.readSessionMetaFromFile.mockReturnValue({ sessionId: 'session-b', cwd: '/background' })
+    expect(authorizeTrustedSessionFile('/background', '/sessions/background.jsonl')).toEqual({
+      ok: false,
+      error: 'trusted_project_open_required',
+    })
+
+    mocks.registeredProjects.add('/background')
     expect(authorizeTrustedSessionFile('/background', '/sessions/background.jsonl')).toEqual({
       ok: true,
       cwd: '/background',
       sessionFile: '/sessions/background.jsonl',
     })
 
+    mocks.registeredProjects.add(mocks.sandboxPath)
     mocks.readSessionMetaFromFile.mockReturnValue({ sessionId: 'session-s', cwd: mocks.sandboxPath })
     expect(authorizeTrustedSessionFile(mocks.sandboxPath, '/sessions/sandbox.jsonl')).toEqual(
       expect.objectContaining({ ok: true, cwd: mocks.sandboxPath }),
@@ -104,11 +134,12 @@ describe('authorizeTrustedSessionFile', () => {
     mocks.readSessionMetaFromFile.mockReturnValue({ sessionId: 'session-e', cwd: '/evil' })
     expect(authorizeTrustedSessionFile('/evil', '/sessions/evil.jsonl')).toEqual({
       ok: false,
-      error: 'cwd_not_trusted',
+      error: 'trusted_project_open_required',
     })
   })
 
   it('accepts a stale Session header only when private sandbox metadata owns that exact file', () => {
+    mocks.registeredProjects.add(mocks.sandboxPath)
     mocks.readSessionMetaFromFile.mockReturnValue({ sessionId: 'session-s', cwd: '/legacy' })
     expect(authorizeTrustedSessionFile(mocks.sandboxPath, '/sessions/sandbox.jsonl')).toEqual({
       ok: false,
@@ -133,6 +164,7 @@ describe('authorizeTrustedSessionFile', () => {
 
   it('matches Windows workspace paths case-insensitively', () => {
     mocks.cwd = 'C:\\Project'
+    mocks.registeredProjects.add(mocks.cwd)
     mocks.readSessionMetaFromFile.mockReturnValue({ sessionId: 'session-a', cwd: 'c:\\project' })
 
     expect(authorizeTrustedSessionFile(mocks.cwd, 'C:\\sessions\\a.jsonl')).toEqual(
@@ -142,6 +174,7 @@ describe('authorizeTrustedSessionFile', () => {
 
   it('authorizes WSL session headers against their Windows workspace view', () => {
     mocks.cwd = 'C:\\project'
+    mocks.registeredProjects.add(mocks.cwd)
     mocks.runtime = { mode: 'wsl', distro: 'Ubuntu' }
     mocks.readSessionMetaFromFile.mockReturnValue({ sessionId: 'session-a', cwd: '/mnt/c/project' })
 
@@ -155,6 +188,7 @@ describe('authorizeTrustedSessionFile', () => {
 
   it('rejects a WSL session from a distro other than the active runtime', () => {
     mocks.cwd = 'C:\\project'
+    mocks.registeredProjects.add(mocks.cwd)
     mocks.runtime = { mode: 'wsl', distro: 'Ubuntu' }
     mocks.readSessionMetaFromFile.mockReturnValue({ sessionId: 'session-a', cwd: '/mnt/c/project' })
 
@@ -168,6 +202,7 @@ describe('authorizeTrustedSessionFile', () => {
 
   it('matches native WSL header paths but rejects another session-file distro', () => {
     mocks.cwd = '\\\\wsl.localhost\\Ubuntu\\home\\u\\project'
+    mocks.registeredProjects.add(mocks.cwd)
     mocks.readSessionMetaFromFile.mockReturnValue({ sessionId: 'session-a', cwd: '/home/u/project' })
 
     expect(

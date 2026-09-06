@@ -103,17 +103,35 @@ async function resolveDisplaySessionScope(
   return { ref, scope }
 }
 
+async function discoverTrustedSessions(
+  workspaceId: string,
+  refresh = false,
+): Promise<{ readonly authorizedRoot: string; readonly sessions: SessionOnDiskRow[] }> {
+  const project = trustedSessionAccessV1.project({ workspaceId })
+  const authorizedRoot = project.authorizedRoot
+  if (refresh) await sessionPreviewProcess.invalidateListSessions(authorizedRoot)
+  const discovered = await sessionPreviewProcess.listSessions(authorizedRoot)
+  const accepted = new Set(trustedSessionAccessV1.recordListedSessions({
+    projectBinding: project.binding,
+    sessions: discovered,
+  }))
+  return {
+    authorizedRoot,
+    sessions: discovered.filter((session) => accepted.has(session.path)),
+  }
+}
+
 export function registerSessionHandlers(): void {
   registerHandler('ipc:session.list', async (req) => {
     const workspaceId = req.workspaceId || workerManager.cwd || configStore.get('currentProject') || ''
-    if (workspaceId && req.refresh === true) {
-      await sessionPreviewProcess.invalidateListSessions(workspaceId)
-    }
-    const sessions = workspaceId ? await sessionPreviewProcess.listSessions(workspaceId) : []
+    const discovery = workspaceId
+      ? await discoverTrustedSessions(workspaceId, req.refresh === true)
+      : { authorizedRoot: '', sessions: [] as SessionOnDiskRow[] }
+    const sessions = discovery.sessions
     const candidates = await Promise.all(
       sessions.map(async (s: SessionOnDiskRow) => {
         try {
-          const { ref, scope } = await resolveDisplaySessionScope(workspaceId, s.path)
+          const { ref, scope } = await resolveDisplaySessionScope(discovery.authorizedRoot, s.path)
           return {
             sessionId: s.id,
             sessionFile: s.path,
@@ -209,9 +227,8 @@ export function registerSessionHandlers(): void {
 
   registerHandlerWithSchema('ipc:session.prepare', sessionPrepareSchema, async (req) => {
     const sessionFile = req.sessionFile
-    const prepared = await resolvePreparedSessionFile(sessionFile, (workspaceId) =>
-      sessionPreviewProcess.listSessions(workspaceId),
-    )
+    const discovery = await discoverTrustedSessions(req.workspaceId)
+    const prepared = await resolvePreparedSessionFile(sessionFile, async () => discovery.sessions)
     if (!prepared) {
       return { bound: false, sessionId: null as string | null, sessionFile }
     }

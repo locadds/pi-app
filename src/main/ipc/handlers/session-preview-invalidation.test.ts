@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   trustedOpen: vi.fn(),
   trustedPrompt: vi.fn(),
   trustedRuntimeIssued: vi.fn(),
+  recordListedSessions: vi.fn(),
   projectBinding: Object.freeze({}),
   sourceBinding: Object.freeze({}),
   targetBinding: Object.freeze({}),
@@ -136,6 +137,7 @@ vi.mock('../../trusted-session-access', () => ({
     open: mocks.trustedOpen,
     prompt: mocks.trustedPrompt,
     runtimeIssued: mocks.trustedRuntimeIssued,
+    recordListedSessions: mocks.recordListedSessions,
   },
 }))
 vi.mock('../../xiaogui/coding-extensions/context-composition', () => ({
@@ -153,6 +155,10 @@ describe('session list preview invalidation', () => {
     mocks.listSessions
       .mockResolvedValueOnce([{ id: 'before', path: '/sessions/before.jsonl' }])
       .mockResolvedValue([{ id: 'after', path: '/sessions/after.jsonl' }])
+    mocks.recordListedSessions.mockReset()
+    mocks.recordListedSessions.mockImplementation(
+      ({ sessions }: { sessions: Array<{ path: string }> }) => sessions.map((session) => session.path),
+    )
     mocks.invalidateListSessions.mockReset()
     mocks.invalidateListSessions.mockResolvedValue(undefined)
     mocks.newSession.mockReset()

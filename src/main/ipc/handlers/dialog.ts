@@ -1,5 +1,6 @@
 import { dialog, BrowserWindow } from 'electron'
 import { registerHandler } from '../registry'
+import { registerTrustedProjectRoot } from '../../trusted-workspace'
 
 export function registerDialogHandlers(): void {
   registerHandler('ipc:dialog:openDirectory', async () => {
@@ -10,7 +11,12 @@ export function registerDialogHandlers(): void {
     if (result.canceled || result.filePaths.length === 0) {
       return { path: null }
     }
-    return { path: result.filePaths[0] }
+    const registered = registerTrustedProjectRoot(
+      result.filePaths[0],
+      'NATIVE_DIRECTORY_PICKER',
+    )
+    if (!registered.ok) throw new Error(registered.error)
+    return { path: registered.cwd }
   })
 
   registerHandler('ipc:dialog:openFiles', async (req) => {

@@ -129,20 +129,40 @@ describe('TrustedSessionAccessModuleV1', () => {
       .toThrow('PROJECT_IDENTITY_CHANGED')
   })
 
-  it('does not mint or remember a capability when explicit file authorization fails', async () => {
+  it('does not list, mint, or remember a capability when file validation fails', async () => {
     const test = setup()
     test.authorizeFile.mockReturnValue({ ok: false as const, error: 'invalid_session' } as never)
+    const project = test.module.project({ workspaceId: 'D:/project' })
+    expect(test.module.recordListedSessions({
+      projectBinding: project.binding,
+      sessions: [{ id: 'session-1', path: 'D:/forged.jsonl' }],
+    })).toEqual([])
 
     await expect(test.module.open({
       workspaceId: 'D:/project',
       sessionFile: 'D:/forged.jsonl',
-    })).rejects.toThrow('invalid_session')
+    })).rejects.toThrow('trusted_session_not_listed')
     expect(test.bindings.rememberSessionBinding).not.toHaveBeenCalled()
     expect(test.scopeResolver.resolveExisting).not.toHaveBeenCalled()
   })
 
-  it('returns and registers one capability after a trusted existing-session open', async () => {
+  it('does not mint a session capability from an arbitrary JSONL before Main discovery', async () => {
     const test = setup({ existingSession: true })
+
+    await expect(test.module.open({
+      workspaceId: 'D:/project',
+      sessionFile: 'D:/sessions/a.jsonl',
+    })).rejects.toThrow('trusted_session_not_listed')
+    expect(test.bindings.rememberSessionBinding).not.toHaveBeenCalled()
+  })
+
+  it('returns and registers one capability only after Main SessionManager discovery', async () => {
+    const test = setup({ existingSession: true })
+    const project = test.module.project({ workspaceId: 'D:/project' })
+    expect(test.module.recordListedSessions({
+      projectBinding: project.binding,
+      sessions: [{ id: 'session-1', path: 'D:/sessions/a.jsonl' }],
+    })).toEqual(['D:/sessions/a.jsonl'])
     const access = await test.module.open({
       workspaceId: 'D:/project',
       sessionFile: 'D:/sessions/a.jsonl',
@@ -169,14 +189,15 @@ describe('TrustedSessionAccessModuleV1', () => {
       sessionFile: 'D:/sessions/a.jsonl',
     })).rejects.toThrow('trusted_session_binding_mismatch')
 
-    const opened = await test.module.open({
-      workspaceId: 'D:/project',
+    const project = test.module.project({ workspaceId: 'D:/project' })
+    const openedBinding = test.module.runtimeIssued({
+      projectBinding: project.binding,
       sessionFile: 'D:/sessions/a.jsonl',
     })
     await expect(test.module.prompt({
       workspaceId: 'D:/project',
       sessionFile: 'D:/sessions/a.jsonl',
-    })).resolves.toMatchObject({ binding: opened.binding, ref: opened.ref, scope })
+    })).resolves.toMatchObject({ binding: openedBinding, scope })
 
     await expect(test.module.prompt({
       workspaceId: 'D:/project',
@@ -191,13 +212,14 @@ describe('TrustedSessionAccessModuleV1', () => {
       workspaceId: 'D:/project',
       sessionFile: 'D:/sessions/a.jsonl',
       requireRunningWorker: true,
-    })).resolves.toMatchObject({ binding: opened.binding })
+    })).resolves.toMatchObject({ binding: openedBinding })
   })
 
   it('rejects Renderer selectors that do not match the registered capability', async () => {
     const test = setup({ existingSession: true })
-    await test.module.open({
-      workspaceId: 'D:/project',
+    const project = test.module.project({ workspaceId: 'D:/project' })
+    test.module.runtimeIssued({
+      projectBinding: project.binding,
       sessionFile: 'D:/sessions/a.jsonl',
     })
 
@@ -213,11 +235,16 @@ describe('TrustedSessionAccessModuleV1', () => {
 
   it('treats JSONL cwd as comparison-only evidence', async () => {
     const test = setup({ existingSession: true, sessionCwd: 'D:/forged-project' })
+    const project = test.module.project({ workspaceId: 'D:/project' })
+    expect(test.module.recordListedSessions({
+      projectBinding: project.binding,
+      sessions: [{ id: 'session-1', path: 'D:/sessions/a.jsonl' }],
+    })).toEqual([])
 
     await expect(test.module.open({
       workspaceId: 'D:/project',
       sessionFile: 'D:/sessions/a.jsonl',
-    })).rejects.toThrow('session_workspace_mismatch')
+    })).rejects.toThrow('trusted_session_not_listed')
     expect(test.bindings.rememberSessionBinding).not.toHaveBeenCalled()
   })
 
@@ -273,6 +300,11 @@ describe('TrustedSessionAccessModuleV1', () => {
 
   it('invalidates a materialized binding if its JSONL disappears', async () => {
     const test = setup({ existingSession: true })
+    const project = test.module.project({ workspaceId: 'D:/project' })
+    test.module.recordListedSessions({
+      projectBinding: project.binding,
+      sessions: [{ id: 'session-1', path: 'D:/sessions/a.jsonl' }],
+    })
     const opened = await test.module.open({
       workspaceId: 'D:/project',
       sessionFile: 'D:/sessions/a.jsonl',
@@ -285,6 +317,11 @@ describe('TrustedSessionAccessModuleV1', () => {
 
   it('reissues persisted evidence only after Main revalidates the current project identity', async () => {
     const test = setup({ existingSession: true })
+    const project = test.module.project({ workspaceId: 'D:/project' })
+    test.module.recordListedSessions({
+      projectBinding: project.binding,
+      sessions: [{ id: 'session-1', path: 'D:/sessions/a.jsonl' }],
+    })
 
     const access = await test.module.reissuePersisted({
       authorizedRoot: 'D:/project',
@@ -303,6 +340,11 @@ describe('TrustedSessionAccessModuleV1', () => {
 
   it('does not register a capability when persisted project evidence is stale', async () => {
     const test = setup({ existingSession: true })
+    const project = test.module.project({ workspaceId: 'D:/project' })
+    test.module.recordListedSessions({
+      projectBinding: project.binding,
+      sessions: [{ id: 'session-1', path: 'D:/sessions/a.jsonl' }],
+    })
 
     await expect(test.module.reissuePersisted({
       authorizedRoot: 'D:/project',

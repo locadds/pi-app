@@ -69,7 +69,9 @@ describe('trusted Pi Worker seam architecture gate', () => {
     const listHandler = sessionHandlers.slice(listStart, listEnd)
 
     expect(manager).not.toContain('forkListWorkerForWsl')
-    expect(listHandler).toContain('sessionPreviewProcess.listSessions')
+    expect(sessionHandlers).toContain('sessionPreviewProcess.listSessions(authorizedRoot)')
+    expect(sessionHandlers).toContain('trustedSessionAccessV1.recordListedSessions')
+    expect(listHandler).toContain('discoverTrustedSessions')
     expect(listHandler).not.toContain('trustedSessionAccessV1.open')
     expect(listHandler).not.toContain('workerManager.start')
     expect(listHandler).not.toContain('workerManager.loadSession')

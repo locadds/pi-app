@@ -104,13 +104,10 @@ export async function activateWorkspace(path: string, options?: ActivateWorkspac
 
   // Register project + recent list without forking a Worker (awaitWorker false).
   // Prompt / session.new / model ops start the Worker lazily via ensureWorkerSessionBound.
-  const openPromise = !sameProject
-    ? ipcClient.invoke('workspace.open', { path, awaitWorker: false }).catch((error) => {
-        console.error('[activateWorkspace] workspace.open failed:', error)
-      })
-    : ipcClient.invoke('settings.set', { key: 'currentProject', value: path }).catch((error) => {
-        console.error('[activateWorkspace] settings.set currentProject failed:', error)
-      })
+  const openPromise = ipcClient.invoke('workspace.open', { path, awaitWorker: false }).catch((error) => {
+    console.error('[activateWorkspace] workspace.open failed:', error)
+    throw error
+  })
 
   if (options?.preferHome) {
     try {

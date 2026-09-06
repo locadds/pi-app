@@ -98,6 +98,13 @@ Bash 在所有档位都逐次确认。授权框显示完整真实命令并保留
 
 R3.3 CLOSEOUT 只收口 Worker 执行目录的唯一权威，不新增产品能力：
 
+> 2026-09-06 复验补正：`fed469a` 只把能力句柄做成 Main 内部对象，签发依据仍错误地接受了 Renderer 可写的 `currentProject`／`recentProjects` 与任意匹配 cwd 的 JSONL，因此未通过人工复验。以下“Main 唯一权威”口径以补正后的信任来源为准。
+
+- 项目能力只能从 Main 原生目录选择器确认的项目，或 Main 创建并验证的受管 Sandbox 证据中签发。`currentProject`、`recentProjects` 只用于显示和候选选择，Renderer 已不能通过 `settings.set` 修改这两个字段；`workspace.open/switch/ensureWorker` 只能消费既有 Main 登记，不能自行登记路径。
+- 项目登记持久化的只是来源与目录实体摘要。每次签发内存能力前都会由 Main 重读目录实体；同路径替换会以 `PROJECT_IDENTITY_CHANGED` 失败。旧配置不会自动升级成授权，用户需要通过原生目录选择器重新确认一次。
+- 会话列表由 Main 的 Session Preview/SessionManager 接缝在已授权项目根下发现。列表结果只登记“可被显式打开的精确会话项”，不签发会话能力；任意 Renderer JSONL 只有在命中该 Main 登记、原子创建回执或精确 live binding 时才能继续 Open/Prepare/Navigate。
+- Prompt 始终只消费已经签发并登记的会话能力。伪造 `settings.set → workspace.*` 或 `sessionFile → session.open/prepare/navigate/prompt` 会在 Worker 创建、上下文装配、模型调用和消息提交前失败。
+
 - Main 以内存对象身份和 `WeakMap` 持有项目／会话能力。能力句柄不含可序列化授权字段，不能由路径、摘要、IPC 参数或持久化数据构造；Renderer 和 Worker 均不会收到该句柄。
 - `WorkerManager` 的创建、恢复、聚焦与重新绑定只接受上述 Main 内部句柄。旧的裸会话文件、字符串 cwd/workspace hint 和 JSONL cwd 执行兜底已被替换，不保留兼容重载。
 - Main→Worker 只发送一次性执行租约。租约绑定精确 slot、项目摘要、转换后的 cwd、会话文件和 nonce；Worker 只验证并消费，不在 Windows/WSL 两侧重算项目实体身份，也不能签发新能力。

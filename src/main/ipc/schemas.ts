@@ -177,8 +177,6 @@ const settingsValueSchemas: Record<string, z.ZodTypeAny> = {
     .nullable(),
   customCssOverride: z.object({ enabled: z.boolean(), css: z.string() }).strict(),
   language: z.enum(['zh', 'en']),
-  currentProject: z.string().nullable(),
-  recentProjects: z.array(z.string()),
   recentProjectsFixedOrder: z.boolean(),
   autoOpenLastProject: z.boolean(),
   autoCheckRegistryUpdates: z.boolean(),

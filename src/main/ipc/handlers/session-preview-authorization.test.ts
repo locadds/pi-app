@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   scopeResolve: vi.fn(),
   scopeResolveExisting: vi.fn(),
   trustedOpen: vi.fn(),
+  trustedProject: vi.fn(),
+  recordListedSessions: vi.fn(),
   resolvePreparedSessionFile: vi.fn(),
   setPendingWorkerSessionBinding: vi.fn(),
   getPendingWorkerSessionBinding: vi.fn(),
@@ -38,7 +40,11 @@ vi.mock('../../trusted-workspace', () => ({
   authorizeTrustedSessionFile: mocks.authorizeTrustedSessionFile,
 }))
 vi.mock('../../trusted-session-access', () => ({
-  trustedSessionAccessV1: { open: mocks.trustedOpen },
+  trustedSessionAccessV1: {
+    project: mocks.trustedProject,
+    recordListedSessions: mocks.recordListedSessions,
+    open: mocks.trustedOpen,
+  },
 }))
 
 vi.mock('../../session-preview-process', () => ({
@@ -126,6 +132,16 @@ describe('session preview authorization', () => {
     mocks.scopeResolveExisting.mockReset()
     mocks.scopeResolveExisting.mockResolvedValue(null)
     mocks.trustedOpen.mockReset()
+    mocks.trustedProject.mockReset()
+    mocks.trustedProject.mockImplementation(({ workspaceId }) => ({
+      binding: Object.freeze({}),
+      authorizedRoot: workspaceId,
+      projectIdentityDigest: 'sha256:project',
+    }))
+    mocks.recordListedSessions.mockReset()
+    mocks.recordListedSessions.mockImplementation(
+      ({ sessions }: { sessions: Array<{ path: string }> }) => sessions.map((session) => session.path),
+    )
     mocks.trustedOpen.mockImplementation(async ({ workspaceId, sessionFile }) => {
       const authorized = mocks.authorizeTrustedSessionFile(workspaceId, sessionFile)
       if (!authorized.ok) throw new Error(authorized.error)

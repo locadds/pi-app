@@ -7,6 +7,7 @@ import type { CheckpointSessionAddressRecordV1 } from './checkpoint-session-bind
 import { trustedSessionAccessV1 } from '../../trusted-session-access'
 import { trustedWorkerCapabilityAuthorityV1 } from '../../trusted-worker-capability'
 import { normalizeSessionKey } from '../../worker-session-key'
+import { sessionPreviewProcess } from '../../session-preview-process'
 import {
   createDefaultCodingCheckpointProductionCompositionV1,
   type CodingCheckpointProductionCompositionV1,
@@ -51,6 +52,12 @@ export async function ensureDefaultCodingRoleWorkerSessionV1(
 ): Promise<void> {
   const record = getDefaultCodingCheckpointProductionCompositionV1()
     .readTrustedSessionAddress(address)
+  const project = trustedSessionAccessV1.project({ workspaceId: record.authorizedRoot })
+  const discovered = await sessionPreviewProcess.listSessions(project.authorizedRoot)
+  trustedSessionAccessV1.recordListedSessions({
+    projectBinding: project.binding,
+    sessions: discovered,
+  })
   const access = await trustedSessionAccessV1.reissuePersisted(record)
   await workerManager.loadSession(access.binding)
 }
