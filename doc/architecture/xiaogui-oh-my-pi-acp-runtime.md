@@ -103,7 +103,6 @@ R3.3 CLOSEOUT 只收口 Worker 执行目录的唯一权威，不新增产品能�
 - 项目能力只能从 Main 原生目录选择器确认的项目，或 Main 创建并验证的受管 Sandbox 证据中签发。`currentProject`、`recentProjects` 只用于显示和候选选择，Renderer 已不能通过 `settings.set` 修改这两个字段；`workspace.open/switch/ensureWorker` 只能消费既有 Main 登记，不能自行登记路径。
 - 项目登记持久化的只是来源与目录实体摘要。每次签发内存能力前都会由 Main 重读目录实体；同路径替换会以 `PROJECT_IDENTITY_CHANGED` 失败。旧配置不会自动升级成授权，用户需要通过原生目录选择器重新确认一次。
 - WSL 的执行根与比较 key 严格分离：执行根保留 Linux 文件系统真实大小写；比较 key 只统一 Windows UNC server／distro，不折叠 WSL 路径主体。`SessionScopeResolverV1` 分别持有 execution/comparison 投影，实体核验和返回 cwd 只能使用 execution；`DirectCodingModuleV2` 仅在相等判断中使用比较 key。比较 key 永远不能作为 Worker cwd。
-- 旧版曾把 WSL Linux 路径主体也转成小写，并据此持久化一级模式、canonical Scope 身份和 TaskHub opaque ProjectId。Main 在已经可信打开当前混合大小写项目／会话后，才会同时推导该 V1 身份并进行兼容：唯一匹配时以一次 canonical V3 写入登记迁移声明和当前绑定，保留原会话模式；TaskHub 旧 Attempt 通过只读 ProjectId 别名解析到唯一真实根，不批量改写历史审计键。V1 key 只用于身份兼容，不能成为 cwd。若两个真实大小写实体竞争同一旧身份，Scope 返回 `LEGACY_SCOPE_AMBIGUOUS`，TaskHub 返回 `PROJECT_AMBIGUOUS`，均保持既有数据不变。
 - 会话列表由 Main 的 Session Preview/SessionManager 接缝在已授权项目根下发现。列表结果只登记“可被显式打开的精确会话项”，不签发会话能力；任意 Renderer JSONL 只有在命中该 Main 登记、原子创建回执或精确 live binding 时才能继续 Open/Prepare/Navigate。Pi 顶层列表不会递归枚举子 Agent 会话；标准嵌套子会话只能沿一个以本次新鲜顶层列表为根的已验证父链派生。每次列表刷新都会逐层重验项目身份、JSONL 元数据、`realpath` 与固定私有产物树，孤立后代被丢弃；派生登记本身仍不签发能力。
 - Prompt 始终只消费已经签发并登记的会话能力。伪造 `settings.set → workspace.*` 或 `sessionFile → session.open/prepare/navigate/prompt` 会在 Worker 创建、上下文装配、模型调用和消息提交前失败。
 

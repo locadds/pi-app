@@ -2,7 +2,7 @@ import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
-import { versionedPathKeysV2 } from '../path-key'
+import { normalizePathKey } from '../path-key'
 import { opaqueScopeIdDeriverV1 } from '../scope-derive'
 
 export interface ProjectWorkspaceCandidatesV1 {
@@ -68,11 +68,15 @@ function candidatePaths(snapshot: ProjectWorkspaceCandidatesV1): string[] {
 }
 
 function matchesProjectId(path: string, projectId: string): boolean {
-  const keys = versionedPathKeysV2(path)
-  if (!keys.current) return false
-  const candidates = keys.legacyV1 ? [keys.current, keys.legacyV1] : [keys.current]
-  return candidates.some(
-    (candidate) => opaqueScopeIdDeriverV1.deriveProject(candidate).projectId === projectId,
+  const normalizedPath = normalizePathKey(path)
+  if (!normalizedPath) return false
+  const pathKeys = [normalizedPath]
+  if (normalizedPath.startsWith('//wsl.localhost/')) {
+    const legacyLowercaseKey = normalizedPath.toLowerCase()
+    if (legacyLowercaseKey !== normalizedPath) pathKeys.push(legacyLowercaseKey)
+  }
+  return pathKeys.some(
+    (pathKey) => opaqueScopeIdDeriverV1.deriveProject(pathKey).projectId === projectId,
   )
 }
 

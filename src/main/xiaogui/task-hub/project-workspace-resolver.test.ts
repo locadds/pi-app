@@ -12,6 +12,8 @@ import {
 } from './project-workspace-resolver'
 
 const roots: string[] = []
+const LEGACY_WSL_PROJECT_ID =
+  'xgp1_bc04c006b32b210288ae0552b0cb2bcebfd3838eb53abb226fbe87125e5c9ad7'
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -50,7 +52,6 @@ describe('MainProjectWorkspaceResolverV1', () => {
 
   it('resolves an existing TaskHub attempt that carries the legacy lowercase WSL project id', async () => {
     const currentPath = '//wsl.localhost/Ubuntu/home/User/CaseProject'
-    const legacyPath = '//wsl.localhost/ubuntu/home/user/caseproject'
     const subject = new MainProjectWorkspaceResolverV1({
       source: () => ({ currentProject: currentPath, recentProjects: [] }),
       fileSystem: {
@@ -59,7 +60,7 @@ describe('MainProjectWorkspaceResolverV1', () => {
       },
     })
 
-    await expect(subject.resolveProjectRoot(projectId(legacyPath))).resolves.toBe(currentPath)
+    await expect(subject.resolveProjectRoot(LEGACY_WSL_PROJECT_ID)).resolves.toBe(currentPath)
   })
 
   it('fails closed when two WSL roots collide under one legacy lowercase project id', async () => {
@@ -73,7 +74,7 @@ describe('MainProjectWorkspaceResolverV1', () => {
       },
     })
 
-    await expect(subject.resolveProjectRoot(projectId(lower)))
+    await expect(subject.resolveProjectRoot(LEGACY_WSL_PROJECT_ID))
       .rejects.toEqual(new ProjectWorkspaceResolutionErrorV1('PROJECT_AMBIGUOUS'))
   })
 

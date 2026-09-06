@@ -14,7 +14,7 @@ import {
   type PiSessionScopeV1,
   type SessionDerivationKind,
 } from './scope-derive'
-import { versionedPathKeysV2 } from './path-key'
+import { normalizePathKey } from './path-key'
 import {
   filesystemExecutionPathV2,
   readProjectRootIdentityV2,
@@ -30,17 +30,6 @@ export interface SessionBindingCommitV1 {
   project: ProjectIdentityBindingV1
   session: SessionIdentityBindingV1
   sessionMode: SessionMode
-  /** Main-trusted compatibility evidence for the pre-V2 lowercase WSL key contract. */
-  legacyWslMigration?: LegacyWslSessionMigrationV1
-}
-
-export interface LegacyWslSessionMigrationV1 {
-  readonly project: Extract<OpaqueIdentityBindingV1, { kind: 'PROJECT' }>
-  readonly session: Extract<OpaqueIdentityBindingV1, { kind: 'SESSION' }>
-  readonly legacyProjectPathKey: string
-  readonly currentProjectPathKey: string
-  readonly legacySessionPathKey: string
-  readonly currentSessionPathKey: string
 }
 
 export type SessionBindingLookupV1 = Pick<SessionBindingCommitV1, 'project' | 'session'>
@@ -53,14 +42,8 @@ export interface SandboxBindingCommitV1 {
 export interface SessionScopePersistenceV1 {
   lookup(address: SessionAddressV1): SessionScopeLookupResultV1
   lookupBoundSession(input: SessionBindingLookupV1): SessionScopeLookupResultV1
-  getLegacySessionMode(
-    normalizedSessionFile: string,
-    legacyNormalizedSessionFile?: string,
-  ): SessionMode | null
-  getLegacyProjectMode(
-    normalizedProjectRoot: string,
-    legacyNormalizedProjectRoot?: string,
-  ): SessionMode | null
+  getLegacySessionMode(normalizedSessionFile: string): SessionMode | null
+  getLegacyProjectMode(normalizedProjectRoot: string): SessionMode | null
   commitSession(input: SessionBindingCommitV1): SessionMode
   commitSandbox(input: SandboxBindingCommitV1): void
 }
@@ -88,7 +71,6 @@ export type SessionScopeResolutionErrorCode =
   | 'CANONICAL_SCOPE_STORE_CORRUPT'
   | 'SCOPE_PERSISTENCE_FAILED'
   | 'PROJECT_IDENTITY_CHANGED'
-  | 'LEGACY_SCOPE_AMBIGUOUS'
 
 export class SessionScopeResolutionError extends Error {
   constructor(readonly code: SessionScopeResolutionErrorCode) {
@@ -100,7 +82,6 @@ export class SessionScopeResolutionError extends Error {
 interface NormalizedSessionRefV1 {
   readonly execution: PiSessionRefV1
   readonly comparison: PiSessionRefV1
-  readonly legacyComparison: PiSessionRefV1 | null
 }
 
 function normalizeSessionRef(session: PiSessionRefV1): NormalizedSessionRefV1 {
@@ -108,19 +89,14 @@ function normalizeSessionRef(session: PiSessionRefV1): NormalizedSessionRefV1 {
     rootPath: filesystemExecutionPathV2(session.rootPath),
     sessionFile: filesystemExecutionPathV2(session.sessionFile),
   }
-  const rootKeys = versionedPathKeysV2(execution.rootPath)
-  const sessionKeys = versionedPathKeysV2(execution.sessionFile)
-  const comparison = { rootPath: rootKeys.current, sessionFile: sessionKeys.current }
+  const comparison = {
+    rootPath: normalizePathKey(execution.rootPath),
+    sessionFile: normalizePathKey(execution.sessionFile),
+  }
   if (!comparison.rootPath || !comparison.sessionFile) {
     throw new SessionScopeResolutionError('INVALID_CANONICAL_SCOPE_INPUT')
   }
-  const legacyComparison = rootKeys.legacyV1 || sessionKeys.legacyV1
-    ? {
-        rootPath: rootKeys.legacyV1 ?? rootKeys.current,
-        sessionFile: sessionKeys.legacyV1 ?? sessionKeys.current,
-      }
-    : null
-  return { execution, comparison, legacyComparison }
+  return { execution, comparison }
 }
 
 function projectBinding(
@@ -147,42 +123,16 @@ export function createSessionScopeResolverV1(
     readProjectRootIdentityV2(rootPath).digest,
 ): SessionScopeResolverV1 & SessionScopeRegistrarV1 {
   function bindSession(
-    session: PiSessionRefV1 | NormalizedSessionRefV1,
+    session: PiSessionRefV1,
     requestedMode: SessionMode,
   ): PiSessionScopeV1 {
-    const normalized = 'execution' in session ? session : normalizeSessionRef(session)
+    const normalized = normalizeSessionRef(session)
     const project = idDeriver.deriveProject(normalized.comparison.rootPath)
     const rootIdentityDigest = projectRootIdentity(normalized.execution.rootPath)
     const derivedSession = idDeriver.deriveSession(
       project.projectId,
       normalized.comparison.sessionFile,
     )
-    const legacyWslMigration = normalized.legacyComparison
-      ? (() => {
-          const legacyProject = idDeriver.deriveProject(normalized.legacyComparison.rootPath)
-          const legacySession = idDeriver.deriveSession(
-            legacyProject.projectId,
-            normalized.legacyComparison.sessionFile,
-          )
-          return {
-            project: {
-              kind: 'PROJECT' as const,
-              opaqueId: legacyProject.projectId,
-              canonicalInputFingerprint: legacyProject.canonicalInputFingerprint,
-            },
-            session: {
-              kind: 'SESSION' as const,
-              opaqueId: legacySession.sessionKey,
-              projectId: legacyProject.projectId,
-              canonicalInputFingerprint: legacySession.canonicalInputFingerprint,
-            },
-            legacyProjectPathKey: normalized.legacyComparison.rootPath,
-            currentProjectPathKey: normalized.comparison.rootPath,
-            legacySessionPathKey: normalized.legacyComparison.sessionFile,
-            currentSessionPathKey: normalized.comparison.sessionFile,
-          } satisfies LegacyWslSessionMigrationV1
-        })()
-      : undefined
     const effectiveMode = safePersistenceCall(() =>
       persistence.commitSession({
         project: projectBinding(
@@ -197,7 +147,6 @@ export function createSessionScopeResolverV1(
           canonicalInputFingerprint: derivedSession.canonicalInputFingerprint,
         },
         sessionMode: requestedMode,
-        ...(legacyWslMigration ? { legacyWslMigration } : {}),
       }),
     )
     return {
@@ -213,17 +162,11 @@ export function createSessionScopeResolverV1(
     const normalized = normalizeSessionRef(session)
     const requestedMode = safePersistenceCall(
       () =>
-        persistence.getLegacySessionMode(
-          normalized.comparison.sessionFile,
-          normalized.legacyComparison?.sessionFile,
-        ) ??
-        persistence.getLegacyProjectMode(
-          normalized.comparison.rootPath,
-          normalized.legacyComparison?.rootPath,
-        ) ??
+        persistence.getLegacySessionMode(normalized.comparison.sessionFile) ??
+        persistence.getLegacyProjectMode(normalized.comparison.rootPath) ??
         'WORK',
     )
-    return bindSession(normalized, requestedMode)
+    return bindSession(normalized.execution, requestedMode)
   }
 
   async function resolveExistingSession(session: PiSessionRefV1): Promise<PiSessionScopeV1 | null> {
