@@ -76,9 +76,67 @@ describe('MainProcessDeliveryIntegrationWorktreePortV1', () => {
 
     await rm(root, { recursive: true, force: true })
   })
+
+  it('seeds approved LF baseline bytes before integrating into a CRLF-smudged worktree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-integration-filtered-'))
+    const repo = join(root, 'repo')
+    const managedRoot = join(root, 'managed')
+    const approvedBytes = Buffer.from('old\nsecond line\n')
+    const resultBytes = Buffer.from('new\nsecond line\n')
+    try {
+      await git(root, ['init', 'repo'])
+      await writeFile(join(repo, 'a.txt'), approvedBytes)
+      await git(repo, ['add', 'a.txt'])
+      await git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'])
+      await git(repo, ['config', 'core.autocrlf', 'true'])
+      await writeFile(join(repo, 'a.txt'), approvedBytes)
+      await expect(git(repo, ['status', '--porcelain=v1', '--untracked-files=all'])).resolves.toBe('')
+
+      const baseRevision = (await git(repo, ['rev-parse', '--verify', 'HEAD'])).trim()
+      const baselineTreeHash = (await git(repo, ['rev-parse', '--verify', 'HEAD^{tree}'])).trim()
+      const target = {
+        projectId: `xgp1_${'2'.repeat(64)}`,
+        baseRevision,
+        baselineTreeHash,
+        initialTargetFingerprint: deliveryTargetFingerprintV1({
+          projectId: `xgp1_${'2'.repeat(64)}`,
+          baseRevision,
+          baselineTreeHash,
+        }),
+      } satisfies DeliveryTargetV1
+      const port = new MainProcessDeliveryIntegrationWorktreePortV1({
+        projectResolver: { resolveProjectRoot: () => repo },
+        managedRoot,
+        target,
+        batchId: 'xhbd_filtered_baseline',
+      })
+
+      const result = await port.integrate([
+        {
+          operation: 'MODIFY',
+          relativePath: 'a.txt',
+          baselineDigest: digestBytes(approvedBytes),
+          contentDigest: digestBytes(resultBytes),
+          contentArtifactId: 'artifact-filtered' as never,
+          content: resultBytes,
+          sourceTaskChangeSetId: 'xhbcs_filtered' as never,
+        },
+      ])
+
+      await expect(readFile(join(repo, 'a.txt'))).resolves.toEqual(approvedBytes)
+      await expect(readFile(join(result.privateIntegrationContext.worktreeRoot, 'a.txt'))).resolves.toEqual(resultBytes)
+      await cleanupDeliveryIntegrationWorktreeRootV1(repo, result.privateIntegrationContext.worktreeRoot)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 function digest(value: string): Sha256Digest {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}` as Sha256Digest
+}
+
+function digestBytes(value: Uint8Array): Sha256Digest {
   return `sha256:${createHash('sha256').update(value).digest('hex')}` as Sha256Digest
 }
 

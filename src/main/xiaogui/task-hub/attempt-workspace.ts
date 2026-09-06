@@ -10,6 +10,7 @@ import {
   readFileSync,
   realpathSync,
   unlinkSync,
+  writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 
@@ -547,8 +548,13 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     const repoRoot = safeRealpath(resolve(await this.resolver.resolveProjectRoot(projectId)), 'REPO_NOT_GIT')
     assertGitRepository(repoRoot)
     const existingLease = this.registry.getLease(attemptId)
-    if (!existingLease) await assertCleanRepository(repoRoot)
-    await assertBaseTree(repoRoot, request.baseRevision, request.baselineTreeHash)
+    const hasApprovedModify = request.manifest.grants.some((grant) => grant.operation === 'MODIFY')
+    if (hasApprovedModify) {
+      await assertAuthoritativeProjectBaseline(repoRoot, request.baseRevision, request.baselineTreeHash)
+    } else {
+      if (!existingLease) await assertCleanRepository(repoRoot)
+      await assertBaseTree(repoRoot, request.baseRevision, request.baselineTreeHash)
+    }
 
     const managedRoot = this.managedRoot
     const worktreeRoot = resolve(managedRoot, safeAttemptDirectoryName(attemptId))
@@ -586,6 +592,8 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
           return result
         }
       }
+      const approvedBaselines = readApprovedModifyBaselines(repoRoot, request.manifest.grants)
+      await seedApprovedModifyBaselines(realWorktreeRoot, approvedBaselines, { recoveredWorktree: true })
       const manifest = await materializeManifest({
         rootPath: realWorktreeRoot,
         manifest: request.manifest,
@@ -603,11 +611,13 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     if (request.faultInjection === 'BEFORE_CREATE') {
       throw new AttemptWorkspaceError('CREATE_BATCH_PENDING')
     }
+    const approvedBaselines = readApprovedModifyBaselines(repoRoot, request.manifest.grants)
     await git(repoRoot, ['worktree', 'add', '--detach', worktreeRoot, request.baseRevision])
     const realWorktreeRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
     if (pathKey(realWorktreeRoot) !== pathKey(worktreeRoot) || !isInside(managedRoot, realWorktreeRoot)) {
       throw new AttemptWorkspaceError('WORKTREE_DRIFT')
     }
+    await seedApprovedModifyBaselines(realWorktreeRoot, approvedBaselines)
 
     const manifest = await materializeManifest({
       rootPath: realWorktreeRoot,
@@ -698,23 +708,29 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
       throw new AttemptWorkspaceError('PATH_FORBIDDEN')
     }
 
-    const changedFiles: TaskPatchFileSnapshotV1[] = []
+    const candidateFiles: Array<{
+      readonly grant: AttemptFileGrantV1 & { readonly operation: 'MODIFY' | 'CREATE' }
+      readonly current: { readonly bytes: Buffer; readonly contentDigest: string }
+    }> = []
     for (const change of beforeStatus) {
       const grant = manifest.grants.find((candidate) => candidate.relativePath === change.relativePath)
-      if (!grant || grant.operation === 'DELETE') throw new AttemptWorkspaceError('PATH_FORBIDDEN')
-      if (grant.operation === 'MODIFY') {
-        const baselineBytes = await gitBytes(lease.projectRoot, [
-          'cat-file',
-          '--filters',
-          `--path=${grant.relativePath}`,
-          `${lease.baseRevision}:${grant.relativePath}`,
-        ])
-        if (!grant.baselineDigest || digestBytes(baselineBytes) !== grant.baselineDigest) {
-          throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
-        }
+      if (!grant || (grant.operation !== 'MODIFY' && grant.operation !== 'CREATE')) {
+        throw new AttemptWorkspaceError('PATH_FORBIDDEN')
       }
       const target = resolveManifestPath(rootPath, grant.relativePath)
       const current = readStableTaskFile(target.realPath)
+      candidateFiles.push({ grant: { ...grant, operation: grant.operation }, current })
+    }
+
+    await assertAuthoritativeProjectBaseline(lease.projectRoot, lease.baseRevision, lease.baselineTreeHash)
+    const changedFiles: TaskPatchFileSnapshotV1[] = []
+    for (const { grant, current } of candidateFiles) {
+      if (grant.operation === 'MODIFY') {
+        const baseline = readApprovedModifyBaseline(lease.projectRoot, grant)
+        if (!grant.baselineDigest || baseline.contentDigest !== grant.baselineDigest) {
+          throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
+        }
+      }
       if (grant.operation === 'MODIFY' && current.contentDigest === grant.baselineDigest) {
         // A mode-only or index-only Git change cannot be represented by the
         // content-only TASK_PATCH_V1 format, so it must not become a candidate.
@@ -1126,6 +1142,62 @@ function normalizeManifestGrants(
   return [...normalized].sort((a, b) => a.relativePath.localeCompare(b.relativePath) || a.operation.localeCompare(b.operation))
 }
 
+interface ApprovedModifyBaselineV1 {
+  readonly relativePath: string
+  readonly baselineDigest: string
+  readonly bytes: Buffer
+}
+
+function readApprovedModifyBaselines(
+  projectRoot: string,
+  grants: readonly AttemptFileGrantV1[],
+): readonly ApprovedModifyBaselineV1[] {
+  return canonicalStoredGrants(grants)
+    .filter((grant): grant is AttemptFileGrantV1 & { readonly operation: 'MODIFY'; readonly baselineDigest: string } => {
+      if (grant.operation !== 'MODIFY') return false
+      if (!grant.baselineDigest) throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
+      return true
+    })
+    .map((grant) => {
+      const baseline = readApprovedModifyBaseline(projectRoot, grant)
+      if (baseline.contentDigest !== grant.baselineDigest) throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
+      return { relativePath: grant.relativePath, baselineDigest: grant.baselineDigest, bytes: baseline.bytes }
+    })
+}
+
+function readApprovedModifyBaseline(
+  projectRoot: string,
+  grant: Pick<AttemptFileGrantV1, 'relativePath' | 'baselineDigest'>,
+): { readonly bytes: Buffer; readonly contentDigest: string } {
+  const target = resolveManifestPath(projectRoot, grant.relativePath)
+  return readStableTaskFile(target.realPath)
+}
+
+async function seedApprovedModifyBaselines(
+  worktreeRoot: string,
+  baselines: readonly ApprovedModifyBaselineV1[],
+  options: { readonly recoveredWorktree?: boolean } = {},
+): Promise<void> {
+  if (options.recoveredWorktree) await assertNoTrackedAttemptChanges(worktreeRoot)
+  for (const baseline of baselines) {
+    const target = resolveManifestPath(worktreeRoot, baseline.relativePath)
+    const current = readStableTaskFile(target.realPath)
+    if (current.contentDigest !== baseline.baselineDigest) {
+      writeFileSync(target.realPath, baseline.bytes)
+    }
+    const seeded = readStableTaskFile(target.realPath)
+    if (seeded.contentDigest !== baseline.baselineDigest || !seeded.bytes.equals(baseline.bytes)) {
+      throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+    }
+  }
+  if (baselines.length > 0) await git(worktreeRoot, ['add', '--', ...baselines.map((baseline) => baseline.relativePath)])
+  if (options.recoveredWorktree) {
+    await assertNoTrackedAttemptChanges(worktreeRoot)
+  } else {
+    await assertCleanAttemptWorktree(worktreeRoot)
+  }
+}
+
 function canonicalStoredGrants(grants: readonly AttemptFileGrantV1[]): readonly AttemptFileGrantV1[] {
   const seen = new Map<string, AttemptFileOperationV1>()
   const normalized = grants.map((grant) => {
@@ -1267,10 +1339,36 @@ function rollbackCreatedTarget(target: CreateBatchTargetV1): void {
 }
 
 async function assertBaseTree(repoRoot: string, baseRevision: string, expectedTreeHash: string): Promise<void> {
-  const type = (await git(repoRoot, ['cat-file', '-t', baseRevision])).stdout.trim()
-  if (type !== 'commit') throw new AttemptWorkspaceError('BASE_REVISION_NOT_COMMIT')
-  const tree = (await git(repoRoot, ['rev-parse', `${baseRevision}^{tree}`])).stdout.trim()
+  let resolved: readonly string[]
+  try {
+    resolved = (await git(repoRoot, ['rev-parse', `${baseRevision}^{commit}`, `${baseRevision}^{tree}`])).stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+  } catch {
+    throw new AttemptWorkspaceError('BASE_REVISION_NOT_COMMIT')
+  }
+  if (resolved[0]?.toLowerCase() !== baseRevision.toLowerCase()) {
+    throw new AttemptWorkspaceError('BASE_REVISION_NOT_COMMIT')
+  }
+  const tree = resolved[1]
   if (tree !== expectedTreeHash) throw new AttemptWorkspaceError('BASELINE_TREE_MISMATCH')
+}
+
+async function assertAuthoritativeProjectBaseline(
+  repoRoot: string,
+  baseRevision: string,
+  expectedTreeHash: string,
+): Promise<void> {
+  await assertBaseTree(repoRoot, baseRevision, expectedTreeHash)
+  await assertCleanCheckoutAtRevision(repoRoot, baseRevision)
+}
+
+async function assertCleanCheckoutAtRevision(repoRoot: string, baseRevision: string): Promise<void> {
+  const status = await git(repoRoot, ['status', '--porcelain=v2', '--branch', '--untracked-files=all'])
+  const lines = status.stdout.split(/\r?\n/).filter(Boolean)
+  const branchOid = lines.find((line) => line.startsWith('# branch.oid '))?.slice('# branch.oid '.length)
+  if (branchOid !== baseRevision) throw new AttemptWorkspaceError('BASELINE_TREE_MISMATCH')
+  if (lines.some((line) => !line.startsWith('# '))) throw new AttemptWorkspaceError('REPO_NOT_CLEAN_FOR_BASELINE')
 }
 
 async function assertExistingWorktreeIdentity(realWorktreeRoot: string, lease: AttemptWorkspaceLeaseV1): Promise<void> {
@@ -1298,6 +1396,16 @@ async function assertCleanRepository(repoRoot: string): Promise<void> {
   if (status.stdout.trim().length > 0) throw new AttemptWorkspaceError('REPO_NOT_CLEAN_FOR_BASELINE')
 }
 
+async function assertCleanAttemptWorktree(worktreeRoot: string): Promise<void> {
+  const status = await git(worktreeRoot, ['status', '--porcelain=v1', '--untracked-files=all'])
+  if (status.stdout.trim().length > 0) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+}
+
+async function assertNoTrackedAttemptChanges(worktreeRoot: string): Promise<void> {
+  const diff = await git(worktreeRoot, ['diff', '--raw', 'HEAD'])
+  if (diff.stdout.trim().length > 0) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+}
+
 function assertGitRepository(repoRoot: string): void {
   if (!existsSync(join(repoRoot, '.git'))) throw new AttemptWorkspaceError('REPO_NOT_GIT')
 }
@@ -1323,24 +1431,6 @@ async function git(cwd: string, args: readonly string[]): Promise<{ stdout: stri
       }
       resolvePromise({ stdout: stdout ?? '' })
     })
-  })
-}
-
-async function gitBytes(cwd: string, args: readonly string[]): Promise<Buffer> {
-  return new Promise((resolvePromise, reject) => {
-    execFile(
-      'git',
-      [...args],
-      { cwd, encoding: 'buffer', windowsHide: true, timeout: 30000, maxBuffer: 64 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        if (error) {
-          const diagnostic = Buffer.isBuffer(stderr) ? stderr.toString('utf8') : String(stderr ?? '')
-          reject(new AttemptWorkspaceError(diagnostic.includes('not a git repository') ? 'REPO_NOT_GIT' : 'GIT_COMMAND_FAILED'))
-          return
-        }
-        resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? ''))
-      },
-    )
   })
 }
 

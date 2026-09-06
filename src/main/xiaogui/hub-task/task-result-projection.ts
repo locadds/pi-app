@@ -22,15 +22,71 @@ export function projectHubTaskResultFromDeliveryV1(input: {
   const mapped = mapDeliveryState(input.delivery.state)
   if (!mapped) return null
 
+  return createResultEnvelope({
+    ...input,
+    ...mapped,
+    artifactRefs: toArtifactRefs(input.delivery),
+  })
+}
+
+/**
+ * Project an authoritative execution terminal when no Delivery was produced.
+ * The caller supplies only the verification classification; fixed, path-free
+ * text keeps runtime failures and local diagnostics outside the Hub envelope.
+ */
+export function projectHubTaskResultFromExecutionTerminalV1(input: {
+  resultId: string
+  assignmentId: string
+  taskId: string
+  occurredAt: string
+  verificationState: 'NOT_RUN' | 'FAIL' | 'UNKNOWN'
+}): XiaoguiTaskResultEnvelopeV1 {
+  const mapped = input.verificationState === 'UNKNOWN'
+    ? {
+        outcome: 'OUTCOME_UNKNOWN' as const,
+        resultSummary: '本机执行结果暂时无法确认，未自动应用任何变更。',
+        verification: {
+          verdict: 'OUTCOME_UNKNOWN' as const,
+          summary: '本机受控执行结果暂时无法确认。',
+        },
+      }
+    : {
+        outcome: 'EXECUTION_FAILED' as const,
+        resultSummary: '本机执行已确定失败，未生成可应用交付。',
+        verification: {
+          verdict: 'FAIL' as const,
+          summary: input.verificationState === 'FAIL'
+            ? '本机受控验证未通过。'
+            : '未进入受控验证阶段。',
+        },
+      }
+
+  return createResultEnvelope({
+    ...input,
+    ...mapped,
+    artifactRefs: [],
+  })
+}
+
+function createResultEnvelope(input: {
+  resultId: string
+  assignmentId: string
+  taskId: string
+  occurredAt: string
+  outcome: XiaoguiTaskResultEnvelopeV1['outcome']
+  resultSummary: string
+  artifactRefs: XiaoguiTaskResultEnvelopeV1['artifactRefs']
+  verification: XiaoguiTaskResultEnvelopeV1['verification']
+}): XiaoguiTaskResultEnvelopeV1 {
   const unsigned = {
     schemaVersion: XIAOGUI_HUB_TASK_RESULT_SCHEMA_V1,
     resultId: input.resultId,
     assignmentId: input.assignmentId,
     taskId: input.taskId,
-    outcome: mapped.outcome,
-    resultSummary: mapped.resultSummary,
-    artifactRefs: toArtifactRefs(input.delivery),
-    verification: mapped.verification,
+    outcome: input.outcome,
+    resultSummary: input.resultSummary,
+    artifactRefs: input.artifactRefs,
+    verification: input.verification,
     occurredAt: input.occurredAt,
   } as const
 

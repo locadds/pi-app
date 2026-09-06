@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import { canonicalizeXiaoguiTaskResultEnvelopeV1 } from '@shared/xiaogui-hub-task-contract'
-import { projectHubTaskResultFromDeliveryV1 } from './task-result-projection'
+import {
+  projectHubTaskResultFromDeliveryV1,
+  projectHubTaskResultFromExecutionTerminalV1,
+} from './task-result-projection'
 
 const base = {
   resultId: 'xgh_result_1',
@@ -53,4 +56,44 @@ describe('H1-4C controlled TaskHub result projection', () => {
   it('does not report a terminal result before the existing delivery workflow reaches a terminal projection', () => {
     expect(projectHubTaskResultFromDeliveryV1({ ...base, delivery: delivery('VERIFYING') })).toBeNull()
   })
+
+  it.each([
+    [
+      'NOT_RUN',
+      'EXECUTION_FAILED',
+      '本机执行已确定失败，未生成可应用交付。',
+      'FAIL',
+      '未进入受控验证阶段。',
+    ],
+    [
+      'FAIL',
+      'EXECUTION_FAILED',
+      '本机执行已确定失败，未生成可应用交付。',
+      'FAIL',
+      '本机受控验证未通过。',
+    ],
+    [
+      'UNKNOWN',
+      'OUTCOME_UNKNOWN',
+      '本机执行结果暂时无法确认，未自动应用任何变更。',
+      'OUTCOME_UNKNOWN',
+      '本机受控执行结果暂时无法确认。',
+    ],
+  ] as const)(
+    'creates a path-free %s terminal envelope when no Delivery exists',
+    (verificationState, outcome, resultSummary, verdict, summary) => {
+      const result = projectHubTaskResultFromExecutionTerminalV1({
+        ...base,
+        verificationState,
+      })
+
+      expect(result).toEqual(expect.objectContaining({
+        outcome,
+        resultSummary,
+        artifactRefs: [],
+        verification: { verdict, summary },
+      }))
+      expect(result.resultSha256).toMatch(/^sha256:[a-f0-9]{64}$/)
+    },
+  )
 })

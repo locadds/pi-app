@@ -77,16 +77,15 @@ describe('M4D delivery IPC adapter', () => {
     expect(port.selectTasks).toHaveBeenCalledOnce()
   })
 
-  it('forwards only an already-authoritative delivery projection to the trusted H1-4C reporter', async () => {
+  it('awaits the shared H1-4C lifecycle reconciler after authoritative Delivery creation', async () => {
     const port = coordinator()
-    const reporter = {
-      recordExecutionStarted: vi.fn(async () => undefined),
-      reportDeliveryOutcome: vi.fn(async () => undefined),
-      recoverPersistedDeliveryOutcomes: vi.fn(async () => undefined),
+    const lifecycle = {
+      recover: vi.fn(async () => undefined),
+      reconcile: vi.fn(async () => undefined),
     }
     const outcome = okBatch()
     ;(port.selectTasks as ReturnType<typeof vi.fn>).mockResolvedValue(outcome)
-    registerXiaoguiDeliveryHandlers(port, reporter)
+    registerXiaoguiDeliveryHandlers(port, lifecycle)
     const select = mocks.handlers.get('ipc:xiaogui.delivery.selection.submit')!
     const payload = {
       contractVersion: 'm4d.v1',
@@ -95,15 +94,17 @@ describe('M4D delivery IPC adapter', () => {
     }
 
     await expect(select(payload)).resolves.toEqual(outcome)
-    await Promise.resolve()
-    expect(reporter.reportDeliveryOutcome).toHaveBeenCalledWith(ADDRESS, outcome.value)
+    expect(lifecycle.reconcile).toHaveBeenCalledWith({
+      address: ADDRESS,
+      flowId: 'xhbf_flow',
+    })
 
     ;(port.selectTasks as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: false,
       error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' },
     })
     await select(payload)
-    expect(reporter.reportDeliveryOutcome).toHaveBeenCalledTimes(1)
+    expect(lifecycle.reconcile).toHaveBeenCalledTimes(1)
   })
 
   it('passes approval only with the current delivery subject shape', async () => {

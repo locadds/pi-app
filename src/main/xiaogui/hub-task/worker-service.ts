@@ -11,12 +11,16 @@ import {
   type XiaoguiTaskDeliveryReceiptV1,
   type XiaoguiTaskReceiptAckV1,
   type XiaoguiTaskResultAckV1,
+  type XiaoguiTaskResultEnvelopeV1,
   type XiaoguiTaskResultSubmissionV1,
 } from '@shared/xiaogui-hub-task-contract'
 import type { DeliveryBatchProjectionV1 } from '@shared/xiaogui-delivery'
 import type { CollaborationHubApplicationV1 } from '../task-hub/application'
 import { signXiaoguiTaskDeliveryReceiptV1 } from './receipt-crypto'
-import { projectHubTaskResultFromDeliveryV1 } from './task-result-projection'
+import {
+  projectHubTaskResultFromDeliveryV1,
+  projectHubTaskResultFromExecutionTerminalV1,
+} from './task-result-projection'
 import {
   type HubTaskWorkerAssignmentDetailV1,
   type HubTaskWorkerAssignmentV1,
@@ -105,22 +109,35 @@ export interface HubTaskWorkerServiceV1 {
   >
   /** Trusted main-process lifecycle hook; it is deliberately not a Renderer IPC. */
   recordExecutionStarted(address: HubAddressV1, flowId: string): Promise<void>
+  /** Main-process-only bindings used by startup lifecycle reconciliation. */
+  listExecutionBindings(): readonly HubTaskExecutionBindingV1[]
   /** Trusted post-verification hook; it reuses Delivery/Evidence and does not apply changes. */
   reportDeliveryOutcome(address: HubAddressV1, delivery: DeliveryBatchProjectionV1): Promise<void>
-  /** Startup repair for the narrow crash window after Delivery persisted but before its Hub result was queued. */
-  recoverPersistedDeliveryOutcomes(
-    readDelivery: (
-      address: HubAddressV1,
-      flowId: string,
-    ) => DeliveryBatchProjectionV1 | null | Promise<DeliveryBatchProjectionV1 | null>,
+  /** Trusted terminal hook for authoritative failures or unknown outcomes with no Delivery. */
+  reportExecutionOutcome(
+    address: HubAddressV1,
+    flowId: string,
+    outcome: HubTaskExecutionTerminalOutcomeV1,
   ): Promise<void>
   startPolling(intervalMs?: number): void
   close(): void
 }
 
+export interface HubTaskExecutionBindingV1 {
+  address: HubAddressV1
+  flowId: string
+}
+
+export interface HubTaskExecutionTerminalOutcomeV1 {
+  verificationState: 'NOT_RUN' | 'FAIL' | 'UNKNOWN'
+}
+
 export type HubTaskWorkerLifecycleReporterV1 = Pick<
   HubTaskWorkerServiceV1,
-  'recordExecutionStarted' | 'reportDeliveryOutcome' | 'recoverPersistedDeliveryOutcomes'
+  | 'listExecutionBindings'
+  | 'recordExecutionStarted'
+  | 'reportDeliveryOutcome'
+  | 'reportExecutionOutcome'
 >
 
 export interface CreateHubTaskWorkerServiceOptionsV1 {
@@ -424,6 +441,25 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     this.requestEvidenceFlush(credentials)
   }
 
+  listExecutionBindings(): readonly HubTaskExecutionBindingV1[] {
+    return this.options.state.listAssignments().flatMap((entry) => {
+      const binding = entry.localPlanDraft
+      if (
+        !binding
+        || !entry.openedAt
+        || entry.assignment.decisionState !== 'ACCEPTED'
+        || !['NOT_STARTED', 'RUNNING'].includes(entry.assignment.executionState)
+      ) return []
+      return [{
+        address: {
+          projectId: binding.projectId,
+          sessionKey: binding.sessionKey,
+        },
+        flowId: binding.flowId,
+      }]
+    })
+  }
+
   async reportDeliveryOutcome(address: HubAddressV1, delivery: DeliveryBatchProjectionV1): Promise<void> {
     const terminalCode = this.terminalActionCode()
     const credentials = this.options.credentials.read()
@@ -447,6 +483,41 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       delivery,
     })
     if (!result) return
+    this.enqueueResult(entry, credentials, result, occurredAt)
+  }
+
+  async reportExecutionOutcome(
+    address: HubAddressV1,
+    flowId: string,
+    outcome: HubTaskExecutionTerminalOutcomeV1,
+  ): Promise<void> {
+    const terminalCode = this.terminalActionCode()
+    const credentials = this.options.credentials.read()
+    if (terminalCode || !credentials) return
+    const entry = this.findBoundAssignment(address, flowId)
+    if (!entry || this.options.state.hasTerminalEvidenceForAssignment(entry.assignment.assignmentId)) return
+    if (
+      entry.assignment.executionState !== 'RUNNING'
+      && !this.hasPendingEvent(entry.assignment.assignmentId, 'EXECUTION_STARTED')
+    ) return
+
+    const occurredAt = this.now()
+    const result = projectHubTaskResultFromExecutionTerminalV1({
+      resultId: this.id('xgh_result'),
+      assignmentId: entry.assignment.assignmentId,
+      taskId: entry.assignment.taskId,
+      occurredAt,
+      verificationState: outcome.verificationState,
+    })
+    this.enqueueResult(entry, credentials, result, occurredAt)
+  }
+
+  private enqueueResult(
+    entry: HubTaskWorkerInboxEntryV1,
+    credentials: HubTaskWorkerCredentialBundleV1,
+    result: XiaoguiTaskResultEnvelopeV1,
+    occurredAt: string,
+  ): void {
     const unsigned: XiaoguiTaskDeliveryReceiptUnsignedV1 = {
       schemaVersion: 'xiaogui.task-receipt.v1',
       eventId: this.id('xgh_event'),
@@ -464,26 +535,6 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     const receipt = (this.options.signReceipt ?? signXiaoguiTaskDeliveryReceiptV1)(unsigned, credentials.node.privateKeyPem)
     this.options.state.enqueueResult({ result, receipt: receipt as XiaoguiTaskResultSubmissionV1['receipt'] }, this.now())
     this.requestEvidenceFlush(credentials)
-  }
-
-  async recoverPersistedDeliveryOutcomes(
-    readDelivery: (
-      address: HubAddressV1,
-      flowId: string,
-    ) => DeliveryBatchProjectionV1 | null | Promise<DeliveryBatchProjectionV1 | null>,
-  ): Promise<void> {
-    for (const entry of this.options.state.listAssignments()) {
-      const binding = entry.localPlanDraft
-      if (!binding || this.options.state.hasTerminalEvidenceForAssignment(entry.assignment.assignmentId)) continue
-      try {
-        const address = { projectId: binding.projectId, sessionKey: binding.sessionKey }
-        const delivery = await readDelivery(address, binding.flowId)
-        if (delivery) await this.reportDeliveryOutcome(address, delivery)
-      } catch {
-        // Startup recovery is best effort. The persisted Delivery remains the
-        // source of truth and will be examined again on the next application start.
-      }
-    }
   }
 
   startPolling(intervalMs = 30_000): void {

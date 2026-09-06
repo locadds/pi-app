@@ -375,6 +375,53 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     registry.close()
   })
 
+  it('preserves approved LF bytes when a fresh worktree is smudged to CRLF', async () => {
+    const projectRoot = await gitRepo()
+    const target = join(projectRoot, 'src', 'existing.txt')
+    const approvedBytes = Buffer.from('before\nsecond line\n')
+    writeFileSync(target, approvedBytes)
+    git(projectRoot, ['add', 'src/existing.txt'])
+    git(projectRoot, ['commit', '-m', 'add LF baseline fixture'])
+    git(projectRoot, ['config', 'core.autocrlf', 'true'])
+
+    // Model the packaged checkout from J1: its exact approved bytes remain LF,
+    // while a newly-created Windows worktree applies the CRLF smudge filter.
+    writeFileSync(target, approvedBytes)
+    expect(git(projectRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
+    expect(readFileSync(target)).toEqual(approvedBytes)
+
+    projectRoots.set(PROJECT_ID, projectRoot)
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    try {
+      const [grant] = await workspace.resolveApprovedFiles(PROJECT_ID, [
+        { operation: 'MODIFY', relativePath: 'src/existing.txt' },
+      ])
+      const prepared = await workspace.prepare(
+        prepareRequest({ projectRoot, managedRoot, attemptId: 'xhba_lf_source' as AttemptId, grants: [grant] }),
+      )
+
+      expect(readFileSync(join(prepared.handle.rootPath, 'src', 'existing.txt'))).toEqual(approvedBytes)
+      expect(git(prepared.handle.rootPath, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
+
+      const resultBytes = Buffer.from('after\nsecond line\n')
+      writeFileSync(join(prepared.handle.rootPath, 'src', 'existing.txt'), resultBytes)
+      await expect(workspace.captureTaskPatch(prepared.handle.attemptId)).resolves.toMatchObject({
+        changedFiles: [
+          {
+            operation: 'MODIFY',
+            relativePath: 'src/existing.txt',
+            baselineDigest: digestBytes(approvedBytes),
+            contentDigest: digestBytes(resultBytes),
+          },
+        ],
+      })
+      expect(readFileSync(target)).toEqual(approvedBytes)
+    } finally {
+      registry.close()
+    }
+  })
+
   it('replays the same request and rejects manifest or source-worktree drift', async () => {
     const projectRoot = await gitRepo()
     const managedRoot = await tempRoot('xiaogui-attempt-managed-')

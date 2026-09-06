@@ -39,6 +39,7 @@ import type {
 } from './runtime-outcome-monitor'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
+import type { HubTaskExecutionLifecycleReconcilerV1 } from './hub-execution-lifecycle'
 
 type ExecutionSagaPhaseV1 =
   | 'ACCEPTED'
@@ -93,6 +94,7 @@ export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly runtimeMonitor?: RuntimeOutcomeMonitorV1
   readonly runtimeBindingRestorer?: (input: { attemptId: AttemptId; runtimeSessionId: string }) => Promise<{ ok: true } | { ok: false; reasonCode: string }>
   readonly verificationCoordinator?: TaskVerificationCoordinatorV1
+  readonly executionLifecycle?: HubTaskExecutionLifecycleReconcilerV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
 }
@@ -111,13 +113,19 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
   >()
   private recovery: Promise<void> | undefined
   private closed = false
+  private executionLifecycle: HubTaskExecutionLifecycleReconcilerV1 | null
 
   constructor(private readonly options: XiaoguiTaskExecutionOrchestratorOptionsV1) {
     if ((options.runtimeMonitor === undefined) !== (options.verificationCoordinator === undefined)) {
       throw new Error('XIAOGUI_TASK_EXECUTION_RUNTIME_VERIFICATION_PAIR_REQUIRED')
     }
+    this.executionLifecycle = options.executionLifecycle ?? null
     this.saga = new SqliteTaskExecutionSagaStoreV1(options.dbPath, () => this.now())
     this.privateAttemptStore = new CollaborationHubSqliteStoreV1(options.dbPath)
+  }
+
+  setExecutionLifecycle(lifecycle: HubTaskExecutionLifecycleReconcilerV1 | null): void {
+    this.executionLifecycle = lifecycle
   }
 
   async start(input: XiaoguiTaskExecutionStartRequestV1): Promise<XiaoguiTaskExecutionStartOutcomeV1> {
@@ -581,6 +589,12 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
         await this.recordRuntimeTerminal(address, flowId, taskRunId, attemptId, outcome)
       }
       await this.settleOperationFromAuthority(operation.operation_id)
+      await this.executionLifecycle?.reconcile({
+        address,
+        flowId,
+        taskRunId,
+        attemptId,
+      })
     }, this.runtimePermissionDecisionFactory(operation, current, runtimeSessionId))
     return true
   }

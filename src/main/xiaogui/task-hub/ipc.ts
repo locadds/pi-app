@@ -27,6 +27,10 @@ import type { HubTaskWorkerLifecycleReporterV1 } from '../hub-task/worker-servic
 import { hubError } from './errors'
 import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
 import {
+  createHubTaskExecutionLifecycleCoordinatorV1,
+  type HubTaskExecutionLifecycleReconcilerV1,
+} from './hub-execution-lifecycle'
+import {
   createXiaoguiRuntimeCompositionV1,
   type XiaoguiRuntimeCompositionV1,
 } from './runtime-composition'
@@ -171,6 +175,7 @@ interface DefaultRuntimeLifecycleV1 {
   readonly composition: XiaoguiRuntimeCompositionV1
   readonly kimiLogin: KimiLoginCoordinatorV1
   readonly piE2eLaunch?: NonNullable<ReturnType<typeof resolvePiE2eScriptedRuntimeLaunchV1>>
+  executionLifecycle: HubTaskExecutionLifecycleReconcilerV1 | null
 }
 
 let defaultRuntimeLifecycle: DefaultRuntimeLifecycleV1 | null = null
@@ -205,6 +210,7 @@ export function getDefaultDeliveryCoordinator(): XiaoguiDeliveryCoordinatorPortV
 export async function closeDefaultCollaborationHubRuntimeComposition(): Promise<void> {
   const lifecycle = defaultRuntimeLifecycle
   defaultRuntimeLifecycle = null
+  lifecycle?.composition.taskExecution.setExecutionLifecycle(null)
   lifecycle?.kimiLogin.close()
   await lifecycle?.composition.close()
   if (lifecycle?.piE2eLaunch) deactivatePiE2eScriptedRuntimeLaunchV1(lifecycle.piE2eLaunch)
@@ -216,21 +222,20 @@ export function registerCollaborationHubHandlers(
   taskExecution?: XiaoguiTaskExecutionOrchestratorV1,
   deliveryCoordinator?: XiaoguiDeliveryCoordinatorPortV1,
   lifecycleReporter: HubTaskWorkerLifecycleReporterV1 | null = hubTaskWorkerLifecycleReporter,
+  executionLifecycle?: HubTaskExecutionLifecycleReconcilerV1,
 ): void {
   const defaultLifecycle = arguments.length === 0 ? getDefaultRuntimeLifecycle() : undefined
   const resolveKimiLogin = () => kimiLogin ?? defaultLifecycle?.kimiLogin ?? getDefaultKimiLoginCoordinator()
   const resolveTaskExecution = () =>
     taskExecution ?? defaultLifecycle?.composition.taskExecution ?? getDefaultTaskExecutionOrchestrator()
+  const resolvedExecutionLifecycle = executionLifecycle
+    ?? (defaultLifecycle && lifecycleReporter
+      ? ensureDefaultExecutionLifecycle(defaultLifecycle, lifecycleReporter)
+      : null)
   if (deliveryCoordinator) {
-    registerXiaoguiDeliveryHandlers(deliveryCoordinator, lifecycleReporter)
+    registerXiaoguiDeliveryHandlers(deliveryCoordinator, resolvedExecutionLifecycle)
   } else if (arguments.length === 0) {
-    registerXiaoguiDeliveryHandlers(getDefaultDeliveryCoordinator(), lifecycleReporter)
-  }
-  if (defaultLifecycle && lifecycleReporter) {
-    void recoverHubTaskWorkerDeliveryResultsV1(
-      defaultLifecycle.composition.delivery,
-      lifecycleReporter,
-    ).catch(() => undefined)
+    registerXiaoguiDeliveryHandlers(getDefaultDeliveryCoordinator(), resolvedExecutionLifecycle)
   }
 
   registerHandler('ipc:xiaogui.hub.observe', async (payload) => {
@@ -247,7 +252,16 @@ export function registerCollaborationHubHandlers(
     const parsed = ExecutionStartSchema.safeParse(payload)
     if (!parsed.success) return invalidExecutionInput()
     const outcome = await resolveTaskExecution().start(parsed.data as unknown as XiaoguiTaskExecutionStartRequestV1)
-    if (outcome.ok) void lifecycleReporter?.recordExecutionStarted(parsed.data.address as HubAddressV1, parsed.data.flowId)
+    await resolvedExecutionLifecycle?.reconcile({
+      address: parsed.data.address as HubAddressV1,
+      flowId: parsed.data.flowId,
+      ...(outcome.ok
+        ? {
+            taskRunId: outcome.value.taskRun.taskRunId,
+            attemptId: outcome.value.attempt.attemptId,
+          }
+        : {}),
+    })
     return outcome
   })
   registerHandler('ipc:xiaogui.hub.execution.startBatch', async (payload) => {
@@ -260,7 +274,10 @@ export function registerCollaborationHubHandlers(
     const outcome = await resolveTaskExecution().startBatch(
       parsed.data as unknown as XiaoguiTaskExecutionStartBatchRequestV1,
     )
-    if (outcome.ok) void lifecycleReporter?.recordExecutionStarted(parsed.data.address as HubAddressV1, parsed.data.flowId)
+    await resolvedExecutionLifecycle?.reconcile({
+      address: parsed.data.address as HubAddressV1,
+      flowId: parsed.data.flowId,
+    })
     return outcome
   })
   registerHandler('ipc:xiaogui.hub.perform', async (payload) => {
@@ -302,16 +319,21 @@ export function registerCollaborationHubHandlers(
   })
 }
 
-async function recoverHubTaskWorkerDeliveryResultsV1(
-  delivery: Pick<XiaoguiRuntimeCompositionV1['delivery'], 'recover' | 'readLatestDelivery'>,
+function ensureDefaultExecutionLifecycle(
+  lifecycle: DefaultRuntimeLifecycleV1,
   reporter: HubTaskWorkerLifecycleReporterV1,
-): Promise<void> {
-  // Delivery outboxes must settle first; otherwise the terminal projection may
-  // still be absent in the precise crash window this repair closes.
-  await delivery.recover()
-  await reporter.recoverPersistedDeliveryOutcomes(
-    (address, flowId) => delivery.readLatestDelivery(address, flowId),
-  )
+): HubTaskExecutionLifecycleReconcilerV1 {
+  if (lifecycle.executionLifecycle) return lifecycle.executionLifecycle
+  const coordinator = createHubTaskExecutionLifecycleCoordinatorV1({
+    application: lifecycle.composition.application,
+    taskExecution: lifecycle.composition.taskExecution,
+    delivery: lifecycle.composition.delivery,
+    evidence: reporter,
+  })
+  lifecycle.executionLifecycle = coordinator
+  lifecycle.composition.taskExecution.setExecutionLifecycle(coordinator)
+  void coordinator.recover().catch(() => undefined)
+  return coordinator
 }
 
 function getDefaultRuntimeLifecycle(): DefaultRuntimeLifecycleV1 {
@@ -337,6 +359,7 @@ function getDefaultRuntimeLifecycle(): DefaultRuntimeLifecycleV1 {
   })
   defaultRuntimeLifecycle = {
     composition,
+    executionLifecycle: null,
     kimiLogin: new KimiLoginCoordinatorV1({
       effectiveEnabled,
       userDataDir,

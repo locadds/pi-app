@@ -23,10 +23,15 @@ const mocks = vi.hoisted(() => ({
   kimiProductionEnabled: false,
   scopeLookup: { lookup: vi.fn() },
   runtimeCompositions: [] as Array<{
-    application: { generation: number }
+    application: { generation: number; observeM2B: ReturnType<typeof vi.fn> }
     close: ReturnType<typeof vi.fn>
     stageAttemptInput: ReturnType<typeof vi.fn>
-    taskExecution: { start: ReturnType<typeof vi.fn>; startBatch: ReturnType<typeof vi.fn> }
+    taskExecution: {
+      start: ReturnType<typeof vi.fn>
+      startBatch: ReturnType<typeof vi.fn>
+      recover: ReturnType<typeof vi.fn>
+      setExecutionLifecycle: ReturnType<typeof vi.fn>
+    }
     delivery: {
       selectTasks: ReturnType<typeof vi.fn>
       approveGate: ReturnType<typeof vi.fn>
@@ -49,7 +54,29 @@ const mocks = vi.hoisted(() => ({
 
 mocks.createRuntimeComposition.mockImplementation(() => {
   const composition = {
-    application: { generation: mocks.runtimeCompositions.length + 1 },
+    application: {
+      generation: mocks.runtimeCompositions.length + 1,
+      observeM2B: vi.fn(async (address) => ({
+        ok: true,
+        value: {
+          version: 'm2b.v1',
+          address,
+          activeFlow: { flowId: 'xhbf_recovered', status: 'PLAN_ACTIVE' },
+          taskRuns: [{
+            taskRunId: 'xhbtr_recovered',
+            taskSpecId: 'xhbts_recovered',
+            taskKey: 'task-recovered',
+            status: 'RUNNING',
+            attemptId: 'xhba_recovered',
+          }],
+          attempts: [{
+            attemptId: 'xhba_recovered',
+            taskRunId: 'xhbtr_recovered',
+            status: 'RUNNING',
+          }],
+        },
+      })),
+    },
     close: vi.fn(async () => undefined),
     stageAttemptInput: vi.fn(),
     taskExecution: {
@@ -74,6 +101,8 @@ mocks.createRuntimeComposition.mockImplementation(() => {
           })),
         },
       })),
+      recover: vi.fn(async () => undefined),
+      setExecutionLifecycle: vi.fn(),
     },
     delivery: {
       selectTasks: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
@@ -389,24 +418,38 @@ describe('M2A collaboration hub IPC adapter', () => {
     expect(mocks.runtimeCompositions[0]?.delivery).toBeDefined()
   })
 
-  it('rechecks persisted Delivery outcomes after the default startup recovery completes', async () => {
+  it('queues Hub start evidence before startup recovery and then reconciles persisted Delivery', async () => {
     const reporter = {
+      listExecutionBindings: vi.fn(() => [{ address: ADDRESS, flowId: 'xhbf_recovered' }]),
       recordExecutionStarted: vi.fn(async () => undefined),
       reportDeliveryOutcome: vi.fn(async () => undefined),
-      recoverPersistedDeliveryOutcomes: vi.fn(async (readDelivery: (address: typeof ADDRESS, flowId: string) => unknown) => {
-        await readDelivery(ADDRESS, 'xhbf_recovered')
-      }),
+      reportExecutionOutcome: vi.fn(async () => undefined),
     }
     setHubTaskWorkerLifecycleReporterV1(reporter)
+    mocks.createRuntimeComposition.mockImplementationOnce(() => {
+      const composition = mocks.createRuntimeComposition.getMockImplementation()!()
+      composition.delivery.readLatestDelivery.mockReturnValue({
+        state: 'READY_FOR_REVIEW',
+        flowId: 'xhbf_recovered',
+      })
+      return composition
+    })
 
     registerCollaborationHubHandlers()
 
-    await vi.waitFor(() => expect(reporter.recoverPersistedDeliveryOutcomes).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(reporter.reportDeliveryOutcome).toHaveBeenCalledOnce())
+    expect(reporter.recordExecutionStarted).toHaveBeenCalled()
     const delivery = mocks.runtimeCompositions[0]!.delivery
+    const taskExecution = mocks.runtimeCompositions[0]!.taskExecution
+    expect(taskExecution.setExecutionLifecycle).toHaveBeenCalledOnce()
+    expect(taskExecution.recover).toHaveBeenCalledOnce()
     expect(delivery.recover).toHaveBeenCalledOnce()
     expect(delivery.readLatestDelivery).toHaveBeenCalledWith(ADDRESS, 'xhbf_recovered')
+    expect(reporter.recordExecutionStarted.mock.invocationCallOrder[0]).toBeLessThan(
+      taskExecution.recover.mock.invocationCallOrder[0]!,
+    )
     expect(delivery.recover.mock.invocationCallOrder[0]).toBeLessThan(
-      reporter.recoverPersistedDeliveryOutcomes.mock.invocationCallOrder[0]!,
+      reporter.reportDeliveryOutcome.mock.invocationCallOrder[0]!,
     )
   })
 
@@ -441,13 +484,12 @@ describe('M2A collaboration hub IPC adapter', () => {
     expect(taskExecution.start).toHaveBeenCalledOnce()
   })
 
-  it('reports an execution start only after the existing orchestrator accepted the user-confirmed action', async () => {
-    const reporter = {
-      recordExecutionStarted: vi.fn(async () => undefined),
-      reportDeliveryOutcome: vi.fn(async () => undefined),
-      recoverPersistedDeliveryOutcomes: vi.fn(async () => undefined),
+  it('awaits one lifecycle reconciliation after every valid single execution attempt', async () => {
+    const lifecycle = {
+      recover: vi.fn(async () => undefined),
+      reconcile: vi.fn(async () => undefined),
     }
-    registerCollaborationHubHandlers(undefined, undefined, undefined, undefined, reporter)
+    registerCollaborationHubHandlers(undefined, undefined, undefined, undefined, null, lifecycle)
     const startExecution = mocks.handlers.get('ipc:xiaogui.hub.execution.start')!
     const taskExecution = mocks.runtimeCompositions[0]!.taskExecution
     const valid = {
@@ -458,15 +500,23 @@ describe('M2A collaboration hub IPC adapter', () => {
     }
 
     await expect(startExecution(valid)).resolves.toMatchObject({ ok: true })
-    await Promise.resolve()
-    expect(reporter.recordExecutionStarted).toHaveBeenCalledWith(ADDRESS, 'xhbf_flow')
+    expect(lifecycle.reconcile).toHaveBeenCalledWith({
+      address: ADDRESS,
+      flowId: 'xhbf_flow',
+      taskRunId: 'xhbtr_task',
+      attemptId: 'xhba_attempt',
+    })
 
     ;(taskExecution.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,
       error: { code: 'EXECUTION_INPUT_INVALID' },
     })
     await expect(startExecution(valid)).resolves.toMatchObject({ ok: false })
-    expect(reporter.recordExecutionStarted).toHaveBeenCalledTimes(1)
+    expect(lifecycle.reconcile).toHaveBeenLastCalledWith({
+      address: ADDRESS,
+      flowId: 'xhbf_flow',
+    })
+    expect(lifecycle.reconcile).toHaveBeenCalledTimes(2)
   })
 
   it('registers a versioned batch execution IPC method and forwards only its narrow 1..2 item shape', async () => {
@@ -502,6 +552,43 @@ describe('M2A collaboration hub IPC adapter', () => {
       })
     }
     expect(taskExecution.startBatch).toHaveBeenCalledOnce()
+  })
+
+  it('reconciles a valid batch even when its item fails after TaskRun and Attempt creation', async () => {
+    const lifecycle = {
+      recover: vi.fn(async () => undefined),
+      reconcile: vi.fn(async () => undefined),
+    }
+    registerCollaborationHubHandlers(undefined, undefined, undefined, undefined, null, lifecycle)
+    const startBatch = mocks.handlers.get('ipc:xiaogui.hub.execution.startBatch')!
+    const taskExecution = mocks.runtimeCompositions[0]!.taskExecution
+    ;(taskExecution.startBatch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      value: {
+        contractVersion: 'xiaogui.task-execution.batch.v1',
+        items: [{
+          ok: false,
+          taskRunId: 'xhbtr_failed',
+          error: { code: 'AGENT_UNAVAILABLE' },
+        }],
+      },
+    })
+
+    await expect(startBatch({
+      contractVersion: 'xiaogui.task-execution.batch.v1',
+      address: ADDRESS,
+      flowId: 'xhbf_flow',
+      items: [{
+        taskRunId: 'xhbtr_failed',
+        prompt: '执行后在工作树准备阶段失败',
+        files: [{ operation: 'MODIFY', relativePath: 'src/task.ts' }],
+      }],
+    })).resolves.toMatchObject({ ok: true })
+
+    expect(lifecycle.reconcile).toHaveBeenCalledWith({
+      address: ADDRESS,
+      flowId: 'xhbf_flow',
+    })
   })
 
   it('does not accept an ambient event-log host path when the Scripted launch gate is closed', async () => {

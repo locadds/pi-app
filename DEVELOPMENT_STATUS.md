@@ -1,8 +1,70 @@
 # DEVELOPMENT STATUS
 
-更新时间：2026-09-05
-阶段：`TASKHUB-H1-4C-B` — 桌面受控结果上报候选
-状态：阶段 B 第三轮最小整改已关闭 `C://` 与 `//server/share` 路径绕过，并与 Hub 中央文本校验规则对齐。单文件聚焦测试已通过，等待固定提交的只读增量复验。现仍停在代码审查门；未授权或启动两机人工验收、C3、Renderer/Web 前端，未合并正式主线或发布。
+更新时间：2026-09-06
+阶段：`TASKHUB-H1-4C-J1-REMEDIATION` — 两机 J1 失败后的桌面最小整改候选
+状态：R0 已确认故障属于 `CHECKOUT_FILTER_EQUIVALENT`；跨 checkout 精确字节播种、终态收敛与聚焦自动化验证已完成，等待固定提交的独立只读复验。尚未启动新的两机验收现场；未进入 C3、Renderer/Web 前端、Apply、正式主线合并或发布。
+
+## H1-4C J1 最小整改（2026-09-06）
+
+### 本阶段目标与基线
+
+只关闭首次 H1-4C 两机 J1 中已经证实的两个缺口：Git checkout filter 造成的工作树原始字节差异被误判为基线漂移，以及本机已确定失败后 Hub 可能长期停在 `RUNNING`。本包不改变 Hub/合同、不重试旧任务，也不启动新的两机验收。
+
+- 桌面基线：`cc29acf5d2f19f228a54562372d1430c2cce273f`
+- H1-4C/C3 机器合同：`98650e0545f8bfaf19055a5748aecd06c041267e`（只读，不修改）
+- Hub 结果链路：`b5bfeb77aa60adf1a88b19bb249ebd912b9bb5ee`（只读，不修改）
+- 独立工作树：`D:\CodexWorktrees\xiaogui-desktop-h1-4c-j1-remediation-v1`
+- 独立分支：`agent/taskhub-h1-4c-j1-remediation-v1`
+
+### R0 准入事实
+
+- 乙机只读探针返回 `CHECKOUT_FILTER_EQUIVALENT`、`R0_EXIT=0`；探针设置 `GIT_OPTIONAL_LOCKS=0`。
+- 原始 checkout 与 Attempt 的 HEAD、tree、index/blob/filtered object identity 一致，二者均 clean、普通单链接文件且 Attempt 已注册。
+- 原始 checkout 的 `src/result.js` 为 41 字节 LF，Attempt 为 42 字节 CRLF；原始 SHA-256 不同，但过滤后的 Git 对象一致。系统 `core.autocrlf=true`。
+- 原现场证据继续保留在 `D:\CodexTemp\xiaogui-h1-4c-lan\`，整改过程没有重新配对、删除旧 Attempt/数据库/队列或重试旧 task/runId。
+
+### 实际修改文件
+
+| 范围 | 文件 |
+| --- | --- |
+| Attempt 精确基线播种 | `src/main/xiaogui/task-hub/attempt-workspace.ts`、`attempt-workspace.test.ts` |
+| Delivery 精确基线播种 | `src/main/xiaogui/task-hub/delivery-integration-worktree.ts`、`delivery-integration-worktree.test.ts` |
+| 受控终态投影 | `src/main/xiaogui/hub-task/task-result-projection.ts`、`task-result-projection.test.ts` |
+| Hub Worker 执行证据 | `src/main/xiaogui/hub-task/worker-service.ts`、`worker-service.test.ts`、`worker-ipc.test.ts` |
+| 单一生命周期协调器 | `src/main/xiaogui/task-hub/hub-execution-lifecycle.ts`、`hub-execution-lifecycle.test.ts` |
+| Main 进程接线 | `src/main/xiaogui/task-hub/ipc.ts`、`ipc.test.ts`、`execution-orchestrator.ts`、`execution-orchestrator.test.ts`、`delivery-ipc.ts`、`delivery-ipc.test.ts` |
+| 交接与状态 | `doc/TASKHUB-H1-4C-J1-REMEDIATION-HANDOFF.md`、`DEVELOPMENT_STATUS.md` |
+
+### 已完成内容
+
+- Attempt 和 Delivery 工作树从权威、clean 的原始 checkout 读取已批准 `MODIFY` 文件的原始字节，并在 Git checkout 后以这些精确字节播种；不做 CRLF/LF 规范化。
+- 播种前后均验证普通文件、非符号链接、非硬链接、字节摘要、Git HEAD/tree 和 clean 状态；只刷新获批路径的 worktree index，禁止扩大文件范围。
+- 捕获任务补丁时再次读取权威原始 checkout 的字节，避免以 `git cat-file --filters` 代替真实 checkout 基线；Apply 路径本阶段未修改。
+- 新增一个串行、幂等、可等待的主进程生命周期协调器，统一覆盖 `startBatch` 返回后的即时失败、Runtime/验证/中断/取消权威回调、Delivery 创建与桌面启动恢复。
+- 恢复顺序固定为：确保 `EXECUTION_STARTED` 幂等入队 → 优先读取终态 Delivery → 无终态 Delivery 时才根据本次绑定的 taskRun/Attempt 形成失败或未知终态。
+- 终态优先级固定为：终态 Delivery → `OUTCOME_UNKNOWN` → `EXECUTION_FAILED` → 全部成功但尚无 Delivery 时继续等待。只允许当前 Hub assignment 绑定的 flow 与本次 taskRun/Attempt 参与判断。
+- 失败/未知结果使用冻结的受控摘要：未进入验证为 `NOT_RUN`，验证失败为 `FAIL`，结果未知为 `OUTCOME_UNKNOWN` 且 `artifactRefs=[]`；不上传本机路径、原始输出或会话信息。
+- 启动恢复的集成回归证明：本机绑定仍为 `NOT_STARTED` 且已存在终态 Delivery 时，待传证据先出现 `EXECUTION_STARTED`，再出现 `RESULT_READY`，序号严格递增。
+
+### 红灯与绿灯证据
+
+| 检查 | 结果 |
+| --- | --- |
+| checkout-filter 红灯 | 在原始 checkout 为 LF、Git 新工作树为 CRLF 且 Git 对象等价时，旧实现分别复现 `TARGET_DIGEST_MISMATCH` 和 `DELIVERY_WORKTREE_BASELINE_DRIFT`。 |
+| 生命周期红灯 | 旧接线只在正常 IPC 成功回调与分散的恢复入口处理结果；`startBatch` 项级失败、异步 Runtime/验证/中断/取消终态和恢复竞态均可漏掉 Hub 终态。 |
+| 聚焦 Vitest | 通过：9 个文件、96 个用例；覆盖精确字节、单一协调器、终态优先级、启动顺序和 Main 进程接线。 |
+| 聚焦 ESLint | 通过：全部本次修改及新增 TypeScript 文件无 lint 错误。 |
+| `npm run typecheck` | 通过：web 与 node 两套 TypeScript 配置。 |
+| `npm run build` | 通过：Main、Preload 与 Renderer 均构建成功。为避免借用依赖缺口，按锁文件在本工作树执行 `npm ci` 后构建；未修改 `package.json` 或锁文件。 |
+| `git diff --check` | 通过；只有 Git 的工作区行尾提示，无空白错误或冲突标记。 |
+
+### 未完成、风险与下一门禁
+
+- 本阶段只形成桌面代码候选；尚未执行新的双机 J1/J2/J3，也不能据此宣称真实 LAN 结果旅程通过。
+- 旧现场 `D:\CodexTemp\xiaogui-h1-4c-lan\` 必须继续只读保留。复验获批后须使用新的 Hub 隔离数据库、桌面 `userData`、证据目录、新 `DIRECT` 任务和新 `runId`。
+- Scripted Runtime 仍只证明控制链路与产品状态，不证明真实模型质量。
+- 下一门是固定提交与独立只读代码/规格双轴复验；只有复验 `APPROVE` 且用户再次明确授权后，才可启动新的两机人工验收。
+- 不授权 C3、Renderer/Web 前端、Apply、正式主线合并或发布。
 
 ## H1-4C 阶段 B 第三轮最小整改（2026-09-05）
 

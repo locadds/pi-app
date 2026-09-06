@@ -14,7 +14,7 @@ import type {
 } from '@shared/xiaogui-delivery-ipc'
 import { registerHandler } from '../../ipc/registry'
 import { recordPiE2eRendererEventV1 } from './pi-e2e-scripted-runtime'
-import type { HubTaskWorkerLifecycleReporterV1 } from '../hub-task/worker-service'
+import type { HubTaskExecutionLifecycleReconcilerV1 } from './hub-execution-lifecycle'
 
 const AddressSchema = z
   .object({
@@ -96,17 +96,21 @@ const PrepareRecoverySchema = BaseIpcSchema.extend({
 
 export function registerXiaoguiDeliveryHandlers(
   coordinator: XiaoguiDeliveryCoordinatorPortV1,
-  lifecycleReporter: HubTaskWorkerLifecycleReporterV1 | null = null,
+  executionLifecycle: HubTaskExecutionLifecycleReconcilerV1 | null = null,
 ): void {
   registerHandler('ipc:xiaogui.delivery.selection.submit', async (payload) => {
     const parsed = SelectTasksSchema.safeParse(payload)
     if (!parsed.success || containsUnsafeRendererValue(payload)) return invalidDeliveryInput()
     const typed = parsed.data as unknown as XiaoguiDeliverySelectTasksIpcRequestV1
     const outcome = await coordinator.selectTasks(typed.address, typed.request)
-    // The coordinator is authoritative for Delivery/Evidence. A result report
-    // is only queued after its verified projection exists; it never approves
-    // the human gate or applies a change.
-    if (outcome.ok) void lifecycleReporter?.reportDeliveryOutcome(typed.address, outcome.value)
+    // One awaited lifecycle seam enforces start-before-terminal ordering. It
+    // reads the authoritative Delivery projection and never approves or applies.
+    if (outcome.ok) {
+      await executionLifecycle?.reconcile({
+        address: typed.address,
+        flowId: typed.request.flowId,
+      })
+    }
     return outcome
   })
 

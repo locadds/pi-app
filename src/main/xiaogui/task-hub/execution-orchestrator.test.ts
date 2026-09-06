@@ -38,6 +38,7 @@ import type {
   TaskVerificationCoordinatorV1,
   TaskVerificationSucceededInputV1,
 } from './task-verification-coordinator'
+import type { HubTaskExecutionLifecycleReconcilerV1 } from './hub-execution-lifecycle'
 
 const ADDRESS = {
   projectId: `xgp1_${'1'.repeat(64)}`,
@@ -408,6 +409,43 @@ describe('XiaoguiTaskExecutionOrchestratorV1', () => {
     await orchestrator.close()
   })
 
+  it('awaits the shared Hub lifecycle reconciler after the authoritative runtime terminal is persisted', async () => {
+    const events: string[] = []
+    const dbPath = await tempDb()
+    const hub = fakeHub(events, dbPath)
+    const monitor = fakeRuntimeMonitor()
+    const lifecycle: HubTaskExecutionLifecycleReconcilerV1 = {
+      recover: vi.fn(async () => undefined),
+      reconcile: vi.fn(async (trigger) => {
+        const observed = await hub.application.observeM2B(trigger.address)
+        if (!observed.ok) throw new Error('missing authority')
+        events.push(`hub-reconcile:${observed.value.attempts[0]?.status}`)
+      }),
+    }
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      runtimeMonitor: monitor,
+      verificationCoordinator: fakeVerificationCoordinator(),
+      executionLifecycle: lifecycle,
+    })
+
+    await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true })
+    await monitor.emit('runtime-1', {
+      state: 'FAILED',
+      runtimeSessionId: 'runtime-1',
+      receiptDigest: 'sha256:runtime-failed',
+      reasonCode: 'RUNTIME_FAILED',
+    })
+
+    expect(lifecycle.reconcile).toHaveBeenCalledWith({
+      address: ADDRESS,
+      flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID,
+    })
+    expect(events).toContain('hub-reconcile:FAILED')
+    await orchestrator.close()
+  })
+
   it('binds deterministic ALLOW_ONCE decisions to the confirmed execution scope', async () => {
     const events: string[] = []
     const dbPath = await tempDb()
@@ -516,6 +554,7 @@ async function createOrchestrator(
     runtimeMonitor?: RuntimeOutcomeMonitorV1
     runtimeBindingRestorer?: ConstructorParameters<typeof XiaoguiTaskExecutionOrchestratorV1>[0]['runtimeBindingRestorer']
     verificationCoordinator?: TaskVerificationCoordinatorV1
+    executionLifecycle?: HubTaskExecutionLifecycleReconcilerV1
   },
   inputStageOverride?: TaskExecutionInputStageV1,
 ): Promise<XiaoguiTaskExecutionOrchestratorV1> {
