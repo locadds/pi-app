@@ -17,3 +17,7 @@ export function resolveMainWindowPreload(appPath = app.getAppPath()): string {
     : join(appPath, 'out')
   return join(outDir, 'preload', 'index.cjs')
 }
+
+export function resolveMainWindowRenderer(appPath = app.getAppPath()): string {
+  return join(dirname(resolveMainWindowPreload(appPath)), '..', 'renderer', 'index.html')
+}
