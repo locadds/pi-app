@@ -43,7 +43,7 @@ import {
   setScope,
 } from './scope-store'
 import { opaqueScopeIdDeriverV1 } from './scope-derive'
-import { SessionScopeResolutionError } from './scope-resolver'
+import { createSessionScopeResolverV1, SessionScopeResolutionError } from './scope-resolver'
 
 beforeEach(() => {
   mem.data = {}
@@ -257,6 +257,202 @@ describe('scope-store：canonical binding 原子持久化', () => {
     mem.throwOnCanonicalSet = true
     expect(() => sessionScopePersistenceV1.commitSession(input)).toThrow('cannot write')
     expect(mem.data['canonicalScopeBindings']).toEqual(before)
+  })
+
+  it('keeps a V2 null identity pending until a trusted project re-confirmation fills it', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'CODING')
+    mem.data['sessionModeMap'] = { 'D:/projects/alpha/one.jsonl': 'CODING' }
+    mem.data['projectModeMap'] = { 'D:/projects/alpha': 'CODING' }
+    mem.data['canonicalScopeBindings'] = {
+      version: 2,
+      projects: {
+        [input.project.opaqueId]: {
+          canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+          rootIdentityDigest: null,
+        },
+      },
+      sessions: {
+        [input.session.opaqueId]: {
+          projectId: input.project.opaqueId,
+          canonicalInputFingerprint: input.session.canonicalInputFingerprint,
+          sessionMode: 'DESIGN',
+        },
+      },
+      sandboxes: {},
+    }
+
+    expect(sessionScopePersistenceV1.lookupBoundSession(input)).toEqual({ kind: 'NOT_FOUND' })
+    expect(sessionScopePersistenceV1.commitSession(input)).toBe('DESIGN')
+    expect(sessionScopePersistenceV1.lookupBoundSession(input)).toMatchObject({
+      kind: 'FOUND',
+      scope: { sessionMode: 'DESIGN' },
+    })
+    expect(mem.data['canonicalScopeBindings']).toMatchObject({
+      version: 2,
+      projects: {
+        [input.project.opaqueId]: {
+          canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+          rootIdentityDigest: ROOT_IDENTITY,
+        },
+      },
+    })
+    expect(getScope('project', 'D:/projects/alpha')).toBe('CODING')
+    expect(getScope('session', 'D:/projects/alpha/one.jsonl')).toBe('CODING')
+  })
+
+  it('accepts a V1 missing identity only as pending and fills it after trusted re-confirmation', () => {
+    const input = sessionCommit('D:/projects/legacy', 'D:/projects/legacy/one.jsonl', 'CODING')
+    mem.data['canonicalScopeBindings'] = {
+      version: 1,
+      projects: {
+        [input.project.opaqueId]: {
+          canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+        },
+      },
+      sessions: {
+        [input.session.opaqueId]: {
+          projectId: input.project.opaqueId,
+          canonicalInputFingerprint: input.session.canonicalInputFingerprint,
+          sessionMode: 'CODING',
+        },
+      },
+      sandboxes: {},
+    }
+
+    expect(sessionScopePersistenceV1.lookupBoundSession(input)).toEqual({ kind: 'NOT_FOUND' })
+    expect(sessionScopePersistenceV1.commitSession(input)).toBe('CODING')
+    expect(mem.data['canonicalScopeBindings']).toMatchObject({
+      version: 2,
+      projects: {
+        [input.project.opaqueId]: { rootIdentityDigest: ROOT_IDENTITY },
+      },
+    })
+  })
+
+  it('keeps multiple V1 bindings pending until trusted resolver reconciliation, then preserves modes', async () => {
+    const coding = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'CODING')
+    const design = sessionCommit('D:/projects/bravo', 'D:/projects/bravo/two.jsonl', 'DESIGN')
+    mem.data['canonicalScopeBindings'] = {
+      version: 1,
+      projects: {
+        [coding.project.opaqueId]: {
+          canonicalInputFingerprint: coding.project.canonicalInputFingerprint,
+        },
+        [design.project.opaqueId]: {
+          canonicalInputFingerprint: design.project.canonicalInputFingerprint,
+        },
+      },
+      sessions: {
+        [coding.session.opaqueId]: {
+          projectId: coding.project.opaqueId,
+          canonicalInputFingerprint: coding.session.canonicalInputFingerprint,
+          sessionMode: 'CODING',
+        },
+        [design.session.opaqueId]: {
+          projectId: design.project.opaqueId,
+          canonicalInputFingerprint: design.session.canonicalInputFingerprint,
+          sessionMode: 'DESIGN',
+        },
+      },
+      sandboxes: {},
+    }
+    const resolver = createSessionScopeResolverV1(
+      sessionScopePersistenceV1,
+      undefined,
+      () => ROOT_IDENTITY,
+    )
+
+    // Preview/lookup of a legacy entry has no identity authority and never
+    // silently grants it execution scope.
+    expect(await resolver.resolveExisting({
+      rootPath: 'D:/projects/alpha',
+      sessionFile: 'D:/projects/alpha/one.jsonl',
+    })).toBeNull()
+    expect(mem.setCalls).toEqual([])
+
+    // A trusted Main-side resolve supplies a freshly measured identity. It
+    // atomically backfills both V1 entries without losing their existing modes.
+    expect(await resolver.resolve({
+      rootPath: 'D:/projects/alpha',
+      sessionFile: 'D:/projects/alpha/one.jsonl',
+    })).toMatchObject({ sessionMode: 'CODING' })
+    expect(await resolver.resolve({
+      rootPath: 'D:/projects/bravo',
+      sessionFile: 'D:/projects/bravo/two.jsonl',
+    })).toMatchObject({ sessionMode: 'DESIGN' })
+    expect(sessionScopePersistenceV1.lookupBoundSession(coding)).toMatchObject({
+      kind: 'FOUND',
+      scope: { sessionMode: 'CODING' },
+    })
+    expect(sessionScopePersistenceV1.lookupBoundSession(design)).toMatchObject({
+      kind: 'FOUND',
+      scope: { sessionMode: 'DESIGN' },
+    })
+    expect(mem.data['canonicalScopeBindings']).toMatchObject({
+      version: 2,
+      projects: {
+        [coding.project.opaqueId]: { rootIdentityDigest: ROOT_IDENTITY },
+        [design.project.opaqueId]: { rootIdentityDigest: ROOT_IDENTITY },
+      },
+    })
+  })
+
+  it('does not let a pending binding bypass project or session fingerprint validation', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'CODING')
+    mem.data['canonicalScopeBindings'] = {
+      version: 2,
+      projects: {
+        [input.project.opaqueId]: {
+          canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+          rootIdentityDigest: null,
+        },
+      },
+      sessions: {
+        [input.session.opaqueId]: {
+          projectId: input.project.opaqueId,
+          canonicalInputFingerprint: input.session.canonicalInputFingerprint,
+          sessionMode: 'CODING',
+        },
+      },
+      sandboxes: {},
+    }
+
+    expect(() => sessionScopePersistenceV1.lookupBoundSession({
+      ...input,
+      project: {
+        ...input.project,
+        canonicalInputFingerprint: 'f'.repeat(64) as never,
+      },
+    })).toThrow(expect.objectContaining({ code: 'OPAQUE_ID_COLLISION' }))
+    expect(() => sessionScopePersistenceV1.lookupBoundSession({
+      ...input,
+      session: {
+        ...input.session,
+        canonicalInputFingerprint: 'e'.repeat(64) as never,
+      },
+    })).toThrow(expect.objectContaining({ code: 'OPAQUE_ID_COLLISION' }))
+    expect(mem.setCalls).toEqual([])
+  })
+
+  it('still rejects an invalid persisted identity without rewriting the store', () => {
+    const input = sessionCommit('D:/projects/alpha', 'D:/projects/alpha/one.jsonl', 'WORK')
+    mem.data['canonicalScopeBindings'] = {
+      version: 2,
+      projects: {
+        [input.project.opaqueId]: {
+          canonicalInputFingerprint: input.project.canonicalInputFingerprint,
+          rootIdentityDigest: 'sha256:not-a-digest',
+        },
+      },
+      sessions: {},
+      sandboxes: {},
+    }
+    mem.setCalls = []
+
+    expect(() => sessionScopePersistenceV1.commitSession(input)).toThrow(
+      expect.objectContaining({ code: 'CANONICAL_SCOPE_STORE_CORRUPT' }),
+    )
+    expect(mem.setCalls).toEqual([])
   })
 
   it('fails closed on malformed persisted canonical data', () => {

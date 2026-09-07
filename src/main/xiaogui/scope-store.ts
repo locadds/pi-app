@@ -125,10 +125,13 @@ function readCanonicalScopeBindings(): CanonicalScopeBindingsV2 {
       corruptStore()
     }
     const rawIdentity = value.rootIdentityDigest
-    if (rawIdentity !== undefined && !DIGEST_PATTERN.test(String(rawIdentity))) corruptStore()
+    const isLegacyV1PendingIdentity = raw.version === 1 && rawIdentity === undefined
+    const isV2PendingIdentity = raw.version === 2 && rawIdentity === null
+    const isRecordedIdentity = typeof rawIdentity === 'string' && DIGEST_PATTERN.test(rawIdentity)
+    if (!isLegacyV1PendingIdentity && !isV2PendingIdentity && !isRecordedIdentity) corruptStore()
     projects[projectId] = {
       canonicalInputFingerprint: value.canonicalInputFingerprint as CanonicalInputFingerprintV1,
-      rootIdentityDigest: typeof rawIdentity === 'string' ? rawIdentity : null,
+      rootIdentityDigest: isRecordedIdentity ? rawIdentity : null,
     }
   }
 
@@ -237,15 +240,18 @@ function lookupCanonicalBoundSession(input: SessionBindingLookupV1): SessionScop
   }
 
   const current = readCanonicalScopeBindings()
+  // A pending legacy project still has immutable opaque-id and fingerprint
+  // evidence. Validate it before returning NOT_FOUND so a trusted caller
+  // cannot use the pending state to skip collision checks and re-bind it.
+  assertProjectCompatible(current.projects[input.project.opaqueId], input.project)
   const session = current.sessions[input.session.opaqueId]
   if (!session) return { kind: 'NOT_FOUND' }
-  assertProjectCompatible(current.projects[input.project.opaqueId], input.project)
-  if (!current.projects[input.project.opaqueId]?.rootIdentityDigest) {
-    throw new SessionScopeResolutionError('PROJECT_IDENTITY_CHANGED')
-  }
   if (session.projectId !== input.session.projectId) return { kind: 'PROJECT_MISMATCH' }
   if (session.canonicalInputFingerprint !== input.session.canonicalInputFingerprint) {
     throw new SessionScopeResolutionError('OPAQUE_ID_COLLISION')
+  }
+  if (!current.projects[input.project.opaqueId]?.rootIdentityDigest) {
+    return { kind: 'NOT_FOUND' }
   }
   return {
     kind: 'FOUND',

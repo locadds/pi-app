@@ -1,5 +1,46 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜既有 Scope 身份待确认兼容修复（阶段候选，待人工复验）
+
+### 目标、范围和实际修改文件
+
+- 基线：`512aa5ae472fdc211fad47034e3d46cd693b37d1`；保留其 preload 修复和干净配置 C-01 条件通过结论。
+- 仅修改 `src/main/xiaogui/scope-store.ts`、`src/main/xiaogui/scope-store.test.ts` 和本记录。Terra 负责代码及测试，主 Agent 负责真实配置副本验证和交付。
+- 根因是 V1 缺失摘要被转换成 V2 `null` 后，再读被误判损坏；且 pending lookup 抛错阻断了可信目录重选后的既有提交路径。
+
+### 已完成及安全边界
+
+- 仅将 V1 缺失摘要、V2 显式 `null` 识别为待确认状态；非字符串、非法摘要、V2 缺失值、孤立绑定仍拒绝。
+- 待确认查询先核验项目及会话指纹，再返回 `NOT_FOUND`，不写入、不签发授权；通过现有 Main 可信打开和实测身份的提交路径补录摘要，保留原模式。
+- 聚焦回归覆盖 V1/V2 往返、多个待确认项目连续补录、CODING/DESIGN 模式保留、查询无写入、指纹伪造和非法摘要拒绝。未改变权限、Worker、TaskHub 或模型配置。
+- 复用调查：既有 `scope-store`、`scope-resolver` 和原生可信目录登记直接拥有本次持久化契约。Pi 0.84.1 的 SessionManager/ResourceLoader、Skill 或 Extension 不拥有 Main 的 canonicalScopeBindings 迁移入口；本次修复既有校验分支，不引入新插件、依赖或框架接缝，不复测成熟 OMP 能力。
+
+### 可复现验证命令与结果
+
+在本工作树执行：
+
+```powershell
+npm exec vitest run src/main/xiaogui/scope-store.test.ts src/main/xiaogui/scope-resolver.test.ts
+npm run typecheck
+npm exec eslint -- src/main/xiaogui/scope-store.ts src/main/xiaogui/scope-store.test.ts
+git diff --check 512aa5ae472fdc211fad47034e3d46cd693b37d1
+node D:/CodexTemp/xiaogui-scope-null-compat-20260907-1600/verify-copy.cjs
+```
+
+- 聚焦测试 `2 files / 38 passed`；Node/Web typecheck、两文件 ESLint 通过。
+- 真实旧配置先备份，再复制至隔离 userData；原文件与备份 SHA-256 均为 `f57ed2f48c8d565ac2aefafbf911c6e57097a797fa9f33fc642e852c8a13b31a`。原配置没有修改。
+- 本轮 Electron 开发构建启动命令：`node node_modules/electron-vite/bin/electron-vite.js dev --remoteDebuggingPort 9341 -- --user-data-dir=D:\CodexTemp\xiaogui-scope-null-compat-20260907-1600\profile`。
+- 通过真实原生目录选择框重新确认一个既有项目，然后在真实 preload IPC 上执行 `session.list` 和 `session.open`：列表返回 1 个 WORK 会话，打开返回 `opened=true, mode=WORK`；没有发送消息或调用模型。
+- 副本验证：项目 `29`、会话 `66` 均保留；空摘要 `28 → 27`，仅选中项目的摘要改变。所有 session/sandbox 绑定、projectModeMap、sessionModeMap、projectBaseline 均与备份深比较一致。其余项目保持待确认，不静默授权。
+- 私有证据及核验脚本位于 `D:\CodexTemp\xiaogui-scope-null-compat-20260907-1600`，不提交配置或路径清单。截图命令因连接超时未产出；本次证据是实际原生选择、真实 Handler 返回及磁盘前后对比，不宣称截图验收。
+
+### 未完成、风险、偏差和下一步
+
+- 本次未重跑外部模型、完整 C-01、OMP、802 MB 装配、Portable 或全量测试；历史真实样本保留的是 WORK 模式，CODING/DESIGN 保留由聚焦测试覆盖。
+- 前一记录将既有配置称为“损坏”不够准确：本次证明是可识别的旧迁移待确认状态；不代表所有损坏配置均可自动修复。用户原配置仍需使用修复版本经原生目录重选确认。
+- 无新增产品/架构决策；仅修复既有契约的升级兼容。全量 lint、test:scripts、E2E、CI audit 仍是合并前未完成门；安装包/ASAR 和权限弹窗完整截图证据仍未补验。
+- 追加提交并推送隔离分支后停止，等待本兼容包定向人工复验；不合入 WORK、阶段线或主线，不处理保护 stash。
+
 ## 2026-09-07｜Electron preload 稳定寻址与 C-01 Windows Host 真实旅程（阶段候选，待人工复验）
 
 ### 本阶段目标
