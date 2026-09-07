@@ -12,6 +12,21 @@ const scope: PiSessionScopeV1 = {
 }
 
 describe('Main Xiaogui Prompt Context Resolver V1', () => {
+  it('passes WORK document defaults without requiring workspace trust or user keywords', async () => {
+    const resolver = createXiaoguiPromptContextResolverV1({
+      resolveScope: vi.fn(async () => ({ ...scope, sessionMode: 'WORK' as const })),
+      getMode: () => 'WORK', getPhase: () => 'EXECUTE',
+      workspaceExists: () => false, projectTrusted: () => false,
+      deriveProjectId: () => scope.projectId,
+    })
+    expect(await resolver.forWorkspace('D:/project')).toMatchObject({
+      workspaceAvailable: false, projectTrusted: false,
+      enabledCapabilities: [
+        'work.file-organize', 'work.report-docx', 'work.template-intake', 'work.template-generation',
+      ],
+    })
+  })
+
   it('uses canonical Session Scope and current Phase without exposing paths', async () => {
     const resolve = vi.fn(async () => scope)
     const resolver = createXiaoguiPromptContextResolverV1({

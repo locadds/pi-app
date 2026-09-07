@@ -18,7 +18,7 @@ import {
 describe('Xiaogui Prompt Mode / Phase / Capability / Tool Matrix V1', () => {
   it('is versioned and covers every declared mode, phase and capability once', () => {
     expect(XIAOGUI_PROMPT_MATRIX_ID_V1).toBe('xiaogui.prompt-matrix.v1')
-    expect(XIAOGUI_PROMPT_MATRIX_VERSION_V1).toBe('1.1.0')
+    expect(XIAOGUI_PROMPT_MATRIX_VERSION_V1).toBe('1.2.0')
     expect(Object.keys(XIAOGUI_CAPABILITY_MATRIX_V1).sort())
       .toEqual([...XIAOGUI_CAPABILITY_IDS_V1].sort())
     expect(Object.keys(XIAOGUI_PHASE_POLICY_MATRIX_V1)).toEqual(XIAOGUI_PROMPT_PHASES_V1)
@@ -44,6 +44,9 @@ describe('Xiaogui Prompt Mode / Phase / Capability / Tool Matrix V1', () => {
       CODING: 'DEFAULT',
     })
     expect(XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1.CODING).toEqual(['coding.workspace'])
+    expect(XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1.WORK).toEqual([
+      'work.file-organize', 'work.report-docx', 'work.template-intake', 'work.template-generation',
+    ])
     expect(JSON.stringify(XIAOGUI_CAPABILITY_MATRIX_V1)).not.toContain('AUTO')
   })
 

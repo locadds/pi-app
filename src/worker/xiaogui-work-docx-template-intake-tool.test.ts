@@ -145,9 +145,13 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     })
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.id)
       .toBe('template-intake-analysis')
-    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.version).toBe('1.2.0')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.version).toBe('1.2.1')
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
-      .toContain('template-intake-analysis@1.2.0')
+      .toContain('template-intake-analysis@1.2.1')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
+      .toContain('occurrence 仅限 SELECTION 使用')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
+      .toContain('WHOLE_FRAGMENT 必须同时省略 selectedText 和 occurrence')
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
       .toContain('未提到的原文默认保留')
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
@@ -332,6 +336,10 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
       .toContain('riskFlags 只能使用以下合法值')
     expect(complete.mock.calls[1]?.[1].messages[0]?.content[0]?.text)
       .toContain('其他 OTHER')
+    expect(complete.mock.calls[1]?.[1].messages[0]?.content[0]?.text)
+      .toContain('MODEL_SCHEMA_INVALID')
+    expect(complete.mock.calls[1]?.[1].messages[0]?.content[0]?.text)
+      .toContain('<fragment id="F001" kind="PARAGRAPH">\n项目名称：旧项目\n</fragment>')
     const secondHostPayload = requestWorkerHostToolMock.mock.calls[1]?.[0]?.payload
     expect(secondHostPayload.analysis).toMatchObject({ status: 'COMPLETE' })
     const published = JSON.stringify(result)
@@ -344,6 +352,117 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     expect(result.content[0]?.text).not.toContain('只读模板整理报告')
     expect(result.content[0]?.text)
       .toContain('如需开始人工复核，请单独回复“复核”或“打开复核卡”。')
+  })
+
+  it.each([
+    { occurrence: 1 }, { selectedText: '合成材料说明' }, { selectedText: '合成材料说明', occurrence: 1 },
+  ])('rejects selection-only fields on WHOLE_FRAGMENT: %o', (fields) => {
+    const fragments = [{
+      fragmentId: 'F001', kind: 'PARAGRAPH' as const,
+      anchor: { part: 'BODY' as const, paragraphIndex: 1 }, text: '合成材料说明',
+    }]
+    const whole = { fragmentIds: ['F001'], scope: 'WHOLE_FRAGMENT', kind: 'EXCLUDE', reason: '合成说明应移除', confidence: 0.9 }
+    expect(() => __test.validateSuggestions(JSON.stringify({ suggestions: [{ ...whole, ...fields }] }), fragments))
+      .toThrow('MODEL_SCHEMA_WHOLE_FRAGMENT_FIELDS')
+    expect(__test.validateSuggestions(JSON.stringify({ suggestions: [whole] }), fragments))
+      .toEqual([whole])
+  })
+
+  it('repairs WHOLE_FRAGMENT occurrence with the concrete error and original aliased source', async () => {
+    const whole = { fragmentIds: ['F001'], scope: 'WHOLE_FRAGMENT', kind: 'EXCLUDE', reason: '合成说明应移除', confidence: 0.9 }
+    const complete = vi.fn()
+      .mockResolvedValueOnce(modelResponse(JSON.stringify({ suggestions: [{ ...whole, occurrence: 1 }] })))
+      .mockResolvedValueOnce(modelResponse(JSON.stringify({ suggestions: [whole] })))
+    const result = await __test.analyzeBatches(context(complete), [{
+      batchIndex: 1, characterCount: 6,
+      fragments: [{ fragmentId: 'source-1', kind: 'PARAGRAPH', anchor: { part: 'BODY', paragraphIndex: 1 }, text: '合成材料说明' }],
+    }], undefined)
+    expect(complete).toHaveBeenCalledTimes(2)
+    const repair = complete.mock.calls[1]![1].messages[0].content[0].text
+    expect(repair).toContain('MODEL_SCHEMA_WHOLE_FRAGMENT_FIELDS')
+    expect(repair).toContain('WHOLE_FRAGMENT 必须同时省略 selectedText 和 occurrence')
+    expect(repair).toContain('<fragment id="F001" kind="PARAGRAPH">\n合成材料说明\n</fragment>')
+    expect(repair).not.toContain('source-1')
+    expect(result).toMatchObject({ status: 'COMPLETE', suggestions: [{ ...whole, fragmentIds: ['source-1'] }] })
+  })
+
+  it('repairs a missing suggestedName with the exact suggestion index and kind', async () => {
+    const missingSuggestedName = {
+      fragmentIds: ['F001'], scope: 'SELECTION', selectedText: '旧项目', kind: 'VARIABLE',
+      reason: '项目名称随项目变化', confidence: 0.9,
+    }
+    const repaired = { ...missingSuggestedName, suggestedName: '项目名称' }
+    const complete = vi.fn()
+      .mockResolvedValueOnce(modelResponse(JSON.stringify({ suggestions: [missingSuggestedName] })))
+      .mockResolvedValueOnce(modelResponse(JSON.stringify({ suggestions: [repaired] })))
+    const fragments = [{
+      fragmentId: 'source-1', kind: 'PARAGRAPH' as const,
+      anchor: { part: 'BODY' as const, paragraphIndex: 1 }, text: '项目名称：旧项目',
+    }]
+
+    expect(() => __test.validateSuggestions(JSON.stringify({ suggestions: [missingSuggestedName] }), [{
+      ...fragments[0], fragmentId: 'F001',
+    }])).toThrow('MODEL_SCHEMA_SUGGESTED_NAME_REQUIRED: suggestion[1] kind=VARIABLE')
+
+    const result = await __test.analyzeBatches(context(complete), [{
+      batchIndex: 1, characterCount: fragments[0].text.length, fragments,
+    }], undefined)
+
+    expect(complete).toHaveBeenCalledTimes(2)
+    const repair = complete.mock.calls[1]![1].messages[0].content[0].text
+    expect(repair).toContain('MODEL_SCHEMA_SUGGESTED_NAME_REQUIRED: suggestion[1] kind=VARIABLE')
+    expect(result).toMatchObject({
+      status: 'COMPLETE',
+      suggestions: [{
+        fragmentIds: ['source-1'],
+        scope: 'SELECTION',
+        selection: { originalText: '旧项目', startUtf16: 5, endUtf16Exclusive: 8 },
+        kind: 'VARIABLE',
+        reason: '项目名称随项目变化',
+        confidence: 0.9,
+        suggestedName: '项目名称',
+      }],
+    })
+  })
+
+  it('safely degrades when repair still omits a required suggestedName', async () => {
+    const invalid = JSON.stringify({ suggestions: [{
+      fragmentIds: ['F001'], scope: 'SELECTION', selectedText: '旧项目', kind: 'VARIABLE',
+      reason: '项目名称随项目变化', confidence: 0.9,
+    }] })
+    const complete = vi.fn()
+      .mockResolvedValueOnce(modelResponse(invalid))
+      .mockResolvedValueOnce(modelResponse(invalid))
+
+    const result = await __test.analyzeBatches(context(complete), [{
+      batchIndex: 1, characterCount: 7,
+      fragments: [{
+        fragmentId: 'source-1', kind: 'PARAGRAPH',
+        anchor: { part: 'BODY', paragraphIndex: 1 }, text: '项目名称：旧项目',
+      }],
+    }], undefined)
+
+    expect(complete).toHaveBeenCalledTimes(2)
+    expect(result).toMatchObject({ status: 'DEGRADED', warning: { code: 'MODEL_OUTPUT_INVALID' } })
+    expect(result).not.toHaveProperty('suggestions')
+  })
+
+  it('uses only one repair across batches and fails closed when a later batch is invalid', async () => {
+    const invalid = JSON.stringify({ suggestions: [{
+      fragmentIds: ['F001'], scope: 'WHOLE_FRAGMENT', occurrence: 1, kind: 'EXCLUDE', reason: '移除说明', confidence: 0.9,
+    }] })
+    const complete = vi.fn()
+      .mockResolvedValueOnce(modelResponse(invalid))
+      .mockResolvedValueOnce(modelResponse('{"suggestions":[]}'))
+      .mockResolvedValueOnce(modelResponse(invalid))
+    const batches = [1, 2].map((index) => ({
+      batchIndex: index, characterCount: 6,
+      fragments: [{ fragmentId: `source-${index}`, kind: 'PARAGRAPH' as const, anchor: { part: 'BODY' as const, paragraphIndex: index }, text: '合成材料说明' }],
+    }))
+    const result = await __test.analyzeBatches(context(complete), batches, undefined)
+    expect(complete).toHaveBeenCalledTimes(3)
+    expect(result).toMatchObject({ status: 'DEGRADED', warning: { code: 'MODEL_OUTPUT_INVALID' } })
+    expect(result).not.toHaveProperty('suggestions')
   })
 
   it('repairs only once then safely degrades invalid model output', async () => {

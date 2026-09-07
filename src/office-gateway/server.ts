@@ -1,6 +1,6 @@
-import { createHash, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { access, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import fs, { access, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { dirname, extname, resolve, sep } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -41,6 +41,7 @@ export interface OfficeGatewayHandleV1 {
 interface SnapshotEnvelopeV1 {
   headSha256: string
   snapshot: OfficeSnapshotV1
+  saveQueue: Promise<void>
 }
 
 export async function startOfficeGatewayV1(options: OfficeGatewayOptionsV1): Promise<OfficeGatewayHandleV1> {
@@ -50,6 +51,7 @@ export async function startOfficeGatewayV1(options: OfficeGatewayOptionsV1): Pro
   const state: SnapshotEnvelopeV1 = {
     headSha256: digestSnapshot(initial),
     snapshot: structuredClone(initial),
+    saveQueue: Promise.resolve(),
   }
   const server = createServer((request, response) => {
     void handleRequest(request, response, options, state).catch((error: unknown) => {
@@ -122,18 +124,26 @@ async function handleRequest(
       writeJson(response, 400, { error: 'OFFICE_SNAPSHOT_INVALID', message: '文档快照格式无效。' })
       return
     }
-    if (payload.expectedHeadSha256 !== state.headSha256) {
-      writeJson(response, 409, {
-        error: 'OFFICE_WORKTREE_CONFLICT',
-        message: '文档工作副本已经变化，请重新载入。',
-        headSha256: state.headSha256,
-      })
-      return
-    }
-    state.snapshot = structuredClone(payload.snapshot)
-    state.headSha256 = digestSnapshot(state.snapshot)
-    await persistSnapshot(options.snapshotPersistencePath, state.snapshot)
-    writeJson(response, 200, { headSha256: state.headSha256 })
+    const saving = state.saveQueue.then(async () => {
+      // 条件检查必须位于串行区；落盘期间的读取仍返回最后一次成功版本。
+      if (payload.expectedHeadSha256 !== state.headSha256) {
+        writeJson(response, 409, {
+          error: 'OFFICE_WORKTREE_CONFLICT',
+          message: '文档工作副本已经变化，请重新载入。',
+          headSha256: state.headSha256,
+        })
+        return
+      }
+      const snapshot = structuredClone(payload.snapshot)
+      const headSha256 = digestSnapshot(snapshot)
+      await persistSnapshot(options.snapshotPersistencePath, snapshot)
+      state.snapshot = snapshot
+      state.headSha256 = headSha256
+      writeJson(response, 200, { headSha256 })
+    })
+    // 单次失败不能污染后续队列；失败仍交给 HTTP 错误出口处理。
+    state.saveQueue = saving.catch(() => {})
+    await saving
     return
   }
 
@@ -158,9 +168,14 @@ async function readPersistedSnapshot(path: string | undefined): Promise<OfficeSn
 async function persistSnapshot(path: string | undefined, snapshot: OfficeSnapshotV1): Promise<void> {
   if (!path) return
   await mkdir(dirname(path), { recursive: true })
-  const temporary = `${path}.tmp-${process.pid}`
-  await writeFile(temporary, stableJson(snapshot), 'utf8')
-  await rename(temporary, path)
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`
+  try {
+    await fs.writeFile(temporary, stableJson(snapshot), { encoding: 'utf8', flag: 'wx' })
+    await fs.rename(temporary, path)
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {})
+    throw error
+  }
 }
 
 async function serveViewerAsset(

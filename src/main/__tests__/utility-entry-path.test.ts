@@ -5,9 +5,17 @@ vi.mock('electron', () => ({
   app: { getAppPath: vi.fn(() => join('D:', 'workspace', 'pi-app')) },
 }))
 
-import { resolveMainWindowPreload, resolveUtilityEntry } from '../utility-entry-path'
+import { resolveMainWindowPreload, resolveMainWindowRenderer, resolveUtilityEntry } from '../utility-entry-path'
 
 describe('resolveUtilityEntry', () => {
+  it('resolves the production renderer independently of main chunk locations', () => {
+    const appPath = join('D:', 'workspace', 'pi-app')
+    for (const root of [appPath, join(appPath, 'out', 'main')]) {
+      expect(resolveMainWindowRenderer(root)).toBe(join(appPath, 'out', 'renderer', 'index.html'))
+    }
+    const asar = join('D:', 'installed', 'resources', 'app.asar')
+    expect(resolveMainWindowRenderer(asar)).toBe(join(asar, 'out', 'renderer', 'index.html'))
+  })
   it('should_not_duplicate_out_main_when_electron_returns_the_built_main_directory', () => {
     const builtMain = join('D:', 'workspace', 'pi-app', 'out', 'main')
 

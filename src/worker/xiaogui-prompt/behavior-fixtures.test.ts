@@ -14,6 +14,9 @@ import type {
 } from '@shared/xiaogui-prompt-contract'
 import { xiaoguiPromptBuilderV1 } from './builder'
 import { decideXiaoguiPromptContextTransitionV1 } from './session-binding'
+import { XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1 } from '@shared/xiaogui-prompt-matrix'
+
+const workDefaults = [...XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1.WORK].sort()
 
 function baseContext(
   mode: XiaoguiMode,
@@ -64,7 +67,7 @@ function turn(
 describe('P01-P16 offline Prompt behavior fixtures', () => {
   it('P01 raw input: WORK + ASK explains template intake without write tools', () => {
     const fixture = turn('WORK', 'ASK', '帮我解释模板整理的流程')
-    expect(fixture.selection.capabilityIds).toEqual(['work.file-organize'])
+    expect(fixture.selection.capabilityIds).toEqual(workDefaults)
     expect(fixture.activeTools).toEqual([
       'read',
       'xiaogui_read_pdf',
@@ -73,27 +76,27 @@ describe('P01-P16 offline Prompt behavior fixtures', () => {
     expect(fixture.result.productPrompt).toContain('不要创建持久成果')
   })
 
-  it('P02 raw input: selects Template Intake only after explicit organizing intent', () => {
+  it('P02 raw input: makes intake available with the other WORK document tools', () => {
     const fixture = turn('WORK', 'EXECUTE', '把这份普通成品文档整理成模板')
     expect(fixture.selection.inferredCapabilityIds).toEqual(['work.template-intake'])
     expect(fixture.result.effectiveContext.enabledCapabilities)
-      .toEqual(['work.file-organize', 'work.template-intake'])
+      .toEqual(workDefaults)
     expect(fixture.activeTools).toContain('xiaogui_work_docx_template_intake')
-    expect(fixture.activeTools).not.toContain('xiaogui_work_report_docx')
+    expect(fixture.activeTools).toContain('xiaogui_work_report_docx')
   })
 
-  it('P03 raw input: own template selects generation and excludes standard report', () => {
+  it('P03 raw input: own template intent does not hide other available tools', () => {
     const fixture = turn('WORK', 'EXECUTE', '用我自己的模板生成报告')
     expect(fixture.selection.inferredCapabilityIds).toEqual(['work.template-generation'])
     expect(fixture.activeTools).toContain('xiaogui_work_docx')
-    expect(fixture.activeTools).not.toContain('xiaogui_work_report_docx')
+    expect(fixture.activeTools).toContain('xiaogui_work_report_docx')
   })
 
-  it('P04 raw input: standard Word output selects report without template tools', () => {
+  it('P04 raw input: Word output keeps template alternatives available to the model', () => {
     const fixture = turn('WORK', 'EXECUTE', '把刚才写好的内容生成 Word')
     expect(fixture.selection.inferredCapabilityIds).toEqual(['work.report-docx'])
     expect(fixture.activeTools).toContain('xiaogui_work_report_docx')
-    expect(fixture.activeTools).not.toContain('xiaogui_work_docx')
+    expect(fixture.activeTools).toContain('xiaogui_work_docx')
   })
 
   it('P05 raw input: the previous PREPARE capability survives one acknowledgement turn', () => {
@@ -110,15 +113,15 @@ describe('P01-P16 offline Prompt behavior fixtures', () => {
     expect(fixture.selection.reasonCodes).toContain('ONE_TURN_CONTINUATION')
     expect(fixture.selection.continuedCapabilityIds).toEqual(['work.template-generation'])
     expect(fixture.selection.capabilityIds)
-      .toEqual(['work.file-organize', 'work.template-generation'])
+      .toEqual(workDefaults)
     expect(fixture.activeTools).toContain('xiaogui_work_docx')
   })
 
   it('P06 raw input: writing report content does not imply file generation', () => {
     const fixture = turn('WORK', 'EXECUTE', '写一份报告内容')
     expect(fixture.selection.reasonCodes).toContain('PURE_TEXT_ONLY')
-    expect(fixture.selection.capabilityIds).toEqual(['work.file-organize'])
-    expect(fixture.activeTools).not.toContain('xiaogui_work_report_docx')
+    expect(fixture.selection.capabilityIds).toEqual(workDefaults)
+    expect(fixture.activeTools).toContain('xiaogui_work_report_docx')
   })
 
   it('P07 raw input: coding intent in WORK is blocked locally, not auto-switched', () => {
@@ -180,14 +183,15 @@ describe('P01-P16 offline Prompt behavior fixtures', () => {
     expect(fixture.result.productPrompt).toContain('不得把未知结果描述为成功')
   })
 
-  it('P14 raw input: mixed design + Word task abstains from a high-risk choice', () => {
+  it('P14 raw input: mixed design + Word keeps WORK tools but never exposes DESIGN tools', () => {
     const fixture = turn('WORK', 'EXECUTE', '做选址分析并写成 Word 报告')
     expect(fixture.selection).toMatchObject({
       decision: 'AMBIGUOUS',
       inferredCapabilityIds: [],
-      capabilityIds: ['work.file-organize'],
+      capabilityIds: workDefaults,
     })
-    expect(fixture.activeTools).not.toContain('xiaogui_work_report_docx')
+    expect(fixture.activeTools).toContain('xiaogui_work_report_docx')
+    expect(fixture.activeTools).not.toContain('design_gis')
   })
 
   it('P15 blocks Prompt Context replacement while a turn is active', () => {

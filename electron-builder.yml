@@ -104,4 +104,6 @@ linux:
 
 publish:
   provider: github
+  owner: locadds
+  repo: pi-app
   releaseType: release

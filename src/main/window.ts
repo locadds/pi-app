@@ -1,5 +1,4 @@
 import { BrowserWindow, shell } from 'electron'
-import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { resolveAppIcon } from './app-icon'
 
@@ -11,7 +10,7 @@ import { configStore } from './config-store'
 import { customThemeRendererArgument } from './custom-theme-startup'
 import { workerManager } from './worker-manager'
 import { installWindowCloseGuard } from './window-close-guard'
-import { resolveMainWindowPreload } from './utility-entry-path'
+import { resolveMainWindowPreload, resolveMainWindowRenderer } from './utility-entry-path'
 
 const MIN_W = 900
 const MIN_H = 600
@@ -150,7 +149,7 @@ export function createWindow(): BrowserWindow {
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(resolveMainWindowRenderer())
   }
 
   return mainWindow

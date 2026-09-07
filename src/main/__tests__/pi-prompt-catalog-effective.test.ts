@@ -97,14 +97,14 @@ describe('Pi Prompt catalog Effective Prompt entry', () => {
 
     const subtask = entries.find((entry) => entry.id === 'builtin:subtask:template-intake-analysis')
     expect(readCodeOwnedPromptCatalogResourceV1(subtask?.path || '')?.content)
-      .toContain('template-intake-analysis@1.2.0')
+      .toContain('template-intake-analysis@1.2.1')
     expect(readCodeOwnedPromptCatalogResourceV1(subtask?.path || '')?.content)
       .toContain('其他 OTHER')
 
     const capability = entries.find((entry) => entry.id === 'builtin:capability-registry')
     const capabilityContent = readCodeOwnedPromptCatalogResourceV1(capability?.path || '')?.content || ''
-    expect(capabilityContent).toContain('# xiaogui.capability-registry.v1@1.1.0')
-    expect(capabilityContent).toContain('## work.template-intake@1.1.0')
+    expect(capabilityContent).toContain('# xiaogui.capability-registry.v1@1.2.0')
+    expect(capabilityContent).toContain('## work.template-intake@1.2.0')
     expect(capabilityContent).toContain('Prompt Layer：xiaogui.capability.work.template-intake@1.1.0')
 
     const guidelines = entries.find((entry) => entry.id === 'builtin:tool-guidelines')

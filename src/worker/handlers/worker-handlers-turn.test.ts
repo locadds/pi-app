@@ -211,7 +211,7 @@ describe('Worker Prompt dispatch preflight', () => {
     expect(activeHistory).toHaveLength(2)
     for (const active of activeHistory) {
       expect(active).toContain('xiaogui_work_docx')
-      expect(active).not.toContain('xiaogui_work_report_docx')
+      expect(active).toContain('xiaogui_work_report_docx')
     }
     expect(st.promptStickyCapabilities).toEqual([])
   })
@@ -321,17 +321,26 @@ describe('Worker Prompt dispatch preflight', () => {
 
     expect(activeHistory).toHaveLength(2)
     expect(activeHistory[0]).toContain('xiaogui_work_docx')
-    expect(activeHistory[1]).not.toContain('xiaogui_work_docx')
+    expect(activeHistory[1]).toContain('xiaogui_work_docx')
     expect(st.promptStickyCapabilities).toEqual([])
   })
 
-  it('P17 WORK quick-entry text activates template intake tools and the turn Manifest names the capability', async () => {
+  it.each([
+    '请使用普通文档模板整理能力，把普通成品文档整理成可复用模板。我刚选择的文件是“上海市浦东新区综合交通专项规划阶段成果汇编最终送审版说明文件.doc”。请立即开始只读分析并生成模板整理报告，不要再次让我选择文件；原文档不得修改。',
+    '把刚才的内容输出为 Word',
+    '做成可复用的范本',
+    '请把这份 PDF 做一份只读整理报告',
+    '继续',
+  ])('P17 WORK turn exposes document tools and Manifest independently of wording: %s', async (text) => {
     const registered = [
       'read',
       'xiaogui_read_pdf',
       'xiaogui_work_read_materials',
       'xiaogui_work_docx_template_intake',
       'xiaogui_work_docx_template_materialize',
+      'xiaogui_work_docx',
+      'xiaogui_work_docx_advanced_generation',
+      'xiaogui_work_report_docx',
     ]
     let activeTools: string[] = []
     const manifests: Array<{
@@ -383,24 +392,25 @@ describe('Worker Prompt dispatch preflight', () => {
       }
     }
 
-    await handlePrompt({
-      text: '请使用普通文档模板整理能力，把普通成品文档整理成可复用模板。我刚选择的文件是“上海市浦东新区综合交通专项规划阶段成果汇编最终送审版说明文件.doc”。请立即开始只读分析并生成模板整理报告，不要再次让我选择文件；原文档不得修改。',
-    }, vi.fn())
+    await handlePrompt({ text }, vi.fn())
 
     await vi.waitFor(() => expect(st.promptTurnContext).toBeNull())
-    expect(activeTools).toHaveLength(5)
+    expect(activeTools).toHaveLength(8)
     expect(activeTools).toEqual(expect.arrayContaining([
       'read',
       'xiaogui_read_pdf',
       'xiaogui_work_read_materials',
       'xiaogui_work_docx_template_intake',
       'xiaogui_work_docx_template_materialize',
+      'xiaogui_work_docx',
+      'xiaogui_work_docx_advanced_generation',
+      'xiaogui_work_report_docx',
     ]))
     expect(manifests).toHaveLength(1)
     expect(manifests[0]!.mode).toBe('WORK')
-    expect(manifests[0]!.capabilityIds).toEqual(
-      expect.arrayContaining(['work.file-organize', 'work.template-intake']),
-    )
+    expect(manifests[0]!.capabilityIds).toEqual([
+      'work.file-organize', 'work.report-docx', 'work.template-generation', 'work.template-intake',
+    ])
     expect(manifests[0]!.tools).toEqual(expect.arrayContaining([
       'xiaogui_work_docx_template_intake',
       'xiaogui_work_docx_template_materialize',

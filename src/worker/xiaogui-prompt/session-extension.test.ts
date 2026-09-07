@@ -13,8 +13,39 @@ import {
   buildXiaoguiPromptSessionStateV1,
   createXiaoguiPromptSessionExtensionV1,
 } from './session-extension'
+import { workerPromptContextToolNamesForModeV1, activeToolNamesForPromptContextV1 } from '@shared/xiaogui-prompt-capabilities'
 
 describe('Pi 0.84.1 Xiaogui Prompt Session extension', () => {
+  it.each([false, true])('keeps WORK documents with collaboration=%s in bounded custom-system assembly', (withCollaboration) => {
+    const candidate = {
+      schemaVersion: 1 as const, mode: 'WORK' as const, phase: 'EXECUTE' as const,
+      workspaceAvailable: withCollaboration, projectTrusted: false,
+      enabledCapabilities: withCollaboration ? ['collaboration.execution' as const] : [], availableToolNames: [],
+    }
+    const tools = activeToolNamesForPromptContextV1(candidate, workerPromptContextToolNamesForModeV1('WORK'))
+    const session = {
+      systemPrompt: 'PI SYSTEM', getActiveToolNames: () => tools,
+      getToolDefinition: () => undefined,
+      settingsManager: { isProjectTrusted: () => false },
+    } as unknown as AgentSession
+    const services = { resourceLoader: { getSystemPrompt: () => 'PI SYSTEM' } } as unknown as AgentSessionServices
+    const state = buildXiaoguiPromptSessionStateV1(session, services, candidate)
+    expect(state.diagnostics.manifest.toolNames).toEqual(tools)
+    expect(state.diagnostics.manifest.capabilityIds).toEqual([
+      ...(withCollaboration ? ['collaboration.execution'] : []),
+      'work.file-organize', 'work.report-docx', 'work.template-intake', 'work.template-generation',
+    ])
+    expect(state.prompt.match(/普通会话延续/g)).toHaveLength(1)
+    expect(state.prompt).toContain('不算正式复核、生成或保存批准')
+    expect(state.prompt).toContain('私有确认令牌')
+    expect(state.prompt).toContain('不得同一轮调用 CONFIRM')
+    expect(state.productPrompt.length).toBeLessThanOrEqual(7000)
+    const productAndCompatibility = state.prompt.split('<!-- XIAOGUI:PRODUCT:BEGIN -->')[1]!.split('<!-- XIAOGUI:PRODUCT:END -->')[0]!
+    expect(productAndCompatibility.trim().length).toBeLessThanOrEqual(7000)
+    expect(state.diagnostics.manifest.layers.find((layer) => layer.id === 'xiaogui.runtime.facts')!.characterCount).toBeLessThanOrEqual(600)
+    expect(state.diagnostics.manifest.completePromptSha256).toBe(createHash('sha256').update(state.prompt).digest('hex'))
+  })
+
   it.each([true, false])(
     'uses ExtensionContext trust=%s as the effective Prompt fact',
     async (projectTrusted) => {

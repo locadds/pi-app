@@ -12,6 +12,7 @@ export interface OfficeGatewaySnapshotV1 {
 
 export class OfficeGatewayClientV1 {
   private headSha256 = ''
+  private saveQueue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly parentBridge: OfficeParentBridgeV1 | null) {}
 
@@ -28,15 +29,21 @@ export class OfficeGatewayClientV1 {
   }
 
   async save(snapshot: OfficeSnapshotV1): Promise<string> {
-    if (!this.headSha256) throw new Error('尚未载入文档工作副本。')
-    const response = await this.request({
-      type: 'VIEWER_GATEWAY_WRITE_REQUEST',
-      expectedHeadSha256: this.headSha256,
-      snapshot,
+    const candidate = structuredClone(snapshot)
+    const saving = this.saveQueue.then(async () => {
+      if (!this.headSha256) throw new Error('尚未载入文档工作副本。')
+      const response = await this.request({
+        type: 'VIEWER_GATEWAY_WRITE_REQUEST',
+        expectedHeadSha256: this.headSha256,
+        snapshot: candidate,
+      })
+      if (!response.ok) throw gatewayFailure(response)
+      if (!/^sha256:[a-f0-9]{64}$/.test(response.headSha256)) throw new Error('本机文档网关返回了无效版本。')
+      this.headSha256 = response.headSha256
+      return this.headSha256
     })
-    if (!response.ok) throw gatewayFailure(response)
-    this.headSha256 = response.headSha256
-    return this.headSha256
+    this.saveQueue = saving.catch(() => {})
+    return saving
   }
 
   getHeadSha256(): string {

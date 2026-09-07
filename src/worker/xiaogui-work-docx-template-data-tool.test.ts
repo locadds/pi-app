@@ -234,6 +234,7 @@ describe('xiaogui WORK DOCX template-data Pi tool', () => {
     )
     expect(outcome.details.kind).toBe('XIAOGUI_WORK_DOCX_TEMPLATE_SELECTED')
     expect(outcome.content[0]?.text).toContain('项目周报模板（第 1 版）')
+    expect(outcome.content[0]?.text).toContain('xgfield2_project_name → 项目名称（必填）')
     expect(JSON.stringify(outcome)).not.toContain(versionId)
     expect(JSON.stringify(outcome)).not.toMatch(/[A-Z]:[\\/]/)
   })

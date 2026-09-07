@@ -53,7 +53,7 @@ import {
   type OfficeUniverWorktreeEnvelopeV1,
 } from './core/structured-docx-projection'
 
-type ViewerStatus = '正在载入' | '可以编辑' | '只读预览' | '有未保存修改' | '正在保存' | '已保存' | '载入失败'
+type ViewerStatus = '正在载入' | '可以编辑' | '只读预览' | '有未保存修改' | '正在保存' | '已保存' | '保存失败，可重试' | '载入失败'
 type ProjectionMetadataV1 = OfficeUniverWorktreeEnvelopeV1['projection']
 
 export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBridgeV1 | null }): React.JSX.Element {
@@ -71,6 +71,7 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
     if (!container) return
     let disposed = false
     let loaded = false
+    let editRevision = 0
     let autosaveTimer: number | null = null
     const gateway = new OfficeGatewayClientV1(parentBridge)
     const univer = new Univer({
@@ -217,8 +218,13 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
         setStatus('只读预览')
         return gateway.getHeadSha256()
       }
+      if (autosaveTimer !== null) {
+        window.clearTimeout(autosaveTimer)
+        autosaveTimer = null
+      }
       setStatus('正在保存')
-      suppressDirty = true
+      setError(null)
+      const savingRevision = editRevision
       const snapshot = activeProjection
         ? {
             envelopeVersion: 1,
@@ -227,15 +233,18 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
             projection: activeProjection,
           }
         : document.getSnapshot()
-      const headSha256 = await gateway.save(snapshot as unknown as OfficeSnapshotV1)
-      suppressDirty = false
-      setStatus('已保存')
-      parentBridge?.post({
-        type: 'VIEWER_DIRTY_STATE',
-        dirty: false,
-        headSha256,
-      })
-      return headSha256
+      try {
+        const headSha256 = await gateway.save(snapshot as unknown as OfficeSnapshotV1)
+        const dirty = editRevision !== savingRevision
+        setStatus(dirty ? '有未保存修改' : '已保存')
+        setError(null)
+        parentBridge?.post({ type: 'VIEWER_DIRTY_STATE', dirty, headSha256 })
+        return headSha256
+      } catch (error) {
+        setStatus('保存失败，可重试')
+        parentBridge?.post({ type: 'VIEWER_DIRTY_STATE', dirty: true, headSha256: gateway.getHeadSha256() })
+        throw error
+      }
     }
 
     const updateField = async (message: Extract<OfficeSurfaceParentMessageV1, { type: 'PARENT_UPDATE_FIELD' }>) => {
@@ -324,6 +333,8 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
 
         if (!verified) {
           for (let index = 0; index < executedCommandCount; index += 1) await document.undo()
+          suppressDirty = false
+          editRevision += 1
           const headSha256 = await save()
           parentBridge?.post({
             type: 'VIEWER_FIELD_UPDATE_RESULT',
@@ -361,6 +372,8 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
         verified = verified && fieldDecorationVerifiedFromDocument(document, nextProjection)
         if (!verified) {
           for (let index = 0; index < executedCommandCount; index += 1) await document.undo()
+          suppressDirty = false
+          editRevision += 1
           const headSha256 = await save()
           parentBridge?.post({
             type: 'VIEWER_FIELD_UPDATE_RESULT',
@@ -375,6 +388,8 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
         activeProjection = nextProjection
         setFieldDecorationVerified(true)
         setProjectionMetadata(activeProjection)
+        suppressDirty = false
+        editRevision += 1
         const headSha256 = await save()
         parentBridge?.post({
           type: 'VIEWER_FIELD_UPDATE_RESULT',
@@ -448,6 +463,7 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
         return
       }
       setStatus('有未保存修改')
+      editRevision += 1
       parentBridge?.post({
         type: 'VIEWER_DIRTY_STATE',
         dirty: true,
@@ -461,7 +477,17 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
         else if (message.type === 'PARENT_RELOAD') window.location.reload()
         else if (message.type === 'PARENT_DISPOSE') univer.dispose()
         else if (message.type === 'PARENT_FOCUS_OCCURRENCE') focusOccurrence(message.occurrenceId)
-        else if (message.type === 'PARENT_UPDATE_FIELD') void updateField(message).catch(handleError)
+        else if (message.type === 'PARENT_UPDATE_FIELD') void updateField(message).catch((reason: unknown) => {
+          parentBridge.post({
+            type: 'VIEWER_FIELD_UPDATE_RESULT',
+            requestId: message.requestId,
+            fieldId: message.fieldId,
+            updatedOccurrenceIds: [],
+            failedOccurrenceIds: message.occurrenceIds,
+            headSha256: gateway.getHeadSha256(),
+          })
+          handleError(reason)
+        })
         else if (message.type === 'PARENT_FOCUS_FIELD') {
           const occurrenceId = activeProjection?.fields.find((field) => field.fieldId === message.fieldId)
             ?.occurrenceIds[0]
@@ -477,6 +503,8 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
     const handleError = (reason: unknown): void => {
       const message = reason instanceof Error ? reason.message : '文档界面出现未知错误。'
       setError(message)
+      // 已载入后的操作失败留在编辑器内；VIEWER_ERROR 会让外层遮住编辑器并要求重载。
+      if (loaded) return
       setStatus('载入失败')
       parentBridge?.post({
         type: 'VIEWER_ERROR',
@@ -523,7 +551,9 @@ export function OfficeViewerApp({ parentBridge }: { parentBridge: OfficeParentBr
             重新载入
           </button>
           {!projectionMetadata?.readOnly ? (
-            <button type="button" className="primary" onClick={() => void saveRef.current?.()}>
+            <button type="button" className="primary" onClick={() => void saveRef.current?.().catch((reason: unknown) => {
+              setError(reason instanceof Error ? reason.message : '保存文档工作副本失败。')
+            })}>
               保存工作副本
             </button>
           ) : null}
