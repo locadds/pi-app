@@ -1,5 +1,5 @@
 import './bootstrap-path'
-import { app, shell, BrowserWindow, dialog, session, Menu } from 'electron'
+import { app, shell, BrowserWindow, dialog, session, Menu, protocol } from 'electron'
 import { createWindow } from './window'
 import { refreshGitWorkspaceWatch } from './git-workspace-watch'
 import { registerAllHandlers } from './ipc'
@@ -22,6 +22,11 @@ import {
   XIAOGUI_PRODUCT_NAME,
   XIAOGUI_WINDOWS_APP_USER_MODEL_ID,
 } from '@shared/xiaogui-product'
+import { c2InstallDeepLinkDispatcher } from './xiaogui/c2/deep-link-dispatcher'
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'xiaogui-app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+])
 // Prevent EPIPE / write errors from crashing the main process
 process.stdout?.on?.('error', () => {})
 process.stderr?.on?.('error', () => {})
@@ -81,7 +86,9 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  c2InstallDeepLinkDispatcher.acceptArgv(process.argv)
+  app.on('second-instance', (_event, commandLine) => {
+    c2InstallDeepLinkDispatcher.acceptArgv(commandLine)
     const win = BrowserWindow.getAllWindows()[0]
     if (win) {
       if (win.isMinimized()) win.restore()
@@ -89,6 +96,11 @@ if (!gotLock) {
     }
   })
 }
+
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  c2InstallDeepLinkDispatcher.acceptArgv([url])
+})
 
 app.whenReady().then(() => {
   if (!gotLock) return
@@ -98,6 +110,7 @@ app.whenReady().then(() => {
     })
   }
   createMenu()
+  if (!is.dev) app.setAsDefaultProtocolClient('xiaogui')
   ensureAppTray()
   initializeCompletionNotifications()
 

@@ -55,6 +55,8 @@ import {
   getDefaultHubTaskWorkerServiceV1,
 } from './hub-task/worker-composition'
 import { registerHubTaskWorkerHandlers } from './hub-task/worker-ipc'
+import { initC2ArtifactInstallV1 } from './c2/composition'
+import { registerC2ArtifactInstallHandlersV1 } from './c2/ipc'
 
 let initialized = false
 
@@ -73,6 +75,8 @@ export function initXiaogui(): void {
   registerWorkDocxHandlers()
   registerTemplateLibraryHandlersV1()
   registerDocumentReviewHandlersV1()
+  initC2ArtifactInstallV1()
+  registerC2ArtifactInstallHandlersV1()
   workerManager.setHostToolRequestHandler(
     createXiaoguiWorkerHostToolRouterV1({
       collaboration: createXiaoguiWorkerToolHandlerV1({

@@ -1,5 +1,9 @@
 appId: com.xiaogui.agent
 productName: 小规 Agent
+protocols:
+  - name: 小规制品安装
+    schemes:
+      - xiaogui
 directories:
   buildResources: build
   output: dist
