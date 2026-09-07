@@ -1,5 +1,15 @@
 # DEVELOPMENT STATUS
 
+## C2 Skill 目录首BOM兼容（2026-09-07）
+
+状态：**名称识别增量候选 / 待只读复验；Pi原生发现BOM问题仍未关闭**。
+
+- 起点 `1987be39c3a90c90085f34c934b75a30c1b3abca`，保留已审无会话登录修复。
+- 实查锁定Pi导出的parseFrontmatter本身不兼容BOM，不可直接用来修复此问题。现有桌面parseFrontmatter只在内存移除一个首BOM再复用原规则；唯一产品变更1行，不升级/修改依赖，不改变文件/签名/名称定义。
+- 实际读取→listSkillsOnDisk→scanStaticSlashCommands测试：旧1失败1通过，修后2/2；正常/无效/缺失frontmatter原回退保持，有无BOM名称描述一致，文件字节未改。typecheck/build/diff-check通过。
+- 独立只读调用Pi公开loadSkillsFromDir读取A原测试目录，返回skills=[]及description is required；这说明仅修静态目录不够，不声称Pi已发现或Worker已加载。未运行模型或替用户发送任务。
+- 本次不制作更新包，等待固定SHA复验及原生发现接缝的最小方案。原用户文件/旧包/数据/安装成功回执保留。
+
 更新时间：2026-09-07
 本轮：`C2-LOGIN-REMEDIATION-V1` — 从 `1756a2c2fbee9786f875314186ccaa8ed5935789` 独立整改无会话登录入口，本次增量独立代码复验 APPROVE。历史安装候选与 LAN 数据不变。
 

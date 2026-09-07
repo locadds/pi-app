@@ -1,5 +1,13 @@
 # C2 桌面无会话登录整改交接
 
+## 追加：Skill目录BOM兼容（2026-09-07）
+
+固定起点 `1987be39c3a90c90085f34c934b75a30c1b3abca`。名称识别增量候选待只读复验：唯一产品差异在pi-resources-editor.ts解析前仅移除内存文本的一个首BOM，原文件不写回。新增skill-catalog-bom.test.ts沿真实读取→命令目录检查名称、描述、回退及原字节不变；旧实现1失败1通过，修后2/2，typecheck/build/diff-check通过。
+
+复用评估：锁定Pi公开parseFrontmatter/stripFrontmatter不处理BOM，直接改用它不能解决该问题，且会扩大原解析语义，因此保留现桌面解析规则。没有升级包或修改node_modules。
+
+重要未完成项：公开loadSkillsFromDir只读加载A原测试skill-01（与B落盘同SHA）返回空skills和description is required。它在core/skills.js读原文后直接调用同一解析器，因此名称列表修复不能被当作Pi发现/Worker加载成功。此发现已回报验收协调任务，尚未修Worker适配、尚未调用模型；不能仅凭新slash名称宣布C2使用链路完成。不改签名ZIP或已安装文件来消除BOM。
+
 - 日期：2026-09-07
 - 来源：C2 桌面独立实施 Agent
 - 结论：本次登录增量独立代码复验 APPROVE，Standards 0、Spec 0；未做两机重验、未合并、未发布。
