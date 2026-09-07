@@ -56,8 +56,8 @@ export function HubTaskInboxSection({
   address,
   onPlanDraftCreated,
 }: {
-  address: HubAddressV1
-  onPlanDraftCreated: () => void
+  address?: HubAddressV1
+  onPlanDraftCreated?: () => void
 }) {
   const canInvoke = typeof window !== 'undefined' && typeof window.piDesktop?.invoke === 'function'
   const [status, setStatus] = useState<WorkerStatus | null>(null)
@@ -77,7 +77,7 @@ export function HubTaskInboxSection({
       return
     }
     setStatus(nextStatus.value)
-    if (!nextStatus.value.configured) {
+    if (!nextStatus.value.configured || !address) {
       setItems([])
       return
     }
@@ -91,10 +91,10 @@ export function HubTaskInboxSection({
 
   useEffect(() => {
     void reload()
-    // `ipcClient` is a stable singleton; load once and refresh only after an
-    // explicit user action to avoid background Renderer polling.
+    // Read local status on mount/session changes; never pair automatically.
+    // Network refresh and connection remain explicit user actions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canInvoke])
+  }, [canInvoke, address?.projectId, address?.sessionKey])
 
   if (!canInvoke) return null
 
@@ -176,6 +176,7 @@ export function HubTaskInboxSection({
   }
 
   const createPlanDraft = async (assignmentId: string): Promise<void> => {
+    if (!address) return
     setBusy(`draft:${assignmentId}`)
     setError(null)
     try {
@@ -185,7 +186,7 @@ export function HubTaskInboxSection({
         return
       }
       await reload()
-      onPlanDraftCreated()
+      onPlanDraftCreated?.()
     } finally {
       setBusy(null)
     }
@@ -195,12 +196,12 @@ export function HubTaskInboxSection({
     <section className="mb-3 rounded-lg border border-border/50 p-2.5" data-testid="hub-task-inbox">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <h2 className="text-[12px] font-medium text-foreground">Hub 任务收件箱</h2>
+          <h2 className="text-[12px] font-medium text-foreground">{address ? 'Hub 任务收件箱' : 'Hub 账号连接'}</h2>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
             {status ? STATUS_TEXT[status.state] : '正在读取收件箱状态…'}
           </p>
         </div>
-        {status?.configured && (
+        {status?.configured && address && (
           <button
             type="button"
             disabled={busy !== null}
@@ -269,6 +270,8 @@ export function HubTaskInboxSection({
             {busy === 'connect' ? '正在登录并配对…' : '登录并配对此小规'}
           </button>
         </form>
+      ) : !address ? (
+        <div className="mt-2 text-[11px] text-muted-foreground">已连接 Hub，可从网页发起 Skill 或应用安装。任务操作请打开工作或编码会话。</div>
       ) : (
         <>
           {status.pendingReceiptCount > 0 && (

@@ -35,6 +35,36 @@ afterEach(() => {
 })
 
 describe('HubTaskInboxSection', () => {
+  it('connects without a session only on submit and never re-pairs on session changes', async () => {
+    let connected = false
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'ipc:xiaogui.hubTask.connect') connected = true
+      if (channel === 'ipc:xiaogui.hubTask.inbox.list') return { ok: true, value: [item({ decisionState: 'ACCEPTED', openedAt: '2026-09-07T00:00:00Z' })] }
+      return { ok: true, value: { configured: connected, state: connected ? 'READY' : 'UNCONFIGURED', lastSyncedAt: null, pendingReceiptCount: 0 } }
+    })
+    window.piDesktop = { invoke } as unknown as Window['piDesktop']
+    const user = userEvent.setup()
+    const view = render(<HubTaskInboxSection />)
+    await screen.findByText('尚未连接院内 Hub')
+    expect(invoke.mock.calls.map(([channel]) => channel)).toEqual(['ipc:xiaogui.hubTask.status'])
+    await user.type(screen.getByLabelText('Hub 地址'), 'http://hub.intranet:3000')
+    await user.type(screen.getByLabelText('Hub 用户名'), 'installer')
+    await user.type(screen.getByLabelText('密码'), 'test-password')
+    await user.click(screen.getByRole('button', { name: '登录并配对此小规' }))
+    await screen.findByText(/已连接 Hub，可从网页/)
+    expect(screen.queryByRole('button', { name: '生成本机计划草稿' })).toBeNull()
+    expect(invoke.mock.calls.some(([channel]) => channel.includes('inbox'))).toBe(false)
+    view.rerender(<HubTaskInboxSection address={ADDRESS} />)
+    await screen.findByRole('button', { name: '生成本机计划草稿' })
+    view.rerender(<HubTaskInboxSection />)
+    expect(screen.queryByRole('button', { name: '生成本机计划草稿' })).toBeNull()
+    view.unmount()
+    render(<HubTaskInboxSection />)
+    await screen.findByText(/已连接 Hub，可从网页/)
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'ipc:xiaogui.hubTask.connect')).toHaveLength(1)
+    expect(invoke.mock.calls.some(([channel]) => channel.endsWith('createPlanDraft'))).toBe(false)
+  })
+
   it('opens a received task, accepts it, and creates only a local plan draft', async () => {
     let opened = false
     let accepted = false

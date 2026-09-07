@@ -1084,7 +1084,8 @@ export function CollaborationHubPanel() {
   if (!scope) {
     return (
       <div className="p-4 text-[12px] text-muted-foreground" data-testid="hub-no-session">
-        这里还没有可协作的会话。请先在左侧打开或新建一个工作或编码会话。
+        <HubTaskInboxSection />
+        任务协作请先在左侧打开或新建一个工作或编码会话；登录与安装不需要创建会话。
       </div>
     )
   }
