@@ -241,7 +241,7 @@ function validateSuggestions(
   const wholeFragments = new Set<string>()
   const rangesByFragment = new Map<string, Array<{ start: number; end: number }>>()
   const suggestions: TemplateIntakeModelSuggestionV1[] = []
-  for (const suggestion of parsed.suggestions) {
+  for (const [suggestionIndex, suggestion] of parsed.suggestions.entries()) {
     const unique = new Set(suggestion.fragmentIds)
     if (unique.size !== suggestion.fragmentIds.length) throw new Error('MODEL_FRAGMENT_DUPLICATED')
     for (const fragmentId of suggestion.fragmentIds) {
@@ -251,7 +251,9 @@ function validateSuggestions(
       ['VARIABLE', 'REPEAT', 'CONDITIONAL'].includes(suggestion.kind) &&
       !suggestion.suggestedName?.trim()
     ) {
-      throw new Error('MODEL_SCHEMA_INVALID')
+      throw new Error(
+        `MODEL_SCHEMA_SUGGESTED_NAME_REQUIRED: suggestion[${suggestionIndex + 1}] kind=${suggestion.kind}`,
+      )
     }
     if (suggestion.scope === 'SELECTION') {
       if (
