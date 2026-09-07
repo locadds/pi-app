@@ -1,5 +1,26 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜日常配置 C-01 真实旅程（未通过完整门，停止待审）
+
+- 前置候选 `8cf17ec5885d9f1c72e1670722ee5cbead7d855c` 已获人工定向批准；本次只做验收，不修改源码。启动前 SHA/远端一致、工作树干净、保护 stash 为 `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61`。
+- 使用真实日常 userData `D:/AppData/Roaming1/xiaogui-agent-desktop`，不是空配置；三个配置 JSON 已备份至 `D:/CodexTemp/xiaogui-c01-daily-profile-20260907/backup`。Scope 备份 SHA-256：`f57ed2f48c8d565ac2aefafbf911c6e57097a797fa9f33fc642e852c8a13b31a`。
+- 必要启动构建通过：`node node_modules/electron-vite/bin/electron-vite.js dev --remoteDebuggingPort 9343 -- --user-data-dir=D:/AppData/Roaming1/xiaogui-agent-desktop`。用户原生选择项目 `5211game`，手动选择统一模型 `deepseek/deepseek-v4-flash-vision-exp`，界面 CODING、逐条确认。
+- 用户批准首轮写入；真实审计 WRITE、READ 均 `SETTLED / TOOL_SETTLED / is_error=0`。`c01-proof.txt` 测前不存在，现内容严格为 `C01_EXISTING_PROFILE_PASS`，SHA-256 `df986f26f4274f8fecfd873ea426d9801a9b680bc8cfead14f6f3e00937d1a99`。不把用户点击误判为权限绕过。
+- 为补拒绝证据，另发一次只写 `c01-denied.txt` 的模型任务，明确拒绝后不重试。测前文件不存在；截图后通过真实 UI 点击“拒绝”，审计 `WRITE / SETTLED / USER_OR_POLICY_DENIED`，测后仍不存在。
+- 权限截图 `permission-deny.png` 已实际查看：来源项目、来源对话、写入动作、相对路径、“允许一次／拒绝”齐全；`after-denial.png` 留存拒绝后界面。均位于上述 D 盘证据目录，不提交历史对话截图到仓库。
+
+### 新发现与未覆盖项
+
+1. 拒绝后的界面仍显示“编辑了 c01-denied.txt”“1 个文件已更改”和该文件的 `+1/-1`，与磁盘不存在、审计拒绝不一致。仅确定真实 UI 现象，尚未诊断具体消费者；不可将其称为真实 Diff。按约定停止旅程，不现场修代码，建议单独交 Terra 最小诊断/修复。
+2. 配置对比证明原 29 项 project、66 项 session 全部逐项不变，无删除；新增后为 30/67，null 仍 28。所选项目实际上是新登记，未完成既有待确认项目的原生重选恢复门；不能用此前配置副本 WORK 样本替代本轮日常配置证据。
+3. 因遇到上述界面问题停止，未执行重启恢复，不再调用模型。完整日常配置旅程仍待验收；不合主线、不发布。
+
+### 验证、交付与下一步
+
+- 本轮没有源码变化，不重跑 38 项单测、typecheck、全量 lint、E2E、OMP、Portable。实际修改仅本记录；同步既有 Obsidian `progress.md`，不创建分散研究稿。
+- 可重核文件：`Test-Path D:/5211game/c01-denied.txt`（False）；`Get-FileHash D:/5211game/c01-proof.txt -Algorithm SHA256`。UI 来源通过 `agent-browser --session c01-daily connect 9343`、`tab t1`、`screenshot` 取得；SQLite 以 Node `DatabaseSync(...,{readOnly:true})` 查询 `xiaogui_direct_coding_calls_v2` 的 operation/relative_path/state/reason_code/is_error，未改审计。
+- 文档门：`git diff --check 8cf17ec5885d9f1c72e1670722ee5cbead7d855c..HEAD`。追加记录提交并推送后停止，等待人工决定 UI 问题的最小处理范围；全量合并与发布门仍未完成。
+
 ## 2026-09-07｜既有 Scope 身份待确认兼容修复（阶段候选，待人工复验）
 
 ### 目标、范围和实际修改文件
