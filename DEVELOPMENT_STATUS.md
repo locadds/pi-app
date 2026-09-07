@@ -1,5 +1,56 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜B：WORK / CODING 独立集成（阶段候选，E2E 未通过）
+
+### 固定输入与集成范围
+
+- 已收到协调验收者对 A `f564d691b9add672d80102734409d589c8ae5043` 的 APPROVE，以及按 A→B 顺序继续独立集成的批准。下方 A 的“待复验”为当时交付历史，不代表当前状态。
+- 本树 `D:/CodexWorktrees/xiaogui-work-coding-integration-c01-v1`，分支 `codex/work-coding-integration-c01-v1`。输入固定为 CODING `e50b7f8a047cfe50c2f76909bf6a47cfbcb40a2d`（包含已验 C-01 `4a2bdf4d968baca3df381fe8ad22371d59ef55f1`）、WORK `c1adfd44514ccea622185a9bee028adcf99dd441`、上述已验 A。
+- 普通合并保留父历史：`898fe26f4302a7885869b5858e3409611d7713c5` 父为 e50/c1；`4924bc024fbf5dd9fab70570833dd59976569555` 父为 898fe26/f564。只冲突 DEVELOPMENT_STATUS.md，手工保留两侧阶段记录；没有整文件选 ours/theirs。
+- 本轮没有新写生产功能、没有升级依赖；只集成上述固定实现并追加本记录。相对 e50 的实际集成文件清单使用 `git diff --name-only e50b7f8a047cfe50c2f76909bf6a47cfbcb40a2d..4924bc024fbf5dd9fab70570833dd59976569555`（40 文件）。主要接缝为 Prompt Matrix/Capabilities、WORK intake/save、共享 Sandbox 打开和 Main Renderer 寻址，具体来源保留在两个 merge 的父提交中。
+- Pi/Skill/插件复用边界不变：复用锁定 Pi 0.84.1 及两条已验分支的现有 Module，没有新增能力需要选型，也没有引入 OMP Runtime/UI/模型配置。源 CODING/WORK/A HEAD 与干净状态未变；保护 stash 仍为 `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61`。
+
+### 独立装配与构建版启动
+
+- node_modules/out/userData/agent 均为本树或本轮 D 盘私有目录，不链接源树；只复用 D 盘下载缓存。`npm ci --ignore-scripts --offline --no-audit --no-fund` 成功安装 1197 包；本树 Electron 43.0.0 install.js 和 electron-builder install-app-deps 成功。未重建其他工作树 native 模块。
+- `npm run build` 成功，包含 Main/Preload/Renderer/Office 产物，未制作安装包或 Portable。字体同步仅造成 OFL.txt 工作区换行标记，核实内容 diff 为空后 git add 归一，无字体或许可证净修改。
+- 构建版命令：设置 `PI_CODING_AGENT_DIR=D:/CodexTemp/xiaogui-work-coding-integration-20260907/agent`、`PI_RENDERER_SANDBOX=1`，运行 `node node_modules/electron/cli.js out/main/index.js --remote-debugging-port=9353 --user-data-dir=D:/CodexTemp/xiaogui-work-coding-integration-20260907/built-user-data`。本次环境没有 ELECTRON_RENDERER_URL，不使用开发服务器。
+- 真实 CDP：URL 为 `file:///D:/CodexWorktrees/xiaogui-work-coding-integration-c01-v1/out/renderer/index.html`，title=小规 Agent，window.piDesktop=object，ping=pong。截图 `built-startup.png` 已人工查看，WORK 主页和模式入口可见；通过 Browser.close 正常退出。日志没有本轮 ERR_FILE_NOT_FOUND 或 binding.startupData 异常；仍有开发构建 CSP 警告和托盘图标提示，不冒充安装包证据。
+
+### 可复现检查与结果
+
+以下命令 cwd 均为本集成树。输出保留在 `D:/CodexTemp/xiaogui-work-coding-integration-20260907`；环境 TEMP/TMP 使用该目录，npm 缓存使用 D:/CodexCache/npm。
+
+```powershell
+$env:TEMP='D:/CodexTemp/xiaogui-work-coding-integration-20260907'
+$env:TMP=$env:TEMP
+$env:npm_config_cache='D:/CodexCache/npm'
+node node_modules/vitest/vitest.mjs run packages/shared/xiaogui-prompt-matrix.test.ts packages/shared/xiaogui-prompt-capabilities.test.ts src/worker/xiaogui-prompt/behavior-fixtures.test.ts src/main/trusted-session-access.test.ts src/main/ipc/handlers/trusted-open-handler-chain.test.ts src/renderer/src/lib/activate-workspace.test.ts src/renderer/src/lib/__tests__/activate-workspace-switch.test.ts src/renderer/src/lib/subagent-session-navigation.test.ts src/office-gateway/server.test.ts src/office-gateway/save-reliability.test.ts src/office-viewer/core/gateway-client.test.ts src/office-viewer/app-save.test.tsx src/main/xiaogui/office-surface/gateway-supervisor.test.ts
+npm run typecheck
+npm run lint
+npm run test:scripts
+$env:PI_CODING_AGENT_DIR='D:/CodexTemp/xiaogui-work-coding-integration-20260907/e2e-agent'
+$env:PI_RENDERER_SANDBOX='1'
+npm run test:e2e -- --max-failures=1 --output=D:/CodexTemp/xiaogui-work-coding-integration-20260907/e2e-results
+git diff --check e50b7f8a047cfe50c2f76909bf6a47cfbcb40a2d..HEAD
+```
+
+- focused.log：13 文件 / 130 项通过（模式/阶段默认工具、可信会话、Sandbox 打开、必要保存接缝）。typecheck.log：Node/Web 均通过；lint.log：0 error，timeline.tsx:800 有 1 条既有 unused eslint-disable warning。test-scripts.log：96 文件 / 288 项通过。
+- 首次 E2E 启动在 npm 写默认 C 盘 cache 日志时 ENOSPC（e2e.log），Playwright 尚未执行，不算产品失败。未清理用户 C 盘；显式设置上述 D 盘 npm cache 后，执行同一批准门，真实结果记录在 e2e-d-cache.log。
+- 实际 E2E：3 passed / 1 failed / 15 did not run，8.7s，exit 1。前三项 composer 通过；第 4 项 `m1-canonical-scope.spec.ts:104` 在 line 161 调用 workspace.open 时得到 `trusted_project_open_required`，立即按 max-failures 停止，没有重复跑同类失败或关闭沙箱绕过。
+- 只读定位：该 fixture 创建文件/JSONL 后直接向 Renderer IPC 传路径，未经过原生目录选择登记；Main workspace.open 首先要求 Main 项目能力，因此拒绝。该测试和相关授权实现相对 e50 没有改动，当前证据说明旧测试准备与受信打开契约不匹配，不支持宣称生产授权门损坏；本轮不现场改测试或放宽 Main 门。
+- 协调者再次独立核对并同意先记录/推送/Quality、暂不修测试。另在该文件 line 192 静态发现 Renderer 写 recentProjects 的旧准备方式，尚未执行到，不计作第二实际失败。最小后续包仅在 Electron 测试端模拟原生目录选择结果，走真实 dialog/open/list/prepare，不 mock 授权模块、不写注册库/Scope数据、不新增 PI_E2E 放行，保留原断言和负例；须待本轮 CI 结果汇齐后再由用户决定开工。
+- 未运行 15 项：settings 3、smoke 3、workspace 3、协作 M2A 1、M4F 旧基线交付恢复 1、三角色 CODING 1、小规窗口/模式/执行控件 3。原 smoke 中有独立 sandbox=0 用例，但本轮未运行到它；不能把它当作 sandbox=1 启动替代证据。
+
+### 状态、偏差、风险与下一步
+
+- 协调者已对固定组装 4924bc0 完成独立双轴审查：Standards CLEAR 0、Spec CLEAR 0；确认父历史、Matrix隔离、A打开顺序、Renderer/preload、保存队列/fieldId、Office默认OFF无组合冲突。这是代码组合通过，不代替 E2E/CI 或完整产品验收。
+- 构建版页面/Preload/IPC、130 项接缝、脚本、类型、lint 门通过；完整 19 项 E2E 尚未通过，所以本集成只能称阶段候选。已向协调验收者发送真实失败原句和日志位置，等待其决定最小测试准备整改包；不自动扩大生产整改。
+- WORK 保持 PARTIAL：Office 默认 OFF；已验保存/Word 证据不重复运行也不夸大；DOC 分析的 MODEL_OUTPUT_INVALID / 7 UNRESOLVED 仍未关闭；Portable 仅历史 build/hash、未独立解包启动。CODING 历史授权中断无工具结果时的投影误报仍是既有 P2，未在本轮修复。
+- 远端 Quality：本候选提交推送后，按批准使用现有 quality.yml 的 workflow_dispatch，必须核对实际 run headSha。冻结前只读查询 actions/workflows 数量为 0，Actions enabled=true，默认 main 的 quality.yml 文件存在；这些信息不等于 CI 已执行。调度结果及 run/实际 SHA 另以私有日志和交付回执记录，不通过改 main/PR/工作流绕过服务端拒绝。
+- 不合入 WORK、阶段线或主线，不发布、不制作新安装包；不重跑 OMP、802 MB 装配、外部模型或 Word。下阶段先由协调验收者审阅本固定组合、决定 E2E 准备修复范围，之后才讨论合并许可。
+
+
 ## 2026-09-07｜A：Sandbox 冷打开可信发现时序修复（独立候选，待定向复验）
 
 ### 固定输入、目标与所有权
