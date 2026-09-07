@@ -1,7 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@renderer/lib/ipc-client', () => ({
-  ipcClient: { invoke: vi.fn().mockResolvedValue({ ok: true, sessions: [], items: [], totalCount: 0 }) },
+  ipcClient: {
+    invoke: vi.fn(async (method: string, request?: { sessionFile?: string }) => {
+      if (method === 'session.prepare') {
+        return {
+          bound: false,
+          sessionId: 'p1',
+          sessionFile: request?.sessionFile,
+        }
+      }
+      return { ok: true, sessions: [], items: [], totalCount: 0 }
+    }),
+  },
 }))
 vi.mock('@renderer/lib/session-history', () => ({
   fetchSessionHistoryTail: vi.fn().mockResolvedValue({
