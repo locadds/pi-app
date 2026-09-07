@@ -127,6 +127,7 @@ export class C2ArchiveInstallerV1 {
     release: C2ArtifactReleaseRefV1,
     archiveBytes: Buffer,
   ): Promise<readonly JSZipObject[]> {
+    assertNoForbiddenRawZipEntryTypes(archiveBytes)
     const zip = await JSZip.loadAsync(archiveBytes, { checkCRC32: true })
     const entries = Object.values(zip.files)
     if (entries.length === 0 || entries.length > C2_PACKAGE_LIMITS.maxEntryCount) {
@@ -171,6 +172,36 @@ export class C2ArchiveInstallerV1 {
         await writeFile(destination, await entry.async('nodebuffer'), { flag: 'wx' })
       }
     }
+  }
+}
+
+function assertNoForbiddenRawZipEntryTypes(bytes: Buffer): void {
+  const centralSignature = 0x02014b50
+  let offset = 0
+  while (offset + 46 <= bytes.length) {
+    if (bytes.readUInt32LE(offset) !== centralSignature) {
+      offset += 1
+      continue
+    }
+    const versionMadeBy = bytes.readUInt16LE(offset + 4)
+    const hostSystem = versionMadeBy >>> 8
+    const nameLength = bytes.readUInt16LE(offset + 28)
+    const extraLength = bytes.readUInt16LE(offset + 30)
+    const commentLength = bytes.readUInt16LE(offset + 32)
+    const next = offset + 46 + nameLength + extraLength + commentLength
+    if (next > bytes.length) throw new Error('C2 ZIP central directory is truncated')
+    const externalAttributes = bytes.readUInt32LE(offset + 38)
+    const unixType = (externalAttributes >>> 16) & 0xf000
+    const windowsReparsePoint = (hostSystem === 0 || hostSystem === 10)
+      && ((externalAttributes & 0x00000400) !== 0 || (externalAttributes & 0x04000000) !== 0)
+    const forbiddenUnixType = hostSystem === 3
+      && unixType !== 0
+      && unixType !== 0x4000
+      && unixType !== 0x8000
+    if (windowsReparsePoint || forbiddenUnixType) {
+      throw new Error('C2 ZIP contains a forbidden link, reparse point, or special entry')
+    }
+    offset = next
   }
 }
 

@@ -145,5 +145,28 @@ describe('C2ArchiveInstallerV1', () => {
       targetDirectory,
     })).rejects.toThrow(/unsafe/i)
     expect(() => readFileSync(join(root, 'escape.txt'))).toThrow()
+
+    const reparseBytes = Buffer.from(fixture.archiveBytes)
+    const centralOffset = reparseBytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+    expect(centralOffset).toBeGreaterThanOrEqual(0)
+    reparseBytes.writeUInt16LE((10 << 8) | 20, centralOffset + 4)
+    reparseBytes.writeUInt32LE(0x00000400, centralOffset + 38)
+    const reparseUnsigned = {
+      ...fixture.release,
+      packageSha256: createHash('sha256').update(reparseBytes).digest('hex'),
+    }
+    const reparseRelease = {
+      ...reparseUnsigned,
+      signature: sign(
+        null,
+        Buffer.from(canonicalizeC2ArtifactReleaseForSignatureV1(reparseUnsigned), 'utf8'),
+        fixture.privateKeyPem,
+      ).toString('base64'),
+    }
+    await expect(compatible.verifyAndInstall({
+      release: reparseRelease,
+      archiveBytes: reparseBytes,
+      targetDirectory,
+    })).rejects.toThrow(/link|special|reparse|forbidden/i)
   })
 })

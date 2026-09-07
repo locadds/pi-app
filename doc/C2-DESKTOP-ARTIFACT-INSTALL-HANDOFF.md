@@ -13,14 +13,14 @@
 - 首次启动 argv、Windows/Linux second-instance 与 macOS open-url 共用同一 `xiaogui://install/{installIntentId}?nonce=...` 分发器；主进程未就绪时按到达顺序暂存。
 - 先以设备身份读取非消费式 preview，渲染层只看到名称、版本、摘要、权限和兼容性；nonce、ticket、registryRef、签名、公钥、本机路径和凭据不进入 Renderer。
 - 只有本机明确确认后才 claim；ZIP 只经 Hub `/api/v2/download-tickets/{ticket}` 代理下载，不直接访问 Nexus/registryRef。
-- 主进程验证 SHA-256、固定 keyId/公钥、Ed25519 签名、版本/模式兼容性、ZIP 数量/大小/路径/大小写冲突/链接类型/入口点和静态文件策略，再以同父目录 staging 原子替换。
+- 主进程验证 SHA-256、固定 keyId/公钥、Ed25519 签名、版本/模式兼容性、ZIP 数量/大小/路径/大小写冲突/链接类型（含 Windows reparse-point）/入口点和静态文件策略，再以同父目录 staging 原子替换。
 - Skill 只安装到当前 Pi Agent 全局 `skills/{artifactId}`，完成后调用现有 Worker resource reload；不写项目、Session 或 TaskHub 状态。
-- App 只允许根 `index.html` 和静态资源，通过 `xiaogui-app://` 独立无持久化 partition 打开；Node、preload、Shell、文件系统 IPC、权限请求、默认网络和外部导航均关闭。
+- App 只允许根 `index.html` 和静态资源，通过 `xiaogui-app://` 独立无持久化 partition 打开；Node、preload、Shell、文件系统 IPC、权限请求、默认网络和外部导航均关闭，并把资源访问限定到精确 artifactId + version。
 - C2 artifact receipt 使用独立持久 FIFO；只有精确 ACK 的 `eventId` 同时匹配实际提交 id 和当前队首才删除。没有读写 H1 receipt/state 文件。
 
 ## 聚焦验证
 
-- `npx vitest run src/main/xiaogui/c2/deep-link-dispatcher.test.ts src/main/xiaogui/c2/install-coordinator.test.ts src/main/xiaogui/c2/archive-installer.test.ts src/main/xiaogui/c2/receipt-outbox.test.ts`
+- `npm run test:unit -- --run src/main/xiaogui/c2/archive-installer.test.ts src/main/xiaogui/c2/deep-link-dispatcher.test.ts src/main/xiaogui/c2/install-coordinator.test.ts src/main/xiaogui/c2/receipt-outbox.test.ts src/main/xiaogui/c2/static-app-url-policy.test.ts`（5 文件 / 9 用例）
 - `npm run typecheck`
 - `npm run build`
 - `git diff --check`

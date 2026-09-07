@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 
 import { assertChildPath } from './archive-installer'
+import { isC2StaticAppUrlAllowedV1 } from './static-app-url-policy'
 
 const STATIC_ID = /^[A-Za-z0-9._-]+$/
 let protocolRegistered = false
@@ -45,7 +46,7 @@ export class C2StaticAppSandboxV1 {
     const isolatedSession = session.fromPartition(partition, { cache: false })
     isolatedSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
     isolatedSession.webRequest.onBeforeRequest((details, callback) => {
-      callback({ cancel: !details.url.startsWith(`${origin}/`) })
+      callback({ cancel: !isC2StaticAppUrlAllowedV1(details.url, value.artifactId, value.version) })
     })
     const window = new BrowserWindow({
       width: 960,
@@ -61,7 +62,7 @@ export class C2StaticAppSandboxV1 {
     })
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     window.webContents.on('will-navigate', (event, target) => {
-      if (!target.startsWith(`${origin}/`)) event.preventDefault()
+      if (!isC2StaticAppUrlAllowedV1(target, value.artifactId, value.version)) event.preventDefault()
     })
     void window.loadURL(`${origin}/${encodeURIComponent(value.version)}/index.html`)
   }

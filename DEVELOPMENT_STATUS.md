@@ -1,8 +1,18 @@
 # DEVELOPMENT STATUS
 
-更新时间：2026-09-06
-阶段：`TASKHUB-H1-4C-J1-REMEDIATION` — 两机 J1 失败后的桌面最小整改候选
-状态：R0 已确认故障属于 `CHECKOUT_FILTER_EQUIVALENT`；桌面产品提交 `b12a4b5b098a5d88d947864edf5f4e32f661c796` 已完成跨 checkout 精确字节播种与终态收敛，并通过固定 SHA 的 Standards/Spec 双轴只读复验。尚未启动新的两机验收现场；下一门仍需用户明确授权，且未进入 C3、Renderer/Web 前端、Apply、正式主线合并或发布。
+更新时间：2026-09-07
+阶段：`COMMUNITY-C2-DESKTOP-ARTIFACT-INSTALL-V1` — C2 桌面安装候选
+状态：**产品实现候选 / 未做真实安装验收 / 未进入主线 / 未发布**。固定消费社区 C0 合同 `71a2b9fc3c510865d80d9675d1ca5b2c3fc67fe4`；未修改 H1-4C 状态机，也未进入 C3、Apply 或用户项目写入。
+
+## COMMUNITY-C2 桌面安装候选（2026-09-07）
+
+- 已复用现有 Hub 节点凭据、Pi Skill 目录与资源刷新、Electron 单实例入口和 IPC 白名单；未新建第二套账号、市场、Agent Loop 或安装状态机。
+- 已实现协议唤起、非消费式 preview、本机确认后 claim、Hub 代理下载、固定信任根验签、受控 Skill/静态 App 安装，以及独立 C2 回执 FIFO 精确 ACK。
+- 最终安全增量关闭 Windows reparse-point ZIP 条目绕过，并将静态 App 网络/导航限制收窄到精确 artifactId + version，拒绝相似主机名和跨版本访问。
+- 最终聚焦验证：C2 主进程 5 文件 / 9 用例通过，桌面 typecheck 与 `git diff --check` 通过；此前候选 build 已通过，本次未重复运行无关全量测试。
+- 尚未启动 Electron、真实协议注册、真实 Hub/Nexus、真实 Skill 刷新、静态 App 打开或两机旅程。
+
+交接说明见 `doc/C2-DESKTOP-ARTIFACT-INSTALL-HANDOFF.md`。
 
 ## H1-4C J1 最小整改（2026-09-06）
 
