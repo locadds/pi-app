@@ -12,10 +12,12 @@ describe('rewind navigateTree stability', () => {
     assert.match(src, /Strict === caused dispose/)
   })
 
-  it('navigateTree IPC passes sessionFile through to worker', () => {
+  it('navigateTree IPC resolves the visible session through Main trusted binding before loading', () => {
     const src = readFileSync(join(root, 'src/main/ipc/handlers/session.ts'), 'utf8')
     const block = src.slice(src.indexOf('ipc:session.navigateTree'), src.indexOf('ipc:session.branchAnchors'))
-    assert.match(block, /sessionFile: req\.sessionFile/)
+    assert.match(block, /resolveTrustedSessionScope\(req\.workspaceId, req\.sessionFile\)/)
+    assert.match(block, /ensureWorkerSessionBound\([\s\S]*sessionBinding: resolved\.binding/)
+    assert.match(block, /sessionFile: resolved\.ref\.sessionFile/)
   })
 
   it('session-rewind fetches history with leafId after navigate', () => {

@@ -15,6 +15,11 @@ describe('E2E smoke env', () => {
     assert.match(src, /PI_E2E/)
     assert.match(src, /require\('electron'\)/)
     assert.match(src, /executablePath/)
+    assert.match(src, /mkdtempSync\(path\.join\(tmpdir\(\), 'xiaogui-e2e-'\)\)/)
+    assert.match(src, /hasExplicitUserDataDir/)
+    assert.match(src, /hasExplicitUserDataDir\s*\?\s*\[\]\s*:/)
+    assert.match(src, /--user-data-dir=/)
+    assert.match(src, /args: \[mainEntry, \.\.\.profileArg, \.\.\.extraArgs\]/)
   })
 
   it('smoke spec uses the shared launcher', () => {

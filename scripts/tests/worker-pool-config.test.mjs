@@ -16,10 +16,14 @@ describe('worker pool session routing (Phase 1)', () => {
     assert.match(cfgSrc, /normalizeMaxSessionWorkers/)
   })
 
-  it('should_route_prompt_by_sessionFile', () => {
+  it('should_route_prompt only through the trusted session binding', () => {
     const prompt = readFileSync(join(root, 'src/main/ipc/handlers/prompt.ts'), 'utf8')
-    assert.match(prompt, /sendPrompt\(req\.text,\s*req\.sessionFile\)/)
-    assert.match(prompt, /steer\(req\.text,\s*req\.sessionFile\)/)
+    assert.match(prompt, /trustedSessionAccessV1\.prompt\(input\)/)
+    assert.match(prompt, /ensureWorkerSessionBound\([\s\S]*sessionBinding: access\.binding/)
+    assert.match(prompt, /sendPrompt\(req\.text,\s*access\.ref\.sessionFile/)
+    assert.match(prompt, /steer\(req\.text,\s*access\.ref\.sessionFile/)
+    assert.match(prompt, /followUp\(req\.text,\s*access\.ref\.sessionFile/)
+    assert.match(prompt, /requireRunningWorker: true/)
     assert.match(prompt, /abort\(sessionFile\)/)
   })
 

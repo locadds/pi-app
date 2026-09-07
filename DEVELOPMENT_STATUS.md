@@ -1,5 +1,58 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜C-01 合并前检查与集成准备（检查候选，E2E 阻断未关闭）
+
+### 目标与范围
+
+- 用户已正式验收 C-01 `4a2bdf4d968baca3df381fe8ad22371d59ef55f1`。本轮只补合并检查和集成准备，不再返修日常配置/权限功能，不合主线、不发布。
+- Terra 只同步过期测试契约并隔离 E2E profile；生产源码、依赖、权限与工作区架构均未修改。历史“授权中断且缺少工具结果时投影可能误报”的 P2 继续登记，不在本轮修复。
+- 实际修改：`e2e/helpers.ts`；`scripts/tests/` 下 `e2e-env.test.mjs`、`ipc-capability-boundaries.test.mjs`、`ipc-schema-validation.test.mjs`、`rewind-navigate-stable.test.mjs`、`session-live-switch-binding.test.mjs`、`worker-load-session-guard.test.mjs`、`worker-pool-config.test.mjs`；本记录。
+
+### 已完成
+
+- 修复测试仍要求旧裸 sessionFile/旧 payload/已删除函数名的问题。断言改为 Main 可信项目登记、会话 binding、明确可见会话身份；保留缺失身份拒绝、prepare 不启动 Worker、非前台会话不抢 foreground 的约束，没有削弱生产门。
+- E2E 未显式指定 `--user-data-dir` 时使用独立临时目录；已指定的目录原样保留。测试进程 TEMP/TMP 指向 D 盘，未使用日常 userData，不重跑外部模型。
+- 构建的字体同步仅改变工作副本换行，Git 归一后无内容差异，没有提交字体/许可证变更。
+- 本次是既有测试对已验收接缝的同步，不新增 Pi/Skill/Extension 或功能。复用现有 Playwright 启动器和 CI 脚本，无第二套测试运行器。
+
+### 固定命令与结果
+
+证据目录 `D:/CodexTemp/xiaogui-c01-premerge-20260907`，日志不提交仓库。
+
+```powershell
+$env:TEMP='D:/CodexTemp/xiaogui-c01-premerge-20260907'
+$env:TMP=$env:TEMP
+npm run lint
+node scripts/ci-audit.mjs
+npm run build
+npm run test:scripts
+npm run test:e2e -- --max-failures=3 --output=D:/CodexTemp/xiaogui-c01-premerge-20260907/e2e-results
+npm run typecheck
+npm exec eslint -- e2e/helpers.ts scripts/tests/e2e-env.test.mjs scripts/tests/ipc-capability-boundaries.test.mjs scripts/tests/ipc-schema-validation.test.mjs scripts/tests/rewind-navigate-stable.test.mjs scripts/tests/session-live-switch-binding.test.mjs scripts/tests/worker-load-session-guard.test.mjs scripts/tests/worker-pool-config.test.mjs
+git diff --check 4a2bdf4d968baca3df381fe8ad22371d59ef55f1
+```
+
+- 全量 lint：退出 0，0 errors / 1 warning（timeline.tsx 既有 unused eslint-disable），`lint.log`。修改后的八个测试文件定向 ESLint 通过。
+- ci-audit：退出 0，无 critical；21 high / 2 moderate 按现有脚本为非阻断，`audit.log`。未执行自动升级或 audit fix。
+- 完整 build（Main/Preload/Renderer/Office）：退出 0，`build.log`；Node/Web typecheck 通过。
+- test:scripts 原先逐批停在过期断言；每次同步后才继续检查。最终 `96 files / 8 batches / 288 passed / 0 failed`，`scripts-verified.log`。中间失败日志保留便于追溯，不当作最终结果；单独测试门 57/57、9/9、10/10 通过。
+- E2E：`19` 项中 `3 failed / 16 did not run`，按 max-failures 停止，`e2e.log` 与 `e2e-results/`。尚未通过，不能继承开发窗口验收的通过标签。
+
+### E2E 阻断与集成接缝
+
+- 实际 CDP 页面加载 `out/main/renderer/index.html`，日志明确 `ERR_FILE_NOT_FOUND`；该路径不存在，构建产物 `out/renderer/index.html` 存在。三个 composer 场景在 launchApp 阶段 60 秒超时，不是模型或授权失败。
+- 同一日志还出现 sandbox renderer `binding.startupData` 为 null 的异常；尚未证明它完全由路径错误引起，集成后必须重新观察，不隐去或预先认定已解决。
+- 已实查本地 WORK 候选 `92bdc99160cf765f9fb7682f9e77dac62915e50d` 包含 `resolveMainWindowRenderer(app.getAppPath())` 并替换上述 __dirname 寻址。为避免双重实现，本轮没有复制该生产修复；其验收和远端固定点应由 WORK 流程确认后再集成。
+- 参考产品集成目标：GitHub `xiaogui/feat/xiaogui-integration@f9f333beb0d29d195ca3f63a30ec1ad887e332a5`；C-01 相对它领先 27 个提交、195 个文件，目标侧独有提交为 0。`origin/main` 是第三方上游，不作为此次自动合并目标。
+- 只读预演命令 `git merge-tree --write-tree 4a2bdf4d968baca3df381fe8ad22371d59ef55f1 92bdc99160cf765f9fb7682f9e77dac62915e50d` 退出 0，树为 `b7bbfa0865f683fd04691e3320e83e43335d8671`；仅说明固定两点没有文本冲突，不代表行为验收。未创建 merge commit、集成分支或修改 WORK 工作树。
+- GitHub 对 `4a2bdf4` 的 Actions 查询为 0 条；Quality workflow 仅自动监听 main 的 push/PR，并支持手动触发。本地 ci-audit 不等于远程完整 CI，远程 CI 仍未覆盖。
+
+### 下一步与交付边界
+
+- 本轮测试准备提交推送后停止。建议下一门：确认 WORK 已验收且推送的固定 SHA，再获准在独立集成分支整合 C-01 与 WORK；先复跑构建版启动，解决/核实 sandbox 异常后再继续完整 E2E 和对应新 SHA 的 CI。不得直接合主线。
+- 原 C-01 功能验收保持通过；本轮合并前门尚未通过，阻断为构建版 E2E/未覆盖远程 CI。安装包、ASAR、Portable、发布仍未执行。
+- 日志与失败上下文保留 D 盘；清理测试临时 profile 的命令被工具策略拒绝，未绕过限制，临时目录暂留。保护 stash 不动；知识库只更新既有 progress 记录。
+
 ## 2026-09-07｜P2 失败工具展示修复及日常配置补验（阶段候选，待人工复验）
 
 ### 目标、修改和决定

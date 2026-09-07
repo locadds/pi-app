@@ -1,5 +1,7 @@
 import { expect, _electron as electron, type Page } from '@playwright/test'
+import { mkdtempSync } from 'node:fs'
 import path from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
@@ -18,9 +20,15 @@ const baseEnv = {
 }
 
 export async function launchApp(extraEnv: Record<string, string> = {}, extraArgs: string[] = []) {
+  const hasExplicitUserDataDir = extraArgs.some((arg) =>
+    arg === '--user-data-dir' || arg.startsWith('--user-data-dir='),
+  )
+  const profileArg = hasExplicitUserDataDir
+    ? []
+    : [`--user-data-dir=${mkdtempSync(path.join(tmpdir(), 'xiaogui-e2e-'))}`]
   return electron.launch({
     executablePath: electronExecutable,
-    args: [mainEntry, ...extraArgs],
+    args: [mainEntry, ...profileArg, ...extraArgs],
     env: { ...baseEnv, ...extraEnv },
     timeout: 60_000,
   })

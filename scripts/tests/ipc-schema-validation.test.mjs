@@ -18,15 +18,15 @@ const schemaCases = [
   ['workspaceFsSearchSchema', { workspaceRoot: '/w', query: 'src/cmp', maxResults: 20 }, { workspaceRoot: '/w', query: 'x', maxResults: 21 }],
   ['workspaceFsReadTextSchema', { workspaceRoot: '/w', path: 'a.txt' }, { path: 'a.txt' }],
   ['workspaceFsRenameSchema', { workspaceRoot: '/w', relativePath: 'a', newName: 'b' }, { newName: 'b' }],
-  ['sessionNavigateTreeSchema', { targetId: 'id-1' }, { targetId: '' }],
+  ['sessionNavigateTreeSchema', { targetId: 'id-1', sessionFile: '/s.jsonl', workspaceId: '/proj' }, { targetId: '', sessionFile: '/s.jsonl', workspaceId: '/proj' }],
   ['sessionTreeSchema', { sessionFile: '/s.jsonl', workspaceId: '/proj' }, { sessionFile: '/s.jsonl', unexpected: true }],
   ['sessionGetMessagesSchema', { sessionFile: '/s.jsonl', workspaceId: '/proj' }, { sessionFile: '/s.jsonl', limit: 0 }],
   ['sessionNewSchema', { workspaceId: '/proj' }, { workspaceId: '' }],
   ['sessionDeleteSchema', { sessionFile: '/s.jsonl', workspaceId: '/proj' }, { sessionFile: '/s.jsonl', workspaceId: '/proj', unexpected: true }],
-  ['sessionPrepareSchema', { sessionFile: '/s.jsonl' }, {}],
+  ['sessionPrepareSchema', { sessionFile: '/s.jsonl', workspaceId: '/proj' }, {}],
   ['workspaceOpenSchema', { path: '/proj' }, {}],
   ['workspaceSandboxDeleteSchema', { path: '/sandbox' }, {}],
-  ['promptTextSchema', { text: 'hi' }, {}],
+  ['promptTextSchema', { sessionId: 'session-1', text: 'hi', workspaceId: '/proj', sessionFile: '/s.jsonl' }, {}],
   ['piSettingsSetSchema', { patch: { a: 1 } }, {}],
   ['shellReadImagePreviewSchema', { workspaceRoot: '/w', path: 'a.png' }, { path: 'a.png' }],
   ['reviewMutationSchema', { cwd: '/w', files: [] }, { files: [{ path: 1, hunkPatches: 'x' }] }],
@@ -53,6 +53,20 @@ describe('IPC Zod schemas', () => {
       const r = schema.safeParse(bad)
       assert.equal(r.success, false)
     })
+  }
+
+  for (const [name, good, requiredFields] of [
+    ['sessionNavigateTreeSchema', { targetId: 'id-1', sessionFile: '/s.jsonl', workspaceId: '/proj' }, ['sessionFile', 'workspaceId']],
+    ['sessionPrepareSchema', { sessionFile: '/s.jsonl', workspaceId: '/proj' }, ['workspaceId']],
+    ['promptTextSchema', { sessionId: 'session-1', text: 'hi', workspaceId: '/proj', sessionFile: '/s.jsonl' }, ['sessionId', 'workspaceId', 'sessionFile']],
+  ]) {
+    for (const field of requiredFields) {
+      it(`${name} rejects a missing ${field}`, () => {
+        const schema = schemas[name]
+        const { [field]: _missing, ...withoutField } = good
+        assert.equal(schema.safeParse(withoutField).success, false)
+      })
+    }
   }
 
   it('registerHandlerWithSchema error message includes field path', () => {

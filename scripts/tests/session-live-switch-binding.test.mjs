@@ -21,9 +21,11 @@ describe('live session switch binding', () => {
     assert.match(openSession, /refreshSessionTree\(sessionFile\)/)
   })
 
-  it('sends the visible sessionFile with prompt and queue requests', () => {
+  it('sends the visible session identity with prompt and queue requests', () => {
     const text = src('src/renderer/src/features/composer/use-composer-send.ts')
-    assert.match(text, /sessionFile:\s*useUIStore\.getState\(\)\.historySessionFile\s*\?\?\s*undefined/)
+    assert.match(text, /sessionId:\s*''/)
+    assert.match(text, /workspaceId:\s*useUIStore\.getState\(\)\.currentWorkspace\s*\?\?\s*''/)
+    assert.match(text, /sessionFile:\s*useUIStore\.getState\(\)\.historySessionFile\s*\?\?\s*''/)
     assert.match(text, /prompt\.send[\s\S]*promptPayload\(\)/)
     assert.match(text, /prompt\.steer[\s\S]*promptPayload\(\)/)
     assert.match(text, /prompt\.followUp[\s\S]*promptPayload\(\)/)
@@ -45,12 +47,15 @@ describe('live session switch binding', () => {
     assert.match(main, /prompt\.dequeueClearQueue[\s\S]*workerMatchesSession\(sessionFile\)/)
   })
 
-  it('navigates the tree for the visible sessionFile, not a stale pendingBind', () => {
+  it('navigates the tree for the visible sessionFile through its trusted binding', () => {
     const renderer = src('src/renderer/src/lib/session-rewind.ts')
     assert.match(renderer, /session\.navigateTree[\s\S]*sessionFile:\s*file/)
 
     const main = src('src/main/ipc/handlers/session.ts')
-    assert.match(main, /ensureWorkerSessionBound\([\s\S]*sessionFile:\s*req\.sessionFile/)
+    const navigateHandler = main.match(/registerHandlerWithSchema\('ipc:session\.navigateTree'[\s\S]*?registerHandler\('ipc:session\.branchAnchors'/)?.[0] ?? ''
+    assert.match(navigateHandler, /resolveTrustedSessionScope\(req\.workspaceId, req\.sessionFile\)/)
+    assert.match(navigateHandler, /ensureWorkerSessionBound\([\s\S]*sessionBinding: resolved\.binding/)
+    assert.match(navigateHandler, /sessionFile: resolved\.ref\.sessionFile/)
   })
 
   it('session.tree ignores pendingBind fallback and marks workerBound only for the matching file', () => {

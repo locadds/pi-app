@@ -18,7 +18,8 @@ describe('IPC capability boundaries', () => {
     assert.match(review, /reviewMutationSchema/)
     assert.match(review, /authorizeTrustedCwd/)
     const tw = readFileSync(join(root, 'src/main/trusted-workspace.ts'), 'utf8')
-    assert.match(tw, /cwd_not_trusted/)
+    assert.match(tw, /trustedProjectRegistrationV1\.authorize/)
+    assert.match(tw, /no_trusted_workspace/)
   })
 
   it('sdk.install validates registry membership', () => {
