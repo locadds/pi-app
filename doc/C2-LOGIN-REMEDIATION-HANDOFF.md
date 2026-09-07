@@ -1,5 +1,17 @@
 # C2 桌面无会话登录整改交接
 
+## 追加：Pi BOM 发现兼容候选（2026-09-07）
+
+本次接续名称提交 `8dc9f81947a906d22e00963d4ff9150b27d65534`，以原已审登录产品 `2aa7d453d25dbd775aa44c6974c4a7443d0351d4` 为整体产品审查基线。新增纯读取helper `src/worker/skill-bom-compat.ts`，通过现有worker-runtime的公开skillsOverride接入，最后仍调用原applySkillsOverride。
+
+只读取Pi原生诊断已访问且报description is required的首BOM文件；切除一个首BOM后由SDK公开parseFrontmatter解析，不伪造description。原始文件路径、baseDir、disableModelInvocation及字节保持；不扫描新目录，不恢复缺描述文件，不覆盖已有同名Skill。DefaultResourceLoader随后按原filePath映射原metadata；公开createSyntheticSourceInfo只作保守fallback，实际C2默认安装目录的测试中不残留该fallback。
+
+验证命令：从本桌面树执行 `node D:/CodexWorktrees/xiaogui-community-c2-login-remediation-v1/packages/server/node_modules/tsx/dist/cli.mjs --tsconfig tsconfig.node.json scripts/test-c2-bom-discovery.mts`。复用已有tsx，不新增依赖。实际DefaultResourceLoader/getSkills中有无BOM的元数据和sourceInfo一致，scope=user；重复reload稳定，缺description负例不加载，路径禁用过滤有效，每次读取后SHA不变。脚本自建/清理临时测试目录，没有AgentSession/模型/用户现场安装。
+
+另2文件3个名称与override回归用例、typecheck/build/diff-check通过。曾遇测试环境全局setup需window，已沿用仓库jsdom；SDK默认扫描会包含其他本机资源，脚本只取自身精确样例路径断言，未输出其他资源内容。WORK/CODING主管已只读核对公开hook方向，无交叉代码编辑。
+
+保留限制：本helper不重建原生所有命名/长度诊断和优先级，同名保守不恢复；SDK `/skill` 展开再次读取原文件，BOM可能让原生stripFrontmatter保留YAML头。这不证明调用失败，本次也不patch私有方法/node_modules。固定候选待独立复验，之后统一更新乙机包；实际Worker集合仍需B机证据。
+
 ## 追加：Skill目录BOM兼容（2026-09-07）
 
 固定起点 `1987be39c3a90c90085f34c934b75a30c1b3abca`。名称识别增量候选待只读复验：唯一产品差异在pi-resources-editor.ts解析前仅移除内存文本的一个首BOM，原文件不写回。新增skill-catalog-bom.test.ts沿真实读取→命令目录检查名称、描述、回退及原字节不变；旧实现1失败1通过，修后2/2，typecheck/build/diff-check通过。

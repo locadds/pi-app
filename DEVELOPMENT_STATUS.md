@@ -1,5 +1,17 @@
 # DEVELOPMENT STATUS
 
+## C2 BOM 原生资源发现接缝（2026-09-07）
+
+状态：**名称+Pi发现增量候选 / 待独立只读复验 / 未更新乙机包**。
+
+- 名称修复固定 `8dc9f81947a906d22e00963d4ff9150b27d65534`；本次接续该提交，保留原登录候选。
+- 锁定Pi 0.84.1公开skillsOverride、parseFrontmatter、createSyntheticSourceInfo可复用；在既有Worker hook中只恢复native diagnostics已访问且description is required的首BOM文件。仅内存切掉一个首BOM，SDK解析后确有非空字符串description才补描述符，保持filePath/baseDir/disableModelInvocation；不覆盖已有同名，不扫描新目录。随后原applySkillsOverride保存基础快照并按路径过滤禁用项。
+- `skill-override.ts`仅将既有透传函数改为保留输入SDK类型的泛型（diagnostics不要求不存在的索引签名），启用过滤规则不变。没有新Skill框架、依赖升级、文件写回或SDK私有方法补丁。
+- 实际SDK DefaultResourceLoader→override→getSkills无模型检查PASS：原生BOM样例漏识别、经hook后与无BOM名称/描述/来源一致；按C2 `agent/skills/artifactId/SKILL.md`默认路径验证，scope=user，不残留bom-read-compat临时来源；刷新稳定、原字节SHA不变、缺description/双BOM仍不加载，路径禁用过滤有效。
+- 脚本 `scripts/test-c2-bom-discovery.mts` 使用隔离临时项目/agent目录，完毕清理；只断言自身样例，无模型/AgentSession或用户安装操作。必要组件/原override检查2文件3用例通过，typecheck/build/diff-check通过。
+- WORK/CODING主管只读确认同一公开接缝可用。本修复不是全部原生命名诊断等价实现；同名保守不恢复。Pi命令展开仍可能保留原文件YAML头，不据此判调用失败，也未修SDK私有逻辑。
+- 等待统一固定候选复验后再制作一次乙机包；B实际Worker集合/模型使用尚未确认。以下名称阶段及原生阻断记录作为历史保留。
+
 ## C2 Skill 目录首BOM兼容（2026-09-07）
 
 状态：**名称识别增量候选 / 待只读复验；Pi原生发现BOM问题仍未关闭**。
