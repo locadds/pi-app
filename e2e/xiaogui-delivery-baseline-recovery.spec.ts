@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
@@ -29,8 +30,6 @@ type PiDesktopWindow = Window & {
   piDesktop: { invoke(channel: string, request?: unknown): Promise<unknown> }
 }
 
-const TEMP_ROOT = 'E:\\CodexTemp\\m4f-electron-journey'
-const EVIDENCE_ROOT = 'E:\\Codex\\evidence\\coding-m4f\\electron-journey'
 const DELIVERY_FILE = 'generated-by-xiaogui.ts'
 const DELIVERY_CONTENT = 'export const recoveredDelivery = "from recovered batch";\n'
 
@@ -85,12 +84,18 @@ async function openSessionAndHub(page: Page, workspaceName: string, title: strin
   await expect(page.getByTestId('collaboration-hub-panel')).toBeVisible()
 }
 
-async function bootstrapAddress(input: { agentDir: string; userDataDir: string; workspace: string; sessionFile: string }) {
+async function bootstrapAddress(input: {
+  agentDir: string
+  userDataDir: string
+  workspace: string
+  sessionFile: string
+  tempRoot: string
+}) {
   const app = await launchApp(
     {
       PI_CODING_AGENT_DIR: input.agentDir,
-      TEMP: TEMP_ROOT,
-      TMP: TEMP_ROOT,
+      TEMP: input.tempRoot,
+      TMP: input.tempRoot,
     },
     [`--user-data-dir=${input.userDataDir}`],
   )
@@ -354,9 +359,8 @@ function readDeliveryRows(dbPath: string) {
 test.describe('M4F 旧基线交付恢复真实 Electron 旅程', () => {
   test('旧批次基线漂移零写入失败，按当前代码重新准备后新批次可应用', async ({}, testInfo) => {
     test.setTimeout(180_000)
-    mkdirSync(TEMP_ROOT, { recursive: true })
-    mkdirSync(EVIDENCE_ROOT, { recursive: true })
-    const root = join(TEMP_ROOT, `run-${Date.now()}`)
+    const tempRoot = join(tmpdir(), 'xiaogui-m4f-electron-journey')
+    const root = join(tempRoot, `run-${Date.now()}`)
     const userDataDir = join(root, 'user-data')
     const agentDir = join(root, 'agent')
     const workspace = join(root, '项目空间')
@@ -365,7 +369,7 @@ test.describe('M4F 旧基线交付恢复真实 Electron 旅程', () => {
 
     const session = writeSessionFixture(sessionDir, workspace)
     const baseline = await initProjectRepository(workspace)
-    const address = await bootstrapAddress({ agentDir, userDataDir, workspace, sessionFile: session.file })
+    const address = await bootstrapAddress({ agentDir, userDataDir, workspace, sessionFile: session.file, tempRoot })
     const dbPath = join(userDataDir, 'xiaogui-task-hub-m2a.sqlite')
     const active = await createActiveCodingPlan(dbPath, address)
     const seeded = await seedReadyDelivery({ dbPath, address, ...active, ...baseline })
@@ -373,14 +377,15 @@ test.describe('M4F 旧基线交付恢复真实 Electron 旅程', () => {
     const app = await launchApp(
       {
         PI_CODING_AGENT_DIR: agentDir,
-        TEMP: TEMP_ROOT,
-        TMP: TEMP_ROOT,
+        TEMP: tempRoot,
+        TMP: tempRoot,
       },
       [`--user-data-dir=${userDataDir}`],
     )
 
-    const screenshotPath = join(EVIDENCE_ROOT, 'm4f-delivery-recovery-final.png')
-    const rowsPath = join(EVIDENCE_ROOT, 'm4f-delivery-recovery-rows.json')
+    mkdirSync(testInfo.outputDir, { recursive: true })
+    const screenshotPath = join(testInfo.outputDir, 'm4f-delivery-recovery-final.png')
+    const rowsPath = join(testInfo.outputDir, 'm4f-delivery-recovery-rows.json')
     try {
       const page = await app.firstWindow({ timeout: 45_000 })
       await page.waitForLoadState('domcontentloaded', { timeout: 45_000 })
@@ -422,7 +427,7 @@ test.describe('M4F 旧基线交付恢复真实 Electron 旅程', () => {
       } catch (error) {
         const rowsBeforeDiagnostic = readDeliveryRows(dbPath)
         writeFileSync(
-          join(EVIDENCE_ROOT, 'm4f-delivery-recovery-debug-after-prepare.json'),
+          join(testInfo.outputDir, 'm4f-delivery-recovery-debug-after-prepare.json'),
           `${JSON.stringify({
             reviewText: await page.getByTestId('hub-delivery-review').innerText(),
             rows: rowsBeforeDiagnostic,
@@ -462,9 +467,9 @@ test.describe('M4F 旧基线交付恢复真实 Electron 旅程', () => {
     } finally {
       await app.close()
       const resolvedRoot = resolve(root)
-      const resolvedTempRoot = resolve(TEMP_ROOT)
+      const resolvedTempRoot = resolve(tempRoot)
       if (!resolvedRoot.startsWith(`${resolvedTempRoot}${sep}`)) {
-        throw new Error(`refusing to remove journey directory outside E-drive temp root: ${resolvedRoot}`)
+        throw new Error(`refusing to remove journey directory outside temporary root: ${resolvedRoot}`)
       }
       await rm(resolvedRoot, { recursive: true, force: true })
     }

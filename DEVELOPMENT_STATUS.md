@@ -1,5 +1,25 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜B-E2E-M4F：跨平台临时目录修正（Windows定向通过）
+
+- 固定输入 `0f4e26fd2a512d0eeba5d9303b0826bb62dc9a5a`；用户原包内目录准备授权由协调者确认。本轮仅 Terra 修改 `e2e/xiaogui-delivery-baseline-recovery.spec.ts`，主 Agent 更新本记录；没有生产、依赖、权限、模式、TaskHub或workflow变更。
+- 上一候选 Quality run [34129144681](https://github.com/locadds/pi-app/actions/runs/34129144681) 实际 headSha=0f4e26f…，最终 failure：8 job成功；Ubuntu E2E 17pass/1skip/1fail，M4F首次bootstrapAddress的native选择之后workspace.open拒绝，重试相同，第二个冷启动app未到；Windows限定三角色正常skip。
+- 已查明该fixture原 TEMP_ROOT=`E:\\CodexTemp\\m4f-electron-journey`，EVIDENCE_ROOT=`E:\\Codex\\evidence\\coding-m4f\\electron-journey`；它覆盖外层D TEMP/TMP，因此上一记录“所有新E2E均D盘”过宽，M4F为沿用E盘的明确例外。Linux下这些字面量不是合法绝对盘路径。本轮没有将E简单改为D，而是用 node:os tmpdir()+子目录，Windows尊重外层D，Linux使用主机真实临时目录。
+- bootstrap和第二app使用同一个tempRoot；截图、rows和失败debug使用testInfo.outputDir。保留run-*目录、真实打开链、全部正负业务断言/超时；finally仍核对run目录处于临时根之下才清理。未新增skip，未更改生产路径判断。
+- 定向命令（cwd本集成树，TEMP/TMP和npm cache同上轮D设置）：`node node_modules/@playwright/test/cli.js test e2e/xiaogui-delivery-baseline-recovery.spec.ts --max-failures=1 --output=D:/CodexTemp/xiaogui-integration-e2e-prep-20260907/e2e-results-07`；`node node_modules/eslint/bin/eslint.js e2e/xiaogui-delivery-baseline-recovery.spec.ts`；`git diff --check 0f4e26fd2a512d0eeba5d9303b0826bb62dc9a5a`。
+- e2e-07-m4f-tempdir.log：Windows M4F 1/1通过，17.1s；单文件eslint和diff-check通过。证据位于e2e-results-07，临时项目位于D盘外层TEMP下并由原finally清理。其余18项无代码变化，不重复；不重build、不跑外部模型。Linux修复结果须由新SHA远端E2E证明，不能用Windows成功代替。
+- 旧CI完整日志已保留D证据目录：quality-linux-e2e.log、quality-unit.log；不清除红灯、不取消或重写原run。新最小候选推送后只运行原Quality一次，不更改工作流以筛掉失败job。
+
+### 旧CI全量unit：初步分类，未逐项判定
+
+- 原unit job101764806342：63 failed files /375passed /1skip；35 failed tests /2171passed /7skip；1 unhandled error。失败文件数包含装载/收集失败，不能等同63个产品Bug。
+- 环境/装载类：attempt-workspace、application等Main测试报 `Cannot bundle Node.js built-in node:sqlite`，提示客户端环境打包问题；不是本次E2E文件的生产diff。
+- Electron配置mock类：skills-resources、prompt-abort-isolation报缺少 `projectName`，实际栈进入electron-store/conf。
+- 跨平台fixture类：worker-session-creation-operation把Windows D盘字面量与Linux resolve后的 /home/runner/.../D:/... 比较；执行租约测试报 WORKER_AUTHORIZED_CWD_REQUIRED，需另门逐项确认路径fixture。
+- 旧mock/断言类：extension-ui-channel mock缺resetExtensionDialogDedupe；worker-session-branch-actions旧调用断言；WORK materialize提示词仍期望“聊天确认只保留为后备路径”，生产文案已要求预览按钮授权。
+- 以上仅据日志给代表例，未对其余失败逐项归因或整改，不声称全部都是测试问题。它们超出本包范围，保留为独立全量基线门；本轮不修63文件，也不把全量unit未清零当成Windows19项未运行。
+
+
 ## 2026-09-07｜B-E2E：可信目录准备契约同步（19项分批通过，待固定SHA Quality与复验）
 
 ### 目标、固定点与实际修改
@@ -19,7 +39,7 @@
 
 ### 命令与证据
 
-cwd 均为本集成树；本轮私有证据目录为 `D:/CodexTemp/xiaogui-integration-e2e-prep-20260907`。所有实际新 E2E 使用独立 profile、D盘 TEMP/TMP/cache；不使用日常配置，不调用外部模型。
+cwd 均为本集成树；本轮私有证据目录为 `D:/CodexTemp/xiaogui-integration-e2e-prep-20260907`。新 E2E 使用独立 profile，外层配置为D盘 TEMP/TMP/cache；M4F原fixture曾覆盖成E盘，此例外及随后修正见上方B-E2E-M4F记录。不使用日常配置，不调用外部模型。
 
 ```powershell
 $env:TEMP='D:/CodexTemp/xiaogui-integration-e2e-prep-20260907'
