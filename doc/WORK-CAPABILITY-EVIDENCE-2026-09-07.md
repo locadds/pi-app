@@ -47,4 +47,16 @@ node node_modules/vitest/vitest.mjs run src/main/__tests__/pi-prompt-catalog-eff
 
 ## 集成验收待办
 
+### 真实探针发现后的子模型修复
+
+合成文档探针发现子模型为 `WHOLE_FRAGMENT` 带上 `occurrence: 1`，被既有严格校验拒绝；旧 Prompt 只禁止该分支的 selectedText，没有明确 occurrence 也必须省略。旧 repair 仅发送上一份输出和编号，缺少原始片段，无法可靠复核原文定位。
+
+子任务 Prompt 升为 `template-intake-analysis@1.2.1`，明确 occurrence 仅限 SELECTION，WHOLE_FRAGMENT 必须同时省略 selectedText/occurrence。该规则由同一常量进入初始 Prompt 和 repair。该非法组合返回私有校验码 `MODEL_SCHEMA_WHOLE_FRAGMENT_FIELDS`；repair 携带具体失败码、最多 12000 字旧输出和本次原始别名片段，沿用原输入边界；不增加模型调用次数，不放松严格验证。跨所有批次仍只允许一次修复，后续失败整体 DEGRADED，不把局部建议当作成功。
+
+该修复没有调用外部模型；四文件 32 项测试通过，新增五个用例（整块非法字段三例、实际 repair 错误及原文回传、跨批次一次修复）。独立子模型 Prompt 为 1116 字，不进入产品 System Prompt；原产品 6191/6625 字、Facts 193/216 字预算不变。实时模型效果由主验收继续核对。
+
+```powershell
+node node_modules/vitest/vitest.mjs run src/worker/xiaogui-work-docx-template-intake-tool.test.ts src/main/__tests__/pi-prompt-catalog-effective.test.ts src/worker/xiaogui-prompt/builder.test.ts src/worker/xiaogui-prompt/session-extension.test.ts --reporter=dot --maxWorkers=3
+```
+
 总控在固定集成 SHA 上执行干净环境启动、真实模型文档闭环和安装包验收。特别记录：用户说“继续”时没有未授权的正式操作；换正常说法仍能选择文档工具；PDF 只生成只读报告，不进入正式 Word 模板物化。本文件的自动化验证不替代该验收。
