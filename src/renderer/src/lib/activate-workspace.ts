@@ -137,18 +137,34 @@ export async function activateWorkspace(path: string, options?: ActivateWorkspac
       : null
 
   if (explicitPick) {
-    // Timeline already focused; register workspace then hydrate from disk (no Worker required).
-    void openPromise.finally(() => {
-      if (!assertSessionNavigation(navToken)) return
-      refreshSessionList()
-    })
+    // Timeline already focused. The target may have been persisted before this
+    // process restarted, so wait for Main's trusted discovery before asking it
+    // to bind the Worker. session.list is a UI refresh only and cannot prove
+    // the target has been registered yet.
     try {
       await openPromise
     } catch {
-      /* hydrate is disk-first */
+      return
     }
     if (!assertSessionNavigation(navToken)) return
-    await openSessionIntoWorker(explicitPick.sessionId, explicitPick.sessionFile, navToken, {
+
+    const prepared = await ipcClient
+      .invoke('session.prepare', {
+        workspaceId: path,
+        sessionFile: explicitPick.sessionFile,
+        bind: false,
+    })
+      .catch(() => null)
+    if (
+      typeof prepared?.sessionId !== 'string'
+      || !prepared.sessionId.trim()
+      || typeof prepared.sessionFile !== 'string'
+      || !sessionFilesEqual(prepared.sessionFile, explicitPick.sessionFile)
+      || !assertSessionNavigation(navToken)
+    ) return
+
+    refreshSessionList()
+    await openSessionIntoWorker(prepared.sessionId, prepared.sessionFile, navToken, {
       workerReady: true,
     })
     return

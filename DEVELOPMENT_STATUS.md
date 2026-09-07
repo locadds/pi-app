@@ -1,5 +1,50 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜A：Sandbox 冷打开可信发现时序修复（独立候选，待定向复验）
+
+### 固定输入、目标与所有权
+
+- 从 CODING `e50b7f8a047cfe50c2f76909bf6a47cfbcb40a2d` 建立 `codex/coding-sandbox-reopen-v1`，工作树 `D:/CodexWorktrees/xiaogui-coding-sandbox-reopen-v1`。WORK 固定 `c1adfd44514ccea622185a9bee028adcf99dd441`，本轮不合入、不修改。
+- Terra 唯一负责 Renderer 实现与聚焦测试；主 Agent 负责独立依赖、身份核对、冷重启证据和交付。实际修改仅 `src/renderer/src/lib/activate-workspace.ts`、`activate-workspace.test.ts`、`__tests__/activate-workspace-switch.test.ts` 和本记录。
+- 只修明确选择的既有会话打开顺序：持久 Sandbox 项目登记不等于重启后 Main 的会话候选登记。原 explicitPick 不等待后台列表，可能在 recordListedSessions 完成前 setPendingBind。
+
+### 实现与复用
+
+- explicitPick 先成功 await workspace.open，再 await 既有 `session.prepare({workspaceId,sessionFile,bind:false})`。项目打开失败即停止；prepare 拒绝、无有效 ID、目标路径不匹配、导航过期均不继续绑定，不回退旧 metadata ID 或最近会话。
+- `bound:false` 不参与成功判断；必须非空字符串 sessionId、既有 `sessionFilesEqual` 确认精确文件、navToken 有效，才使用 Main 返回的 ID/路径调用 openSessionIntoWorker。UI 列表刷新置于可信 prepare 之后。
+- Main gate、项目/会话持久记录、权限、Worker、TaskHub、模型、Office 默认状态均未修改。WORK/CODING 模式保持原值。
+- 实查复用候选：Pi 0.84.1 SessionManager；e50 的 Main session.prepare/discoverTrustedSessions/recordListedSessions；Renderer prepareCanonicalSessionOpen。最后一个仅封装 scope.lookup+mode.switch，不提供可信发现，因此不强行调用或平行扩展。Skill/插件不拥有此 Renderer 导航竞态，采用已批准的最小现有接缝，不新增依赖或会话平台。
+
+### 身份差异与合成现场
+
+- 只读源码核对：Sandbox metadata 保存 Main session.new 回执 ID；Worker currentSessionId 来自 Pi session.sessionId，并非另定义的公开别名。Pi 0.84.1 打开尚未落盘的明确路径时会 newSession 生成新 ID，同时保留路径。独立无模型探针验证了这一机制；不能据此推定原 WORK 现场的完整历史，也没有修改原 JSONL/metadata。
+- 本轮使用独立 userData/agent/out/node_modules。Main `workspace.sandbox.create` + `session.new(mode:WORK)` 创建受管 Sandbox `748e22a4`，然后正常退出 Electron。只在该新合成会话中使用 Pi SessionManager.open/appendMessage 写入明确标记的无模型测试消息，产生与原现场相同的“元数据齐全、ID可不一致、重启内存登记为空”条件；没有伪造项目登记或直接写原业务配置。
+- 新合成 metadata ID `01a07bf0-7214-7813-a7ee-9a8db25bb8ba`；Pi 首行 ID `01a07bf0-cc3b-7f78-af06-4d2fcc61118f`。文件名保留原 ID；恢复后 UI currentSessionId 为后者，historyLoading=false，正文 `SANDBOX_COLD_REOPEN_SYNTHETIC_NO_MODEL` 可见、模式 WORK。
+- 完全重启后通过真实侧栏“A包无模型冷重启”按钮打开，未手动预调用 session.list/prepare 预热。Main 日志无 trusted_session_not_listed / open sandbox failed；未调用模型。metadata 前后 SHA-256 均 `d695884ede9e83b5bbfbd119e4f3067e9e9013a11177a72c3ed1fa744fbb8986`，没有静默改写 ID。
+- 截图已实际查看：`D:/CodexTemp/xiaogui-sandbox-reopen-20260907/cold-reopen-pass.png`。同目录 `pi-id-probe.mjs`、`electron-live.log`、`electron-restart.log` 与合成 userData/agent 保留复验，不含原业务内容/模型凭据。
+
+### 必要检查与独立装配
+
+```powershell
+node node_modules/vitest/vitest.mjs run src/renderer/src/lib/activate-workspace.test.ts src/renderer/src/lib/__tests__/activate-workspace-switch.test.ts src/renderer/src/lib/subagent-session-navigation.test.ts
+node node_modules/typescript/bin/tsc -p tsconfig.web.json --noEmit
+node node_modules/typescript/bin/tsc -p tsconfig.node.json --noEmit
+node node_modules/eslint/bin/eslint.js src/renderer/src/lib/activate-workspace.ts src/renderer/src/lib/activate-workspace.test.ts src/renderer/src/lib/__tests__/activate-workspace-switch.test.ts
+git diff --check e50b7f8a047cfe50c2f76909bf6a47cfbcb40a2d
+```
+
+- 聚焦 `3 files / 18 tests passed`，覆盖延迟 prepare、有效 bound:false、空/空白 ID、错误文件、拒绝、workspace.open 失败、过期导航、两模式保持及既有导航。Node/Web 类型检查、定向 ESLint、diff-check 通过；独立依赖装完后复跑同门记录在 `focused-final.log`。
+- 独立 npm ci 首两次遇 registry ECONNRESET；定位锁定 tesseract.js-core 7.0.0 下载后，按 lock SHA-512 核验复用本机旧 tarball 到 D 缓存，最终 `npm ci --ignore-scripts --offline --no-audit --no-fund` 成功（1197 packages）。没有修改锁文件、镜像或源树 node_modules；本树 node_modules realpath 就是本树目录，非链接。
+- Electron 43.0.0 复用已缓存下载 ZIP（SHA-256 `a195f798837e4c5719b462d3210c47619f6fc44ce032d06dbdcfbc88327b26e0`），由本树 install.js 安装；本树 electron-builder install-app-deps 成功装配 better-sqlite3。装配命令显式指定 D 盘 npm/Electron/builder/devdir 缓存与 TEMP，原生目标为本树，未重建源树原生模块。
+- 真实窗口命令：设置 `PI_CODING_AGENT_DIR=D:/CodexTemp/xiaogui-sandbox-reopen-20260907/agent`，运行 `node node_modules/electron-vite/bin/electron-vite.js dev --remoteDebuggingPort 9351 -- --user-data-dir=D:/CodexTemp/xiaogui-sandbox-reopen-20260907/user-data`；Main/Preload 编译和真实进程冷重启通过。本门使用开发服务器 Renderer，不冒充 B 的构建版寻址/E2E门。
+
+### Standards / Spec 与交付边界
+
+- Standards：独立只读审查 CLEAR，0 finding。
+- Spec：最初要求补两模式保持断言，已补齐并独立复核 CLEAR，0 remaining finding。不是协调验收者的最终批准。
+- A 提交推送后停在定向复验内部交接点；只有收到协调验收者通过通知才开始 B。B 将从两固定输入和已验 A 提交建立独立集成候选，手动合并开发记录，保持父历史，复用 WORK renderer 修复。
+- B 的构建版 Renderer/preload、sandbox startupData 异常、19项 E2E 和新 SHA Quality workflow_dispatch 尚未执行；WORK 仍整体 PARTIAL、Office 默认 OFF、DOC 分析降级等事实不变。未制作新包、未发布、未合主线。两个源工作树 HEAD/clean 与保护 stash `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61` 未变。
+
 ## 2026-09-07｜C-01 合并前检查与集成准备（检查候选，E2E 阻断未关闭）
 
 ### 目标与范围
