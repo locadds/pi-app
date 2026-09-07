@@ -10,3 +10,10 @@ export function resolveUtilityEntry(
     : join(appPath, 'out', 'main')
   return join(mainDir, entryName)
 }
+
+export function resolveMainWindowPreload(appPath = app.getAppPath()): string {
+  const outDir = basename(appPath) === 'main' && basename(dirname(appPath)) === 'out'
+    ? dirname(appPath)
+    : join(appPath, 'out')
+  return join(outDir, 'preload', 'index.cjs')
+}

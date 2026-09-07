@@ -1,5 +1,79 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜Electron preload 稳定寻址与 C-01 Windows Host 真实旅程（阶段候选，待人工复验）
+
+### 本阶段目标
+
+只修复 Electron Main 被 Rollup 拆分到 `out/main/chunks` 后错误寻址 preload 的问题，恢复 `window.piDesktop` IPC 桥。IPC 恢复后继续执行 C-01 的 Windows Host 真实模型＋Electron 验收；不修改 WORK、Prompt Matrix、权限矩阵、TaskHub、OMP、模型配置、UI 产品逻辑或其他功能。
+
+### 实际修改文件
+
+- `src/main/utility-entry-path.ts`
+- `src/main/window.ts`
+- `src/main/__tests__/utility-entry-path.test.ts`
+- `src/main/__tests__/utility-entry-build-smoke.test.ts`
+- `DEVELOPMENT_STATUS.md`
+
+### 已完成内容
+
+1. 新增 `resolveMainWindowPreload()`，以 Electron `app.getAppPath()` 为稳定锚点解析 `out/preload/index.cjs`；同时兼容测试或工具传入已构建 `out/main` 目录的情况。
+2. 主窗口不再使用拆分 chunk 的 `__dirname` 推导 preload。修复前该表达式会落到不存在的 `out/main/preload/index.cjs`；修复后始终落到实际构建产物 `out/preload/index.cjs`。
+3. 路径单测覆盖应用根与 `out/main` 两种输入，并明确拒绝旧的重复 `out/main/preload` 形状；构建冒烟同时核验 Main utility entry 和 preload 产物存在。
+4. 真实 Electron 开发窗口中确认 `window.piDesktop` 为对象并暴露 `15` 个桥接方法；“打开文件夹”能弹出原生“选择项目目录”窗口并将测试项目登记到 CODING。
+5. 在独立干净 Electron userData 下完成 C-01 真实旅程：选择 `k3-256k`，模型真实发起 `write`；“逐条确认”弹窗显示来源项目 `xiaogui-c01-electron-acceptance-20260907-125543`、来源对话 `01a07a55` 和相对目标 `c01-proof.txt`；只批准“允许一次”后，Pi 实际写入并继续调用 `read` 回读。
+6. 最终文件长度 `37` 字节，去除允许的末尾换行后内容严格等于 `C01_REAL_MODEL_ELECTRON_PASS_20260907`，SHA-256 为 `0e98842c03ec49051592c7986b92360c0249b3f631832cb8bffb8d1f47db3386`。界面最终答复也明确报告写入与回读一致。
+7. 前两次未在约 `55` 秒内完成授权，系统均以 `USER_OR_POLICY_DENIED` 安全拒绝且没有创建文件；第三次测试自动化只在来源项目、写入动作和 `c01-proof.txt` 三项完全匹配时点击“允许一次”。该自动化只用于本次验收，不进入产品代码。
+
+### 未完成内容
+
+- 当前用户既有 Electron 配置中的 `canonicalScopeBindings` 数据会触发 `CANONICAL_SCOPE_STORE_CORRUPT`；常规配置下的首次旅程在模型启动前安全停止。本阶段按用户边界没有修复、清理或迁移该既有持久化状态，真实 C-01 通过证据来自全新隔离 userData。
+- 未运行 Portable、打包安装版或无关全量测试；未合入 WORK、阶段线或主线，未发布。
+- 当前结论仍是隔离分支阶段候选，等待人工复验；不能把干净配置旅程扩大表述为所有历史本机配置均已恢复。
+
+### 与规格文档存在的偏差
+
+- preload 修复没有改变任何冻结产品或架构决策，也没有引入新启动模式、配置面或依赖。
+- C-01 的干净配置 Windows Host 真实模型＋Electron 主链已通过；既有配置损坏属于本阶段之外的独立已知缺口，已如实登记，没有在本提交中扩大修复范围。
+
+### Pi／Skill／插件复用调查
+
+- 本次缺口属于 Electron 构建产物的 preload 路径寻址，Pi、Skill 或插件不拥有 BrowserWindow preload 装载能力，不能替代该框架接缝。
+- 实现复用仓库既有 `utility-entry-path.ts` 作为统一路径模块，并使用 Electron 原生 `app.getAppPath()`；没有新增依赖、Skill、插件、运行时或平行路径系统。
+
+### 测试命令和测试结果
+
+~~~powershell
+npm exec vitest run src/main/__tests__/utility-entry-path.test.ts src/main/__tests__/utility-entry-build-smoke.test.ts
+npm run typecheck
+npm exec eslint -- src/main/utility-entry-path.ts src/main/window.ts src/main/__tests__/utility-entry-path.test.ts src/main/__tests__/utility-entry-build-smoke.test.ts
+node node_modules/electron-vite/bin/electron-vite.js build
+npm exec vitest run src/main/__tests__/utility-entry-build-smoke.test.ts
+git diff --check
+
+# Windows Host 真实模型＋Electron（隔离 userData，仅用于验收）
+node node_modules/electron-vite/bin/electron-vite.js dev --remoteDebuggingPort 9337 -- --user-data-dir=D:\CodexTemp\xiaogui-c01-electron-acceptance-20260907-125543\_isolated-profile\Chromium2
+~~~
+
+- 聚焦测试：`2 files / 4 tests passed`；构建完成后单独复跑构建冒烟：`1/1 passed`。
+- Node/Web typecheck：通过。
+- 四个变更 TS 文件定向 ESLint：通过。
+- Electron Main、Preload、Renderer 构建：通过；仅保留仓库既有动态导入提示。
+- `git diff --check`：通过。
+- 真实窗口：preload IPC 桥可用，原生目录选择可用；真实 `k3-256k` 完成 `write → 允许一次 → read`，磁盘文件内容和 SHA-256 核验通过。
+- 截图证据：`D:\CodexTemp\xiaogui-c01-electron-acceptance-20260907-125543\_evidence\c01-real-model-electron-pass.png`（不提交仓库）。测试产物位于同一 D 盘临时项目，不影响用户项目。
+- 按范围未运行 OMP、802 MB 装配、Portable 或无关全量测试。
+
+### 已知风险
+
+1. 既有用户配置的 canonical scope 持久化损坏仍会阻止新会话；它与 preload 寻址无关，但会影响该具体本机配置继续试用，需要另行授权后才能修复或迁移。
+2. 本轮真实旅程使用 Electron 开发构建和隔离 userData，尚未覆盖安装包或 Portable 的路径布局。
+3. 权限弹窗有超时语义；本轮已证明超时安全拒绝和精确“允许一次”均按预期工作。
+
+### 下一阶段计划
+
+- 只追加一个提交并推送当前隔离分支，随后立即停止，等待人工复验。
+- 未获人工批准前不合入 WORK、阶段线或主线，不处理既有配置损坏，不进入发布或其他功能开发。
+
 ## 2026-09-06｜CODING-C-01 默认工作区能力（测试契约返修候选，待定向复验）
 
 ### 本阶段目标

@@ -11,6 +11,7 @@ import { configStore } from './config-store'
 import { customThemeRendererArgument } from './custom-theme-startup'
 import { workerManager } from './worker-manager'
 import { installWindowCloseGuard } from './window-close-guard'
+import { resolveMainWindowPreload } from './utility-entry-path'
 
 const MIN_W = 900
 const MIN_H = 600
@@ -91,7 +92,7 @@ export function createWindow(): BrowserWindow {
     title: '小规 Agent',
     icon: resolveAppIcon(),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.cjs'),
+      preload: resolveMainWindowPreload(),
       additionalArguments: [customThemeRendererArgument()],
       sandbox: readRendererSandboxEnabled(),
       contextIsolation: true,

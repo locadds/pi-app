@@ -5,7 +5,7 @@ vi.mock('electron', () => ({
   app: { getAppPath: vi.fn(() => join('D:', 'workspace', 'pi-app')) },
 }))
 
-import { resolveUtilityEntry } from '../utility-entry-path'
+import { resolveMainWindowPreload, resolveUtilityEntry } from '../utility-entry-path'
 
 describe('resolveUtilityEntry', () => {
   it('should_not_duplicate_out_main_when_electron_returns_the_built_main_directory', () => {
@@ -31,6 +31,21 @@ describe('resolveUtilityEntry', () => {
     )
     expect(resolveUtilityEntry('worker.mjs', appPath)).not.toContain(
       join('out', 'main', 'chunks', 'worker.mjs'),
+    )
+  })
+
+  it('should_resolve_the_main_window_preload_from_the_app_root_instead_of_a_split_chunk', () => {
+    const appPath = join('D:', 'workspace', 'pi-app')
+    const builtMain = join(appPath, 'out', 'main')
+
+    expect(resolveMainWindowPreload(appPath)).toBe(
+      join(appPath, 'out', 'preload', 'index.cjs'),
+    )
+    expect(resolveMainWindowPreload(builtMain)).toBe(
+      join(appPath, 'out', 'preload', 'index.cjs'),
+    )
+    expect(resolveMainWindowPreload(appPath)).not.toContain(
+      join('out', 'main', 'preload', 'index.cjs'),
     )
   })
 })
