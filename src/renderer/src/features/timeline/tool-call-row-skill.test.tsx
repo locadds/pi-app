@@ -56,4 +56,46 @@ describe('ToolCallRow Skill context semantics', () => {
     expect(row.querySelector('svg.text-primary\\/75')).toBeNull()
     expect(row).not.toHaveTextContent(/Skill context/i)
   })
+
+  it('does not present pending or denied writes as completed edits', () => {
+    const { rerender } = render(<ToolCallRow item={{
+      id: 'pending-write',
+      type: 'tool-call',
+      toolName: 'write',
+      toolArgs: { path: 'c01-denied.txt', content: 'must not write' },
+      toolPhase: 'start',
+      timestamp: 1,
+    }} />)
+
+    const pending = screen.getByRole('button', { name: /Running write/i })
+    expect(pending).not.toHaveTextContent(/Edited c01-denied\.txt/i)
+    expect(pending).not.toHaveTextContent('+1')
+    fireEvent.click(pending)
+    expect(screen.getByText('No successful change result yet')).toBeTruthy()
+
+    rerender(<ToolCallRow item={{
+      id: 'denied-write',
+      type: 'tool-call',
+      toolName: 'write',
+      toolArgs: { path: 'c01-denied.txt', content: 'must not write' },
+      toolOutput: 'DIRECT_CODING_PERMISSION_DENIED',
+      toolPhase: 'end',
+      isError: true,
+      timestamp: 2,
+    }} />)
+
+    const denied = screen.getByRole('button', { name: /write failed/i })
+    expect(denied).not.toHaveTextContent(/Edited c01-denied\.txt/i)
+    expect(denied).not.toHaveTextContent('+1')
+
+    rerender(<ToolCallRow item={{
+      id: 'unknown-write',
+      type: 'tool-call',
+      toolName: 'write',
+      toolArgs: { path: 'c01-denied.txt', content: 'must not write' },
+      timestamp: 3,
+    }} />)
+
+    expect(screen.getByRole('button', { name: /Waiting for write result/i })).not.toHaveTextContent(/Edited c01-denied\.txt/i)
+  })
 })

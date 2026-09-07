@@ -111,6 +111,11 @@
     "verbRun": "运行了 {{detail}}",
     "verbSearch": "搜索了 {{detail}}",
     "verbUsed": "使用了 {{name}} · {{detail}}",
-    "workingTool": "正在运行 {{name}}…"
+    "workingTool": "正在运行 {{name}}…",
+    "toolFailed": "{{name}} 失败",
+    "toolPending": "等待 {{name}} 结果",
+    "writeAwaitingExecution": "等待执行",
+    "writeFailed": "失败",
+    "writeNoSuccessResult": "尚无成功修改结果"
   }
 }

@@ -1,6 +1,7 @@
 // Pi 原生工具预览：read / edit / write / grep / find / bash
 // 主流 主流 Agent 桌面与 IDE：默认折叠、可展开、diff、Shiki 语法高亮
 import { useState, type ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 import { FileText, Search, Terminal, Plus, Minus, FolderSearch } from '@renderer/components/icons'
 import { cn } from '@renderer/lib/utils'
 import { guessLangFromPath } from '@renderer/lib/shiki-highlighter'
@@ -20,6 +21,7 @@ import { buildHashlineProtocolSummary } from '@extension-compat/renderer/hashlin
 import { resolveAdapterToolCardTemplate } from './tool-card-registry'
 import type { ToolTimelineItem } from './tool-preview-shell'
 import type { ToolCallDetail } from '@shared/tool-call-detail'
+import { hasSuccessfulToolCompletion } from './timeline-turn-activity'
 
 function DiffBody({ rows }: { rows: DiffRow[] }) {
   let del = 0
@@ -71,6 +73,7 @@ function DiffBody({ rows }: { rows: DiffRow[] }) {
 }
 
 function EditWritePreview({ item, flat }: { item: ToolTimelineItem; flat?: boolean }) {
+  const { t } = useTranslation()
   const args = normalizeToolArgs(item.toolArgs)
   const output = extractToolText(item.toolOutput || '')
   const path = fullPathFromArgs(args)
@@ -78,6 +81,30 @@ function EditWritePreview({ item, flat }: { item: ToolTimelineItem; flat?: boole
   const lang = guessLangFromPath(path)
   const newStr = String(args.new_string ?? args.newString ?? args.newText ?? args.content ?? '')
   const diff = resolveEditWriteDiffRows(item)
+  const completedSuccessfully = hasSuccessfulToolCompletion(item)
+
+  if (!completedSuccessfully) {
+    return (
+      <NativePreviewPanel
+        itemRunId={item.runId}
+        icon={<FileText className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
+        title={name}
+        meta={
+          <span className={cn('text-[10px]', item.isError ? 'text-destructive' : 'text-foreground-secondary')}>
+            {item.isError ? t('timeline:activity.writeFailed') : t('timeline:activity.writeAwaitingExecution')}
+          </span>
+        }
+        defaultOpen={false}
+        flat={flat}
+      >
+        {output ? (
+          <div className="p-2 text-[11px] text-foreground-secondary whitespace-pre-wrap">{output}</div>
+        ) : (
+          <div className="p-2 text-[11px] text-foreground-secondary/60">{t('timeline:activity.writeNoSuccessResult')}</div>
+        )}
+      </NativePreviewPanel>
+    )
+  }
 
   if (diff) {
     const openDefault = false

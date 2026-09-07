@@ -111,6 +111,11 @@
     "verbRun": "Ran {{detail}}",
     "verbSearch": "Searched {{detail}}",
     "verbUsed": "Used {{name}} · {{detail}}",
-    "workingTool": "Running {{name}}…"
+    "workingTool": "Running {{name}}…",
+    "toolFailed": "{{name}} failed",
+    "toolPending": "Waiting for {{name}} result",
+    "writeAwaitingExecution": "Awaiting execution",
+    "writeFailed": "Failed",
+    "writeNoSuccessResult": "No successful change result yet"
   }
 }

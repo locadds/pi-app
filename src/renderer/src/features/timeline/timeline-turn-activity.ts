@@ -30,6 +30,11 @@ const COMMAND_TOOLS = new Set(['bash'])
 const EXPLORE_TOOLS = new Set(['read', 'ls'])
 const MUTATE_TOOLS = new Set(['write', 'edit', 'insert'])
 
+/** A mutate tool changes the timeline only after Pi has ended it without an error. */
+export function hasSuccessfulToolCompletion(item: Pick<ToolTimelineItem, 'toolPhase' | 'isError'>): boolean {
+  return item.toolPhase === 'end' && item.isError !== true
+}
+
 function basename(path: string): string {
   const normalized = path.replace(/\\/g, '/')
   const parts = normalized.split('/')
@@ -44,6 +49,11 @@ function toDisplayPath(path: string, workspaceRoot?: string | null): string {
     return normalized.slice(root.length + 1)
   }
   return normalized
+}
+
+/** Existing workspace display normalization is also the safe comparison key for file events. */
+function filePathKey(path: string, workspaceRoot?: string | null): string {
+  return toDisplayPath(path, workspaceRoot).replace(/\\/g, '/')
 }
 
 function collectToolsFromBlocks(blocks: TimelineDisplayItem[]): ToolTimelineItem[] {
@@ -83,7 +93,10 @@ function countDiffRows(item: ToolTimelineItem): { additions: number; deletions: 
 /** Public: +/− line counts for a single mutate tool (edit/write/insert). */
 export function countToolDiffStats(item: ToolTimelineItem): { additions: number; deletions: number } {
   const name = (item.toolName || '').toLowerCase()
-  if (name !== 'edit' && name !== 'write' && name !== 'insert') {
+  if (
+    (name !== 'edit' && name !== 'write' && name !== 'insert') ||
+    !hasSuccessfulToolCompletion(item)
+  ) {
     return { additions: 0, deletions: 0 }
   }
   return countDiffRows(item)
@@ -126,12 +139,26 @@ export function buildTurnActivitySummary(
   const runIds = opts?.runIds
   const workspaceRoot = opts?.workspaceRoot
 
+  const isRejectedOrPendingMutationFileEvent = (change: FileChange): boolean => {
+    if ((change.source !== 'edit' && change.source !== 'write') || !change.runId) return false
+    const changePath = filePathKey(change.path, workspaceRoot)
+    const matchingTools = tools.filter((tool) => {
+      if (tool.runId !== change.runId || !MUTATE_TOOLS.has(tool.toolName || '')) return false
+      const toolPath = pathFromTool(tool)
+      return toolPath !== null && filePathKey(toolPath, workspaceRoot) === changePath
+    })
+    return matchingTools.length > 0 && !matchingTools.some(hasSuccessfulToolCompletion)
+  }
+
   for (const change of fileChanges) {
     if (runIds && runIds.size > 0 && change.runId && !runIds.has(change.runId)) continue
     if (runIds && runIds.size > 0 && !change.runId) {
       // keep session-scoped entries when no run match yet
     }
-    const key = change.path.replace(/\\/g, '/')
+    // Pi emits file events from the tool name. A denied or not-yet-run edit/write
+    // therefore needs its matching tool result before it can be displayed as a change.
+    if (isRejectedOrPendingMutationFileEvent(change)) continue
+    const key = filePathKey(change.path, workspaceRoot)
     const existing = fileMap.get(key)
     if (existing) {
       existing.changeType = change.changeType || existing.changeType
@@ -151,10 +178,10 @@ export function buildTurnActivitySummary(
 
   for (const tool of tools) {
     const name = tool.toolName || ''
-    if (!MUTATE_TOOLS.has(name)) continue
+    if (!MUTATE_TOOLS.has(name) || !hasSuccessfulToolCompletion(tool)) continue
     const path = pathFromTool(tool)
     if (!path) continue
-    const key = path.replace(/\\/g, '/')
+    const key = filePathKey(path, workspaceRoot)
     const stats = countDiffRows(tool)
     const existing = fileMap.get(key)
     if (existing) {

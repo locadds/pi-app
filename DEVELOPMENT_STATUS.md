@@ -1,5 +1,43 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜P2 失败工具展示修复及日常配置补验（阶段候选，待人工复验）
+
+### 目标、修改和决定
+
+- 从 `a60041e3bd7a8a3c34b41547da05d42755f7a696` 追加。Terra 编写最小 Renderer 修复，主 Agent 核对代码、执行真实拒绝及恢复验证；不改 Main、Worker、权限矩阵、Scope、TaskHub 或 OMP。
+- 实际修改：`src/renderer/src/features/timeline/` 下 `timeline-turn-activity.ts`、`tool-call-row.tsx`、`tool-previews.tsx` 及 `timeline-turn-activity.test.ts`、`tool-call-row-skill.test.tsx`；`src/renderer/src/locales/en/timeline.json`、`src/renderer/src/locales/zh/timeline.json`；本记录。
+- 根因：过去按写入工具名称/参数生成成功变更，没等工具结果。现在单条增删数、折叠摘要、变更卡和预览统一要求 `toolPhase=end && isError!==true`；未完成和错误保留记录，不显示成功 diff。具有同 run/path 的文件事件也核对工具状态，复用既有工作区相对展示路径归一，避免绝对事件路径与相对参数不匹配。
+- 同一文件先成功、后拒绝的成功记录保留；没有用“失败”删除全部历史变更。无新增架构/依赖；复用 Pi 0.84.1 已有结果字段与现有 Renderer 汇总接缝。Skill/插件无法替代既有 Renderer 对结果的误读，本轮不新增能力或复测 OMP。
+
+### 聚焦验证
+
+```powershell
+npm exec vitest run src/renderer/src/features/timeline/timeline-turn-activity.test.ts src/renderer/src/features/timeline/tool-call-row-skill.test.tsx
+npm run typecheck
+npm exec eslint -- src/renderer/src/features/timeline/timeline-turn-activity.ts src/renderer/src/features/timeline/timeline-turn-activity.test.ts src/renderer/src/features/timeline/tool-call-row.tsx src/renderer/src/features/timeline/tool-call-row-skill.test.tsx src/renderer/src/features/timeline/tool-previews.tsx
+git diff --check a60041e3bd7a8a3c34b41547da05d42755f7a696
+node D:/CodexTemp/xiaogui-c01-p2-retest-20260907/verify-scope.cjs
+```
+
+- 修复前新增回归 `1 failed / 1 passed`，失败信号为 pending write 被统计进 files；最终 `2 files / 5 passed`，包含 pending/error/缺失 phase、同文件成功后拒绝，以及绝对事件/相对参数匹配。定向 ESLint、Node/Web typecheck、diff-check 通过。
+- 使用日常配置的实际 Electron 开发构建：`node node_modules/electron-vite/bin/electron-vite.js dev --remoteDebuggingPort 9345 -- --user-data-dir=D:/AppData/Roaming1/xiaogui-agent-desktop`。启动构建通过；Electron 二进制由共享 node_modules 提供，项目入口/构建/Renderer 均为本隔离工作树。
+- 只新增一次真实模型拒绝请求：沿用用户所选 `deepseek/deepseek-v4-flash-vision-exp`，要求创建 `c01-denied-p2.txt`，明确拒绝后不重试。等待授权时无“已编辑”或成功增删数；截图后点拒绝，结果显示 `write 失败`，无该项变更卡。只读 SQLite 显示 `WRITE / SETTLED / USER_OR_POLICY_DENIED`，测前测后文件都不存在。
+- 之前成功的 `c01-proof.txt` 写入/回读证据继续有效，内容及 SHA-256 `df986f26f4274f8fecfd873ea426d9801a9b680bc8cfead14f6f3e00937d1a99` 不变；先前拒绝项 `c01-denied.txt` 仍不存在。没有重跑成功模型旅程。
+
+### 旧项目与重启补验
+
+- 本轮私有备份与证据：`D:/CodexTemp/xiaogui-c01-p2-retest-20260907`。Scope 备份 SHA-256 `9de853d8e2505f2f8cc88d48f36679dca3e717fa4657bf5d31cef020366df8a7`。
+- 用户通过原生选择框重选日常配置中既有 `9c13edc9` 项目；真实 `session.list → session.open` 返回原会话 `01a03e9f-214a-76c4-b3d9-8261a5f288fd`，模式 `WORK`，未发送模型消息。没有将 WORK 样本改成 CODING。
+- 前后深比较：30 个项目、67 个会话全保留；session/sandbox 绑定、projectModeMap/sessionModeMap/projectBaseline 全部不变；仅选中旧项目 null 补录身份，待确认数 `28 → 27`，其余项目不静默授权。核验脚本为上列 `verify-scope.cjs`。
+- 经窗口关闭、CDP `Browser.close` 正常结束 Electron（原进程退出，Worker dispose），重新启动并在 UI 选择 5211game 的原测试会话。会话 ID 仍 `01a07b5a-3ae1-76d1-a9d6-2c28f98d07f9`，sessionKey 仍 `xgs1_a712b6d80211e5a0598084d0e9c70ad8b7884a43113edebe45b456763f0cb669`，projectId 仍 `xgp1_08cb0d4edf4d11159278ca3fc17900e403229883fdde5cfee94040f3e8d8c3b1`，模式 CODING；成功和失败历史均正确显示。重启没有再次调用模型。
+- 真实截图：`permission-pending-fixed.png`（完整来源字段及等待状态）、`denial-fixed.png`、`history-fixed.png`、`restart-session.png`。证据保留本机，不提交原始历史会话截图/配置到 GitHub。
+
+### 未完成、偏差、风险和下一步
+
+- 本轮已补齐上轮记录的 P2 展示问题、日常旧项目重选和 CODING 会话重启恢复证据；最终结论仍待人工复验，不自行宣布整体验收通过。
+- 不扩展旧 WSL 迁移、Main 权限、完整 AUTO、OMP 或新 UI 功能；等待阶段使用既有“正在运行”文案，不声称修改成功。此处统计仍依赖工具成功事件，不代表对任意第三方工具副作用的独立磁盘审计。
+- 不跑全量测试/OMP/Portable。全量 lint、test:scripts、E2E、CI audit、安装包/ASAR 仍是后续合并/发布门。追加提交推送本隔离分支后停止，保护 stash 不动，不合入 WORK、阶段线或主线。
+
 ## 2026-09-07｜日常配置 C-01 真实旅程（未通过完整门，停止待审）
 
 - 前置候选 `8cf17ec5885d9f1c72e1670722ee5cbead7d855c` 已获人工定向批准；本次只做验收，不修改源码。启动前 SHA/远端一致、工作树干净、保护 stash 为 `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61`。

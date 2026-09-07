@@ -12,7 +12,7 @@ import { renderNativeToolPreview } from './tool-previews'
 import { buildToolSummary } from './tool-previews'
 import { useExtensionUIStore } from '@renderer/stores/extension-ui-store'
 import type { ToolTimelineItem } from '@renderer/stores/ui-store-types'
-import { countToolDiffStats } from './timeline-turn-activity'
+import { countToolDiffStats, hasSuccessfulToolCompletion } from './timeline-turn-activity'
 import { DiffStatBadge } from './diff-stat-badge'
 import { resolveSkillContextActivity } from './skill-context-activity'
 
@@ -94,6 +94,7 @@ function ToolCallRowImpl({
   const [localExpanded, setLocalExpanded] = useState<boolean | null>(null)
   const isCurrentRun = !!item.runId && item.runId === activeRunId
   const isRunning = item.toolPhase === 'start' || item.toolPhase === 'update'
+  const completedSuccessfully = hasSuccessfulToolCompletion(item)
   const hasToolBody = !!(item.toolOutput || item.toolDetails || item.toolArgs || item.toolDetail)
   const autoExpanded = autoExpandedInBudget && agentRunning && isCurrentRun && hasToolBody
   const expanded =
@@ -107,6 +108,9 @@ function ToolCallRowImpl({
 
   const primaryLabel = useMemo(() => {
     if (xiaoguiActivityLabel) return xiaoguiActivityLabel
+    if (isRunning) return t('timeline:activity.workingTool', { name: displayToolName })
+    if (item.isError) return t('timeline:activity.toolFailed', { name: displayToolName })
+    if (!completedSuccessfully) return t('timeline:activity.toolPending', { name: displayToolName })
     if (skillContext) {
       return t('timeline:activity.skillContext', {
         name: skillContext.name,
@@ -120,9 +124,8 @@ function ToolCallRowImpl({
         defaultValue: argSummary,
       })
     }
-    if (isRunning) return t('timeline:activity.workingTool', { name: displayToolName })
     return displayToolName
-  }, [xiaoguiActivityLabel, skillContext, liveStatus, argSummary, displayToolName, isRunning, item.toolName, t])
+  }, [xiaoguiActivityLabel, skillContext, liveStatus, argSummary, displayToolName, isRunning, completedSuccessfully, item.isError, item.toolName, t])
 
   const toggleExpanded = () => {
     if (!hasToolBody) return
