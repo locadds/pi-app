@@ -1,5 +1,17 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜WORK 单机保存与自然语言文档闭环（阶段候选，待人工验收）
+
+- 共同基线 `a60041e3bd7a8a3c34b41547da05d42755f7a696`；隔离分支 `codex/work-document-stability-v1`，固定实现 `2817547bff293b44574fd5d064dcb3abef01f8eb`。原候选的 Timeline 修改与主线均未触碰。文档收尾提交不改变已测构建内容。
+- WORK：Gateway 保存排队并在持久化成功后提交内存版本；失败可重试、同版本竞争至多一个成功，Supervisor 等待子进程退出后释放路径所有权，Viewer 保留失败及保存期间的新编辑。5 文件 / 15 项聚焦验证通过；真实 Univer 工作副本修改、保存、关闭重开通过。
+- 共享能力：按模式/执行阶段/授权装配 WORK 工具，正常措辞不再隐藏文档工具；仍沿用 Pi 原生 Skill 与 setActiveToolsByName。保留 CODING 边界及 Host 确认；“继续”未触发正式写入，明确“确认”后才另存。
+- 真实缺陷修复：构建版 Renderer 路径 `92bdc99`；intake WHOLE_FRAGMENT 字段说明和 repair 原文上下文 `e068a2c`；缺少 suggestedName 的精确反馈 `df24b49`；SELECT_TEMPLATE 将 Host 的真实 fieldId 映射放入模型可读 content `2817547`。没有新增工具、中央路由或宽松校验。
+- 真实模型证据：合成 DOCX→只读整理报告→实际字段复核/预览确认→正式模板落库→按模板成品→系统 Word 打开修改、保存与关闭重开。固定版本增量对应的调用与输出 SHA 已记录。PDF 只读报告与伪 PDF 格式拒绝通过，没有进入模板物化。
+- 根启动补齐 Office 构建；独立 npm ci、不复用 junction 或历史 Office 输出；类型检查与构建通过。打包配置 `ac16d934346d614c6166d6b6d539600e30a15b9a` 补齐显式 GitHub 仓库，最终 Windows 打包退出 0；NSIS 安装及最终替换均退出 0。新安装配置的随包 Skill、Office 保存重开、模板落库、Word 生成及系统 Word 编辑重开通过。asar 与业务冻结版本逐字节相同，最终替换后又复核更新配置、资源与冷启动。
+- 完整功能验收仍为 PARTIAL：安装版 DOC 转换/只读报告成功，但出现一次 MODEL_OUTPUT_INVALID 安全降级，具体原因未稳定复现，不将单独探针成功替代失败记录。Portable 生成但未单独运行，人工验收与发布均未通过。安装器与 Portable 大小/摘要、实测配置和产物摘要见统一交接。
+- 保留边界：Office 仍需既有单机试验模式，未修改默认 OFF；Sandbox 冷启动 trusted_session_not_listed 交 CODING 统一处理，未放松 Main gate。模型事实性表述、内部字段编号复述、Univer 合成表格宽度提示列为已知体验限制，不声称全部产品验收通过。
+- 交接与逐门证据见 `doc/WORK-REMEDIATION-HANDOFF-2026-09-06.md`、`doc/WORK-SAVE-EVIDENCE-2026-09-07.md`、`doc/WORK-CAPABILITY-EVIDENCE-2026-09-07.md`。未进入主线、未晋级或发布；人工批准后再处理集成。
+
 ## 2026-09-07｜日常配置 C-01 真实旅程（未通过完整门，停止待审）
 
 - 前置候选 `8cf17ec5885d9f1c72e1670722ee5cbead7d855c` 已获人工定向批准；本次只做验收，不修改源码。启动前 SHA/远端一致、工作树干净、保护 stash 为 `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61`。

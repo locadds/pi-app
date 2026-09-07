@@ -45,7 +45,7 @@ node node_modules/vitest/vitest.mjs run src/main/__tests__/pi-prompt-catalog-eff
 
 没有用这些离线测试声称模型已经实际选择工具；真实模型调用、完整 typecheck 和集成构建由总控执行并记录。
 
-## 集成验收待办
+## 集成验收增量
 
 ### 真实探针发现后的子模型修复
 
@@ -59,4 +59,6 @@ node node_modules/vitest/vitest.mjs run src/main/__tests__/pi-prompt-catalog-eff
 node node_modules/vitest/vitest.mjs run src/worker/xiaogui-work-docx-template-intake-tool.test.ts src/main/__tests__/pi-prompt-catalog-effective.test.ts src/worker/xiaogui-prompt/builder.test.ts src/worker/xiaogui-prompt/session-extension.test.ts --reporter=dot --maxWorkers=3
 ```
 
-总控在固定集成 SHA 上执行干净环境启动、真实模型文档闭环和安装包验收。特别记录：用户说“继续”时没有未授权的正式操作；换正常说法仍能选择文档工具；PDF 只生成只读报告，不进入正式 Word 模板物化。本文件的自动化验证不替代该验收。
+后续真实故障驱动的最小修复：`df24b49` 为缺少 suggestedName 的私有校验反馈增加建议索引/kind（所属测试文件 15 项通过）；`2817547` 把 SELECT_TEMPLATE 的真实 fieldId→名称映射放入 Pi 模型可读 content，而不再只放 details（所属文件 4 项通过）。没有扩大工具面或降低校验。
+
+总控已在固定代码上执行干净环境启动、真实模型 DOCX 闭环和安装版复验，详见 `WORK-REMEDIATION-HANDOFF-2026-09-06.md`。特别记录：“继续”没有产生正式写入，正常说法可选择工具，PDF 只生成只读报告。但安装版 DOC 出现一次 MODEL_OUTPUT_INVALID 安全降级，单独同输入探针未复现具体原因，该项没有关闭。自动化验证及探针过绿均不代替该实际失败记录。
