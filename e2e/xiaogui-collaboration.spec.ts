@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { launchApp } from './helpers'
+import { launchApp, openTrustedWorkspace, refreshProjectSidebar } from './helpers'
 
 /**
  * UI-M3A-01 协作计划最小前端真实 Electron 场景：
@@ -77,7 +77,7 @@ async function seedDraft(
       intent: { type: 'flow.start.with_draft', draft: { objective, tasks } },
     },
   })
-  expect(result.ok).toBe(true)
+  expect(result.ok, JSON.stringify(result)).toBe(true)
 }
 
 test.describe('协作计划 M2A 真实 Electron 场景', () => {
@@ -100,10 +100,7 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
       const page = await app.firstWindow({ timeout: 45_000 })
       await page.waitForLoadState('domcontentloaded', { timeout: 45_000 })
 
-      await invoke(page, 'ipc:workspace.open', {
-        path: workspace,
-        awaitWorker: false,
-      })
+      await openTrustedWorkspace(app, page, workspace)
       await invoke(page, 'ipc:xiaogui.scope.set', {
         kind: 'session',
         key: work.file,
@@ -125,21 +122,20 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
       const addressFor = (sessionFile: string): HubAddress => {
         const address = listed.sessions.find((session) => session.sessionFile === sessionFile)?.canonicalScope
         if (!address) throw new Error(`missing canonical scope for ${sessionFile}`)
-        return address
+        return { projectId: address.projectId, sessionKey: address.sessionKey }
       }
       const workAddress = addressFor(work.file)
       const codingAddress = addressFor(coding.file)
-      await invoke(page, 'ipc:settings.set', {
-        key: 'recentProjects',
-        value: [workspace],
-      })
-      await page.evaluate(() =>
-        window.dispatchEvent(
-          new CustomEvent('pi-desktop:settings-changed', {
-            detail: { key: 'recentProjects' },
-          }),
-        ),
-      )
+      for (const fixture of [work, coding, design]) {
+        const prepared = await invoke<{ sessionId: string | null; sessionFile: string }>(page, 'ipc:session.prepare', {
+          workspaceId: workspace,
+          sessionFile: fixture.file,
+          bind: false,
+        })
+        expect(prepared.sessionId).toBeTruthy()
+        expect(prepared.sessionFile).toBe(fixture.file)
+      }
+      await refreshProjectSidebar(page)
       const projectButton = page.locator('.sidebar-project-hit').filter({ hasText: '协作项目' })
       await expect(projectButton).toHaveCount(1)
       await projectButton.click()
@@ -160,7 +156,7 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
       // ── 2. 刷新后审批恢复（重载窗口后从 M2A 投影继续） ────────────
       await page.reload()
       await page.waitForLoadState('domcontentloaded', { timeout: 45_000 })
-      // 重载后应用回到项目首页；通过已持久化的 recentProjects 重新进入同一项目。
+      // 重载后应用回到项目首页；重新进入同一已选择项目。
       const projectAfterReload = page.locator('.sidebar-project-hit').filter({ hasText: '协作项目' })
       await expect(projectAfterReload).toHaveCount(1)
       await projectAfterReload.click()
@@ -171,8 +167,17 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
       await page.getByRole('button', { name: '批准计划' }).click()
       const active = page.getByTestId('hub-active-plan')
       await expect(active).toBeVisible()
-      await expect(active).toContainText('PENDING_DISABLED')
-      await expect(active).toContainText('执行能力将在后续 CODING Adapter 接入')
+      const executable = page.getByTestId('hub-task-group-executable')
+      const waiting = page.getByTestId('hub-task-group-waiting')
+      await expect(executable).toContainText('收集数据')
+      await expect(page.getByTestId('hub-taskrun-status-collect')).toHaveText('就绪')
+      await expect(waiting).toContainText('撰写报告')
+      await expect(page.getByTestId('hub-taskrun-status-write')).toHaveText('等待依赖')
+      await expect(page.getByTestId('hub-task-group-running')).toHaveCount(0)
+      await expect(page.getByTestId('hub-task-group-verifying')).toHaveCount(0)
+      await expect(page.getByTestId('hub-task-group-done')).toHaveCount(0)
+      await expect(active).not.toContainText('运行中')
+      await expect(active).not.toContainText('已完成')
 
       // ── 3. 切换会话不串投影：CODING 会话无活动 Flow ──────────────
       await openSessionAndPanel(page, coding.title)
@@ -182,7 +187,7 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
       await expect(page.getByTestId('hub-active-plan')).toHaveCount(0)
       await expect(page.getByTestId('hub-awaiting-approval')).toHaveCount(0)
 
-      // ── 4. CODING 夹具种入草稿并批准 → 只读任务视图 ──────────────
+      // ── 4. CODING 夹具种入草稿并批准 → 根任务就绪，等待人工确认 ──
       await seedDraft(page, codingAddress, 'e2e-coding-draft', '修复登录缺陷', [
         { taskKey: 'fix', title: '定位并修复' },
       ])
@@ -191,7 +196,12 @@ test.describe('协作计划 M2A 真实 Electron 场景', () => {
       const codingActive = page.getByTestId('hub-active-plan')
       await expect(codingActive).toBeVisible()
       await expect(codingActive).toContainText('定位并修复')
-      await expect(codingActive).toContainText('PENDING_DISABLED')
+      const codingExecutable = page.getByTestId('hub-task-group-executable')
+      await expect(codingExecutable).toContainText('定位并修复')
+      await expect(page.getByTestId('hub-taskrun-status-fix')).toHaveText('就绪')
+      await expect(page.getByTestId('hub-task-group-running')).toHaveCount(0)
+      await expect(page.getByTestId('hub-task-group-verifying')).toHaveCount(0)
+      await expect(page.getByTestId('hub-task-group-done')).toHaveCount(0)
       await expect(codingActive).not.toContainText('运行中')
       await expect(codingActive).not.toContainText('已完成')
 

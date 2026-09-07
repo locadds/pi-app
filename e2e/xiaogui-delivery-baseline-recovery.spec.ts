@@ -23,7 +23,7 @@ import type { SessionAddressV1, SessionMode, SessionScopeLookupV1 } from '@share
 
 import { createCollaborationHubApplicationV1 } from '../src/main/xiaogui/task-hub/application'
 import { CollaborationHubSqliteStoreV1 } from '../src/main/xiaogui/task-hub/sqlite-store'
-import { launchApp } from './helpers'
+import { launchApp, openTrustedWorkspace, refreshProjectSidebar } from './helpers'
 
 type PiDesktopWindow = Window & {
   piDesktop: { invoke(channel: string, request?: unknown): Promise<unknown> }
@@ -97,19 +97,25 @@ async function bootstrapAddress(input: { agentDir: string; userDataDir: string; 
   try {
     const page = await app.firstWindow({ timeout: 45_000 })
     await page.waitForLoadState('domcontentloaded', { timeout: 45_000 })
-    await invoke(page, 'ipc:workspace.open', { path: input.workspace, awaitWorker: false })
+    await openTrustedWorkspace(app, page, input.workspace)
     await invoke(page, 'ipc:xiaogui.scope.set', {
       kind: 'session',
       key: input.sessionFile,
       mode: 'CODING',
     })
-    await invoke(page, 'ipc:settings.set', { key: 'currentProject', value: input.workspace })
-    await invoke(page, 'ipc:settings.set', { key: 'recentProjects', value: [input.workspace] })
     const listed = await invoke<{
       sessions: Array<{ sessionFile: string; canonicalScope?: HubAddressV1 & { sessionMode: string } }>
     }>(page, 'ipc:session.list', { workspaceId: input.workspace, refresh: true })
     const session = listed.sessions.find((candidate) => candidate.sessionFile === input.sessionFile)
     if (!session?.canonicalScope) throw new Error('missing canonical scope')
+    const prepared = await invoke<{ sessionId: string | null; sessionFile: string }>(page, 'ipc:session.prepare', {
+      workspaceId: input.workspace,
+      sessionFile: input.sessionFile,
+      bind: false,
+    })
+    expect(prepared.sessionId).toBeTruthy()
+    expect(prepared.sessionFile).toBe(input.sessionFile)
+    await refreshProjectSidebar(page)
     return {
       projectId: session.canonicalScope.projectId,
       sessionKey: session.canonicalScope.sessionKey,
@@ -378,14 +384,21 @@ test.describe('M4F 旧基线交付恢复真实 Electron 旅程', () => {
     try {
       const page = await app.firstWindow({ timeout: 45_000 })
       await page.waitForLoadState('domcontentloaded', { timeout: 45_000 })
-      await invoke(page, 'ipc:workspace.open', { path: workspace, awaitWorker: false })
+      await openTrustedWorkspace(app, page, workspace)
       await invoke(page, 'ipc:xiaogui.scope.set', {
         kind: 'session',
         key: session.file,
         mode: 'CODING',
       })
-      await invoke(page, 'ipc:settings.set', { key: 'currentProject', value: workspace })
-      await invoke(page, 'ipc:settings.set', { key: 'recentProjects', value: [workspace] })
+      await invoke(page, 'ipc:session.list', { workspaceId: workspace, refresh: true })
+      const prepared = await invoke<{ sessionId: string | null; sessionFile: string }>(page, 'ipc:session.prepare', {
+        workspaceId: workspace,
+        sessionFile: session.file,
+        bind: false,
+      })
+      expect(prepared.sessionId).toBeTruthy()
+      expect(prepared.sessionFile).toBe(session.file)
+      await refreshProjectSidebar(page)
       await openSessionAndHub(page, '项目空间', session.title)
 
       await expect(page.getByTestId('hub-delivery-review')).toContainText('待审阅', { timeout: 30_000 })

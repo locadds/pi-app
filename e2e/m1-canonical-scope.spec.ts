@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 
-import { launchApp } from './helpers'
+import { launchApp, openTrustedWorkspace, refreshProjectSidebar } from './helpers'
 
 type PiDesktopWindow = Window & {
   piDesktop: {
@@ -158,10 +158,7 @@ test.describe('M1 规范会话作用域真实 Electron 门禁', () => {
       const page = await app.firstWindow({ timeout: 45_000 })
       await page.waitForLoadState('domcontentloaded', { timeout: 45_000 })
 
-      await invoke(page, 'ipc:workspace.open', {
-        path: workspace,
-        awaitWorker: false,
-      })
+      await openTrustedWorkspace(app, page, workspace)
       for (const fixture of fixtures) {
         await invoke(page, 'ipc:xiaogui.scope.set', {
           kind: 'session',
@@ -187,21 +184,21 @@ test.describe('M1 规范会话作用域真实 Electron 门禁', () => {
         'DESIGN',
         'WORK',
       ])
-
-      const alternateDriveCase = `${workspace[0]?.toLowerCase()}${workspace.slice(1)}`
-      await invoke(page, 'ipc:settings.set', {
-        key: 'recentProjects',
-        value: [workspace, alternateDriveCase],
-      })
-      await page.evaluate(() =>
-        window.dispatchEvent(
-          new CustomEvent('pi-desktop:settings-changed', {
-            detail: { key: 'recentProjects' },
-          }),
-        ),
-      )
+      for (const fixture of fixtures) {
+        const prepared = await invoke<{ sessionId: string | null; sessionFile: string }>(page, 'ipc:session.prepare', {
+          workspaceId: workspace,
+          sessionFile: fixture.file,
+          bind: false,
+        })
+        expect(prepared.sessionId).toBeTruthy()
+        expect(prepared.sessionFile).toBe(fixture.file)
+      }
+      await refreshProjectSidebar(page)
 
       const projectName = basename(workspace)
+      const alternateDriveCase = `${workspace[0]?.toLowerCase()}${workspace.slice(1)}`
+      await openTrustedWorkspace(app, page, alternateDriveCase)
+      await refreshProjectSidebar(page)
       const projectButton = page.locator('.sidebar-project-hit').filter({ hasText: projectName })
       await expect(projectButton).toHaveCount(1)
       await projectButton.click()

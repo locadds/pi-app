@@ -1,5 +1,56 @@
 # 小规开发阶段状态
 
+## 2026-09-07｜B-E2E：可信目录准备契约同步（19项分批通过，待固定SHA Quality与复验）
+
+### 目标、固定点与实际修改
+
+- 用户经协调者明确批准：从 `e973bec29745cad5455705b1224a14c073dac1bb` 继续，仅修旧 E2E 的可信目录准备并处理远端 Quality 调度。开工核实 HEAD/上游/GitHub 一致、工作树 clean、保护 stash `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61` 未变；仍在独立 `codex/work-coding-integration-c01-v1`。
+- 遇到原协作展示断言过时后先暂停，用户随后明确批准“同意，仅同步旧展示断言”。仅按现有Panel/组件测试同步根任务就绪、后继等待依赖，补足无running/verifying/done，保留跨会话隔离、DESIGN保留、取消和刷新恢复；未扩展生产行为。
+- Terra 负责测试代码，主 Agent 负责真实运行、失败分类及记录；实际文件仅 `e2e/helpers.ts`、`e2e/m1-canonical-scope.spec.ts`、`e2e/xiaogui-collaboration.spec.ts`、`e2e/xiaogui-delivery-baseline-recovery.spec.ts`、`e2e/xiaogui-real-three-task-journey.spec.ts` 和 DEVELOPMENT_STATUS.md。
+- 复用现有 Electron 测试 Main evaluate、原生 dialog.showOpenDialog、真实 ipc:dialog:openDirectory / workspace.open / session.list / session.prepare，不新增产品功能或框架。不修改 src、权限、Scope/Worker实现、模型、WORK/TaskHub语义、构建配置或依赖，不引入新 Skill/插件。
+
+### 实现与边界
+
+- helper 只临时模拟 Electron 原生目录选择返回；调用真实 Main dialog handler 产生登记，再调用真实 workspace.open；finally 恢复原 dialog 函数。没有直接写可信登记库，没有 mock 授权/Scope/Worker 成功返回，没有增加 PI_E2E 放行。
+- fixture 保留真实公开 scope.set 初始化模式，随后首次 list→prepare(bind:false)→侧栏刷新。prepare 核对非空会话 ID 和准确文件；移除 Renderer settings.set currentProject/recentProjects 的旧造数。M1 通过第二次原生选择盘符大小写变体保留项目唯一性验证，未删除去重场景。
+- 原 Scope lookup NOT_FOUND/PROJECT_MISMATCH 失败注入负例保留，仅验证失败不切换，不用于伪造授权成功。
+- 协作 fixture 的地址仅显式投影 projectId/sessionKey，避免把 sessionMode 附加字段传入 strict AddressSchema；原 ok=true 断言增加真实响应诊断，未降低预期。
+- Main/Preload/Renderer 构建产物摘要前后相同（记录在 build-input-sha256.json），复用已验构建；没有重跑 build、130项聚焦、288项脚本或完整类型检查。原 node/web tsconfig 不包含 E2E，本轮不宣称它覆盖新测试；修改的测试由 ESLint 和真实 Playwright 转译执行覆盖。
+
+### 命令与证据
+
+cwd 均为本集成树；本轮私有证据目录为 `D:/CodexTemp/xiaogui-integration-e2e-prep-20260907`。所有实际新 E2E 使用独立 profile、D盘 TEMP/TMP/cache；不使用日常配置，不调用外部模型。
+
+```powershell
+$env:TEMP='D:/CodexTemp/xiaogui-integration-e2e-prep-20260907'
+$env:TMP=$env:TEMP
+$env:npm_config_cache='D:/CodexCache/npm'
+$env:PI_CODING_AGENT_DIR='D:/CodexTemp/xiaogui-integration-e2e-prep-20260907/agent'
+$env:PI_RENDERER_SANDBOX='1'
+node --test scripts/tests/e2e-env.test.mjs
+node node_modules/eslint/bin/eslint.js e2e/helpers.ts e2e/m1-canonical-scope.spec.ts e2e/xiaogui-collaboration.spec.ts e2e/xiaogui-delivery-baseline-recovery.spec.ts e2e/xiaogui-real-three-task-journey.spec.ts
+node node_modules/@playwright/test/cli.js test --max-failures=1 --output=D:/CodexTemp/xiaogui-integration-e2e-prep-20260907/e2e-results-02
+node node_modules/@playwright/test/cli.js test e2e/xiaogui-collaboration.spec.ts --max-failures=1 --output=D:/CodexTemp/xiaogui-integration-e2e-prep-20260907/e2e-results-05
+node node_modules/@playwright/test/cli.js test e2e/xiaogui-delivery-baseline-recovery.spec.ts e2e/xiaogui-real-three-task-journey.spec.ts e2e/xiaogui.spec.ts --max-failures=1 --output=D:/CodexTemp/xiaogui-integration-e2e-prep-20260907/e2e-results-06
+git diff --check e973bec29745cad5455705b1224a14c073dac1bb
+```
+
+- e2e-env.log：既有相关脚本 3/3；eslint-final.log：五文件通过；diff-check通过。没有扩展到完整脚本/全量模型套件。
+- e2e-01.log：3 passed /1 failed/15未跑。已越过原trusted_project_open_required，但新增helper提前list导致三模式首先固化为WORK；只读确认scope.set仅改legacy而不覆盖canonical。按协调确认调整为先原真实模式初始化后首次list，保留此红灯记录，不修改生产模式机制。
+- e2e-02.log：13 passed /1 failed/5未跑，46.0s。M1完整原断言通过（含三模式、盘符变体去重、跨模式打开、clone/fork和查询失败不变更）；13项还包括既有单独sandbox=0诊断用例，它未替代sandbox=1构建启动证据。第14协作seedDraft只记录ok=false。
+- e2e-03-collaboration-diagnostic.log：单项诊断失败，真实响应 INTERNAL；只读确认 parseIpc 对 strict schema 失败即返回此代码。session.list 返回 canonicalScope 含sessionMode，而旧 fixture 直接透传整个对象。修正为两个字段的精确地址；不放宽 Main schema。
+- e2e-04-collaboration.log：单项重跑，已过建稿、刷新恢复和批准，38.6s后停在原 `PENDING_DISABLED` 断言。真实界面为“可执行／就绪／等待依赖”；旧下一行“执行能力将在后续 CODING Adapter 接入”未运行到，不计为第二失败。现有组件及其测试早已有 READY→就绪 语义，先暂停并取得上述用户明确批准后才同步测试。
+- e2e-05-collaboration.log：1/1通过，11.3s。WORK根collect为就绪、后继write等待依赖；CODING根fix就绪；两者running/verifying/done组均为0，未自动执行；原刷新恢复、跨会话隔离、DESIGN保留和取消均通过。
+- e2e-06-remaining.log：剩5/5通过，1.5min、exit0。M4F旧基线漂移零写入及新批次可应用（17s）；三角色串行/检查点恢复/真实Diff/受控交付（1.1min）；最后3项品牌/模式/执行控件。三角色使用既有Scripted Runtime，不是外部模型旅程，证据目录 `D:/CodexTemp/xiaogui-hub-m4g-real-journey-v1/evidence/run-1788788541856` 有 journey-rows.json、journey-events.jsonl、检查点和06-apply-succeeded.png；交付截图已查看。
+- 原19项最终按02前13+05协作1+06剩5分批全覆盖通过；不是声称某一次全套命令19/19。每次只在新改动/明确失败后重跑受影响部分，没有重复前13项；本地无剩余未跑E2E。
+
+### 当前结论及未完成
+
+- 本包可信目录选择、会话发现/prepare、M1模式/去重真实门和获批的旧展示断言已同步；19项E2E分批通过。没有源码/架构偏差；行为只变测试准备及对既有真实语义的断言，不据此宣称WORK所有PARTIAL项完成。
+- CI 原404原因已由协调者与用户处理：fork首次Actions启用后Quality列表可见，id=352321368、active；没有修改main、workflow或提升token权限。待本测试候选提交推送后，仅触发Quality并核对run.headSha；Release不得触发。冻结提交前不宣称新SHA CI已跑。
+- 本阶段仍未合任何主线/WORK/阶段线、未发布。WORK PARTIAL、Office默认OFF、DOC分析降级、Portable仅历史build/hash、历史缺toolResult投影P2均继续保留；后续只按协调/用户批准范围处理剩余门。
+
+
 ## 2026-09-07｜B：WORK / CODING 独立集成（阶段候选，E2E 未通过）
 
 ### 固定输入与集成范围

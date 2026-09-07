@@ -1,4 +1,4 @@
-import { expect, _electron as electron, type Page } from '@playwright/test'
+import { expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import { mkdtempSync } from 'node:fs'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
@@ -17,6 +17,64 @@ const baseEnv = {
   ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
   // Linux CI: avoid dbus/session noise
   ELECTRON_NO_ATTACH_CONSOLE: '1',
+}
+
+type PiDesktopWindow = Window & {
+  piDesktop: {
+    invoke(channel: string, request?: unknown): Promise<unknown>
+  }
+}
+
+/**
+ * Exercises the production trust boundary: only the Main-process native directory
+ * picker registers a workspace before the Renderer asks to open it.
+ */
+export async function openTrustedWorkspace(
+  app: ElectronApplication,
+  page: Page,
+  workspace: string,
+): Promise<void> {
+  await app.evaluate(({ dialog }, selectedWorkspace) => {
+    const patchKey = Symbol.for('xiaogui.e2e.openDirectory.originalShowOpenDialog')
+    const state = globalThis as Record<PropertyKey, unknown>
+    if (state[patchKey]) throw new Error('native directory picker already patched')
+    state[patchKey] = dialog.showOpenDialog
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedWorkspace] })
+  }, workspace)
+
+  try {
+    const selection = await page.evaluate(
+      async () => (window as PiDesktopWindow).piDesktop.invoke('ipc:dialog:openDirectory') as Promise<{ path: string | null }>,
+    )
+    if (!selection.path) throw new Error('native directory picker did not return a workspace')
+    await page.evaluate(
+      async (workspacePath) =>
+        (window as PiDesktopWindow).piDesktop.invoke('ipc:workspace.open', {
+          path: workspacePath,
+          awaitWorker: false,
+        }),
+      selection.path,
+    )
+  } finally {
+    await app.evaluate(({ dialog }) => {
+      const patchKey = Symbol.for('xiaogui.e2e.openDirectory.originalShowOpenDialog')
+      const state = globalThis as Record<PropertyKey, unknown>
+      const original = state[patchKey]
+      if (typeof original !== 'function') throw new Error('native directory picker patch missing original')
+      dialog.showOpenDialog = original as typeof dialog.showOpenDialog
+      delete state[patchKey]
+    })
+  }
+}
+
+export async function refreshProjectSidebar(page: Page): Promise<void> {
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new CustomEvent('pi-desktop:settings-changed', {
+        detail: { key: 'recentProjects' },
+      }),
+    ),
+  )
 }
 
 export async function launchApp(extraEnv: Record<string, string> = {}, extraArgs: string[] = []) {

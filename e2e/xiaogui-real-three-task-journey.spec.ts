@@ -17,6 +17,8 @@ import { DatabaseSync } from 'node:sqlite'
 
 import type { HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
 
+import { openTrustedWorkspace, refreshProjectSidebar } from './helpers'
+
 type PiDesktopWindow = Window & {
   piDesktop: { invoke(channel: string, request?: unknown): Promise<unknown> }
 }
@@ -629,22 +631,21 @@ test.describe('真实三角色 CODING Electron 旅程', () => {
       await page.waitForLoadState('domcontentloaded', { timeout: 45_000 })
       await page.setViewportSize({ width: 1440, height: 1100 })
 
-      await invoke(page, 'ipc:workspace.open', { path: workspace, awaitWorker: false })
+      await openTrustedWorkspace(app, page, workspace)
       await invoke(page, 'ipc:xiaogui.scope.set', { kind: 'session', key: session.file, mode: 'CODING' })
-      await invoke(page, 'ipc:settings.set', { key: 'currentProject', value: workspace })
-      await invoke(page, 'ipc:settings.set', { key: 'recentProjects', value: [workspace] })
-      await page.evaluate(() =>
-        window.dispatchEvent(
-          new CustomEvent('pi-desktop:settings-changed', {
-            detail: { key: 'recentProjects' },
-          }),
-        ),
-      )
       const listed = await invoke<{
         sessions: Array<{ sessionFile: string; canonicalScope?: HubAddressV1 }>
       }>(page, 'ipc:session.list', { workspaceId: workspace, refresh: true })
       const canonicalScope = listed.sessions.find((candidate) => candidate.sessionFile === session.file)?.canonicalScope
       if (!canonicalScope) throw new Error('missing canonical scope')
+      const prepared = await invoke<{ sessionId: string | null; sessionFile: string }>(page, 'ipc:session.prepare', {
+        workspaceId: workspace,
+        sessionFile: session.file,
+        bind: false,
+      })
+      expect(prepared.sessionId).toBeTruthy()
+      expect(prepared.sessionFile).toBe(session.file)
+      await refreshProjectSidebar(page)
       const address: HubAddressV1 = {
         projectId: canonicalScope.projectId,
         sessionKey: canonicalScope.sessionKey,
