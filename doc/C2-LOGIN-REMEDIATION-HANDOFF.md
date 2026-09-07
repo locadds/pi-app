@@ -2,6 +2,8 @@
 
 ## 追加：Pi BOM 发现兼容候选（2026-09-07）
 
+独立复验已完成：**APPROVE，仅限名称+发现接缝**。已审产品 `14f3616533b34d7fb7d42ddabf6ad80d099e65e7`，Standards 0、Spec 0；验收协调任务独立SDK脚本及2文件3项测试通过。后续统一包目录 `D:/CodexTemp/C2-LAN-UPDATE-14f36165`；启动仍保留原desktop-b数据、安装文件及配对，先查询实际Worker资源集合，不运行模型。以下候选描述保留为历史。
+
 本次接续名称提交 `8dc9f81947a906d22e00963d4ff9150b27d65534`，以原已审登录产品 `2aa7d453d25dbd775aa44c6974c4a7443d0351d4` 为整体产品审查基线。新增纯读取helper `src/worker/skill-bom-compat.ts`，通过现有worker-runtime的公开skillsOverride接入，最后仍调用原applySkillsOverride。
 
 只读取Pi原生诊断已访问且报description is required的首BOM文件；切除一个首BOM后由SDK公开parseFrontmatter解析，不伪造description。原始文件路径、baseDir、disableModelInvocation及字节保持；不扫描新目录，不恢复缺描述文件，不覆盖已有同名Skill。DefaultResourceLoader随后按原filePath映射原metadata；公开createSyntheticSourceInfo只作保守fallback，实际C2默认安装目录的测试中不残留该fallback。

@@ -2,7 +2,9 @@
 
 ## C2 BOM 原生资源发现接缝（2026-09-07）
 
-状态：**名称+Pi发现增量候选 / 待独立只读复验 / 未更新乙机包**。
+状态：**名称+Pi发现增量独立代码复验 APPROVE / 待乙机实际Worker发现确认**。
+
+- 验收协调任务确认固定产品 `14f3616533b34d7fb7d42ddabf6ad80d099e65e7`，Standards 0、Spec 0，独立实际SDK发现脚本与2文件3项测试通过，远端一致/clean。此登记仅文档，准备统一新包但未替用户启动或配对。
 
 - 名称修复固定 `8dc9f81947a906d22e00963d4ff9150b27d65534`；本次接续该提交，保留原登录候选。
 - 锁定Pi 0.84.1公开skillsOverride、parseFrontmatter、createSyntheticSourceInfo可复用；在既有Worker hook中只恢复native diagnostics已访问且description is required的首BOM文件。仅内存切掉一个首BOM，SDK解析后确有非空字符串description才补描述符，保持filePath/baseDir/disableModelInvocation；不覆盖已有同名，不扫描新目录。随后原applySkillsOverride保存基础快照并按路径过滤禁用项。
