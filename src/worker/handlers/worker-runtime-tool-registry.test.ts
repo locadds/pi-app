@@ -166,17 +166,22 @@ describe('worker-runtime session tool registry whitelist', () => {
 
     expect(captured.additionalSkillPaths).toEqual(['D:\\app\\resources\\pi-skills'])
 
-    // 注册表白名单 = 本模式全部候选工具（含非默认能力的 intake/materialize）。
+    // 注册表白名单 = 本模式全部候选工具。
     expect(captured.tools).toEqual([...universe])
     expect(captured.tools).toContain('xiaogui_work_docx_template_intake')
     expect(captured.tools).toContain('xiaogui_work_docx_template_materialize')
 
-    // 创建后初始激活集按首轮策略（空输入 → 默认能力）收窄。
+    // 空输入也提供所有 WORK 文档默认能力，协作仍非默认。
     expect(activeCalls.length).toBeGreaterThan(0)
     expect(activeCalls.at(-1)).toEqual([
       'read',
       'xiaogui_read_pdf',
+      'xiaogui_work_docx',
+      'xiaogui_work_docx_advanced_generation',
+      'xiaogui_work_docx_template_intake',
+      'xiaogui_work_docx_template_materialize',
       'xiaogui_work_read_materials',
+      'xiaogui_work_report_docx',
     ])
 
     // override 链确实注册了 intake/materialize 工具。

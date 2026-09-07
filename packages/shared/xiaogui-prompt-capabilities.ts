@@ -19,7 +19,7 @@ import {
 } from './xiaogui-work-docx-template-intake'
 
 export const XIAOGUI_CAPABILITY_REGISTRY_ID_V1 = 'xiaogui.capability-registry.v1' as const
-export const XIAOGUI_CAPABILITY_REGISTRY_VERSION_V1 = '1.1.0' as const
+export const XIAOGUI_CAPABILITY_REGISTRY_VERSION_V1 = '1.2.0' as const
 
 export const XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1 = {
   'system-selector-no-path': {
@@ -33,6 +33,10 @@ export const XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1 = {
   'save-as-new-no-overwrite': {
     id: 'save-as-new-no-overwrite',
     content: '生成或导出的成果必须另存为不存在的新文件，不得覆盖或修改来源文件、已有文件或原模板；不得声称覆盖或修改了已有文件。',
+  },
+  'explicit-document-approval': {
+    id: 'explicit-document-approval',
+    content: '工具可见只表示允许选择能力，不代表用户已经授权具体操作。普通会话延续（例如单独“继续”）不算正式复核、生成或保存批准；必须等待用户明确确认当前预览/操作，或使用工具要求的确认按钮。',
   },
 } as const
 
@@ -203,6 +207,7 @@ const WORK_REPORT_DOCX_TOOL = toolDefinition({
     '把当前对话中已经整理好的纯文本草稿生成标准 Word 预览，并在用户下一条消息确认后另存为全新 DOCX。WORK 中用户指定自有模板时不要调用；DESIGN 中仅在用户明确要求导出标准 Word 成果时调用。',
   promptSnippet: '自然语言提交报告草稿、预览、跨轮确认另存、取消或打开',
   sharedRuleIds: [
+    'explicit-document-approval',
     'system-selector-no-path',
     'no-internal-runtime-details',
     'save-as-new-no-overwrite',
@@ -230,6 +235,7 @@ const WORK_DOCX_TOOL = toolDefinition({
     '在日常工作会话中选择已经标记字段的 Word 模板，从当前对话整理字段，经用户单独确认后生成新的 Word 副本。普通成品文档会提示先整理成模板。',
   promptSnippet: '用自然语言选择模板、整理字段、准备、确认、取消或打开 Word；生成前必须等待用户下一条确认消息',
   sharedRuleIds: [
+    'explicit-document-approval',
     'system-selector-no-path',
     'no-internal-runtime-details',
     'save-as-new-no-overwrite',
@@ -286,7 +292,7 @@ const TEMPLATE_INTAKE_TOOL = toolDefinition({
   description:
     '在日常工作会话中把普通成品文档安全解析为模板整理报告（只读状态），并由用户复核确认；不会修改原文档或直接生成正式模板。',
   promptSnippet: '用自然语言开始、调整、复核、继续、删除或取消普通成品文档的模板整理',
-  sharedRuleIds: ['system-selector-no-path', 'no-internal-runtime-details'],
+  sharedRuleIds: ['system-selector-no-path', 'no-internal-runtime-details', 'explicit-document-approval'],
   usage: {
     when: [
       '只有用户明确提出“整理成模板”或明确同意进入模板整理流程时才能调用 START。',
@@ -319,6 +325,7 @@ const TEMPLATE_MATERIALIZE_TOOL = toolDefinition({
   description: '把已人工确认的模板整理报告生成小规内置预览，并在用户点击确认后保存进本机模板库。',
   promptSnippet: '从已确认的模板整理报告生成预览、保存模板库、另存一份、恢复、取消或打开正式模板',
   sharedRuleIds: [
+    'explicit-document-approval',
     'system-selector-no-path',
     'no-internal-runtime-details',
     'save-as-new-no-overwrite',
@@ -330,7 +337,7 @@ const TEMPLATE_MATERIALIZE_TOOL = toolDefinition({
   protocol: {
     sequence: [
       'PREPARE 会打开小规内置整份预览；只有用户点击“生成正式模板”后，Worker 才携带私有确认令牌继续保存，模型不得自行构造该令牌。',
-      '聊天确认只保留为后备路径；如果用户在后续新消息明确表示已经看过预览并确认生成，仍可调用 CONFIRM，并可同时带模板名称、用途和标签。如确认继续，请单独回复“确认”。',
+      '聊天中表示确认不能代替预览按钮授权；尚未点击时引导用户在预览中点击“生成正式模板”，不得直接调用 CONFIRM。可按用户提供的信息补充模板名称、用途和标签。',
       '用户明确要求另存一份本机模板时才调用 EXPORT；模板会先存在本机模板库。',
       '用户取消保存位置后不要自动重试；等待用户下一条消息。',
     ],
@@ -344,6 +351,7 @@ const ADVANCED_GENERATION_TOOL = toolDefinition({
   description: '从包含小规重复块或条件块的正式模板生成只读预览，并在下一轮确认后另存全新成品文档。',
   promptSnippet: '自然语言选择正式模板、补齐普通字段和结构槽位、预览、确认另存、恢复或取消成品文档',
   sharedRuleIds: [
+    'explicit-document-approval',
     'system-selector-no-path',
     'no-internal-runtime-details',
     'save-as-new-no-overwrite',
@@ -417,7 +425,7 @@ export const WORK_FILE_ORGANIZE_CAPABILITY_V1 = {
 
 export const WORK_REPORT_DOCX_CAPABILITY_V1 = {
   id: 'work.report-docx',
-  version: '1.1.0',
+  version: '1.2.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['work.report-docx'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['work.report-docx'].tools,
   requiresWorkspace: false,
@@ -431,7 +439,7 @@ export const WORK_REPORT_DOCX_CAPABILITY_V1 = {
 
 export const WORK_TEMPLATE_INTAKE_CAPABILITY_V1 = {
   id: 'work.template-intake',
-  version: '1.1.0',
+  version: '1.2.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['work.template-intake'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['work.template-intake'].tools,
   requiresWorkspace: false,
@@ -448,7 +456,7 @@ export const WORK_TEMPLATE_INTAKE_CAPABILITY_V1 = {
 
 export const WORK_TEMPLATE_GENERATION_CAPABILITY_V1 = {
   id: 'work.template-generation',
-  version: '1.1.0',
+  version: '1.2.0',
   modes: XIAOGUI_CAPABILITY_MATRIX_V1['work.template-generation'].modes,
   tools: XIAOGUI_CAPABILITY_MATRIX_V1['work.template-generation'].tools,
   requiresWorkspace: false,
@@ -556,7 +564,7 @@ function requestedOrAutoActivatedCapabilityIds(
 
 export const XIAOGUI_TURN_CAPABILITY_SELECTOR_ID_V1 =
   'xiaogui.turn-capability-selector.v1' as const
-export const XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1 = '1.1.0' as const
+export const XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1 = '1.2.0' as const
 
 export type XiaoguiTurnCapabilitySelectionDecisionV1 =
   | 'SELECTED'
@@ -759,8 +767,9 @@ function localIntentCandidates(userInput: string): {
 
 /**
  * Deterministic, offline selector for one user turn. `ALLOWED` is never a
- * default: non-default capabilities require structured Context or an
- * unambiguous local intent rule. Cross-mode matches are reported but not
+ * default: WORK documents are mode defaults and never depend on phrasing.
+ * Non-default capabilities retain structured Context/local intent selection.
+ * Cross-mode matches are reported but not
  * activated, so the separate recommendation UI can ask the user first.
  */
 export function selectXiaoguiTurnCapabilitiesV1(

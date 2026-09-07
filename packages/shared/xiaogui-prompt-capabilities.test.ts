@@ -10,6 +10,7 @@ import {
   selectXiaoguiTurnCapabilitiesV1,
   workerBuiltinToolNamesForPromptContextV1,
   workerBuiltinToolNamesForModeV1,
+  workerPromptContextToolNamesForModeV1,
   xiaoguiPromptStickyCandidateForToolActionV1,
   xiaoguiPromptStickyCapabilityFromToolResultV1,
   XIAOGUI_CAPABILITY_REGISTRY_ID_V1,
@@ -19,6 +20,9 @@ import {
   XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1,
   XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
 } from './xiaogui-prompt-capabilities'
+import { XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1 } from './xiaogui-prompt-matrix'
+
+const workDefaults = [...XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1.WORK].sort()
 
 const reportContext = (): XiaoguiPromptContextV1 => ({
   schemaVersion: 1,
@@ -31,9 +35,36 @@ const reportContext = (): XiaoguiPromptContextV1 => ({
 })
 
 describe('Xiaogui Prompt Capability Registry V1', () => {
+  it.each([
+    '把刚才的内容输出为 Word', '做成可复用的范本', '请把这份 PDF 做一份只读整理报告',
+    '继续', '先别生成，我还要修改', '你好',
+  ])('exposes authorized WORK document tools independently of wording: %s', (input) => {
+    const selection = selectXiaoguiTurnCapabilitiesV1({ mode: 'WORK', enabledCapabilities: [] }, input)
+    expect(selection.capabilityIds).toEqual(workDefaults)
+    const tools = activeToolNamesForPromptContextV1({
+      mode: 'WORK', phase: 'EXECUTE', workspaceAvailable: false,
+      enabledCapabilities: selection.capabilityIds,
+    }, workerPromptContextToolNamesForModeV1('WORK'))
+    expect(tools).toEqual([
+      'read', 'xiaogui_read_pdf', 'xiaogui_work_docx', 'xiaogui_work_docx_advanced_generation',
+      'xiaogui_work_docx_template_intake', 'xiaogui_work_docx_template_materialize',
+      'xiaogui_work_read_materials', 'xiaogui_work_report_docx',
+    ])
+    expect(selection.continuedCapabilityIds).toEqual([])
+  })
+
+  it.each(['ASK', 'PLAN'] as const)('withholds persistent document tools in %s even on explicit request', (phase) => {
+    const selection = selectXiaoguiTurnCapabilitiesV1({ mode: 'WORK', enabledCapabilities: [] }, '把刚才的内容输出为 Word')
+    expect(activeToolNamesForPromptContextV1({
+      mode: 'WORK', phase, workspaceAvailable: true, enabledCapabilities: selection.capabilityIds,
+    }, workerPromptContextToolNamesForModeV1('WORK'))).toEqual([
+      'read', 'xiaogui_read_pdf', 'xiaogui_work_read_materials',
+    ])
+  })
+
   it('is versioned and covers every Capability exactly once', () => {
     expect(XIAOGUI_CAPABILITY_REGISTRY_ID_V1).toBe('xiaogui.capability-registry.v1')
-    expect(XIAOGUI_CAPABILITY_REGISTRY_VERSION_V1).toBe('1.1.0')
+    expect(XIAOGUI_CAPABILITY_REGISTRY_VERSION_V1).toBe('1.2.0')
     expect(Object.keys(XIAOGUI_CAPABILITY_REGISTRY_V1).sort())
       .toEqual([...XIAOGUI_CAPABILITY_IDS_V1].sort())
     expect(Object.entries(XIAOGUI_CAPABILITY_REGISTRY_V1).every(
@@ -45,7 +76,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       'work.template-intake',
       'work.template-generation',
     ] as const) {
-      expect(XIAOGUI_CAPABILITY_REGISTRY_V1[id].version).toBe('1.1.0')
+      expect(XIAOGUI_CAPABILITY_REGISTRY_V1[id].version).toBe(id === 'work.file-organize' ? '1.1.0' : '1.2.0')
       expect(XIAOGUI_CAPABILITY_REGISTRY_V1[id].promptLayer.version).toBe('1.1.0')
     }
   })
@@ -57,8 +88,10 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       'system-selector-no-path',
       'no-internal-runtime-details',
       'save-as-new-no-overwrite',
+      'explicit-document-approval',
     ])
     expect(report.sharedRuleIds).toEqual([
+      'explicit-document-approval',
       'system-selector-no-path',
       'no-internal-runtime-details',
       'save-as-new-no-overwrite',
@@ -109,7 +142,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
     ).map((capability) => capability.id)).toEqual(['work.report-docx'])
   })
 
-  it('never auto-activates ALLOWED capabilities merely because their tools exist', () => {
+  it('activates default WORK documents only when their tools and phase permit them', () => {
     const base = {
       ...reportContext(),
       enabledCapabilities: ['work.file-organize' as const],
@@ -123,7 +156,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       'read',
       'xiaogui_work_read_materials',
       'xiaogui_work_report_docx',
-    ]).map((entry) => entry.id)).toEqual(['work.file-organize'])
+    ]).map((entry) => entry.id)).toEqual(['work.file-organize', 'work.report-docx'])
     expect(resolveEffectiveXiaoguiCapabilitiesV1({
       ...base,
       enabledCapabilities: ['work.file-organize', 'work.report-docx'],
@@ -173,7 +206,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       .not.toContain('xiaogui_work_docx_template_intake')
   })
 
-  it('uses explicit WORK Capability facts for Worker built-in tool policy', () => {
+  it('uses WORK defaults for Worker policy while keeping PLAN read-only', () => {
     const work = {
       mode: 'WORK' as const,
       phase: 'EXECUTE' as const,
@@ -181,7 +214,11 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       enabledCapabilities: ['work.file-organize' as const],
     }
     expect(workerBuiltinToolNamesForPromptContextV1(work))
-      .toEqual(['xiaogui_read_pdf', 'xiaogui_work_read_materials'])
+      .toEqual([
+        'xiaogui_read_pdf', 'xiaogui_work_docx', 'xiaogui_work_docx_advanced_generation',
+        'xiaogui_work_docx_template_intake', 'xiaogui_work_docx_template_materialize',
+        'xiaogui_work_read_materials', 'xiaogui_work_report_docx',
+      ])
     expect(workerBuiltinToolNamesForPromptContextV1({ ...work, phase: 'PLAN' }))
       .toEqual(['xiaogui_read_pdf', 'xiaogui_work_read_materials'])
     expect(workerBuiltinToolNamesForPromptContextV1({
@@ -209,12 +246,12 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
   })
 
   it.each([
-    ['把这份普通成品文档整理成模板', ['work.file-organize', 'work.template-intake']],
-    ['用我自己的模板生成报告', ['work.file-organize', 'work.template-generation']],
-    ['把刚才写好的内容生成 Word', ['work.file-organize', 'work.report-docx']],
-    ['写一份报告内容', ['work.file-organize']],
-    ['请拆分任务并交给多个 Agent 协作', ['collaboration.execution', 'work.file-organize']],
-  ])('selects an exact WORK capability for %s', (input, expected) => {
+    ['把这份普通成品文档整理成模板', workDefaults],
+    ['用我自己的模板生成报告', workDefaults],
+    ['把刚才写好的内容生成 Word', workDefaults],
+    ['写一份报告内容', workDefaults],
+    ['请拆分任务并交给多个 Agent 协作', ['collaboration.execution', ...workDefaults]],
+  ])('keeps WORK defaults and adds collaboration only when requested: %s', (input, expected) => {
     expect(selectXiaoguiTurnCapabilitiesV1({
       mode: 'WORK',
       enabledCapabilities: [],
@@ -233,27 +270,27 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
     })
   })
 
-  it('publishes selector 1.1.0 and preserves long .docx quick-action routing', () => {
+  it('publishes selector 1.2.0 and preserves long .docx quick-action intent metadata', () => {
     const fileDisplayName = '上海市浦东新区综合交通专项规划阶段成果汇编最终送审版说明文件.docx'
     const input = `请使用普通文档模板整理能力，把普通成品文档整理成可复用模板。我刚选择的文件是“${fileDisplayName}”。请立即开始只读分析并生成模板整理报告，不要再次让我选择文件；原文档不得修改。`
-    expect(XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1).toBe('1.1.0')
+    expect(XIAOGUI_TURN_CAPABILITY_SELECTOR_VERSION_V1).toBe('1.2.0')
     expect(selectXiaoguiTurnCapabilitiesV1({
       mode: 'WORK',
       enabledCapabilities: [],
     }, input)).toMatchObject({
-      selectorVersion: '1.1.0',
+      selectorVersion: '1.2.0',
       decision: 'SELECTED',
       inferredCapabilityIds: ['work.template-intake'],
     })
   })
 
-  it('abandons mixed or cross-mode intent instead of pre-activating a high-risk capability', () => {
+  it('keeps WORK defaults for mixed input while withholding cross-mode capabilities', () => {
     expect(selectXiaoguiTurnCapabilitiesV1({
       mode: 'WORK',
       enabledCapabilities: [],
     }, '做选址分析并写成 Word 报告')).toMatchObject({
       decision: 'AMBIGUOUS',
-      capabilityIds: ['work.file-organize'],
+      capabilityIds: workDefaults,
       inferredCapabilityIds: [],
       reasonCodes: expect.arrayContaining(['MIXED_TASK_ABSTAINED']),
     })
@@ -261,7 +298,7 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       mode: 'WORK',
       enabledCapabilities: [],
     }, '帮我修这个 TypeScript bug 并跑测试')).toMatchObject({
-      capabilityIds: ['work.file-organize'],
+      capabilityIds: workDefaults,
       inferredCapabilityIds: [],
       reasonCodes: expect.arrayContaining(['MODE_BLOCKED']),
     })
@@ -274,14 +311,14 @@ describe('Xiaogui Prompt Capability Registry V1', () => {
       oneTurnStickyCapabilityIds: sticky,
     })).toMatchObject({
       continuedCapabilityIds: sticky,
-      capabilityIds: ['work.file-organize', 'work.template-generation'],
+      capabilityIds: workDefaults,
     })
     expect(selectXiaoguiTurnCapabilitiesV1(context, '把这份普通成品文档整理成模板', {
       oneTurnStickyCapabilityIds: sticky,
     })).toMatchObject({
       continuedCapabilityIds: [],
       inferredCapabilityIds: ['work.template-intake'],
-      capabilityIds: ['work.file-organize', 'work.template-intake'],
+      capabilityIds: workDefaults,
     })
   })
 

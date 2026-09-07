@@ -5,6 +5,8 @@ import type { OfficeSnapshotV1 } from '@shared/xiaogui-office-surface'
 
 const READY_TYPE = 'XIAOGUI_OFFICE_GATEWAY_READY_V1'
 const CLOSE_TYPE = 'XIAOGUI_OFFICE_GATEWAY_CLOSE_V1'
+// 一个 Electron 主进程可以创建多个 supervisor；持久化文件仍只能有一个子进程所有者。
+const activePersistencePaths = new Set<string>()
 
 export interface OfficeGatewaySessionV1 {
   readonly origin: string
@@ -27,7 +29,6 @@ export interface OfficeGatewaySupervisorOptionsV1 {
 
 export class OfficeGatewaySupervisorV1 {
   private readonly sessions = new Set<OfficeGatewaySessionV1>()
-  private readonly activePersistenceKeys = new Set<string>()
 
   async start(options: OfficeGatewaySupervisorOptionsV1 = {}): Promise<OfficeGatewaySessionV1> {
     const appRoot = app.getAppPath()
@@ -41,14 +42,15 @@ export class OfficeGatewaySupervisorV1 {
     if (persistenceKey && !/^[a-f0-9]{64}$/.test(persistenceKey)) {
       throw new Error('OFFICE_WORKTREE_PERSISTENCE_KEY_INVALID')
     }
-    if (persistenceKey && this.activePersistenceKeys.has(persistenceKey)) {
-      throw new Error('OFFICE_WORKTREE_ALREADY_OPEN')
-    }
-    if (persistenceKey) this.activePersistenceKeys.add(persistenceKey)
     const persistenceRoot = options.persistenceRoot
       ?? process.env.XIAOGUI_OFFICE_WORKTREE_ROOT
       ?? join(app.getPath('userData'), 'xiaogui', 'office-surface', 'v1', 'worktrees')
     const snapshotPath = persistenceKey ? join(persistenceRoot, `${persistenceKey}.json`) : undefined
+    const resolvedPath = snapshotPath ? resolve(snapshotPath) : undefined
+    const ownerPath = process.platform === 'win32' ? resolvedPath?.toLowerCase() : resolvedPath
+    if (ownerPath && activePersistencePaths.has(ownerPath)) throw new Error('OFFICE_WORKTREE_ALREADY_OPEN')
+    if (ownerPath) activePersistencePaths.add(ownerPath)
+    const releaseOwner = () => { if (ownerPath) activePersistencePaths.delete(ownerPath) }
     let child: UtilityProcess
     try {
       child = utilityProcess.fork(entryPath, [], {
@@ -62,17 +64,13 @@ export class OfficeGatewaySupervisorV1 {
         },
       })
     } catch (error) {
-      if (persistenceKey) this.activePersistenceKeys.delete(persistenceKey)
+      releaseOwner()
       throw error
     }
+    // close/kill 的调用不代表进程已退出；旧进程退出前不能开放同一文件。
+    child.once('exit', releaseOwner)
 
-    let ready: ReadyMessageV1
-    try {
-      ready = await waitForReady(child, options.startupTimeoutMs ?? 15_000)
-    } catch (error) {
-      if (persistenceKey) this.activePersistenceKeys.delete(persistenceKey)
-      throw error
-    }
+    const ready = await waitForReady(child, options.startupTimeoutMs ?? 15_000)
     let headSha256 = ready.headSha256
     try {
       const current = await readGatewaySnapshot(ready.origin, cookieName, sessionToken)
@@ -88,7 +86,6 @@ export class OfficeGatewaySupervisorV1 {
         headSha256 = current.headSha256
       }
     } catch (error) {
-      if (persistenceKey) this.activePersistenceKeys.delete(persistenceKey)
       child.kill()
       throw error
     }
@@ -115,7 +112,6 @@ export class OfficeGatewaySupervisorV1 {
         if (closed) return
         closed = true
         this.sessions.delete(gatewaySession)
-        if (persistenceKey) this.activePersistenceKeys.delete(persistenceKey)
         await closeUtilityProcess(child)
       },
     }

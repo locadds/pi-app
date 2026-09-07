@@ -17,6 +17,53 @@ afterEach(() => {
 })
 
 describe('Office Gateway 主进程代理客户端', () => {
+  it('失败后保留预期版本，重试仍提交原编辑内容', async () => {
+    let fail = true
+    const writes: OfficeSurfaceViewerMessageV1[] = []
+    const bridge = createBridge((request, respond) => {
+      if (request.type === 'VIEWER_GATEWAY_READ_REQUEST') {
+        respond({ type: 'PARENT_GATEWAY_RESPONSE', requestId: request.requestId, ok: true, headSha256: HEAD_ONE, snapshot: {} })
+      } else if (request.type === 'VIEWER_GATEWAY_WRITE_REQUEST') {
+        writes.push(request)
+        if (fail) respond({ type: 'PARENT_GATEWAY_RESPONSE', requestId: request.requestId, ok: false, errorCode: 'OFFICE_GATEWAY_INTERNAL', message: '保存失败' })
+        else respond({ type: 'PARENT_GATEWAY_RESPONSE', requestId: request.requestId, ok: true, headSha256: HEAD_TWO })
+      }
+    })
+    const client = new OfficeGatewayClientV1(bridge)
+    await client.load()
+    const edits = { title: '保留的编辑' }
+    await expect(client.save(edits)).rejects.toThrow('保存失败')
+    expect(client.getHeadSha256()).toBe(HEAD_ONE)
+    fail = false
+    await expect(client.save(edits)).resolves.toBe(HEAD_TWO)
+    expect(writes).toHaveLength(2)
+    for (const request of writes) expect(request).toMatchObject({ expectedHeadSha256: HEAD_ONE, snapshot: edits })
+  })
+
+  it('自动保存和手动保存排队，后一请求使用前一成功版本并冻结提交快照', async () => {
+    const writes: Extract<OfficeSurfaceViewerMessageV1, { type: 'VIEWER_GATEWAY_WRITE_REQUEST' }>[] = []
+    let finishFirst!: () => void
+    const bridge = createBridge((request, respond) => {
+      if (request.type === 'VIEWER_GATEWAY_READ_REQUEST') {
+        respond({ type: 'PARENT_GATEWAY_RESPONSE', requestId: request.requestId, ok: true, headSha256: HEAD_ONE, snapshot: {} })
+      } else if (request.type === 'VIEWER_GATEWAY_WRITE_REQUEST') {
+        writes.push(request)
+        if (writes.length === 1) finishFirst = () => respond({ type: 'PARENT_GATEWAY_RESPONSE', requestId: request.requestId, ok: true, headSha256: HEAD_TWO })
+        else respond({ type: 'PARENT_GATEWAY_RESPONSE', requestId: request.requestId, ok: true, headSha256: `sha256:${'3'.repeat(64)}` })
+      }
+    })
+    const client = new OfficeGatewayClientV1(bridge)
+    await client.load()
+    const first = client.save({ title: '第一版' })
+    const draft = { title: '第二版' }
+    const second = client.save(draft)
+    draft.title = '保存之后的编辑'
+    await vi.waitFor(() => expect(writes).toHaveLength(1))
+    finishFirst()
+    await Promise.all([first, second])
+    expect(writes[1]).toMatchObject({ expectedHeadSha256: HEAD_TWO, snapshot: { title: '第二版' } })
+  })
+
   it('通过 MessagePort 代理读写快照，不在 Viewer 发起 HTTP 请求', async () => {
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)

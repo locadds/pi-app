@@ -5,7 +5,7 @@ import type {
 } from './xiaogui-prompt-contract'
 
 export const XIAOGUI_PROMPT_MATRIX_ID_V1 = 'xiaogui.prompt-matrix.v1' as const
-export const XIAOGUI_PROMPT_MATRIX_VERSION_V1 = '1.1.0' as const
+export const XIAOGUI_PROMPT_MATRIX_VERSION_V1 = '1.2.0' as const
 
 export type XiaoguiModeCapabilityPolicyV1 =
   | 'DEFAULT'
@@ -91,9 +91,9 @@ export const XIAOGUI_CAPABILITY_MATRIX_V1 = {
     ],
   },
   'work.report-docx': {
-    version: '1.0.0',
+    version: '1.2.0',
     modes: {
-      WORK: 'ALLOWED',
+      WORK: 'DEFAULT',
       DESIGN: 'EXPLICIT_EXPORT_ONLY',
       CODING: 'HIDDEN',
     },
@@ -102,9 +102,9 @@ export const XIAOGUI_CAPABILITY_MATRIX_V1 = {
     ],
   },
   'work.template-intake': {
-    version: '1.0.0',
+    version: '1.2.0',
     modes: {
-      WORK: 'ALLOWED',
+      WORK: 'DEFAULT',
       DESIGN: 'HIDDEN',
       CODING: 'HIDDEN',
     },
@@ -114,9 +114,9 @@ export const XIAOGUI_CAPABILITY_MATRIX_V1 = {
     ],
   },
   'work.template-generation': {
-    version: '1.0.0',
+    version: '1.2.0',
     modes: {
-      WORK: 'ALLOWED',
+      WORK: 'DEFAULT',
       DESIGN: 'HIDDEN',
       CODING: 'HIDDEN',
     },
@@ -172,8 +172,13 @@ export function workerBuiltinToolNamesFromPromptMatrixV1(): readonly string[] {
   )].sort()
 }
 
+function defaultCapabilityIds(mode: XiaoguiMode): readonly XiaoguiCapabilityId[] {
+  return (Object.keys(XIAOGUI_CAPABILITY_MATRIX_V1) as XiaoguiCapabilityId[])
+    .filter((id) => XIAOGUI_CAPABILITY_MATRIX_V1[id].modes[mode] === 'DEFAULT')
+}
+
 export const XIAOGUI_DEFAULT_CAPABILITIES_BY_MODE_V1 = {
-  WORK: ['work.file-organize'],
-  DESIGN: [],
-  CODING: ['coding.workspace'],
+  WORK: defaultCapabilityIds('WORK'),
+  DESIGN: defaultCapabilityIds('DESIGN'),
+  CODING: defaultCapabilityIds('CODING'),
 } as const satisfies Readonly<Record<XiaoguiMode, readonly XiaoguiCapabilityId[]>>

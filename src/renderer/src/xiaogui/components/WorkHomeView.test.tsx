@@ -117,7 +117,9 @@ describe('WorkHomeView', () => {
       enabledCapabilities: [],
     }, prompt)).toMatchObject({
       decision: 'SELECTED',
-      capabilityIds: ['work.file-organize', 'work.template-intake'],
+      capabilityIds: [
+        'work.file-organize', 'work.report-docx', 'work.template-generation', 'work.template-intake',
+      ],
       inferredCapabilityIds: ['work.template-intake'],
       reasonCodes: expect.arrayContaining(['LOCAL_TEMPLATE_INTAKE']),
     })

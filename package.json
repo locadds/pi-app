@@ -31,7 +31,9 @@
   },
   "scripts": {
     "sync:fonts": "node scripts/sync-geist-mono-font.mjs",
+    "predev": "npm run build:office",
     "dev": "npm run sync:fonts && electron-vite dev",
+    "predev:alert-trace": "npm run build:office",
     "dev:alert-trace": "set PI_ALERT_TRACE=1&& set PI_AUDIO_TRACE=1&& electron-vite dev",
     "build": "npm run sync:fonts && electron-vite build && npm run build:office",
     "preview": "electron-vite preview",
@@ -48,7 +50,7 @@
     "test:e2e:install": "playwright install chromium",
     "package:win": "node scripts/package-windows.mjs",
     "package:win:prebuilt": "node scripts/package-windows.mjs --prebuilt",
-    "postinstall": "node scripts/sync-geist-mono-font.mjs && electron-builder install-app-deps && electron-vite build",
+    "postinstall": "node scripts/sync-geist-mono-font.mjs && electron-builder install-app-deps && electron-vite build && npm run build:office",
     "rebuild:native": "npx @electron/rebuild -f -w better-sqlite3",
     "prepare:libreoffice": "node scripts/prepare-libreoffice-runtime.mjs",
     "build:office-viewer": "vite build --config vite.office-viewer.config.ts",
