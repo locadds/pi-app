@@ -1,5 +1,12 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜安装后最短验收（部分通过）
+
+- 固定7d源码、8951e165…最终NSIS实际安装exit0到 `E:/XiaoguiInstalledRC/7d18334`，新测试profile在 `E:/XiaoguiInternalCandidate/installed-7d18334-20260909/profile`。实际Main/Renderer来自安装根app.asar、packaged=true、版本/appId正确；未用展开目录或源树冒充安装版。详细证据索引：同测试根 `INSTALLATION-ACCEPTANCE.md`。
+- 通过范围：Main稳定确认WORK/CODING切换及H1真实UNCONFIGURED入口；安装Main调用包内Word helper转换锁定DOC，1表/2行/4格保持、源SHA不变；默认UNIVER_PREFERRED真实复核入口、canvas键盘编辑、保存/关闭/重开，标记0→1→1且截图可见，源DOCX SHA不变，无正式模板/确认令牌伪造。Word测试实例按原helper的owner三项检查清理，安装测试Main正常关闭。
+- 未闭合：安装后19860文件匹配/0内容差异，但LO Python的4个ARM64启动器缺失（原NSIS载荷有），原因未定、未回填，全资源门PARTIAL。初次预选DeepSeek在新会话中落到默认Anthropic并403；之后实际model_change核DeepSeek再对同一输入重试，唯一START报告仍有MODEL_UNAVAILABLE、10候选未判定、canMaterialize=false。Office保存重开通过不覆盖分析降级；初403和乐观页签检测的旧记录保留，不算一次成功。
+- 真实70 Hub配置/启动、H1/C3两机联合门仍未运行；不读秘密/旧冻结profile、不起Hub、不合主线或公开发布。没有重新构建、改包或改生产源码；后续文档HEAD不等于包sourceSHA。
+
 ## 2026-09-09｜唯一 NSIS 组合候选已生成（未安装验收）
 
 - 包 sourceSHA `7d18334860a86653e1c5aef480c7608cea3b1919`，包含 f4 组合及本轮 H1 P1 修复。增量独立 Standards APPROVE0 / Spec APPROVE0，原提前开始和中间终态过滤问题均关闭；35项受影响测试/Node类型/四文件lint通过。代码已推送正确remote `xiaogui`（locadds/pi-app），首次连接重置后重试成功；后续本记录为纯文档HEAD，不等同包sourceSHA。
