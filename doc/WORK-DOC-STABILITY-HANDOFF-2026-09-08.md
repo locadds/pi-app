@@ -63,6 +63,13 @@ soffice.com -env:UserInstallation=file:///E:/CodexTemp/xiaogui-doc-stability-202
 
 命令退出 0；输出 `word/document.xml` 中 `<w:tbl>` 计数为 0，仍含“形成资料目录”。对照 DOCX SHA-256 `d2e1464fe2c71e6eb6a4dc4dcbfec50fd53190028795be2012d2426e0ce3e378`。表格结构在既定 LO 转换环节已经丢失，不归因于本次 Prompt、模型、模板状态机或保存修改。没有擅自新增 Word COM 生产转换路径、替换运行时版本或修改 Univer；需总控明确后续转换保真处置范围。
 
+后续无模型接缝定位（不修改原样本）：
+
+- 实际程序 FileVersion/ProductVersion 均 `26.2.5.2`，CompanyName 为 The Document Foundation；输入头 `d0cf11e0a1b11ae1`，CFB 含 WordDocument、1Table 等真实 DOC 流，不是伪装扩展名。
+- 同一输入和独立 profile 改为 `--convert-to odt`，退出 0，`content.xml` 的 `<table:table>` 为 0，文字保留。这使问题收敛到读取 DOC 的阶段，而不是仅 DOCX 导出。
+- 按 [LibreOffice 官方过滤器表](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)，增加 `--infilter=MS Word 97`，另存到 `lo-explicit-filter`；退出 0，DOCX `<w:tbl>` 仍为 0。显式指定输入过滤器未解决，未将无效参数写入生产代码。
+- 当前已试自动识别→DOCX、自动识别→ODT、显式 Word 97→DOCX，均丢表格。没有证据证明简单参数修复可行；并非声称穷尽所有上游设置。下一步若试不同 LibreOffice 版本/上游修复，需要固定新供应链候选并重新验收；若用 Word COM，则引入已安装且许可可用的 Microsoft Word 产品条件，不能静默替换现有无该依赖的路径。两者均未实施，交总控决定。
+
 ## 结论与未覆盖项
 
 - 分析输出 Prompt 最小改进及此固定 DOC 的实际确认/输出/保存重开旅程有证据；不确定旧安装版二次失败的唯一原因，也不声称统计意义的模型稳定率。
