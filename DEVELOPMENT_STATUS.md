@@ -1,5 +1,16 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜唯一 NSIS 组合候选已生成（未安装验收）
+
+- 包 sourceSHA `7d18334860a86653e1c5aef480c7608cea3b1919`，包含 f4 组合及本轮 H1 P1 修复。增量独立 Standards APPROVE0 / Spec APPROVE0，原提前开始和中间终态过滤问题均关闭；35项受影响测试/Node类型/四文件lint通过。代码已推送正确remote `xiaogui`（locadds/pi-app），首次连接重置后重试成功；后续本记录为纯文档HEAD，不等同包sourceSHA。
+- 最终安装器：`E:/XiaoguiInternalCandidate/nsis-7d18334/dist-final/小规 Agent 院内候选-Setup-0.3.0-rc.2-x64.exe`，557,982,959字节，SHA256 `8951e16576b8e093785dad77684b3301ca72ce4f5371b4e722946c14e900e26e`。产品仍 `小规 Agent 院内候选` / `com.xiaogui.agent.internal` / `0.3.0-rc.2`，Electron43.0.0；唯一NSIS x64目标，不发布Portable或GitHub Release。
+- 展开目录 `E:/XiaoguiInternalCandidate/nsis-7d18334/dist/win-unpacked`；ASAR SHA256 `fb476b3f6eaabd4dcce88deedc41d828b0977ce0df9ff074d8042c4aa56c47c0`，Main SHA256 `2e184850440f40bb034d3b4c09764943be9e0a712492ab521fcf5d7b8156cf76`。Main/Preload/Renderer在E独立输出构建，198个构建文件全部与ASAR逐字节一致；本树未改Office viewer/gateway源，复用其既有构建。原运行树out和PID43176未改。
+- 资源验证：Word helper源码/包 SHA256 `d4c964f30ef022052216f3728f086fd64807d717bd9033b7f5b0e21c3f8caec3`；Word2、LibreOffice19487、Pi Skill7、Office viewer80个资源文件与本树源逐项hash一致，法律说明/SBOM也一致。包内Electron RUN_AS_NODE仅加载自身better-sqlite3执行内存SELECT通过（Node24.17.0/ABI148），未加载产品Main或模型。
+- 展开清单 `unpacked-manifest.json`：19,864文件 / 2,363,468,161字节，SHA256 `651ccdb3da23367263f90a50048746467216eef39020182c1a62f2c6b83042fc`。直接从最终安装器解出应用载荷后，同19,864文件大小和SHA全部一致；未执行安装器。7-Zip识别内嵌7z时提示归档尾部另有数据，原日志保留，提取exit0且全部文件核对通过，不声称无警告或已经安装。
+- 集中证据目录 `E:/XiaoguiInternalCandidate/nsis-7d18334`：`code-review.md`、`build.log`、`package-final.log`、`package-verification.json`、`native-probe.log`、`installer-payload-verification.json`、`payload-extract.log`、两个校验脚本和清单。正常安装脚本/身份沿原electron-builder.yml，只将输出定位E并复用已准备native依赖，不在正在运行的源树重建native。
+- 装配过程如实保留：初次临时配置yaml解析器不存在，改为已有js-yaml后完成；初包因未先运行原export-app-icon使用默认Electron图标，`dist`初始安装器不采用。运行原图标导出后用冻结builder自身resedit补齐exe图标及resources/build，8幅图像与源一致、代码段与所有非图标资源不变（`icon-completion.json`）；随后仅用原builder --prepackaged/NSIS重新封装至dist-final，未重新编译产品或改安装流程。源码图标ICO SHA256 `06b3b25faeb755a30bf90aed90b82842fd6c5d363b67be0f081a570be74f6e15`。
+- 剩余门：安装后身份/资源/最短界面旅程，及主管统一70 Hub实际配置/启动后的H1/C3联合验收；本机Word存在性/实际DOC路径仍属于部署验收。未运行安装器、未读秘密/冻结profile、未调用模型、未启动Hub/pump、未合主线或公开发布。两处失败测试临时目录清理被自动审批拦截，保留现场，不影响候选。
+
 ## 2026-09-09｜H1 开始回执 P1 最小整改
 
 - 增量复验定位5dc门的终态回归：原 saga.byAttempt 排除FAILED/SETTLED，runtime先settle再reconcile导致失败/Delivery丢报。已仅为证据读取显式includeTerminal，原resume默认仍只查活动操作。真实monitor回调→settle→coordinator的FAILED与SUCCEEDED/READY_FOR_REVIEW补证旧红新绿，恢复读取也通过；Application/verification为合成端口，未调用模型。最终受影响2文件35/35、Node类型和4文件lint通过，日志 `h1-start-terminal-focused.log` / `h1-start-terminal-typecheck.log` / `h1-start-terminal-eslint.log`。
