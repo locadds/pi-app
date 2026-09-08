@@ -8,6 +8,10 @@
 - Terra 执行：`npx vitest run src/main/__tests__/pi-prompt-catalog-effective.test.ts src/worker/xiaogui-work-docx-template-intake-tool.test.ts`：2 文件 / 19 通过；`npx vitest run src/worker/handlers/worker-handlers-turn.test.ts -t "P16 reuses a Worker while a neutral CODING EXECUTE turn gets the default workspace tools"`：1 通过 / 12 未选中。三个受影响 TS 文件 ESLint、diff-check 通过。日志分别为新 evidence 下 `work-prompt-1.2.2-focused.log`、`c01-default-tools-focused.log`。没有重复模型、DOC转换或全量测试。
 - 下一步先固定此源码/构建点并回报无模型身份核验，再只允许该 DOCX 一次必要 intake→复核→私有 Office 草稿编辑/保存/关闭重开；不物化、不建库、不再分析。当前仍是准备点，不是 Office/DOC/最终包通过。
 - H1/C3 只读接缝清单已回协调者：需在固定输入放行后恢复现有 polling/refresh、inbox IPC/Preload allowlist、人工接收/计划草稿 UI，保留 e232 显式重登录；不能整树覆盖已验 TaskHub/CODING。Hub 70c93d0 复用 H1 协议，无新桌面 C3 状态机；d76 向导完整引用待回收。用户已明确所有目标机有 Microsoft Word，后续等待 WORK 的 Word DOC 主转换固定输入，不新增无 Word 兜底或转换选择页。
+- 固定源码 `c7440dd8ed0043c9636bb33fd9da4ec438341e7a` 已推送；E 新根 build/out 的 Electron-vite Main/Preload/Renderer 构建通过，main SHA-256 `12759ffa2b4fa862375d3729b857a91b1405dd3cd453d636a52a0d15716f72ca`。沿用本树已构建且未修改的 Office 产物，不制作安装包。
+- 无模型目录身份前置通过，证据 `evidence/preflight.json`：appPath 为真正 package 根，userData/Main agentDir/实际 Worker sessionFile 均在新 root，cwd 为新 project，Office 覆盖变量未设置且实际 `UNIVER_PREFERRED`。测试控制 stdin 关闭和模型菜单点击超时曾导致两次仅本轮新 profile 重启，前两份 preflight 保留，没有对旧异常 profile 操作。
+- 新场景实际22:55主请求未达到验收：准确 title 单次返回锁定 `office-input.docx`，实际消息名称匹配；但运行时为 `anthropic/claude-opus-4-8` 而非测试选定模型，返回403，JSONL仅 user 与 assistant/error，未记录 toolCall/START，未生成新报告。已停，不自动切换或重复请求。只读发现无会话模型选择只更新 Renderer runState，没有发 model.set；缺少运行时实际选型确认，不能把菜单点击当模型绑定通过，也未据此修改生产模型逻辑。待明确恢复后须通过统一模型选择与 runtime.getState 核实，再决定是否继续唯一实际 intake；当前 Office 仍未通过。
+- d76完整引用现已核对为 `d76fe2866d4e927a5eb95baf15e9e4c567e7f430`：仅70c93d0部署包的仓外配置向导，不是新桌面协议；C3服务器内部密钥不能搬入桌面，实际Hub根址待中台启动/release回执。本轮没有执行向导、读取其私密env或启动Hub。
 
 ## 2026-09-08｜Office 联用准备：输入选择未闭环（未通过）
 
