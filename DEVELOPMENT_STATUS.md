@@ -6,6 +6,9 @@
 - 同 E profile 的生产 IPC 返回 Office `UNIVER_PREFERRED`，未使用 `XIAOGUI_OFFICE_TEST`。文件页普通 DOCX 只有系统打开，不能拿它替代 Office Surface；可编辑 Surface 来自模板草稿，该测试 profile 尚无草稿。
 - 为准备草稿，点击正常 DOCX 整理入口并尝试在本候选原生选择器选择 E 盘合成样本；UIAutomation 定位到本候选 PID 的对话框/文件名控件后设值、点击打开，但实际会话提交的文件名不等于预定合成样本。因此输入证据不闭合，不能计为合成 DOCX 或 Office 通过。
 - 已停止后续业务操作，仅检查事件元数据：该次 intake 和模型回复在检查时已经结算，不能把点击停止表述成成功取消。未在仓库提交该文档、正文、报告或原始会话。私有现场继续保存在 E profile 及 `evidence-20260908/local-app.log`，已向协调者回传精确私有索引。
+- 元数据补核：当地时间 18:40:14 `START`（参数仅 action），18:40:17 工具成功返回 DRAFT、2 个 FIXED 候选、`SCAN_COUNT_UNKNOWN`、有模型分析版本；18:40:20 回复结算。产品已完成读取和报告处理，不能从主用户消息只含文件名推定子分析未接收正文；未检查原始模型 HTTP 载荷，不推断确切上传全文范围。`canMaterializeTemplate=false`，未打开该报告复核或生成正式模板。
+- 在协调者随后收紧为仅临时替换目标 dialog 返回值的指令到达前，已收到 WORK owner 的正常草稿前置及其 WM_SETTEXT/BM_CLICK 辅助方法，另开空对话选择同 E 合成样本；实际提交名称及源 SHA-256 `4983f085dd243b81e1b61bb1774b5e23bfcd4f21a6544582da6b86df5224df55` 已核对。此第二次 DOCX 报告 10 个 UNRESOLVED / 3 警告，分析仍 PARTIAL，未拿它抵消旧 DOC 丢表格问题。
+- 第二次合成报告点击真实开始复核后，Office gateway 提前退出 1，界面降级 HTML；没有编辑/保存/重开通过证据。源码网关依据 app.getAppPath 解析入口，而本次测试 launcher 直接以 out/main/index.js 启动，存在测试 appRoot 语义疑点，未据此认定安装产品缺陷或修改代码。收到最新暂停口径后，已停止新选择、模型及业务操作，仅回传上述元数据；后续只允许使用协调者批准的精确目标 dialog 单次返回合成样本、finally 恢复方法，不再依赖未闭环的 UIAutomation 值提交。
 - 尚不能判定选择不一致来自人工并发操作或原生自动化提交语义，未据此修改生产选择器、权限或文件路由。下一步等待既有 Office 无新分析入口/合成 fixture 回收或明确选择确认，再继续编辑、保存与关闭重开。本次没有 Office 保存/重开 PASS，也没有最终安装包结论；源码保持 e232a360 不变。
 
 ## 2026-09-08｜RC 基础返修：模式重建诊断与显式重登录（候选）
