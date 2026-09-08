@@ -1,5 +1,14 @@
 # 小规开发阶段状态
 
+## 2026-09-08｜全新 Office 隔离场景与 Prompt 1.2.2（准备点）
+
+- 总控重新授权仅新隔离场景。旧 `E:/XiaoguiInternalCandidate/test-profile`、非测试文档与旧会话继续冻结；继续工作不等于用户承认旧选择。新根 `E:/XiaoguiInternalCandidate/office-isolated-20260908-v2` 实查不存在后创建 profile/pi-agent、project、evidence、temp，只从原统一 Pi 目录复制 models.json/auth.json，不复制异常 profile 的会话、报告、绑定或 Token。
+- 唯一样本 `project/office-input.docx`，8985 bytes；源与副本 SHA-256 `4983f085dd243b81e1b61bb1774b5e23bfcd4f21a6544582da6b86df5224df55` 一致。新场景要求从真正 package 根启动、核 Main/Worker 身份、默认 UNIVER_PREFERRED，不设置 XIAOGUI_OFFICE_TEST。准确 title 的 dialog.showOpenDialog 仅为该 PID 单次返回锁定样本，finally 恢复，不再采用全局原生键盘/UIAutomation。
+- 本源码点仅承接已定向批准的 `7ffbc22bc2023c4df7d56a1500ef4bad041c7187` Prompt 小差异：template-intake-analysis 1.2.1→1.2.2、逐项 suggestedName 约束、合法 VARIABLE 示例；源对应两测试和 prompt inventory 版本引用。没有更改 schema、解析器、修复循环、DOC 转换、Office、C‑01 coding.workspace 或模式/授权规则。
+- Terra 执行：`npx vitest run src/main/__tests__/pi-prompt-catalog-effective.test.ts src/worker/xiaogui-work-docx-template-intake-tool.test.ts`：2 文件 / 19 通过；`npx vitest run src/worker/handlers/worker-handlers-turn.test.ts -t "P16 reuses a Worker while a neutral CODING EXECUTE turn gets the default workspace tools"`：1 通过 / 12 未选中。三个受影响 TS 文件 ESLint、diff-check 通过。日志分别为新 evidence 下 `work-prompt-1.2.2-focused.log`、`c01-default-tools-focused.log`。没有重复模型、DOC转换或全量测试。
+- 下一步先固定此源码/构建点并回报无模型身份核验，再只允许该 DOCX 一次必要 intake→复核→私有 Office 草稿编辑/保存/关闭重开；不物化、不建库、不再分析。当前仍是准备点，不是 Office/DOC/最终包通过。
+- H1/C3 只读接缝清单已回协调者：需在固定输入放行后恢复现有 polling/refresh、inbox IPC/Preload allowlist、人工接收/计划草稿 UI，保留 e232 显式重登录；不能整树覆盖已验 TaskHub/CODING。Hub 70c93d0 复用 H1 协议，无新桌面 C3 状态机；d76 向导完整引用待回收。用户已明确所有目标机有 Microsoft Word，后续等待 WORK 的 Word DOC 主转换固定输入，不新增无 Word 兜底或转换选择页。
+
 ## 2026-09-08｜Office 联用准备：输入选择未闭环（未通过）
 
 - 协调者已对 `e232a360815a81dc80b436d75e8e0d7a9e6c0884` 的 MODE 与显式重登录返修给出 Standards CLEAR / Spec CLEAR，允许继续 Office；这不等于最终整版或 NSIS 通过。

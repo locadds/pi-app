@@ -6,7 +6,7 @@
 - 矩阵：`xiaogui.prompt-matrix.v1` / `1.2.0`
 - Capability Registry：`xiaogui.capability-registry.v1` / `1.2.0`
 - 本轮能力选择器：`xiaogui.turn-capability-selector.v1` / `1.2.0`
-- 模板整理子任务 Prompt：`template-intake-analysis` / `1.2.1`
+- 模板整理子任务 Prompt：`template-intake-analysis` / `1.2.2`
 - Runtime Tool 兼容层：`0.84.1-compat.2`
 - Runtime Facts Layer：`1.1.0`
 - 日期：2026-09-02
