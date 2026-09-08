@@ -1,5 +1,14 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜H1 开始回执 P1 最小整改
+
+- 固定起点 f4f7acbec5588b047c913e459582f6c29eb5da82。独立只读审查 Standards0 / Spec1P1：已准备但 Plan/Role 未批准的 Attempt，被新生命周期误当作已执行并上报 EXECUTION_STARTED。旧报告 `E:/XiaoguiInternalCandidate/combined-integration-20260909/f4f7acb-independent-review.md` 保留。
+- 仅修改 H1 execution-orchestrator / hub-execution-lifecycle 及对应测试。Main 新增只读 hasDispatchEvidence：既有 saga 必须匹配 address/flow/taskRun/attempt，私有 attempt 必须匹配 flow/taskRun，且存在 Application 写入的 agent_dispatch_outbox 或真实 runtime_session_id；不以 READY/FAILED、runtime selection 或对象存在作为已执行证明。无新表/合同/凭据/审批变更。
+- 正常 reconcile 与启动恢复共同使用上述门；实际 dispatch 返回后向原 coordinator 排队 reconcile，覆盖人工批准走 resumeAttempt 不经过原 start IPC 的路径。非等待排队避免与 coordinator.recover 等待执行器恢复形成循环；签名队列既有去重保证重复 reconcile 不新增开始回执。
+- 两条新接缝回归使用真实执行器、coordinator、Worker service 和待提交状态，Application/离线网络为合成夹具：旧代码 Plan/Role 未批均失败（各错误产生一条回执），修后均通过；人工批准恢复运行自动生成恰好一条，重复 reconcile 仍一条。红/绿日志 `h1-start-gate-red.log` / `h1-start-gate-green.log` 保留。
+- 本轮受影响两文件全量聚焦 33/33、Node typecheck、四文件 ESLint、diff-check 通过，日志同目录 `h1-start-focused.log` / `h1-start-typecheck.log` / `h1-start-eslint.log`。这是新生成的定向lint证据，不补造旧缺失 eslint.log。两条红绿属于33项子集，不累加。未重跑 Word/模型/网页或旧业务全套。
+- Word、原 JSON/签名/ACK、Apply、70 Hub包和d76向导未改；PID43176与冻结profile未动。修订固定后只复验本次增量，通过即继续唯一 E 盘 NSIS 构建与资源检查；安装后/真实Hub联合门仍待完成。
+
 ## 2026-09-09｜H1 生命周期与 Word DOC 最小组合（代码候选）
 
 - 固定起点 `311216110f19e6f4f05634f594b32e74a0a03062`，仍是独立 `codex/windows-internal-rc-20260908-v1`。用户已批准最终组合包含 H1/C3 与 Word DOC，不再把临时关闭项当最终范围豁免。旧异常 profile 冻结，不强推、不合主线、不公开发布。

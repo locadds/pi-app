@@ -26,7 +26,7 @@ describe('HubTaskExecutionLifecycleCoordinatorV1', () => {
           },
         })),
       } as never,
-      taskExecution: { recover: vi.fn(async () => {}) },
+      taskExecution: { recover: vi.fn(async () => {}), hasDispatchEvidence: vi.fn(() => true) },
       delivery: { recover: vi.fn(async () => {}), readLatestDelivery: vi.fn(() => null) },
       evidence,
     })
@@ -56,7 +56,7 @@ describe('HubTaskExecutionLifecycleCoordinatorV1', () => {
           },
         })),
       } as never,
-      taskExecution: { recover: vi.fn(async () => {}) },
+      taskExecution: { recover: vi.fn(async () => {}), hasDispatchEvidence: vi.fn(() => true) },
       delivery: { recover: vi.fn(async () => {}), readLatestDelivery: vi.fn(() => null) },
       evidence,
     })

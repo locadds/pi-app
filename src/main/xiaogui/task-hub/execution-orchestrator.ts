@@ -47,7 +47,7 @@ import type {
 } from './runtime-outcome-monitor'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
-import type { HubTaskExecutionLifecycleReconcilerV1 } from './hub-execution-lifecycle'
+import type { HubTaskExecutionLifecycleReconcilerV1, HubTaskExecutionLifecycleTriggerV1 } from './hub-execution-lifecycle'
 
 type ExecutionSagaPhaseV1 =
   | 'ACCEPTED'
@@ -180,6 +180,18 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
 
   setExecutionLifecycle(lifecycle: HubTaskExecutionLifecycleReconcilerV1 | null): void {
     this.executionLifecycle = lifecycle
+  }
+
+  hasDispatchEvidence(trigger: HubTaskExecutionLifecycleTriggerV1): boolean {
+    if (this.closed || !trigger.attemptId || !trigger.taskRunId) return false
+    const attemptId = trigger.attemptId as AttemptId
+    const operation = this.saga.byAttempt(trigger.address, attemptId)
+    if (operation?.flow_id !== trigger.flowId || operation.task_run_id !== trigger.taskRunId) return false
+    const attempt = this.privateAttemptStore.attempt(attemptId)
+    if (attempt?.flow_id !== trigger.flowId || attempt.task_run_id !== trigger.taskRunId) return false
+    // Written by Application only after approval gates and dispatch preflight;
+    // unlike READY/FAILED or runtime selection, this survives terminal recovery.
+    return Boolean(this.privateAttemptStore.agentDispatchOutbox(attemptId) || attempt.runtime_session_id)
   }
 
   async start(input: XiaoguiTaskExecutionStartRequestV1): Promise<XiaoguiTaskExecutionStartOutcomeV1> {
@@ -547,6 +559,11 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
           attemptId,
         },
       })
+      // resumeAttempt (after human approval) does not return through start IPC.
+      // Do not await recovery here: recovery itself can be awaiting this run.
+      void this.executionLifecycle?.reconcile({
+        address: addressOf(operation), flowId: operation.flow_id, taskRunId, attemptId,
+      }).catch(() => undefined)
       if (!dispatched.ok) {
         const authority = await this.authority(operation)
         if (!authority.ok) {

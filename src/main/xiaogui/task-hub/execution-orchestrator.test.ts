@@ -20,6 +20,9 @@ import type {
 import type { RuntimeEventV1, RuntimeOutcomeV1 } from '@shared/xiaogui-agent-runtime'
 
 import type { CollaborationHubApplicationV1 } from './application'
+import { createHubTaskExecutionLifecycleCoordinatorV1 } from './hub-execution-lifecycle'
+import { createHubTaskWorkerServiceV1, createInMemoryHubTaskWorkerCredentialsV1 } from '../hub-task/worker-service'
+import { createInMemoryHubTaskWorkerStateStoreV1 } from '../hub-task/worker-state'
 import { CodingAttemptPlanModuleV1 } from '../coding-extensions/attempt-plan-module'
 import {
   XiaoguiTaskExecutionOrchestratorV1,
@@ -1315,6 +1318,62 @@ function parallelHub(
     releaseBlockedDispatch: () => releaseBlockedDispatch(),
   }
 }
+
+describe('H1 actual dispatch receipt boundary', () => {
+  it.each(['plan', 'role'] as const)('does not report while %s is unapproved; dispatch and repeated reconciliation enqueue once', async (gate) => {
+    const events: string[] = []
+    const dbPath = await tempDb()
+    const hub = fakeHub(events, dbPath)
+    let approved = false
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      attemptPlanGate: {
+        ensureAttemptPlan: async () => undefined,
+        isAttemptPlanApproved: async () => gate !== 'plan' || approved,
+        markAttemptExecutionStarted: async () => undefined,
+        markAttemptExecutionDispatchFailed: async () => undefined,
+      },
+      attemptRoleGate: { isAttemptRoleExecutable: async () => gate !== 'role' || approved },
+    })
+    const state = createInMemoryHubTaskWorkerStateStoreV1()
+    const now = '2026-09-09T00:00:00.000Z'
+    state.upsertAssignment({
+      assignment: { assignmentId: 'assignment-1', taskId: 'task-1', decisionState: 'ACCEPTED', deliveryState: 'OPENED', executionState: 'NOT_STARTED', createdAt: now, updatedAt: now },
+      offer: { taskId: 'task-1', mode: 'DIRECT', title: 'task', taskContent: 'synthetic', constraints: [], acceptanceRequirements: [], attachmentRefs: [], packageSha256: `sha256:${'c'.repeat(64)}` },
+    })
+    state.markOpened('assignment-1', now)
+    state.bindPlanDraft('assignment-1', { ...ADDRESS, flowId: FLOW_ID, revisionId: 'revision-1', createdAt: now })
+    const credentials = createInMemoryHubTaskWorkerCredentialsV1()
+    credentials.write({ endpoint: 'http://hub.intranet:3000', accessToken: 'a'.repeat(20), node: { subjectId: 'subject-1', nodeId: 'node-1', keyId: 'key-1', deviceToken: 'synthetic-device-token', privateKeyPem: 'synthetic-private-key' } })
+    const service = createHubTaskWorkerServiceV1({
+      state, credentials, application: hub.application,
+      createPort: () => ({ submitReceipt: async () => { throw new Error('offline fixture') } }) as never,
+      signReceipt: (unsigned) => ({ ...unsigned, signature: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }),
+    })
+    const lifecycle = createHubTaskExecutionLifecycleCoordinatorV1({
+      application: hub.application, taskExecution: orchestrator,
+      delivery: { recover: async () => undefined, readLatestDelivery: () => null }, evidence: service,
+    })
+    orchestrator.setExecutionLifecycle(lifecycle)
+    try {
+      await expect(orchestrator.start(request())).resolves.toMatchObject({ ok: true, value: { attempt: { status: 'READY' } } })
+      await lifecycle.reconcile({ address: ADDRESS, flowId: FLOW_ID, taskRunId: TASK_RUN_ID, attemptId: ATTEMPT_ID })
+      await lifecycle.recover()
+      expect(events).not.toContain('dispatch')
+      expect(state.pendingEvidence()).toHaveLength(0)
+      approved = true
+      await expect(orchestrator.resumeAttempt(ADDRESS, ATTEMPT_ID)).resolves.toMatchObject({ ok: true, value: { attempt: { status: 'RUNNING' } } })
+      // Approval resumes via Attempt IPC, not the original start IPC.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(state.pendingEvidence()).toHaveLength(1)
+      for (let i = 0; i < 2; i++) await lifecycle.reconcile({ address: ADDRESS, flowId: FLOW_ID })
+      expect(events.filter((event) => event === 'dispatch')).toHaveLength(1)
+      expect(state.pendingEvidence()).toMatchObject([{ kind: 'RECEIPT', receipt: { eventType: 'EXECUTION_STARTED', sequence: 1 } }])
+    } finally {
+      service.close()
+      await orchestrator.close()
+    }
+  })
+})
 
 function fakeHub(events: string[], privateDbPath?: string) {
   let attemptStatus: 'WORKSPACE_PREPARING' | 'READY' | 'RUNNING' | 'FAILED' | 'OUTCOME_UNKNOWN' | undefined

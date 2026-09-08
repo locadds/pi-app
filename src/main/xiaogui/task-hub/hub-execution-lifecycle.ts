@@ -30,7 +30,7 @@ export interface HubTaskExecutionLifecycleReconcilerV1 {
 
 export function createHubTaskExecutionLifecycleCoordinatorV1(options: {
   application: Pick<CollaborationHubApplicationV1, 'observeM2B'>
-  taskExecution: Pick<XiaoguiTaskExecutionOrchestratorV1, 'recover'>
+  taskExecution: Pick<XiaoguiTaskExecutionOrchestratorV1, 'recover' | 'hasDispatchEvidence'>
   delivery: Pick<XiaoguiDeliveryWorkflowV1, 'recover' | 'readLatestDelivery'>
   evidence: HubTaskExecutionEvidencePortV1
 }): HubTaskExecutionLifecycleReconcilerV1 {
@@ -114,7 +114,10 @@ class HubTaskExecutionLifecycleCoordinatorImpl implements HubTaskExecutionLifecy
         : projection.attempts.filter((candidate) => candidate.taskRunId === taskRun.taskRunId).length === 1
           ? projection.attempts.find((candidate) => candidate.taskRunId === taskRun.taskRunId) ?? null
           : null
-      return attempt?.taskRunId === taskRun.taskRunId ? { taskRun, attempt } : null
+      if (attempt?.taskRunId !== taskRun.taskRunId) return null
+      return this.options.taskExecution.hasDispatchEvidence({
+        ...trigger, taskRunId: taskRun.taskRunId, attemptId: attempt.attemptId,
+      }) ? { taskRun, attempt } : null
     } catch {
       return null
     }
