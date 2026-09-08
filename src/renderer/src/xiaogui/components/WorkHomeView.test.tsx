@@ -65,7 +65,7 @@ describe('WorkHomeView', () => {
       expect.stringContaining('按模板生成'),
     ])
     expect(
-      screen.getByText('选择 DOCX，开始只读分析和模板整理；旧 DOC 暂未开放'),
+      screen.getByText('选择 DOC/DOCX，开始只读分析和模板整理；旧 DOC 使用本机 Word'),
     ).toBeInTheDocument()
   })
 

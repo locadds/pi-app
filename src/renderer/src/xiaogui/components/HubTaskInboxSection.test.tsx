@@ -23,7 +23,7 @@ describe('HubTaskInboxSection', () => {
     const user = userEvent.setup()
     render(<HubTaskInboxSection />)
 
-    await screen.findByText('已配置 Hub 账号连接；任务收件箱尚未开放')
+    await screen.findByText('可收取任务')
     expect(invoke).toHaveBeenCalledTimes(1)
     expect(invoke).toHaveBeenLastCalledWith('xiaogui.hubTask.status', undefined)
     expect(screen.queryByPlaceholderText('Hub 用户名')).not.toBeInTheDocument()

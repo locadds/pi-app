@@ -25,7 +25,7 @@ async function chooseSource(): Promise<string | null> {
   const options: OpenDialogOptions = {
     title: '选择要整理的普通成品 Word',
     properties: ['openFile'],
-    filters: [{ name: 'Word 文档（本候选仅开放 DOCX）', extensions: ['docx'] }],
+    filters: [{ name: 'Word 文档', extensions: ['doc', 'docx'] }],
   }
   const window = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
   const result = window
@@ -50,10 +50,7 @@ export async function chooseTemplateIntakeSourceForWorkspaceV1(
 ): Promise<{ cancelled: true } | { cancelled: false; fileDisplayName: string }> {
   const selectedPath = await chooseSource()
   if (!selectedPath) return { cancelled: true }
-  if (extname(selectedPath).toLowerCase() === '.doc') {
-    throw new Error('TEMPLATE_INTAKE_LEGACY_DOC_DISABLED')
-  }
-  if (extname(selectedPath).toLowerCase() !== '.docx') {
+  if (!['.doc', '.docx'].includes(extname(selectedPath).toLowerCase())) {
     throw new Error('TEMPLATE_INTAKE_INPUT_INVALID')
   }
   const projectId = opaqueScopeIdDeriverV1.deriveProject(workspaceRoot).projectId
@@ -82,7 +79,6 @@ export function getDefaultWorkDocxTemplateIntakeServiceV1(): WorkDocxTemplateInt
     ),
     reviewRenderer: getDefaultDocumentReviewRendererV1(),
     templateDraftV2Enabled: process.env.XIAOGUI_TEMPLATE_DRAFT_V2 !== '0',
-    legacyDocAnalysisEnabled: false,
   })
   return defaultService
 }

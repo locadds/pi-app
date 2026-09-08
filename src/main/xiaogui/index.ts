@@ -18,6 +18,7 @@ import {
   getDefaultCodingRoleProfileModuleV1,
   getDefaultTaskExecutionOrchestrator,
   registerCollaborationHubHandlers,
+  setHubTaskWorkerLifecycleReporterV1,
 } from './task-hub/ipc'
 import { getDefaultWorkDocxServiceV1, registerWorkDocxHandlers } from './work-docx-ipc'
 import { getDefaultWorkDocumentSnapshotServiceV1 } from './work-document-snapshot-composition'
@@ -92,7 +93,12 @@ export function initXiaogui(): void {
 
   registerXiaoguiHandlers()
   const hubTaskWorker = getDefaultHubTaskWorkerServiceV1()
+  setHubTaskWorkerLifecycleReporterV1(hubTaskWorker)
   registerCollaborationHubHandlers()
+  if (hubTaskWorker.status().configured) {
+    hubTaskWorker.startPolling()
+    void hubTaskWorker.refresh()
+  }
   registerHubTaskWorkerHandlers(hubTaskWorker, getDefaultHubTaskWorkerInstallationIdDigestV1())
   initC2ArtifactInstallV1()
   registerC2ArtifactInstallHandlersV1()
@@ -164,6 +170,7 @@ export function initXiaogui(): void {
 
 /** 优雅停止 Python sidecar 与内嵌任务中枢运行时。 */
 export async function shutdownXiaoguiSidecar(): Promise<void> {
+  setHubTaskWorkerLifecycleReporterV1(null)
   const results = await Promise.allSettled([
     Promise.resolve().then(() => xiaogui.shutdown()),
     Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),

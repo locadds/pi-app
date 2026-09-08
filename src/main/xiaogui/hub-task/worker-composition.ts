@@ -24,7 +24,6 @@ export function getDefaultHubTaskWorkerServiceV1(): HubTaskWorkerServiceV1 {
         accessToken: credentials.accessToken,
         ...('node' in credentials ? { node: { deviceToken: credentials.node.deviceToken } } : {}),
       }),
-    taskInboxEnabled: false,
   })
   defaultService = service
   return service

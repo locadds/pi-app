@@ -30,7 +30,7 @@ const QUICK_ACTIONS: { id: QuickActionId; title: string; description: string; ar
   {
     id: 'DOCUMENT',
     title: '整理普通文档',
-    description: '选择 DOCX，开始只读分析和模板整理；旧 DOC 暂未开放',
+    description: '选择 DOC/DOCX，开始只读分析和模板整理；旧 DOC 使用本机 Word',
     ariaLabel: '选择普通文档并开始分析',
   },
   {

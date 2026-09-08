@@ -1191,7 +1191,12 @@ export function CollaborationHubPanel() {
         </button>
       </div>
 
-      <HubTaskInboxSection />
+      {scope.sessionMode !== 'DESIGN' && (
+        <HubTaskInboxSection
+          address={{ projectId: scope.projectId, sessionKey: scope.sessionKey }}
+          onPlanDraftCreated={() => void refresh()}
+        />
+      )}
 
       {error && <ErrorBanner error={error} onDismiss={clearError} />}
 

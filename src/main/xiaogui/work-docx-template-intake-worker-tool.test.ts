@@ -46,12 +46,12 @@ describe('WORK DOCX template-intake Worker adapter', () => {
   it.each([
     [
       'TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE',
-      '转换组件尚未安装或装配',
+      'Microsoft Word 转换组件不可用',
       '转换组件已可用',
     ],
     [
       'TEMPLATE_INTAKE_CONVERSION_FAILED',
-      '转换组件已可用，但本次文档转换失败',
+      'Microsoft Word 未能完成本次旧版 DOC 转换',
       '尚未安装或装配',
     ],
   ] as const)('向用户区分 %s', async (code, expected, excluded) => {

@@ -151,8 +151,6 @@ export interface CreateHubTaskWorkerServiceOptionsV1 {
     receipt: XiaoguiTaskDeliveryReceiptUnsignedV1,
     privateKeyPem: string,
   ) => XiaoguiTaskDeliveryReceiptV1
-  /** C2 pairs a device only; H1 assignment polling remains separately gated. */
-  taskInboxEnabled?: boolean
 }
 
 export function createInMemoryHubTaskWorkerCredentialsV1(options: { canPersist?: boolean } = {}): HubTaskWorkerCredentialsV1 & {
@@ -235,10 +233,8 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         lastSyncedAt: this.state.lastSyncedAt,
         pendingReceiptCount: this.options.state.pendingEvidence().length,
       }
-      if (this.options.taskInboxEnabled) {
-        this.startPolling()
-        await this.refresh()
-      }
+      this.startPolling()
+      await this.refresh()
       return { ok: true, value: this.status() }
     } catch (error) {
       const nextState = unavailableStateFor(error)
@@ -668,16 +664,16 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     }
     const nextState = unavailableStateFor(error)
     if (nextState === 'NODE_REVOKED' || nextState === 'AUTHENTICATION_FAILED') {
-      // A stale worker must not keep acting on cached task packages. Drop the
-      // old node's local state and require a fresh explicit login/pairing.
+      // A stale worker must not keep acting on cached task packages. Require
+      // explicit re-login, but retain the durable signed evidence exactly as
+      // queued; losing a token must never erase a receipt awaiting audit.
       this.options.credentials.clear()
-      this.options.state.clear()
       this.close()
       this.state = {
         configured: false,
         state: nextState,
         lastSyncedAt: this.state.lastSyncedAt,
-        pendingReceiptCount: 0,
+        pendingReceiptCount: this.options.state.pendingEvidence().length,
       }
       return
     }

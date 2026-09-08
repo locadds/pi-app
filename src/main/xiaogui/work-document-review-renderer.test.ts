@@ -58,6 +58,31 @@ function createLegacyDoc(): Buffer {
 }
 
 describe("DocumentReviewRendererV1", () => {
+  it('propagates cancelled Word conversion instead of returning a fallback manifest', async () => {
+    const controller = new AbortController();
+    const renderer = new DocumentReviewRendererV1({ converter: {
+      async convert() {
+        controller.abort();
+        throw Object.assign(new Error('WORD_ABORTED'), { code: 'WORD_ABORTED' });
+      },
+    } });
+    await expect(renderer.prepare(createLegacyDoc(), 'DOC', controller.signal)).rejects.toThrow('WORD_ABORTED');
+    renderer.close();
+  });
+  it.each([
+    ['WORD_UNAVAILABLE', 'LEGACY_DOC_CONVERSION_UNAVAILABLE'],
+    ['WORD_FAILED', 'LEGACY_DOC_CONVERSION_FAILED'],
+  ])('preserves the Word conversion error distinction: %s', async (code, warning) => {
+    const renderer = new DocumentReviewRendererV1({ converter: {
+      async convert() { throw Object.assign(new Error(code), { code }); },
+    } });
+    const result = await renderer.prepare(createLegacyDoc(), 'DOC');
+    expect(result.normalizedDocxAvailable).toBe(false);
+    expect(result.render.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: warning }),
+    ]));
+    renderer.close();
+  });
   it("serves a safe DOCX through an opaque document token without converting to PDF", async () => {
     const renderer = new DocumentReviewRendererV1({ converter: neverConvert() });
     const result = await renderer.prepare(await createSafeDocx(), "DOCX", undefined, [

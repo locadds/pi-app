@@ -14,6 +14,7 @@ import type {
 } from '@shared/xiaogui-delivery-ipc'
 import { registerHandler } from '../../ipc/registry'
 import { recordPiE2eRendererEventV1 } from './pi-e2e-scripted-runtime'
+import type { HubTaskExecutionLifecycleReconcilerV1 } from './hub-execution-lifecycle'
 
 const AddressSchema = z
   .object({
@@ -93,12 +94,19 @@ const PrepareRecoverySchema = BaseIpcSchema.extend({
     .strict(),
 }).strict()
 
-export function registerXiaoguiDeliveryHandlers(coordinator: XiaoguiDeliveryCoordinatorPortV1): void {
+export function registerXiaoguiDeliveryHandlers(
+  coordinator: XiaoguiDeliveryCoordinatorPortV1,
+  executionLifecycle: HubTaskExecutionLifecycleReconcilerV1 | null = null,
+): void {
   registerHandler('ipc:xiaogui.delivery.selection.submit', async (payload) => {
     const parsed = SelectTasksSchema.safeParse(payload)
     if (!parsed.success || containsUnsafeRendererValue(payload)) return invalidDeliveryInput()
     const typed = parsed.data as unknown as XiaoguiDeliverySelectTasksIpcRequestV1
-    return coordinator.selectTasks(typed.address, typed.request)
+    const outcome = await coordinator.selectTasks(typed.address, typed.request)
+    if (outcome.ok) {
+      await executionLifecycle?.reconcile({ address: typed.address, flowId: typed.request.flowId })
+    }
+    return outcome
   })
 
   registerHandler('ipc:xiaogui.delivery.gate.approve', async (payload) => {

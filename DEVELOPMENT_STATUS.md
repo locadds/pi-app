@@ -1,5 +1,36 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜H1 生命周期与 Word DOC 最小组合（代码候选）
+
+- 固定起点 `311216110f19e6f4f05634f594b32e74a0a03062`，仍是独立 `codex/windows-internal-rc-20260908-v1`。用户已批准最终组合包含 H1/C3 与 Word DOC，不再把临时关闭项当最终范围豁免。旧异常 profile 冻结，不强推、不合主线、不公开发布。
+- H1 由 Terra 按成熟 `b12a4b5b098a5d88d947864edf5f4e32f661c796` 接缝增量移植，未整树覆盖已验 CODING/TaskHub：恢复 poll/refresh、六项 inbox IPC/白名单、WORK/CODING 人工打开/接受/拒绝/退回/创建本机计划草稿 UI；保留无会话登录与 e232 显式重登录。DESIGN 不增加任务执行能力。
+- 生命周期接回 `hub-execution-lifecycle.ts`、TaskHub IPC、execution-orchestrator、Delivery selection 和只读 readLatestDelivery。Main 顺序为构造 H1 service→注入 reporter→装配 TaskHub 协调器/recover→已配置才 poll/refresh。只有真实终态 Delivery 可上报相应结果；运行中或 SUCCEEDED 但无验证/Delivery 不假报 RESULT_READY，失败无验证标为 NOT_RUN。原 TaskHub 人工 Apply 门不变。
+- 401/403 清失效凭据并停操作要求显式重登录，但不清签名待提交 evidence；生成、提交、持久队列三个完整 JSON 编码逐字节相同。HTTP 仍直接 JSON.stringify 原 receipt；只有 verified 且精确匹配队头 ACK 才删除。C2 outbox、签名算法、服务器 C3 密钥与状态机均未改。
+- Word 接收点 `dc3cd29168fcac2b495dd813273a199ec2bc6b46`，生产 `c6c7124f2230a699c424ef2fbe640467f2f2d9d7`，已获独立 Standards APPROVE0 / Spec APPROVE0。摘取默认 converter/Renderer取消与错误映射、自有 helper及修后测试，恢复 DOC/DOCX 入口；RC appId/profile/Office默认不变。`convert-doc.ps1` 实际 SHA-256 `d4c964f30ef022052216f3728f086fd64807d717bd9033b7f5b0e21c3f8caec3` 与源相同；win.extraResources 增加 word-converter，保留 LO 资源/脚本。Windows+已安装 Word 是部署事实，不分发 Word，不回退 LO、不新增选择页/依赖。
+- 实际文件以本提交 `git diff 3112161..HEAD` 为完整清单：H1 shared白名单/Main hub-task及TaskHub lifecycle/协作UI；Word converter/Renderer/错误映射/选择入口/helper/资源声明/README与许可证用途记录；本记录。没有写知识库散片或提交私有配置/原始会话。
+
+### 聚焦证据
+
+- `npx vitest run src/main/xiaogui/hub-task/worker-service-c2-gate.test.ts src/main/xiaogui/hub-task/worker-ipc-c2-gate.test.ts src/main/xiaogui/task-hub/hub-execution-lifecycle.test.ts src/main/xiaogui/task-hub/ipc.test.ts src/main/xiaogui/task-hub/delivery-ipc.test.ts src/renderer/src/xiaogui/components/HubTaskInboxSection.test.tsx`：6文件25通过，`E:/XiaoguiInternalCandidate/h1-integration-20260909/h1-focused.log`。
+- 补完整字节及装配顺序后，`npx vitest run src/main/xiaogui/hub-task/worker-service-c2-gate.test.ts src/main/xiaogui/hub-task/worker-ipc-c2-gate.test.ts`：2文件5通过；其中401/403两条反例均核签名原编码保留。`h1-receipt-byte-retention.log` 为该补证；计数与前组有重叠，不累加宣称独立30项。
+- `node node_modules/vitest/vitest.mjs run src/main/xiaogui/work-document-review-renderer-composition.test.ts src/main/xiaogui/work-document-review-renderer.test.ts src/main/xiaogui/work-docx-template-intake-worker-tool.test.ts src/renderer/src/xiaogui/components/WorkHomeView.test.tsx`：4文件24通过，`E:/XiaoguiInternalCandidate/combined-integration-20260909/word-seams.log`。Word平台fixture单文件10/10为源owner已验且独立复验采信，移植未改，不重跑Word/模型。
+- 本组合 `npm run typecheck` Node/Web通过（combined-integration-20260909/typecheck.log），所有新增/修改TS/TSX定向 ESLint 通过（eslint.log），diff-check通过。提交后复现定向lint：`$files = @(git diff --name-only --diff-filter=ACM 311216110f19e6f4f05634f594b32e74a0a03062..HEAD -- '*.ts' '*.tsx'); node node_modules/eslint/bin/eslint.js @files`。
+- 既有新隔离默认Office/Skill/CODING证据保留，详见下节；不声称本H1/Word未构建组合已经完成同一窗口或安装包旅程。Word首次MODEL_UNAVAILABLE、明确重试及人工修正等源限制不抹去；没有全量CI/第二Hub/额外模型验证。
+
+### 明确余项
+
+本候选待组合审查/构建与唯一 NSIS 实际资源检查及安装后最短旅程；新 H1/C3 仍需中台唯一 Hub/Web `70c93d0dd1fda4e48475af513b705938ac87f1af` 和配置向导 `d76fe2866d4e927a5eb95baf15e9e4c567e7f430` 的实际启动/release回执与受控测试数据。未启动 Hub，不从文档固定地址猜已上线。未完成验证前不得宣称整个最终版本通过。
+
+## 2026-09-09｜新隔离默认 Office 草稿保存重开（限定场景完成）
+
+- 用户经总控要求继续最终组合；旧异常 profile/非测试文档仍冻结。新场景仍只使用 `E:/XiaoguiInternalCandidate/office-isolated-20260908-v2`，本次 PID 43176，源码/实际构建为 `c7440dd8ed0043c9636bb33fd9da4ec438341e7a`，不把并行未构建的 H1 源码算入窗口证据。
+- 在现有失败会话通过统一模型 UI 发出真实 model.set；JSONL 新 model_change 和新私有 settings 默认 provider/model 均确认 `deepseek/deepseek-v4-flash-vision-exp`。原 runtime.getState 对该 SDK 的 model 字段未返回值，未用空值冒充绑定成功，以实际 setModel、Pi 持久模型事件和随后真实调用模型三者核对。旧403保留；不自动绑定陌生默认模型。
+- 随后准确 title 的单次测试 dialog 返回锁定合成 DOCX，finally 恢复；实际主消息、报告源和样本 SHA 一致。唯一成功 intake START 生成11候选（3 VARIABLE、2 EXCLUDE、6 FIXED）及2警告；这是此合成样本结果，不声称模型普遍稳定或旧 DOC 转换已解决。
+- 从报告实际“开始复核”进入 TEMPLATE_DRAFT，默认 UNIVER_PREFERRED（没有 OFFICE_TEST/SURFACE 环境覆盖）。试填项目名称 `OFFICE_ISOLATED_SAVE_REOPEN_20260909` → “同步到全文2处” → iframe“保存工作副本”显示已保存 → “关闭并保存草稿” → 同报告“继续文档复核”。重开截图已目视正文两处标记仍在；侧栏试填框恢复示例值不是正文丢失，未用侧栏值冒充保存结果。
+- `evidence/office-save-reopen-result.json`：私有快照 `27d8d2ac048151f4e3a9fdddfcb47dff46da4483ee971c0e56b334861063e697.json` 的 dataStream 保存前/重开后标记均2处。快照文件 SHA 分别 `f18b12acd033ddf3e4873a1ec860db037ef2fb1d8dcfbd80d6366afc49b567fb`、`28f192b48e14e914b432d626ec5fcf5029b7ce1803b55231f41c3a9539d83d8c`；源 DOCX SHA 仍 `4983f085dd243b81e1b61bb1774b5e23bfcd4f21a6544582da6b86df5224df55`。没有确认字段、物化、建库或修改源文件。
+- 证据 `office-edited-before-save.png`、`office-saved.png`、`office-reopened.png` 均在新 evidence。保存/重开脚本初次已保存关闭，因测试按钮 accessible name 写错而超时；依据真实按钮“继续文档复核”修正测试定位，仅续跑重开，不伪造状态或重复模型。复现命令：`node E:/XiaoguiInternalCandidate/office-isolated-20260908-v2/evidence/office-save-reopen.mjs --resume-after-close`，输出 OFFICE_SAVE_REOPEN_DISK_PASS。该续跑命令仅适用于已保存关闭现场，不能声称从空白开始一步重现整个准备。
+- 限制：这不是 NSIS/安装后验收，也不是 DOC Word 转换验收；合成表格原有窄列导入提示保留，不宣称 Word 像素级一致。此前直接 out/main 启动的 gateway 失败与本次 package 根正常启动分开记录，未增加生产路径兜底。当前继续由 Terra 补 H1 固定接缝；Word 增量纳入决定已明确，待独立技术复验通过直接承接，不再回问是否纳入。
+
 ## 2026-09-08｜全新 Office 隔离场景与 Prompt 1.2.2（准备点）
 
 - 总控重新授权仅新隔离场景。旧 `E:/XiaoguiInternalCandidate/test-profile`、非测试文档与旧会话继续冻结；继续工作不等于用户承认旧选择。新根 `E:/XiaoguiInternalCandidate/office-isolated-20260908-v2` 实查不存在后创建 profile/pi-agent、project、evidence、temp，只从原统一 Pi 目录复制 models.json/auth.json，不复制异常 profile 的会话、报告、绑定或 Token。

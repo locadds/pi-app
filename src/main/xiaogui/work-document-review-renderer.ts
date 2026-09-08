@@ -364,8 +364,9 @@ export interface DocumentReviewRendererConfigV1 {
 
 function conversionWarning(error: unknown): TemplateReviewRenderWarningV3 {
   if (
-    error instanceof LibreOfficeConversionErrorV1 &&
-    error.code === "LIBREOFFICE_UNAVAILABLE"
+    (error instanceof LibreOfficeConversionErrorV1 &&
+      error.code === "LIBREOFFICE_UNAVAILABLE") ||
+    (error instanceof Error && "code" in error && error.code === "WORD_UNAVAILABLE")
   ) {
     return {
       code: "LEGACY_DOC_CONVERSION_UNAVAILABLE",
@@ -928,6 +929,10 @@ export class DocumentReviewRendererV1 {
           );
           normalizedDocx = Buffer.from(converted.content);
         } catch (error) {
+          if (signal?.aborted ||
+              (error instanceof Error && "code" in error && error.code === "WORD_ABORTED")) {
+            throw error;
+          }
           return this.saveFallbackManifest(
             sourceSha256,
             inputFormat,

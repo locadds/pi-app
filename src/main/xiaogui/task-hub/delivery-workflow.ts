@@ -99,6 +99,11 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
     this.verificationService = new DeliveryVerificationServiceV1(options.verificationPort)
   }
 
+  /** Main-only lifecycle read; it never approves, applies, or mutates a batch. */
+  readLatestDelivery(address: HubAddressV1, flowId: FlowId): DeliveryBatchProjectionV1 | null {
+    return this.store.readActiveDelivery(address, flowId)
+  }
+
   selectTasks(
     address: HubAddressV1,
     request: XiaoguiDeliverySelectTasksRequestV1,

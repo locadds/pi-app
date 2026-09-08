@@ -1,43 +1,25 @@
 import { app } from 'electron'
-import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
   DocumentReviewRendererV1,
-  LibreOfficePrivateConverterV1,
 } from './work-document-review-renderer'
+import { WordPrivateConverterV1 } from './work-word-private-converter'
 import { TemplateReviewReplacementImageStoreV1 } from './work-document-review-image-store'
 
 let defaultRenderer: DocumentReviewRendererV1 | null = null
 let defaultImageStore: TemplateReviewReplacementImageStoreV1 | null = null
 let rendererShutdownRegistered = false
 
-function libreOfficeExecutablePath(): string {
-  const executable = process.platform === 'win32' ? 'soffice.exe' : 'soffice'
-  const candidates = [
-    process.env.XIAOGUI_LIBREOFFICE_PATH,
-    join(process.resourcesPath, 'libreoffice', 'program', executable),
-    join(
-      app.getAppPath(),
-      'resources',
-      'libreoffice-runtime',
-      'runtime',
-      'program',
-      executable,
-    ),
-    join(app.getAppPath(), 'resources', 'libreoffice-runtime', 'program', executable),
-    process.platform === 'win32'
-      ? join('C:\\Program Files', 'LibreOffice', 'program', executable)
-      : '/usr/bin/soffice',
-  ].filter((value): value is string => Boolean(value))
-  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]
-}
-
 export function getDefaultDocumentReviewRendererV1(): DocumentReviewRendererV1 {
   if (!defaultRenderer) {
     defaultRenderer = new DocumentReviewRendererV1({
-      converter: new LibreOfficePrivateConverterV1({
-        executablePath: libreOfficeExecutablePath(),
+      converter: new WordPrivateConverterV1({
+        scriptPath: join(
+          app.isPackaged ? process.resourcesPath : join(app.getAppPath(), 'resources'),
+          'word-converter',
+          'convert-doc.ps1',
+        ),
         privateRoot:
           process.env.XIAOGUI_DOCUMENT_REVIEW_TEMP_ROOT ??
           join(app.getPath('temp'), 'xiaogui-document-review', 'v1'),
