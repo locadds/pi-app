@@ -72,6 +72,8 @@ soffice.com -env:UserInstallation=file:///E:/CodexTemp/xiaogui-doc-stability-202
 
 ## 结论与未覆盖项
 
+- A 路线官方核查已收尾：未找到直接匹配的修复候选。26.2.6.3 虽有精确官方包及摘要，但两版本 WW8 目录 tree SHA 相同，无直接导入修复依据，故不下载/试装。详见 [固定候选研究](LO-DOC-IMPORT-CANDIDATE-RESEARCH-2026-09-08.md)。生产运行时保持 26.2.5.2，后续 Word 条件由总控向用户确认；不在等待期间重复模型调用。
+
 - 分析输出 Prompt 最小改进及此固定 DOC 的实际确认/输出/保存重开旅程有证据；不确定旧安装版二次失败的唯一原因，也不声称统计意义的模型稳定率。
 - DOC 表格保真失败，整体仍 PARTIAL，不交付为“DOC 已完善”，不关闭 DOC 入口或以 DOCX 通过替代。
 - Office 仍仅通过既有 XIAOGUI_OFFICE_TEST=1 测试，未修改默认值；桌面 RC 默认/集成/安装包由唯一 owner 处理。本轮未做安装包或平台无关回归。
