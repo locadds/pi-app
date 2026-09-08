@@ -36,6 +36,7 @@ import { CodingAttemptPlanCard } from './CodingAttemptPlanCard'
 import { CodingAttemptReviewCard } from './CodingAttemptReviewCard'
 import { CodingCheckpointCard } from './CodingCheckpointCard'
 import { CodingRoleCard } from './CodingRoleCard'
+import { HubTaskInboxSection } from './HubTaskInboxSection'
 import { useCodingAttemptStore } from '../stores/coding-attempt-store'
 
 import {
@@ -1148,7 +1149,8 @@ export function CollaborationHubPanel() {
   if (!scope) {
     return (
       <div className="p-4 text-[12px] text-muted-foreground" data-testid="hub-no-session">
-        这里还没有可协作的会话。请先在左侧打开或新建一个工作或编码会话。
+        <p className="mb-3">这里还没有可协作的会话。请先在左侧打开或新建一个工作或编码会话。</p>
+        <HubTaskInboxSection />
       </div>
     )
   }
@@ -1188,6 +1190,8 @@ export function CollaborationHubPanel() {
           {loading || codingPlansLoading ? '加载中…' : '刷新'}
         </button>
       </div>
+
+      <HubTaskInboxSection />
 
       {error && <ErrorBanner error={error} onDismiss={clearError} />}
 

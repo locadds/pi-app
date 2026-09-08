@@ -3,7 +3,7 @@ import { readWorkerSkillOverrides } from './worker-skill-settings.js'
 
 type SkillSnapshot = {
   skills: Array<{ name?: string; description?: string; filePath?: string; path?: string; baseDir?: string; sourceInfo?: unknown }>
-  diagnostics: Array<Record<string, unknown>>
+  diagnostics: unknown[]
 }
 
 let baseSnapshot: SkillSnapshot | null = null
@@ -20,12 +20,13 @@ export function desktopSkillOverridesFromSettings(): Record<string, boolean> {
   return readWorkerSkillOverrides()
 }
 
-export function applySkillsOverride(base: SkillSnapshot): SkillSnapshot {
+export function applySkillsOverride<T extends SkillSnapshot>(base: T): T {
   baseSnapshot = {
     skills: [...base.skills],
     diagnostics: [...base.diagnostics],
   }
   return {
+    ...base,
     skills: filterSkillsByEnabledPaths(base.skills, desktopSkillOverridesFromSettings()),
     diagnostics: base.diagnostics,
   }

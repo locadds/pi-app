@@ -230,6 +230,8 @@ function messageForError(code: TemplateIntakeErrorCodeV1): string {
       return '普通成品文档整理只在日常工作会话中可用'
     case 'TEMPLATE_INTAKE_INPUT_INVALID':
       return '整理操作参数或所选文档不符合要求，请检查后重试'
+    case 'TEMPLATE_INTAKE_LEGACY_DOC_DISABLED':
+      return '当前院内候选暂不开放旧版 DOC 模板分析，请在 Word 中另存为 DOCX 后重试'
     case 'TEMPLATE_INTAKE_INPUT_TOO_LARGE':
       return '文档、提取内容或模板整理报告超过安全上限，未进行静默截断'
     case 'TEMPLATE_INTAKE_UNSAFE_DOCX':

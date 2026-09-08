@@ -55,6 +55,14 @@ import { createXiaoguiWorkerHostToolRouterV1 } from './worker-host-tool-router'
 import { registerTemplateLibraryHandlersV1 } from './template-library-ipc'
 import { closeDefaultTemplateLibraryServiceV1 } from './template-library-composition'
 import { registerDocumentReviewHandlersV1 } from './work-document-review-ipc'
+import { initC2ArtifactInstallV1 } from './c2/composition'
+import { registerC2ArtifactInstallHandlersV1 } from './c2/ipc'
+import {
+  closeDefaultHubTaskWorkerServiceV1,
+  getDefaultHubTaskWorkerInstallationIdDigestV1,
+  getDefaultHubTaskWorkerServiceV1,
+} from './hub-task/worker-composition'
+import { registerHubTaskWorkerHandlers } from './hub-task/worker-ipc'
 import {
   closeOfficeSurfaceSessionsV1,
   registerOfficeSurfaceHandlersV1,
@@ -83,7 +91,11 @@ export function initXiaogui(): void {
   initialized = true
 
   registerXiaoguiHandlers()
+  const hubTaskWorker = getDefaultHubTaskWorkerServiceV1()
   registerCollaborationHubHandlers()
+  registerHubTaskWorkerHandlers(hubTaskWorker, getDefaultHubTaskWorkerInstallationIdDigestV1())
+  initC2ArtifactInstallV1()
+  registerC2ArtifactInstallHandlersV1()
   registerWorkDocxHandlers()
   registerTemplateLibraryHandlersV1()
   registerDocumentReviewHandlersV1()
@@ -155,6 +167,7 @@ export async function shutdownXiaoguiSidecar(): Promise<void> {
   const results = await Promise.allSettled([
     Promise.resolve().then(() => xiaogui.shutdown()),
     Promise.resolve().then(() => closeDefaultCollaborationHubRuntimeComposition()),
+    Promise.resolve().then(() => closeDefaultHubTaskWorkerServiceV1()),
     Promise.resolve().then(() => closeDefaultCodingRoleProfileModuleV1()),
     Promise.resolve().then(() => closeDefaultCodingCheckpointProductionCompositionV1()),
     Promise.resolve().then(() => closeDefaultDirectCodingCompositionV2()),

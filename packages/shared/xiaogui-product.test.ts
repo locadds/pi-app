@@ -10,9 +10,9 @@ import {
 
 describe('小规产品身份', () => {
   it('固定内部试用版的名称、更新源和 Windows 身份', () => {
-    expect(XIAOGUI_PRODUCT_NAME).toBe('小规 Agent')
+    expect(XIAOGUI_PRODUCT_NAME).toBe('小规 Agent 院内候选')
     expect(XIAOGUI_GITHUB_REPOSITORY).toBe('locadds/pi-planning-agent')
-    expect(XIAOGUI_WINDOWS_APP_USER_MODEL_ID).toBe('com.xiaogui.agent')
+    expect(XIAOGUI_WINDOWS_APP_USER_MODEL_ID).toBe('com.xiaogui.agent.internal')
     expect(XIAOGUI_RELEASE_CHANNEL).toBe('internal-rc')
   })
 

@@ -109,6 +109,8 @@ export interface WorkDocxTemplateIntakeServiceOptionsV1 {
   parseTimeoutMs?: number
   /** 设为 false 可立即回退到既有逐段复核器。 */
   templateDraftV2Enabled?: boolean
+  /** The first internal candidate exposes DOCX analysis only. Conversion remains reusable. */
+  legacyDocAnalysisEnabled?: boolean
 }
 
 type PreparedReviewManifestV1 = {
@@ -697,6 +699,9 @@ export class WorkDocxTemplateIntakeServiceV1 {
     const selectedPath = handoff?.sourcePath ?? (await this.options.dialogs.chooseSource())
     if (!selectedPath) {
       return { ok: true, value: { kind: 'XIAOGUI_WORK_DOCX_TEMPLATE_INTAKE_SELECTION_CANCELLED' } }
+    }
+    if (this.options.legacyDocAnalysisEnabled === false && extname(selectedPath).toLowerCase() === '.doc') {
+      return failure('TEMPLATE_INTAKE_LEGACY_DOC_DISABLED')
     }
     const source = await readPrivateSource(
       selectedPath,

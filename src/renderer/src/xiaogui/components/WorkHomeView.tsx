@@ -30,7 +30,7 @@ const QUICK_ACTIONS: { id: QuickActionId; title: string; description: string; ar
   {
     id: 'DOCUMENT',
     title: '整理普通文档',
-    description: '选择 DOC 或 DOCX，开始只读分析和模板整理',
+    description: '选择 DOCX，开始只读分析和模板整理；旧 DOC 暂未开放',
     ariaLabel: '选择普通文档并开始分析',
   },
   {
@@ -102,7 +102,9 @@ export function WorkHomeView() {
       )
     } catch (reason) {
       console.error('[WorkHomeView] 快捷入口执行失败:', reason)
-      setError('没有完成选择或启动，请重试。')
+      setError(String(reason).includes('TEMPLATE_INTAKE_LEGACY_DOC_DISABLED')
+        ? '当前院内候选暂不开放旧版 DOC 模板分析，请在 Word 中另存为 DOCX 后重试。'
+        : '没有完成选择或启动，请重试。')
     } finally {
       setBusyAction(null)
     }

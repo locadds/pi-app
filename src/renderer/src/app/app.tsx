@@ -46,6 +46,7 @@ import { handleSdkRuntimeChanged } from '@renderer/lib/sdk-runtime-changed'
 import { prefetchAvailableModels } from '@renderer/lib/available-models-cache'
 
 import { useDoubleEscapeTree } from '@renderer/hooks/use-double-escape-tree'
+import { C2ArtifactInstallDialog } from '@renderer/xiaogui/components/C2ArtifactInstallDialog'
 
 // 小规 Agent 集成：一级模式切换器 + 三模式首屏视图
 // （DESIGN：项目检查；WORK：工作台引导；CODING：编程说明卡）
@@ -313,6 +314,7 @@ export default function App() {
         {paletteAndShortcuts}
         <AppUpdateHost />
         <CloseDecisionDialog />
+        <C2ArtifactInstallDialog />
       </ErrorBoundary>
     )
   }
@@ -419,6 +421,7 @@ export default function App() {
       <ExtensionUIHost />
       <AppUpdateHost />
       <CloseDecisionDialog />
+      <C2ArtifactInstallDialog />
       {paletteAndShortcuts}
       <Suspense fallback={null}>
         {modelPickerOpen && <ModelPicker />}

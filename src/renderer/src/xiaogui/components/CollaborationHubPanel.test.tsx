@@ -758,11 +758,14 @@ function showSession(session: SessionItem) {
 }
 
 describe('CollaborationHubPanel', () => {
-  it('没有 canonical 会话时不调用 Hub IPC 并提示先进入会话', async () => {
+  it('没有 canonical 会话时保留 Hub 登录且不读取协作计划', async () => {
     showSession(sessionWith('s-plain'))
     render(<CollaborationHubPanel />)
     expect(await screen.findByTestId('hub-no-session')).toHaveTextContent('请先在左侧打开或新建一个工作或编码会话')
+    expect(screen.getByRole('button', { name: '登录并配对此小规' })).toBeVisible()
+    expect(screen.getByPlaceholderText('Hub 用户名')).toBeVisible()
     expect(observeMock).not.toHaveBeenCalled()
+    expect(performMock).not.toHaveBeenCalled()
   })
 
   it('DESIGN reserved 不渲染任何 perform 按钮', async () => {

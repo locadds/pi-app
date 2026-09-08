@@ -194,6 +194,7 @@ export type OfficeSurfaceParentMessageV1 =
 export function readOfficeSurfaceModeV1(
   value = typeof process === 'undefined' ? undefined : process.env.XIAOGUI_OFFICE_SURFACE,
 ): OfficeSurfaceModeV1 {
+  if (value === undefined) return 'UNIVER_PREFERRED'
   return value === 'UNIVER_EXPERIMENTAL' || value === 'UNIVER_PREFERRED' ? value : 'OFF'
 }
 

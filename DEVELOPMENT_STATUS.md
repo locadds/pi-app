@@ -1,5 +1,48 @@
 # 小规开发阶段状态
 
+## 2026-09-08｜Windows 院内 RC 基础集成（未完成最终交付）
+
+- 输入：已验证集成基线 `8d7222f102b09fbfcf6e4092a42575f035aea9f2`；独立分支 `codex/windows-internal-rc-20260908-v1`。不合入 WORK、阶段线或主线，不发布 Release。
+- 当前目标已由协调者明确扩展为 DOC 分析、H1/C3、C2、CODING 和 Office 的同一 Windows 安装候选。本文记录的是可审查基础，不是范围全部完成的验收。
+- 产品固定为 `小规 Agent 院内候选`、`com.xiaogui.agent.internal`、`0.3.0-rc.2`；仅候选身份/版本元数据变更，没有升级 Pi、OMP 或其他依赖。Main 最早初始化统一 `userData/pi-agent`，尊重显式 `PI_CODING_AGENT_DIR`，不引入第二模型配置。
+- C2 按固定 `14f3616533b34d7fb7d42ddabf6ad80d099e65e7` 的窄模块移植，不整分支合并 H1 祖先。复用 Pi Resource Loader 的公开 `skillsOverride`、现有 Hub 登录组件与 safeStorage；不新建 Skill 加载器。新增 BOM 恢复只在 skills hook，不修改既有 extensions hook、角色保护或直接 CODING 工具权限。
+- Office 默认 `UNIVER_PREFERRED`；显式 OFF 和未知值仍 OFF，不改变既有 DOCX/HTML 降级。当前 DOC intake 禁用和 H1 task inbox 不轮询是等待固定候选的临时门，不能作为最终范围豁免。C2 自身 receipt outbox 保持独立可运行。静态 APP 从社区浏览器打开，没有新增桌面 APP 按钮。
+- 尚未完成：DOC/H1/C3 最终固定输入及窄差异集成、真实隔离 Hub 的 C2 组合、最终 NSIS/安装后旅程。不得据当前基础构建宣布这些已通过。Nexus 已由中台在本日确认恢复；等待其唯一新 Hub BaseURL，不自行启动平行服务。
+
+### 本轮修改及复用来源
+
+- 根 Agent：`package.json`、`package-lock.json`、`electron-builder.yml`、`sbom.cdx.json`、共享 product/office/intake 契约及对应测试、`src/main/bootstrap-profile.ts`、WORK intake composition/service/tool、`WorkHomeView` 及测试、本记录。
+- Terra：共享 C2/Hub 契约和 IPC、`src/main/xiaogui/c2/`、Hub 连接所需 `hub-task/` 模块及门测试、secret-store、Main/Preload/Renderer 装配、`C2ArtifactInstallDialog`、`HubTaskInboxSection`、`CollaborationHubPanel`、Pi resources/Skill BOM hook。最终精确文件以本阶段 Git 提交 diff 为准。
+- C2 来源链：`4d52588` 核心、`1756a2c` hardening、`2aa7d45` 无会话登录、`8dc9f81` BOM、`14f3616` Pi 公开 hook；不引入浮动依赖或陌生插件。已有第一方 `resources/pi-skills/xiaogui-work-documents/SKILL.md` 通过 Pi 原生命令实际展开验证；不以 Skill 数量替代行为证据。
+
+### 已执行验证（不替代最终安装验收）
+
+- 新树独立 `npm ci --offline --ignore-scripts --no-audit --no-fund`：1197 包完成；独立 Electron 43.0.0、better-sqlite3 native 和 LibreOffice 26.2.5 按既有校验脚本准备通过。没有使用另一工作树的 node_modules 链接。
+- `npm run build`：Main/Preload/Renderer/Office gateway 构建通过；这是第一次基础构建，早于最后的无会话登录/静态 APP 按钮删减，不能冒充最终 HEAD 构建。
+- `npm run typecheck`：Node/Web 通过（Terra 集成门）。
+- `npx vitest run src/main/xiaogui/c2/archive-installer.test.ts src/main/xiaogui/c2/deep-link-dispatcher.test.ts src/main/xiaogui/c2/install-coordinator.test.ts src/main/xiaogui/c2/receipt-outbox.test.ts src/main/xiaogui/c2/static-app-url-policy.test.ts src/main/xiaogui/hub-task/worker-credentials.test.ts`：6 文件 / 11 项通过。
+- `npx vitest run src/main/xiaogui/hub-task/worker-service-c2-gate.test.ts src/main/xiaogui/hub-task/worker-ipc-c2-gate.test.ts`：2 文件 / 2 项通过；连接保存不启动任务轮询，status/connect 白名单成立。
+- 无 scope 末端修正由根 Agent 完成：Terra 恢复任务停在 pending_init，停止该未启动任务后只在原空态加回同一个连接组件。`node node_modules/vitest/vitest.mjs run src/renderer/src/xiaogui/components/CollaborationHubPanel.test.tsx --testNamePattern='没有 canonical 会话'`：1 通过 / 29 未选中；原空态提示、登录入口和不读取/执行协作计划均保留。没有新增 Hub 入口页或自动配对。
+- `npx vitest run packages/shared/xiaogui-office-surface-mode.test.ts packages/shared/xiaogui-product.test.ts src/main/xiaogui/work-docx-template-intake-service.test.ts src/renderer/src/xiaogui/components/WorkHomeView.test.tsx --testNamePattern='院内候选|产品身份|三个|快捷'`：4 文件 / 7 通过 / 18 未选中；未选中不是额外通过证据。
+- 原始基础构建/准备及根测试日志：`D:/CodexTemp/xiaogui-windows-internal-rc-20260908`。Terra 的前两组输出来自工具返回，没有虚构不存在的日志附件。
+- 末端验证日志在 `E:/XiaoguiInternalCandidate/evidence-20260908`：`no-scope-login-test.log`、`base-typecheck.log`、`base-eslint.log`。最终差异 ESLint 的提交后复现命令为 `$files = @(git diff --name-only --diff-filter=ACM 8d7222f102b09fbfcf6e4092a42575f035aea9f2..HEAD -- '*.ts' '*.tsx'); node node_modules/eslint/bin/eslint.js @files`，不是在干净工作树上检查零文件；本轮实际运行覆盖所有已改及新增 TS/TSX，退出 0。
+- 末端 typecheck 首跑发现 gate 删减时遗漏 `invalidInput` helper（TS2304），恢复固定来源原函数，不改变错误枚举；同一 IPC 门测试补入非法输入不连接断言，重跑 1/1 通过（`base-ipc-test.log`）。保留 `base-typecheck.log` 红灯，不拿前次类型检查覆盖后续删减。
+- helper 修复后 `npm run typecheck` Node/Web 最终退出 0（`base-typecheck-final.log`），两个受影响 IPC 文件 ESLint 退出 0；暂存区检查发现新增移植文件 EOF 空行后仅规范末尾换行，再执行 `git diff --cached --check` 通过，没有改逻辑或重复跑成熟套件。
+- 本地窗口采用统一 `E:/XiaoguiInternalCandidate/test-profile`，实际 agentDir 为其 `pi-agent`；证据 `E:/XiaoguiInternalCandidate/evidence-20260908/local-profile-identity.json`，`packaged=false`。仅复制用户统一模型配置到私有测试目录，原配置不变，仓库不收原配置或凭据。
+- 原生选择框返回值由 Playwright 提供合成项目目录，随后走真实 Main 选择/登记链；不是用户手点原生选择器的证据。该项目仅包含合成文档。
+- 真实 Skill：用户配置模型 `deepseek/deepseek-v4-flash-vision-exp`；JSONL 中有 Pi 展开的完整 `<skill name="xiaogui-work-documents">` 后产生正常回复，未调用工具（任务明确要求不调用）。截图 `native-skill-response.png` 和原始会话留 E 盘私有证据。该结论只覆盖 Skill 展开与模型使用，不覆盖模型自主选择 Skill 或 DOC 分析。
+- 同 E profile 真实 CODING：首次 write 未及时确认，JSONL 为 `USER_OR_POLICY_DENIED`；明确重试后实际 UI 逐次允许 write/read，两次 `isError=false`。磁盘 `rc-coding-proof.txt` 为 23 bytes `RC_UNIFIED_PROFILE_PASS`，SHA-256 `31616b353177a94b786df1947386d2121451840fa7b404d2990aa62216bba7ba`，与回读一致。截图 `coding-write-permission.png`、`coding-read-permission.png` 实含来源项目、来源对话、操作、相对路径和两选项；`coding-response.png` 为最终回复。记录的是已允许的真实工具执行，不宣称截图等于用户亲自验收。
+- 私有会话索引（同 `test-profile/pi-agent/sessions/--E--XiaoguiInternalCandidate-test-project--/`）：Skill `2026-09-08T09-57-46-647Z_01a08073-c817-7f0d-be0a-b4aef787fc50.jsonl`；CODING `2026-09-08T09-59-08-619Z_01a08075-084b-7f64-a48f-171b01011ad0.jsonl`。原始文件不提交仓库。
+
+### 风险与下一门
+
+- 本轮 built 窗口实际阻断：CODING 写读成功后点击 WORK，Main `ipc:xiaogui.mode.switch` 报 `XIAOGUI_MODE_WORKER_REBUILD_FAILED: Worker not started`，随后日志出现 Init done，但界面仍 CODING。原始 `local-app.log` 与 `mode-switch-failure.png` 留 E；已停止 Office 旅程并通知协调者，未现场扩大修复，Office 编辑/保存/重开未验证。文件页的 DOCX“系统打开”入口不作为 Office Surface 失败证据。
+- 协调者随后批准在基础固定点之后处理上述最小模式切换问题包：先无模型真实 IPC/Worker 就绪回归，再按查实原因修复、回同一 UI 验证；本基础提交不包含该修复，不据旧同名故障猜测根因。
+- 观察：原生 Skill 展开后侧栏历史标题显示 `<skill ... location=...>` 片段；这条证据不证明公开展示已脱敏。本基础未修改相关历史标题投影。
+- D 盘余量快速波动；新 profile、测试临时文件、大型输出固定 E 盘。没有删其他树、保护 stash 或旧证据；源树保持原样。未制作 NSIS/Portable。
+- 上游 Linux Quality 仍有既有红灯，未扩大本轮修复或重新跑全量。最终安装包、ASAR、协议冷/热启动与同 profile 核验仍待完成。
+- 下一步：冻结基础提交供审查；等待 DOC/H1/C3 通过后的固定窄差异，保留 `coding.workspace` 默认四工具，最后只制作一套完整 NSIS；不交范围不全的最终包。
+
 ## 2026-09-07｜B-E2E-M4F：跨平台临时目录修正（Windows定向通过）
 
 - 固定输入 `0f4e26fd2a512d0eeba5d9303b0826bb62dc9a5a`；用户原包内目录准备授权由协调者确认。本轮仅 Terra 修改 `e2e/xiaogui-delivery-baseline-recovery.spec.ts`，主 Agent 更新本记录；没有生产、依赖、权限、模式、TaskHub或workflow变更。

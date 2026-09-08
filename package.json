@@ -1,13 +1,14 @@
 {
   "name": "xiaogui-agent-desktop",
-  "version": "0.3.0-rc.1",
+  "version": "0.3.0-rc.2",
+  "productName": "小规 Agent 院内候选",
   "description": "小规 Agent - 桌面端 AI Agent 应用",
   "main": "./out/main/index.js",
   "author": "xiaogui-agent",
   "license": "MIT",
   "type": "module",
   "xiaoguiBuild": {
-    "productName": "小规 Agent",
+    "productName": "小规 Agent 院内候选",
     "bundledRuntimeDependencies": [
       "officeparser",
       "cfb",

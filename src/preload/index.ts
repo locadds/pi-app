@@ -9,6 +9,7 @@ const EXT_UI_CHANNEL = 'ipc:extension-ui-request'
 const EXT_UI_DISMISS_CHANNEL = 'ipc:extension-ui-dismiss'
 const APP_UPDATE_CHANNEL = 'ipc:app-update-available'
 const APP_UPDATE_DOWNLOAD_PROGRESS_CHANNEL = 'ipc:app-update-download-progress'
+const C2_INSTALL_STATE_CHANNEL = 'ipc:xiaogui-c2-install-state'
 
 const api = {
   customThemeDisabled: process.argv.includes(CUSTOM_THEME_DISABLED_RENDERER_ARGUMENT),
@@ -79,6 +80,11 @@ const api = {
     const handler = (_event: unknown, data: unknown): void => callback(data)
     ipcRenderer.on(APP_UPDATE_DOWNLOAD_PROGRESS_CHANNEL, handler)
     return () => ipcRenderer.off(APP_UPDATE_DOWNLOAD_PROGRESS_CHANNEL, handler)
+  },
+  onC2InstallState(callback: (info: unknown) => void): () => void {
+    const handler = (_event: unknown, data: unknown): void => callback(data)
+    ipcRenderer.on(C2_INSTALL_STATE_CHANNEL, handler)
+    return () => ipcRenderer.off(C2_INSTALL_STATE_CHANNEL, handler)
   },
 
   onGitWorkspaceChanged(callback: (payload: { cwd: string }) => void): () => void {

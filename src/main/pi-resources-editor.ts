@@ -25,7 +25,7 @@ function agentDir() {
 }
 
 function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {
-  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
+  const m = raw.replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
   if (!m) return { meta: {}, body: raw }
   const meta: Record<string, string> = {}
   for (const line of m[1].split('\n')) {

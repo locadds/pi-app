@@ -112,6 +112,28 @@ function lookup(): SessionScopeLookupV1 {
 }
 
 describe('WORK 普通成品 Word 整理最小闭环', () => {
+  it.each([false, true])('院内候选在转换前拒绝旧DOC分析（handoff=%s）', async (handoff) => {
+    const root = await fixtureRoot()
+    const sourcePath = join(root, '未开放.doc')
+    const renderer = failedLegacyDocRenderer('LEGACY_DOC_CONVERSION_UNAVAILABLE')
+    const service = new WorkDocxTemplateIntakeServiceV1({
+      lookup: lookup(),
+      dialogs: { chooseSource: vi.fn(async () => sourcePath) },
+      handoffs: { consumeTemplateIntakeHandoff: vi.fn(() => handoff ? { sourcePath } : null) },
+      store: new WorkDocxTemplateIntakeStoreV1(join(root, 'private', 'disabled-doc.sqlite')),
+      reviewRenderer: renderer,
+      legacyDocAnalysisEnabled: false,
+    })
+    try {
+      await expect(service.execute(ADDRESS, { action: 'START', ...COMMON })).resolves.toEqual({
+        ok: false, error: { code: 'TEMPLATE_INTAKE_LEGACY_DOC_DISABLED' },
+      })
+      expect(renderer.prepare).not.toHaveBeenCalled()
+    } finally {
+      service.close()
+    }
+  })
+
   it.each([
     ['未装配 renderer', undefined, 'TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE'],
     ['转换组件不可用', 'LEGACY_DOC_CONVERSION_UNAVAILABLE', 'TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE'],

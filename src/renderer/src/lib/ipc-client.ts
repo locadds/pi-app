@@ -1,6 +1,7 @@
 import type { AppEvent } from '@shared/app-events'
 import type { AppUpdateAvailableInfo, AppUpdateDownloadProgress } from '@shared/app-update'
 import type { WorkerExitInfo } from '@renderer/lib/worker-exit-runtime'
+import type { C2InstallPublicStateV1 } from '@shared/xiaogui-c2-artifact'
 
 declare global {
   interface Window {
@@ -17,6 +18,7 @@ declare global {
       onExtensionUIDismiss: (callback: (payload: { type: string; id?: string; reason?: string }) => void) => () => void
       onAppUpdateAvailable: (callback: (info: AppUpdateAvailableInfo) => void) => () => void
       onAppUpdateDownloadProgress?: (callback: (info: AppUpdateDownloadProgress) => void) => () => void
+      onC2InstallState?: (callback: (info: C2InstallPublicStateV1) => void) => () => void
       onGitWorkspaceChanged: (callback: (payload: { cwd: string }) => void) => () => void
       onCloseRequested?: (callback: (info: { isStreaming: boolean }) => void) => () => void
       onNotificationOpenSession?: (
@@ -86,6 +88,11 @@ export function onAppUpdateDownloadProgress(
 ): () => void {
   if (!window.piDesktop?.onAppUpdateDownloadProgress) return () => {}
   return window.piDesktop.onAppUpdateDownloadProgress(callback)
+}
+
+export function onC2InstallState(callback: (info: C2InstallPublicStateV1) => void): () => void {
+  if (!window.piDesktop?.onC2InstallState) return () => {}
+  return window.piDesktop.onC2InstallState(callback)
 }
 
 export function onGitWorkspaceChanged(callback: (payload: { cwd: string }) => void): () => void {

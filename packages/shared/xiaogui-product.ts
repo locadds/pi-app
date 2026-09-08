@@ -1,8 +1,8 @@
 /** 小规桌面端对外身份。内部兼容键仍可保留 pi-desktop 前缀。 */
-export const XIAOGUI_PRODUCT_NAME = '小规 Agent'
+export const XIAOGUI_PRODUCT_NAME = '小规 Agent 院内候选'
 export const XIAOGUI_GITHUB_REPOSITORY = 'locadds/pi-planning-agent'
 export const XIAOGUI_GITHUB_URL = `https://github.com/${XIAOGUI_GITHUB_REPOSITORY}`
-export const XIAOGUI_WINDOWS_APP_USER_MODEL_ID = 'com.xiaogui.agent'
+export const XIAOGUI_WINDOWS_APP_USER_MODEL_ID = 'com.xiaogui.agent.internal'
 export const XIAOGUI_RELEASE_CHANNEL = 'internal-rc' as const
 
 export type XiaoguiReleaseCapabilityStatusV1 =

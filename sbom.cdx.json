@@ -5,8 +5,8 @@
   "metadata": {
     "component": {
       "type": "application",
-      "name": "小规 Agent",
-      "version": "0.3.0-rc.1"
+      "name": "小规 Agent 院内候选",
+      "version": "0.3.0-rc.2"
     }
   },
   "components": [

@@ -27,6 +27,7 @@ import { formatSessionModelKey, type SessionModelRef } from '@shared/worker-mode
 import { createDesktopUIBridge, type DesktopUIBridge } from './desktop-ui-bridge.js'
 import { createDesktopWidgetHost } from './desktop-widget-host.js'
 import { applySkillsOverride } from './skill-override.js'
+import { recoverBomSkills } from './skill-bom-compat.js'
 import { decorateQuestionnaireTools } from './questionnaire-tool-decorator.js'
 import { addXiaoguiWorkerToolsV1 } from './xiaogui-worker-tools.js'
 import { assertXiaoguiModelToolSchemasCompatible } from './xiaogui-model-tool-schema-compatibility.js'
@@ -698,7 +699,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
           )
           return assertXiaoguiModelToolSchemasCompatible(loaded)
         },
-        skillsOverride: applySkillsOverride as never,
+        skillsOverride: (base) => applySkillsOverride(recoverBomSkills(base, sdk)),
       },
     })
     const created = await sdk.createAgentSessionFromServices({
