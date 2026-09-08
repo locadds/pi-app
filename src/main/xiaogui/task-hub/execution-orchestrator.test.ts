@@ -1320,6 +1320,51 @@ function parallelHub(
 }
 
 describe('H1 actual dispatch receipt boundary', () => {
+  it.each(['FAILED', 'SUCCEEDED'] as const)('retains dispatch authority after the runtime settles as %s', async (terminal) => {
+    const events: string[] = []
+    const dbPath = await tempDb()
+    const hub = fakeHub(events, dbPath)
+    const monitor = fakeRuntimeMonitor()
+    const verification = fakeVerificationCoordinator()
+    const orchestrator = await createOrchestrator(hub.application, events, undefined, dbPath, {
+      runtimeMonitor: monitor,
+      verificationCoordinator: { ...verification, handleSucceeded: async (input) => {
+        hub.completeSuccessfully()
+        return verification.handleSucceeded(input)
+      } },
+    })
+    let deliveryReady = false
+    const evidence = {
+      listExecutionBindings: () => [{ address: ADDRESS, flowId: FLOW_ID }],
+      recordExecutionStarted: vi.fn(async () => {}),
+      reportExecutionOutcome: vi.fn(async () => {}),
+      reportDeliveryOutcome: vi.fn(async () => {}),
+    }
+    const options = {
+      application: hub.application, taskExecution: orchestrator, evidence,
+      delivery: { recover: async () => undefined, readLatestDelivery: () => deliveryReady ? { flowId: FLOW_ID, state: 'READY_FOR_REVIEW' } as never : null },
+    }
+    const lifecycle = createHubTaskExecutionLifecycleCoordinatorV1(options)
+    orchestrator.setExecutionLifecycle(lifecycle)
+    try {
+      await orchestrator.start(request())
+      await monitor.emit('runtime-1', terminal === 'FAILED'
+        ? { state: 'FAILED', runtimeSessionId: 'runtime-1', receiptDigest: 'sha256:failure', reasonCode: 'AGENT_EXITED' }
+        : { state: 'SUCCEEDED', runtimeSessionId: 'runtime-1', receiptDigest: 'sha256:success', candidateDigest: 'sha256:candidate' })
+      const db = new DatabaseSync(dbPath)
+      try { expect(db.prepare('select phase from task_execution_sagas').get()).toMatchObject({ phase: terminal === 'FAILED' ? 'FAILED' : 'SETTLED' }) } finally { db.close() }
+      if (terminal === 'FAILED') expect(evidence.reportExecutionOutcome).toHaveBeenCalledWith(ADDRESS, FLOW_ID, { verificationState: 'NOT_RUN' })
+      else {
+        deliveryReady = true
+        await lifecycle.reconcile({ address: ADDRESS, flowId: FLOW_ID })
+        expect(evidence.reportDeliveryOutcome).toHaveBeenCalledWith(ADDRESS, { flowId: FLOW_ID, state: 'READY_FOR_REVIEW' })
+      }
+      const started = evidence.recordExecutionStarted.mock.calls.length
+      await createHubTaskExecutionLifecycleCoordinatorV1(options).recover()
+      expect(evidence.recordExecutionStarted.mock.calls.length).toBeGreaterThan(started)
+    } finally { await orchestrator.close() }
+  })
+
   it.each(['plan', 'role'] as const)('does not report while %s is unapproved; dispatch and repeated reconciliation enqueue once', async (gate) => {
     const events: string[] = []
     const dbPath = await tempDb()
@@ -1376,7 +1421,7 @@ describe('H1 actual dispatch receipt boundary', () => {
 })
 
 function fakeHub(events: string[], privateDbPath?: string) {
-  let attemptStatus: 'WORKSPACE_PREPARING' | 'READY' | 'RUNNING' | 'FAILED' | 'OUTCOME_UNKNOWN' | undefined
+  let attemptStatus: 'WORKSPACE_PREPARING' | 'READY' | 'RUNNING' | 'FAILED' | 'SUCCEEDED' | 'OUTCOME_UNKNOWN' | undefined
   let runtimeSession: string | undefined
   let schedules = 0
   let failDispatch = false
@@ -1496,6 +1541,10 @@ function fakeHub(events: string[], privateDbPath?: string) {
 
   return {
     application,
+    completeSuccessfully: () => {
+      attemptStatus = 'SUCCEEDED'
+      if (privateDbPath) writePrivateRuntimeAttempt(privateDbPath, attemptStatus, 'runtime-1')
+    },
     scheduleCount: () => schedules,
     runtimeSessionId: () => runtimeSession,
     systemCommands: () => executeSystem.mock.calls.map(([command]) => command),
@@ -1509,7 +1558,7 @@ function fakeHub(events: string[], privateDbPath?: string) {
 
 function writePrivateRuntimeAttempt(
   dbPath: string,
-  status: 'RUNNING' | 'FAILED' | 'OUTCOME_UNKNOWN',
+  status: 'RUNNING' | 'FAILED' | 'SUCCEEDED' | 'OUTCOME_UNKNOWN',
   runtimeSessionId: string,
 ): void {
   const db = new DatabaseSync(dbPath)

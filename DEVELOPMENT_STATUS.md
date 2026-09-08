@@ -2,6 +2,9 @@
 
 ## 2026-09-09｜H1 开始回执 P1 最小整改
 
+- 增量复验定位5dc门的终态回归：原 saga.byAttempt 排除FAILED/SETTLED，runtime先settle再reconcile导致失败/Delivery丢报。已仅为证据读取显式includeTerminal，原resume默认仍只查活动操作。真实monitor回调→settle→coordinator的FAILED与SUCCEEDED/READY_FOR_REVIEW补证旧红新绿，恢复读取也通过；Application/verification为合成端口，未调用模型。最终受影响2文件35/35、Node类型和4文件lint通过，日志 `h1-start-terminal-focused.log` / `h1-start-terminal-typecheck.log` / `h1-start-terminal-eslint.log`。
+- `h1-terminal-gate-red.log` 是首次夹具遗漏close导致的失败，不作产品红灯；修正夹具后 `h1-terminal-gate-red-v2.log` 才是两条终态报告0次的产品回归红灯。日志分别保留，不覆盖旧证据。
+
 - 固定起点 f4f7acbec5588b047c913e459582f6c29eb5da82。独立只读审查 Standards0 / Spec1P1：已准备但 Plan/Role 未批准的 Attempt，被新生命周期误当作已执行并上报 EXECUTION_STARTED。旧报告 `E:/XiaoguiInternalCandidate/combined-integration-20260909/f4f7acb-independent-review.md` 保留。
 - 仅修改 H1 execution-orchestrator / hub-execution-lifecycle 及对应测试。Main 新增只读 hasDispatchEvidence：既有 saga 必须匹配 address/flow/taskRun/attempt，私有 attempt 必须匹配 flow/taskRun，且存在 Application 写入的 agent_dispatch_outbox 或真实 runtime_session_id；不以 READY/FAILED、runtime selection 或对象存在作为已执行证明。无新表/合同/凭据/审批变更。
 - 正常 reconcile 与启动恢复共同使用上述门；实际 dispatch 返回后向原 coordinator 排队 reconcile，覆盖人工批准走 resumeAttempt 不经过原 start IPC 的路径。非等待排队避免与 coordinator.recover 等待执行器恢复形成循环；签名队列既有去重保证重复 reconcile 不新增开始回执。

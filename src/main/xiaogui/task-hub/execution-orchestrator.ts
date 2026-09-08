@@ -185,7 +185,7 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
   hasDispatchEvidence(trigger: HubTaskExecutionLifecycleTriggerV1): boolean {
     if (this.closed || !trigger.attemptId || !trigger.taskRunId) return false
     const attemptId = trigger.attemptId as AttemptId
-    const operation = this.saga.byAttempt(trigger.address, attemptId)
+    const operation = this.saga.byAttempt(trigger.address, attemptId, { includeTerminal: true })
     if (operation?.flow_id !== trigger.flowId || operation.task_run_id !== trigger.taskRunId) return false
     const attempt = this.privateAttemptStore.attempt(attemptId)
     if (attempt?.flow_id !== trigger.flowId || attempt.task_run_id !== trigger.taskRunId) return false
@@ -1114,7 +1114,7 @@ class SqliteTaskExecutionSagaStoreV1 {
       .get(operationId) as ExecutionSagaRowV1 | undefined
   }
 
-  byAttempt(address: HubAddressV1, attemptId: AttemptId): ExecutionSagaRowV1 | undefined {
+  byAttempt(address: HubAddressV1, attemptId: AttemptId, options: { includeTerminal?: boolean } = {}): ExecutionSagaRowV1 | undefined {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
@@ -1122,10 +1122,10 @@ class SqliteTaskExecutionSagaStoreV1 {
                permission_mode, permission_policy_digest, last_safe_code
           from task_execution_sagas
          where project_id = ? and session_key = ? and attempt_id = ?
-           and phase not in ('FAILED', 'SETTLED')
+           and (? = 1 or phase not in ('FAILED', 'SETTLED'))
          limit 1
       `)
-      .get(address.projectId, address.sessionKey, attemptId) as ExecutionSagaRowV1 | undefined
+      .get(address.projectId, address.sessionKey, attemptId, options.includeTerminal ? 1 : 0) as ExecutionSagaRowV1 | undefined
   }
 
   acquire(
