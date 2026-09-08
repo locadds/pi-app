@@ -20,6 +20,21 @@ import {
 const requestWorkerHostToolMock = vi.hoisted(() => vi.fn())
 const requestTemplateIntakeReviewMock = vi.hoisted(() => vi.fn())
 
+it('provides a validator-valid VARIABLE example with its required suggestedName', () => {
+  const prompt = TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt
+  const example = prompt.split('\n').find((line) => line.startsWith('只返回严格 JSON：'))!
+  const raw = example.slice('只返回严格 JSON：'.length)
+  const parsed = JSON.parse(raw)
+  expect(parsed.suggestions.some((item: { kind: string }) => item.kind === 'VARIABLE')).toBe(true)
+  const fragments = [
+    { fragmentId: 'F001', kind: 'PARAGRAPH' as const, anchor: { part: 'BODY' as const, paragraphIndex: 1 }, text: '项目名称：示例项目甲' },
+    { fragmentId: 'F002', kind: 'PARAGRAPH' as const, anchor: { part: 'BODY' as const, paragraphIndex: 2 }, text: '签字：张三' },
+  ]
+  expect(__test.validateSuggestions(raw, fragments)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'VARIABLE', suggestedName: '项目名称' }),
+  ]))
+})
+
 vi.mock('./worker-host-tool-channel.js', () => ({
   requestWorkerHostTool: requestWorkerHostToolMock,
 }))
@@ -145,9 +160,9 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     })
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.id)
       .toBe('template-intake-analysis')
-    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.version).toBe('1.2.1')
+    expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.version).toBe('1.2.2')
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
-      .toContain('template-intake-analysis@1.2.1')
+      .toContain('template-intake-analysis@1.2.2')
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)
       .toContain('occurrence 仅限 SELECTION 使用')
     expect(TEMPLATE_INTAKE_ANALYSIS_MODEL_PROMPT_V1.systemPrompt)

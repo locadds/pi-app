@@ -1,5 +1,12 @@
 # 小规开发阶段状态
 
+## 2026-09-08｜WORK DOC 分析后续（施工候选，未验收）
+
+- 从冻结 `c1adfd4` 建 E 盘独立分支 `codex/work-doc-analysis-stability-v2-e1`；原 WORK/CODING、桌面发布树和主线不动。
+- 同一合成 DOC 的真实 START 捕获首次缺少 suggestedName，既有精确 repair 补齐后通过。旧安装版二次失败缺少原始输出，未冒认同因或关闭。
+- 最小候选只将子模型 Prompt 升至 1.2.2，补逐项必填说明与合法 VARIABLE 示例；schema、一次 repair、正式确认和 Office 默认不变。示例检查红绿、intake/Catalog 19 项及节点类型检查通过，本树构建通过。
+- 新候选真实 DOC 闭环待验。详见 `doc/WORK-DOC-STABILITY-HANDOFF-2026-09-08.md`；未合主线、未制作安装包、未发布。
+
 ## 2026-09-07｜WORK 单机保存与自然语言文档闭环（阶段候选，待人工验收）
 
 - 共同基线 `a60041e3bd7a8a3c34b41547da05d42755f7a696`；隔离分支 `codex/work-document-stability-v1`，固定实现 `2817547bff293b44574fd5d064dcb3abef01f8eb`。原候选的 Timeline 修改与主线均未触碰。文档收尾提交不改变已测构建内容。
