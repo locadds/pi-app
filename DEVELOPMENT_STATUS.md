@@ -1,5 +1,19 @@
 # 小规开发阶段状态
 
+## 2026-09-08｜RC 基础返修：模式重建诊断与显式重登录（候选）
+
+- 固定父提交 `f9455671f402109863defdc945bb1747066e53bb` 已推送独立 RC 分支；协调者基础审查 Standards CLEAR、Spec 1 项 P2（已配置后无重新登录入口）。模式切换是另条已批准的基础使用阻断。最终 DOC/H1/C3/NSIS 未完成的边界不变。
+- MODE 原因收敛：已 await 的可信 Worker 初始化完成后，handler 额外调用依赖前台槽位的通用诊断 RPC；`session.setVisible(null)` 可撤销该槽位，额外查询因此抛 `Worker not started`。Terra 只修改 `src/main/xiaogui/ipc-handlers.ts`，读取同一次 `WorkerInitResult.promptDiagnostics`；缺失诊断、错误模式、活动回合/权限窗和失败回滚仍拒绝，不改 phase、可信能力、JSONL cwd 或权限矩阵。
+- 回归在 `ipc-handlers-scope-lookup.test.ts` 和 `worker-manager-session-isolation.test.ts`。后者使用真实 WorkerManager/消息处理、fake transport 的真实 `init-done` 事件形状，证明 start 在初始化前不结算、撤销前台后旧诊断查询会失败；不是外部模型或 OS 子进程测试。handler 的可控故障与其配对，不能把一处 mock 返回值当完整旅程。
+- 红灯：`E:/XiaoguiInternalCandidate/mode-switch-red-foreground-race-f945567.log`，旧实现 2 failed / 30 passed。修复后 `npx vitest run src/main/xiaogui/ipc-handlers-scope-lookup.test.ts src/main/__tests__/worker-manager-session-isolation.test.ts`：2 文件 / 33 通过；`mode-switch-fixed-f945567.log`。三文件定向 ESLint、diff-check 通过。
+- `npm run typecheck`：Node/Web 通过（`evidence-20260908/mode-switch-typecheck.log`）。`node node_modules/electron-vite/bin/electron-vite.js build --outDir E:/XiaoguiInternalCandidate/mode-switch-build/out`：Main/Preload/Renderer 通过（`mode-switch-build.log`）；未重建无改动的 Office viewer/gateway。约 19 MB 新生成产物复制至当前测试树 out，主入口源/目标 SHA-256 均 `fccf0fffaa4268200634bedef26c41c50ba61dc25116b212bcf6ee96984e1007`。不是打包或 NSIS 证据。
+- 根 Agent 使用原 E profile 重启并运行 `node E:/XiaoguiInternalCandidate/evidence-20260908/mode-switch-ui-probe.mjs fixed-live-worker`：无模型通过；打开既有 CODING 历史后通过已有授权 `workspace.ensureWorker` IPC 实际启动 Worker，再点击 WORK，主进程真实 Ready/init/Init done → abort/dispose → 新 Ready/init/Init done，WORK 选中、无新 MODE 错误。`mode-switch-fixed-live-worker.json/png` 留证。显式无模型启动是探针步骤，不宣称恢复历史本身必然启动 Worker。
+- 首次真实失败仍保留；基线的普通窗口重试曾成功（历史恢复是 lazy，没有保证触及重建分支），不将这些成功当红灯或修复依据。最终复验用上述显式初始化的探针补齐真实进程链。
+- C2 P2：Terra 只修改 `HubTaskInboxSection.tsx`，已配置状态显示显式“重新登录并配对此小规”，点击仅展示原表单；提交才调用原 connect，失败保留重试，成功回到已配置视图。不新增认证系统、设置页、后台轮询，不清凭据或 C2 outbox。
+- 新 `HubTaskInboxSection.test.tsx` 用真实组件和 IPC mock 验证已配置/未配置、点击入口不 connect、首次提交恰好一次、失败再次提交、成功收起表单。根将合成测试密码改为符合 Main 长度要求的值，并补成功退出表单断言。`node node_modules/vitest/vitest.mjs run src/renderer/src/xiaogui/components/HubTaskInboxSection.test.tsx`：2/2 通过（`evidence-20260908/relogin-final-test.log`）；组件两文件 ESLint 与最终 Web typecheck 通过，Node 文件在上述 typecheck 已通过且此后无生产修改。这是聚焦组件证据，不是过期真实 Hub token 联调。
+- MODE 窗口使用的构建早于最后 C2 重登录微调，不能称最终 HEAD 全部 UI 的构建/安装验收。协调者允许此处只跑重登录聚焦 UI 门；完整组合构建仍在最终候选装配执行。下一步提交独立分支后等待定向复验，不交 NSIS、不合主线。
+
+
 ## 2026-09-08｜Windows 院内 RC 基础集成（未完成最终交付）
 
 - 输入：已验证集成基线 `8d7222f102b09fbfcf6e4092a42575f035aea9f2`；独立分支 `codex/windows-internal-rc-20260908-v1`。不合入 WORK、阶段线或主线，不发布 Release。

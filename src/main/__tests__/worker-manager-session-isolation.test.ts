@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { WorkerSlot } from '../worker-manager-types'
+import type { WorkerInitResult, WorkerSlot } from '../worker-manager-types'
 import { WorkerManager } from '../worker-manager'
 import { attachWorkerHandlers } from '../worker-manager-pool'
 import { normalizeSessionKey, workspacePoolKey } from '../worker-session-key'
@@ -205,6 +205,36 @@ describe('WorkerManager session isolation', () => {
     expect(preview).toEqual(expect.objectContaining({ sessionFile: target.poolKey, estimatedChars: 22 }))
     expect(foreground.worker.postMessage).not.toHaveBeenCalled()
     expect(await manager.getSessionContextPreview('/sessions/missing.jsonl')).toBeNull()
+  })
+
+  it('keeps start pending until the created Worker returns its init diagnostics, even if foreground is revoked', async () => {
+    const manager = managerForTests()
+    const created = fakeSlot(workspacePoolKey('/workspace'))
+    bindSlotRoot(created, '/workspace', null)
+    let resolveInit!: (result: WorkerInitResult) => void
+    const init = new Promise<WorkerInitResult>((resolve) => {
+      resolveInit = resolve
+    })
+    created.initResolver = resolveInit
+    forkWorkerForCwd.mockResolvedValue({ slot: created, init })
+
+    let settled = false
+    const started = manager.start(trusted.issueProject('/workspace')).then(() => {
+      settled = true
+    })
+    await vi.waitFor(() => expect(forkWorkerForCwd).toHaveBeenCalledOnce())
+    manager.clearForegroundSession()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    ;(created.worker as FakeTransport).emitMessage({
+      type: 'init-done',
+      sessionId: 'rebuilt-worker',
+      promptDiagnostics: { manifest: { mode: 'CODING' } },
+    })
+    await started
+
+    await expect(manager.getEffectivePromptManifest()).rejects.toThrow('Worker not started')
   })
 
   it('routes a private checkpoint capture to the bound session without returning path or leaf', async () => {

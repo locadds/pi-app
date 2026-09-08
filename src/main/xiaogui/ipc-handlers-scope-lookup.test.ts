@@ -53,6 +53,9 @@ vi.mock('../worker-manager', () => ({
     getEffectivePromptManifest: mocks.getEffectivePromptManifest,
   },
 }))
+vi.mock('../trusted-worker-control', () => ({
+  startTrustedWorkerForProjectV1: mocks.start,
+}))
 vi.mock('../config-store', () => ({ configStore: { get: vi.fn() } }))
 vi.mock('../worker-manager-pool', () => ({
   extensionUiDialogSource: mocks.extensionUiDialogSource,
@@ -179,6 +182,20 @@ describe('xiaogui canonical scope lookup IPC', () => {
 
   it('P16 safe-rebuild: acknowledges WORK to CODING only after the idle Worker Prompt Context is rebuilt', async () => {
     mocks.cwd = 'C:\\workspace'
+    mocks.start.mockResolvedValueOnce({
+      sessionId: 'rebuilt-worker',
+      promptDiagnostics: {
+        manifest: {
+          mode: 'CODING',
+          capabilityIds: ['coding.workspace'],
+          toolNames: ['read', 'write'],
+        },
+      },
+    })
+    // A visible-session update can revoke the foreground slot after the new
+    // Worker has reported init-done. The mode acknowledgement must validate
+    // that init result, not issue a second foreground-dependent RPC.
+    mocks.getEffectivePromptManifest.mockRejectedValueOnce(new Error('Worker not started'))
 
     await expect(
       mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
@@ -187,22 +204,36 @@ describe('xiaogui canonical scope lookup IPC', () => {
     expect(mocks.mode).toBe('CODING')
     expect(mocks.stop).toHaveBeenCalledOnce()
     expect(mocks.start).toHaveBeenCalledWith('C:\\workspace')
-    expect(mocks.getEffectivePromptManifest).toHaveBeenCalledOnce()
+    expect(mocks.getEffectivePromptManifest).not.toHaveBeenCalled()
   })
 
   it('P16 fail-closed: rolls back when the rebuilt Worker still reports the WORK Prompt Context', async () => {
     mocks.cwd = 'C:\\workspace'
-    mocks.getEffectivePromptManifest.mockResolvedValueOnce({
-      manifest: {
-        mode: 'WORK',
-        capabilityIds: ['work.file-organize'],
-        toolNames: ['read', 'xiaogui_read_pdf'],
+    mocks.start.mockResolvedValueOnce({
+      sessionId: 'rebuilt-worker',
+      promptDiagnostics: {
+        manifest: {
+          mode: 'WORK',
+          capabilityIds: ['work.file-organize'],
+          toolNames: ['read', 'xiaogui_read_pdf'],
+        },
       },
     })
 
     await expect(
       mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
     ).rejects.toThrow('XIAOGUI_MODE_WORKER_REBUILD_FAILED')
+
+    expect(mocks.mode).toBe('WORK')
+  })
+
+  it('P16 fail-closed: rolls back when rebuilt init has no prompt diagnostics', async () => {
+    mocks.cwd = 'C:\\workspace'
+    mocks.start.mockResolvedValueOnce({ sessionId: 'rebuilt-worker' })
+
+    await expect(
+      mocks.handlers.get('ipc:xiaogui.mode.switch')!({ mode: 'CODING' }),
+    ).rejects.toThrow('XIAOGUI_MODE_PROMPT_CONTEXT_UNAVAILABLE')
 
     expect(mocks.mode).toBe('WORK')
   })

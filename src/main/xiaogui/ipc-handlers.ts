@@ -164,9 +164,12 @@ export function registerXiaoguiHandlers(): void {
     }
     try {
       await workerManager.stop()
-      await startTrustedWorkerForProjectV1(cwd)
-      const diagnostics = await workerManager.getEffectivePromptManifest()
-      if (diagnostics?.manifest.mode !== mode) {
+      const initialized = await startTrustedWorkerForProjectV1(cwd)
+      const diagnostics = initialized.promptDiagnostics
+      if (!diagnostics) {
+        throw new Error('XIAOGUI_MODE_PROMPT_CONTEXT_UNAVAILABLE')
+      }
+      if (diagnostics.manifest.mode !== mode) {
         throw new Error('XIAOGUI_MODE_PROMPT_CONTEXT_MISMATCH')
       }
     } catch (error) {
