@@ -63,6 +63,12 @@ Word API 依据：[Documents.Open](https://learn.microsoft.com/en-us/office/vba/
 
 ## 交付范围与未覆盖项
 
+### 2026-09-09：测试平台夹具修订
+
+对 `8638c6250ef7411840196cfe869365f078fc186a` 的只读审阅发现测试未模拟 Windows，在 Ubuntu 会被生产平台检查提前拒绝。本次仅在 `work-word-private-converter.test.ts` 的 describe 作用域内，每项开始模拟 win32、结束恢复原 process.platform 属性描述符；新增模拟 Linux 时 WORD_UNAVAILABLE 且 runner 零调用的断言，未跳过 Windows 行为测试。
+
+仅运行该文件：1 文件 / 10 项通过，git diff --check 通过。这是本机带平台模拟的聚焦结果，不宣称已执行 Ubuntu CI。生产源码/资源未变，复用上述 c6 构建摘要；未重跑构建、模型、Word 或真实旅程。
+
 - 本固定 DOC 的表格丢失由 Word 主转换解决，实际正式输出与保存重开有证据；首次子模型不可用的准确原因仍未知，不声称统计稳定性或无需人工修正。
 - 高级复核初次关闭保存了默认 KEEP，后续通过明确 UPDATE/高级复核修正；快捷汇总仍呈现原建议、部分定位不可靠等体验问题未改。不能把聊天 UPDATE 统计当作最终复核动作，最终以实际复核和生成结果为准。
 - 历史 LO 报告/草稿没有迁移或复验；不自动将旧 `81f3ff3` 的失败证据改判。新验收使用 Word 转换的新报告。

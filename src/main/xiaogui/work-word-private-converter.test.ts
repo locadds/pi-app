@@ -2,7 +2,7 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   WordConversionErrorV1,
@@ -28,6 +28,28 @@ async function fixtureRoot(): Promise<{ root: string; scriptPath: string; powers
 }
 
 describe("WordPrivateConverterV1", () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", originalPlatform);
+  });
+
+  it("rejects non-Windows platforms before starting the process runner", async () => {
+    Object.defineProperty(process, "platform", { ...originalPlatform, value: "linux" });
+    const fixture = await fixtureRoot();
+    const processRunner = vi.fn();
+    const converter = new WordPrivateConverterV1({ ...fixture, processRunner });
+
+    await expect(converter.convert(Buffer.from("doc"), "DOC", "DOCX")).rejects.toMatchObject({
+      code: "WORD_UNAVAILABLE",
+    });
+    expect(processRunner).not.toHaveBeenCalled();
+  });
+
   it("converts only DOC through the private PowerShell seam, then cleans the session", async () => {
     const fixture = await fixtureRoot();
     const calls: Array<{ executable: string; args: readonly string[]; signal?: AbortSignal }> = [];
