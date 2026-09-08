@@ -1,9 +1,9 @@
 # 小规开发阶段状态
 
-## 2026-09-08｜WORK Word DOC 主转换（施工候选）
+## 2026-09-08｜WORK Word DOC 主转换（阶段候选，待验收）
 
 - 用户明确 Windows + Microsoft Word 部署基线，DOC 主转换接入现有 Renderer seam；失败不回退 LibreOffice，不改 DOCX/PDF、Pi、Univer 或确认状态机。
-- 起点81f3ff3，施工分支 `codex/work-word-doc-converter-v1`。独立 Word 对照保留原 DOC 的 1 表2x2及全文，源 SHA 不变；真实 Adapter→Renderer 冒烟通过，完整模型闭环待验。
+- 起点81f3ff3，施工分支 `codex/work-word-doc-converter-v1`，业务代码固定 `c6c7124f2230a699c424ef2fbe640467f2f2d9d7`。独立 Word 对照保留原 DOC 的1表2x2及全文，源 SHA 不变；真实 Adapter→Renderer 冒烟通过，经一次分析重试及人工修正完成正式模板/成品和Word保存重开，表格/单元格/标签保留。首次MODEL_UNAVAILABLE原因仍未知，不宣称全程一次成功。
 - 仅新增 Word 私有 helper、Adapter、装配/错误映射和资源声明；没有制作 NSIS。详见 `doc/WORK-WORD-DOC-CONVERTER-HANDOFF-2026-09-08.md`。未验收、未进入主线、未发布。
 
 ## 2026-09-08｜WORK DOC 分析后续（施工候选，未验收）
