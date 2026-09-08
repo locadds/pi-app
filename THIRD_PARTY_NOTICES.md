@@ -17,7 +17,7 @@
 - 安装包：`LibreOffice_26.2.5_Win_x86-64.msi`
 - 固定 SHA-256：`f15ba07bfcb0186986cf3171063506f5d207c11f8cc051ba0d135209e9e915f9`
 - 许可证：MPL 2.0；官方发行包中的第三方许可证与说明随运行时一并装配。
-- 用途：仅在本机无界面、独立用户配置目录中把通过基础检查的旧版 DOC 转为内部 DOCX。DOCX 复核和模板预览不再转 PDF。
+- 用途：保留既定打包资源及历史转换实现；当前 Windows 旧版 DOC 主转换已改用本机 Microsoft Word，不自动回退此路径。DOCX 复核和模板预览不再转 PDF。
 - 装配：二进制不进入 Git。Windows 阶段封版时由 `scripts/prepare-libreoffice-runtime.mjs` 下载到 D 盘缓存、校验官方摘要，再加入安装包；对应固定版本源码获取地址为 https://download.documentfoundation.org/libreoffice/src/26.2.5/ 。
 - 运行边界：转换设固定超时，可中止并终止进程树；不用于 DOCX 复核、模板预览或普通 PDF 阅读。
 

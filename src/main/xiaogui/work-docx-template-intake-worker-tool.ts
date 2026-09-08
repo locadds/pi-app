@@ -237,9 +237,9 @@ function messageForError(code: TemplateIntakeErrorCodeV1): string {
     case 'TEMPLATE_INTAKE_UNSAFE_DOC':
       return '所选旧版 DOC 结构异常、加密或包含不支持的对象，请更换文档'
     case 'TEMPLATE_INTAKE_CONVERSION_UNAVAILABLE':
-      return '旧版 DOC 转换组件尚未安装或装配，当前无法生成模板整理报告；请完成小规文档转换运行时装配后重试'
+      return 'Microsoft Word 转换组件不可用，当前无法生成模板整理报告；请确认本机已安装且可正常启动 Microsoft Word，并检查小规转换资源是否完整'
     case 'TEMPLATE_INTAKE_CONVERSION_FAILED':
-      return '旧版 DOC 转换组件已可用，但本次文档转换失败；请检查文档是否受损或改用 DOCX 后重试'
+      return 'Microsoft Word 未能完成本次旧版 DOC 转换；请检查文档是否受损、Word 是否被对话框阻塞后重试。本次没有改用其他转换器'
     case 'TEMPLATE_INTAKE_OPERATION_ACTIVE':
       return '当前会话已有一份文档正在分析，请等待完成或先取消'
     case 'TEMPLATE_INTAKE_REPORT_NOT_FOUND':

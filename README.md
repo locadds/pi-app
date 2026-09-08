@@ -45,9 +45,9 @@ npm run dev
 
 `npm ci` 的安装后步骤和 `npm run dev` 的启动前步骤都会构建 Office Viewer 与 Gateway，不需要已有的 `artifacts/office-viewer` 或 `out/office-gateway`。修改 Office 源码后重新运行 `npm run dev`。若安装时使用 `--ignore-scripts`，须先补执行 `npm run postinstall`。
 
-单机 Office 试验使用 `npm run dev:office-test`；它显式启用既有试验模式。内置 Skill 从 `resources/pi-skills` 原生加载。旧版 DOC 转换需先运行 `npm run prepare:libreoffice`，再运行 `node scripts/verify-libreoffice-runtime.mjs`，使用 D 盘固定缓存；DOCX/PDF 读取无需该转换步骤。
+单机 Office 试验使用 `npm run dev:office-test`；它显式启用既有试验模式。内置 Skill 从 `resources/pi-skills` 原生加载。Windows 部署环境需已安装且可正常启动 Microsoft Word；旧版 DOC 通过独立 Word 实例转换为私有 DOCX，宏禁用、源文件只读、输出另存。Word 不可用或转换失败会明确报错，不静默回退 LibreOffice。DOCX/PDF 读取不需要 DOC 转换步骤。
 
-发布前运行与变更相关的聚焦检查、`npm run typecheck` 和 `npm run build`。Windows 执行 `npm run package:win`，脚本装配并校验 LibreOffice 后生成安装包与 Portable 到 `dist/`；只有刚完成同一候选构建时才使用 `npm run package:win:prebuilt`。内置 Skill、Office 资源与 LibreOffice 随包提供。内部试用版默认不自动查询更新，生成安装包不等于已批准发布。
+发布前运行与变更相关的聚焦检查、`npm run typecheck` 和 `npm run build`。Windows 执行 `npm run package:win`，脚本仍按既定流程装配并校验保留的 LibreOffice 资源后生成安装包与 Portable 到 `dist/`；只有刚完成同一候选构建时才使用 `npm run package:win:prebuilt`。内置 Skill、Office 资源和 `resources/word-converter/convert-doc.ps1` 随包提供；Microsoft Word 本体不随包分发。内部试用版默认不自动查询更新，生成安装包不等于已批准发布。
 
 ## 兼容性说明
 

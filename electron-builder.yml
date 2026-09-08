@@ -53,6 +53,10 @@ extraResources:
 win:
   # 发布 Windows 包前由 package-windows 装配并复核。二进制只进入 ignored runtime 子目录。
   extraResources:
+    - from: resources/word-converter
+      to: word-converter
+      filter:
+        - "**/*"
     - from: resources/libreoffice-runtime/runtime
       to: libreoffice
       filter:
