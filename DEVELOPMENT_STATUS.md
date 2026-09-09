@@ -5,6 +5,7 @@
 - 安装 source `7d18334` 的补证确认内部模型为 DeepSeek，失败处于分析 catch；历史内部具体异常仍未定，不再请求模型猜测。
 - 最小修复将 repair 后文本定位不存在/重叠归为 `MODEL_OUTPUT_INVALID`，不再误报 `MODEL_UNAVAILABLE`；不改共享绑定、调用参数或一次 repair。红灯 2 项、修复后 intake 文件 19 项全绿。
 - 详见 `doc/WORK-INTAKE-ERROR-CLASSIFICATION-HANDOFF-2026-09-09.md`。分类缺陷已修复；真实安装故障未关闭、未进入主线、未发布。
+- 固定 `e3f4842…0c8819a` 经主管代码定向复验：Standards APPROVE0 / Spec APPROVE0；已独立核对本任务历史中的原始红绿、Node exit 0 输出（无独立日志文件）。此项代码审阅通过不等于安装验收通过；本次补记不改生产、不重跑。
 
 ## 2026-09-08｜WORK Word DOC 主转换（阶段候选，待验收）
 
