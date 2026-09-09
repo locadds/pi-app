@@ -10,6 +10,7 @@ vi.mock('@renderer/lib/ipc-client', () => ({
 }))
 
 import { HubTaskInboxSection } from './HubTaskInboxSection'
+import type { HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
 
 afterEach(cleanup)
 
@@ -17,6 +18,36 @@ describe('HubTaskInboxSection', () => {
   beforeEach(() => {
     invoke.mockReset()
     invoke.mockResolvedValue({ ok: true, value: { configured: true, state: 'READY' } })
+  })
+
+  it('uses Main openedAt after same-instance re-login and requires another manual open', async () => {
+    const user = userEvent.setup()
+    let openedAt: string | null = null
+    let opens = 0
+    const item = () => ({ assignmentId: 'assignment', title: 'task', taskContent: 'content', mode: 'DIRECT',
+      decisionState: 'ACCEPTED', executionState: 'NOT_STARTED', openedAt, receiptPendingSync: false, localPlanDraftCreated: false })
+    invoke.mockImplementation(async method => {
+      if (method === 'xiaogui.hubTask.inbox.list') return { ok: true, value: [item()] }
+      if (method === 'xiaogui.hubTask.inbox.open') { opens++; openedAt = '2026-09-09T00:00:00.000Z'; return { ok: true, value: item() } }
+      if (method === 'xiaogui.hubTask.connect') openedAt = null
+      return { ok: true, value: { configured: true, state: 'READY' } }
+    })
+    render(<HubTaskInboxSection address={{ projectId: `xgp1_${'a'.repeat(64)}`, sessionKey: `xgs1_${'b'.repeat(64)}` } as HubAddressV1} />)
+    await user.click(await screen.findByRole('button', { name: '打开任务' }))
+    await screen.findByRole('button', { name: '生成本机计划草稿' })
+    expect(opens).toBe(1)
+    await user.click(screen.getByRole('button', { name: '重新登录并配对此小规' }))
+    await user.type(screen.getByPlaceholderText('http://hub.intranet:3000'), 'http://hub.example')
+    await user.type(screen.getByPlaceholderText('Hub 用户名'), 'alice')
+    await user.type(screen.getByPlaceholderText('密码'), 'test-password')
+    await user.click(screen.getByRole('button', { name: '登录并配对此小规' }))
+    await user.click(await screen.findByRole('button', { name: '同步' }))
+    const openAgain = await screen.findByRole('button', { name: '打开任务' })
+    expect(openAgain).toBeEnabled()
+    expect(opens).toBe(1)
+    await user.click(openAgain)
+    await screen.findByRole('button', { name: '生成本机计划草稿' })
+    expect(opens).toBe(2)
   })
 
   it('requires an explicit configured-account re-login before connecting, and keeps the form available after failure', async () => {

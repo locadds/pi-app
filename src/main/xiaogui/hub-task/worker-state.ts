@@ -215,7 +215,7 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
       openedAt: packageChanged || replacedDelivery ? null : previous?.openedAt ?? null,
       localDeliveryState: packageChanged || replacedDelivery ? 'NOT_OPENED' : previous?.localDeliveryState ?? 'NOT_OPENED',
       localPlanDraft: packageChanged ? null : previous?.localPlanDraft ?? null,
-      deliveryIdentity: identity ? { ...identity } : previous?.deliveryIdentity,
+      deliveryIdentity: projectDeliveryIdentity(identity ?? previous?.deliveryIdentity),
     }
     this.state = {
       ...this.state,
@@ -491,7 +491,7 @@ function cloneState(state: HubTaskWorkerStateV1): HubTaskWorkerStateV1 {
 
 function cloneEntry(entry: HubTaskWorkerInboxEntryV1): HubTaskWorkerInboxEntryV1 {
   return {
-    deliveryIdentity: validDeliveryIdentity(entry.deliveryIdentity) ? { ...entry.deliveryIdentity } : undefined,
+    deliveryIdentity: projectDeliveryIdentity(entry.deliveryIdentity),
     assignment: cloneAssignment(entry.assignment),
     offer: cloneOffer(entry.offer),
     openedAt: entry.openedAt,
@@ -502,6 +502,11 @@ function cloneEntry(entry: HubTaskWorkerInboxEntryV1): HubTaskWorkerInboxEntryV1
 
 function validDeliveryIdentity(value: unknown): value is EvidenceIdentityV1 {
   return isRecord(value) && isOpaqueId(value.subjectId) && isOpaqueId(value.nodeId) && isOpaqueId(value.keyId)
+}
+
+function projectDeliveryIdentity(value: unknown): EvidenceIdentityV1 | undefined {
+  if (!validDeliveryIdentity(value)) return undefined
+  return { subjectId: value.subjectId, nodeId: value.nodeId, keyId: value.keyId }
 }
 
 function sameDeliveryIdentity(left: EvidenceIdentityV1 | undefined, right: EvidenceIdentityV1): boolean {

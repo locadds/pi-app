@@ -41,7 +41,6 @@ export function HubTaskInboxSection({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showCredentials, setShowCredentials] = useState(false)
-  const [openedAssignmentId, setOpenedAssignmentId] = useState<string | null>(null)
 
   const reload = async () => {
     const result = await invoke<WorkerStatus>('xiaogui.hubTask.status')
@@ -65,6 +64,8 @@ export function HubTaskInboxSection({
         setStatus(result.value)
         setPassword('')
         setShowCredentials(false)
+        setItems([])
+        if (address) await reload()
       } else {
         setError(errorText(result.code))
       }
@@ -96,7 +97,6 @@ export function HubTaskInboxSection({
     try {
       const result = await invoke<InboxItem>('xiaogui.hubTask.inbox.open', { assignmentId })
       if (!result.ok) return setError(errorText(result.code))
-      setOpenedAssignmentId(assignmentId)
       await reload()
     } finally {
       setBusy(false)
@@ -156,7 +156,7 @@ export function HubTaskInboxSection({
           {items.length === 0 ? <p className="mt-2 text-[11px] text-muted-foreground">当前没有分配给此小规的任务。</p> : (
             <ul className="mt-2 flex flex-col gap-2">
               {items.map((item) => {
-                const opened = openedAssignmentId === item.assignmentId || item.openedAt !== null
+                const opened = item.openedAt !== null
                 return <li key={item.assignmentId} className="rounded-md border border-border/40 p-2" data-testid="hub-task-inbox-item">
                   <div className="text-[12px] font-medium text-foreground">{item.title}</div>
                   <p className="mt-1 text-[10px] text-muted-foreground">{item.mode === 'DIRECT' ? '定向任务' : '任务池任务'} · {item.decisionState}</p>

@@ -1,5 +1,15 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜H1 三ID投影与人工打开入口（待增量复验）
+
+- 固定起点 `4d1016a2e4aae6e6550aa468e5897e8ccad4f2a4`。本轮仅两处：状态元数据不得展开复制凭据，以及同组件重登录后原打开按钮必须服从Main投影；已通过六项/在途隔离不重做。
+- `worker-state.ts` 统一使用运行时显式投影，只构造 subjectId/nodeId/keyId 三字段。新upsert、clone/snapshot、旧记录恢复及后续正常persist均复用该投影；不是只改TS类型或单一caller。不改签名/加密/队列框架。没有读取、清理真实配置，也没有实际泄漏或需轮换凭据的证据。
+- `HubTaskInboxSection.tsx` 删除 openedAssignmentId 影子状态，仅根据item.openedAt显示原按钮；同实例connect成功后清旧items并按原reload取Main投影（无address时不额外请求收件箱）。不下发node字段、不新增UI、不自动打开；人工再次点击才调用open。React指南用于移除重复派生状态，没有旁支优化。
+- 最小红绿：`node node_modules/vitest/vitest.mjs run src/main/xiaogui/hub-task/worker-state-identity-projection.test.ts src/renderer/src/xiaogui/components/HubTaskInboxSection.test.tsx`。原3失败/2通过；修后5/5通过。合成完整node对象经过真实worker-state→worker-persistence→合成backing.set，验证新写入/旧记录恢复仅三ID、已入队receipts/results编码不变；没有打开electron-store真实用户目录。UI在同一mount执行A人工打开→重登录B→同步同assignment openedAt=null→原按钮再次可点，第二次open仅由点击产生。原两条登录测试随同文件运行，无额外扩围。
+- 集中证据 `E:/XiaoguiInternalCandidate/h1-projection-ui-20260909`：red.log、green-verified.log、typecheck.log、eslint.log。中间green-final.log的两个失败来自测试把既有enqueue规范化前的字段顺序拿来与已入队数据比较，改为记录身份投影前的真实outbox编码后验证不变；未修改既有enqueue/签名逻辑，不把该夹具问题记为新产品缺陷。
+- `npm run typecheck` Node/Web通过；四个变更TS/TSX定向ESLint通过；`git diff --check`通过。类型检查后只调整上述测试编码比较基线，无生产变更。可复现lint：`node node_modules/eslint/bin/eslint.js src/main/xiaogui/hub-task/worker-state.ts src/main/xiaogui/hub-task/worker-state-identity-projection.test.ts src/renderer/src/xiaogui/components/HubTaskInboxSection.tsx src/renderer/src/xiaogui/components/HubTaskInboxSection.test.tsx`。
+- 实际修改仅上述四文件及本记录。不运行Hub/模型/Word/Office/Electron/NSIS或全量测试，不混0c/共享模型显示。固定后交桌面主管统一转中台复验；旧安装包仍为7d/8951，未合主线、未发布。
+
 ## 2026-09-09｜H1 身份恢复两个 P2 最小返修（待复验）
 
 - 固定起点 `2730172144c5b805606057aef6aa1bd34245df54`；本地/live远端一致、clean、保护stash未变。中台原七项已关闭六项，本轮只修在途发送归属与当前节点送达/打开事实。Terra只读方案后未落盘，已暂停；最终代码与公开调用回归由根owner落地，没有并发改树。
