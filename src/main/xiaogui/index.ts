@@ -18,6 +18,7 @@ import {
   getDefaultCodingRoleProfileModuleV1,
   getDefaultTaskExecutionOrchestrator,
   registerCollaborationHubHandlers,
+  recoverDefaultHubTaskExecutionLifecycleV1,
   setHubTaskWorkerLifecycleReporterV1,
 } from './task-hub/ipc'
 import { getDefaultWorkDocxServiceV1, registerWorkDocxHandlers } from './work-docx-ipc'
@@ -96,8 +97,13 @@ export function initXiaogui(): void {
   setHubTaskWorkerLifecycleReporterV1(hubTaskWorker)
   registerCollaborationHubHandlers()
   if (hubTaskWorker.status().configured) {
-    hubTaskWorker.startPolling()
-    void hubTaskWorker.refresh()
+    void recoverDefaultHubTaskExecutionLifecycleV1()
+      .then(() => {
+        if (!hubTaskWorker.status().configured) return
+        hubTaskWorker.startPolling()
+        void hubTaskWorker.refresh()
+      })
+      .catch(() => undefined)
   }
   registerHubTaskWorkerHandlers(hubTaskWorker, getDefaultHubTaskWorkerInstallationIdDigestV1())
   initC2ArtifactInstallV1()

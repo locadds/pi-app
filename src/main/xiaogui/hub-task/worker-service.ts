@@ -25,6 +25,7 @@ import {
   type HubTaskWorkerAssignmentDetailV1,
   type HubTaskWorkerAssignmentV1,
   type HubTaskWorkerInboxEntryV1,
+  type HubTaskWorkerPendingEvidenceV1,
   type HubTaskWorkerStateStoreV1,
 } from './worker-state'
 
@@ -223,8 +224,12 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       })
       if (!persisted) {
         this.options.credentials.clear()
-        this.options.state.clear()
-        this.state = { ...this.state, configured: false, state: 'UNCONFIGURED', pendingReceiptCount: 0 }
+        this.state = {
+          ...this.state,
+          configured: false,
+          state: 'UNCONFIGURED',
+          pendingReceiptCount: this.options.state.pendingEvidence().length,
+        }
         return { ok: false, code: 'HUB_WORKER_CREDENTIAL_STORAGE_UNAVAILABLE' }
       }
       this.state = {
@@ -271,10 +276,10 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       const port = this.options.createPort(credentials)
       let receiptFailure: unknown = null
       try {
-        await this.flushPendingEvidence(port)
+        await this.flushPendingEvidence(port, credentials)
       } catch (error) {
         receiptFailure = error
-        this.recordPortFailure(error)
+        this.recordPortFailure(error, credentials)
         if (this.terminalActionCode()) return { ok: false, code: this.portFailureCode(error) }
       }
       const snapshot = await port.pollAssignments(this.options.state.cursor())
@@ -292,10 +297,10 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         try {
           // New packages add NODE_STORED evidence during this poll. Submit it
           // in the same online turn, but never delete a record before its ACK.
-          await this.flushPendingEvidence(port)
+          await this.flushPendingEvidence(port, credentials)
         } catch (error) {
           receiptFailure = error
-          this.recordPortFailure(error)
+          this.recordPortFailure(error, credentials)
         }
       }
       if (receiptFailure) return { ok: false, code: this.portFailureCode(receiptFailure) }
@@ -307,7 +312,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       }
       return { ok: true, value: this.status() }
     } catch (error) {
-      this.recordPortFailure(error)
+      this.recordPortFailure(error, credentials)
       return { ok: false, code: this.portFailureCode(error) }
     }
   }
@@ -361,7 +366,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       this.requestEvidenceFlush(credentials)
       return { ok: true, value: this.options.state.requireAssignment(assignmentId) }
     } catch (error) {
-      this.recordPortFailure(error)
+      this.recordPortFailure(error, credentials)
       return { ok: false, code: this.portFailureCode(error) }
     }
   }
@@ -376,7 +381,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       this.options.state.upsertAssignment(detail)
       return { ok: true, value: this.options.state.requireAssignment(assignmentId) }
     } catch (error) {
-      this.recordPortFailure(error)
+      this.recordPortFailure(error, credentials)
       return { ok: false, code: this.portFailureCode(error) }
     }
   }
@@ -387,6 +392,8 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   ): Promise<HubTaskWorkerServiceResultV1<{ flowId: string; revisionId: string }>> {
     const terminalCode = this.terminalActionCode()
     if (terminalCode) return { ok: false, code: terminalCode }
+    const credentials = this.options.credentials.read()
+    if (!credentials) return { ok: false, code: 'HUB_WORKER_UNCONFIGURED' }
     let entry: HubTaskWorkerInboxEntryV1
     try {
       entry = this.options.state.requireAssignment(assignmentId)
@@ -400,6 +407,29 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     ) {
       return { ok: false, code: 'HUB_ASSIGNMENT_NOT_READY' }
     }
+    try {
+      const current = await this.options.createPort(credentials).downloadAssignment(assignmentId)
+      const stillCurrent = this.options.credentials.read()
+      if (!stillCurrent || !sameIdentity(stillCurrent, credentials)) {
+        return { ok: false, code: 'HUB_WORKER_UNCONFIGURED' }
+      }
+      if (
+        current.assignment.assignmentId !== assignmentId
+        || current.assignment.taskId !== entry.assignment.taskId
+        || current.offer.taskId !== entry.offer.taskId
+        || current.offer.packageSha256 !== entry.offer.packageSha256
+      ) return { ok: false, code: 'HUB_ASSIGNMENT_NOT_READY' }
+      this.options.state.upsertAssignment(current)
+      entry = this.options.state.requireAssignment(assignmentId)
+    } catch (error) {
+      this.recordPortFailure(error, credentials)
+      return { ok: false, code: this.portFailureCode(error) }
+    }
+    if (
+      !entry.openedAt
+      || entry.assignment.decisionState !== 'ACCEPTED'
+      || entry.assignment.executionState !== 'NOT_STARTED'
+    ) return { ok: false, code: 'HUB_ASSIGNMENT_NOT_READY' }
     if (entry.localPlanDraft) {
       return {
         ok: true,
@@ -592,17 +622,20 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   }
 
   private requestEvidenceFlush(credentials: HubTaskWorkerCredentialBundleV1): void {
-    void this.flushPendingEvidence(this.options.createPort(credentials)).catch((error) => {
+    void this.flushPendingEvidence(this.options.createPort(credentials), credentials).catch((error) => {
       // The signed record remains durable. Do not turn a local open/decision
       // into a failed user action merely because the Hub is temporarily away.
-      this.recordPortFailure(error)
+      this.recordPortFailure(error, credentials)
     })
   }
 
-  private flushPendingEvidence(port: XiaoguiHubTaskWorkerPortV1): Promise<void> {
+  private flushPendingEvidence(
+    port: XiaoguiHubTaskWorkerPortV1,
+    credentials: HubTaskWorkerCredentialBundleV1,
+  ): Promise<void> {
     if (this.evidenceFlush) return this.evidenceFlush
 
-    const work = this.flushPendingEvidenceSerial(port)
+    const work = this.flushPendingEvidenceSerial(port, credentials)
     this.evidenceFlush = work
     void work.finally(() => {
       if (this.evidenceFlush === work) this.evidenceFlush = null
@@ -610,11 +643,18 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     return work
   }
 
-  private async flushPendingEvidenceSerial(port: XiaoguiHubTaskWorkerPortV1): Promise<void> {
+  private async flushPendingEvidenceSerial(
+    port: XiaoguiHubTaskWorkerPortV1,
+    credentials: HubTaskWorkerCredentialBundleV1,
+  ): Promise<void> {
     // Sequence order is part of the Hub anti-replay contract. Stop at the
     // first non-ACKed item so a later receipt/result never leaps over it.
     for (;;) {
-      const pending = this.options.state.pendingEvidence()[0]
+      const current = this.options.credentials.read()
+      if (!current || !sameIdentity(current, credentials)) return
+      const pending = this.options.state.pendingEvidence().find((candidate) =>
+        evidenceMatchesIdentity(candidate, credentials),
+      )
       if (!pending) return
       if (pending.kind === 'RECEIPT') {
         const ack = await port.submitReceipt(pending.receipt)
@@ -622,20 +662,23 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         // This comparison belongs here, where the submitted queue head is still
         // known, and is duplicated by the state store's expected-event gate.
         if (
-          ack.eventId !== pending.receipt.eventId
-          || !this.options.state.acknowledgeReceipt(pending.receipt.eventId, ack)
+          !evidenceMatchesIdentity(pending, credentials)
+          || ack.eventId !== pending.receipt.eventId
+          || !this.options.state.acknowledgeReceipt(pending.receipt.eventId, ack, credentials.node)
         ) {
           throw new HubTaskWorkerReceiptAckError()
         }
       } else {
         const ack = await port.submitResult(pending.submission)
         if (
-          ack.resultId !== pending.submission.result.resultId
+          !evidenceMatchesIdentity(pending, credentials)
+          || ack.resultId !== pending.submission.result.resultId
           || ack.eventId !== pending.submission.receipt.eventId
           || !this.options.state.acknowledgeResult(
             pending.submission.result.resultId,
             pending.submission.receipt.eventId,
             ack,
+            credentials.node,
           )
         ) {
           throw new HubTaskWorkerResultAckError()
@@ -652,7 +695,9 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     return this.options.idFactory?.(prefix) ?? `${prefix}_${randomUUID()}`
   }
 
-  private recordPortFailure(error: unknown): void {
+  private recordPortFailure(error: unknown, sourceCredentials?: HubTaskWorkerCredentialBundleV1): void {
+    const current = this.options.credentials.read()
+    if (sourceCredentials && (!current || !sameIdentity(current, sourceCredentials))) return
     if (isStateConflict(error)) {
       // A 409 is returned only after the Hub accepted the current node
       // credential, but it may describe a task-state or receipt conflict
@@ -738,6 +783,25 @@ function normalizeEndpoint(value: string): string | null {
   } catch {
     return null
   }
+}
+
+function evidenceMatchesIdentity(
+  evidence: HubTaskWorkerPendingEvidenceV1,
+  credentials: HubTaskWorkerCredentialBundleV1,
+): boolean {
+  const receipt = evidence.kind === 'RECEIPT' ? evidence.receipt : evidence.submission.receipt
+  return receipt.subjectId === credentials.node.subjectId
+    && receipt.nodeId === credentials.node.nodeId
+    && receipt.keyId === credentials.node.keyId
+}
+
+function sameIdentity(
+  left: Pick<HubTaskWorkerCredentialBundleV1, 'node'>,
+  right: Pick<HubTaskWorkerCredentialBundleV1, 'node'>,
+): boolean {
+  return left.node.subjectId === right.node.subjectId
+    && left.node.nodeId === right.node.nodeId
+    && left.node.keyId === right.node.keyId
 }
 
 function cloneCredentials(value: HubTaskWorkerCredentialBundleV1): HubTaskWorkerCredentialBundleV1 {

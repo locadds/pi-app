@@ -1,5 +1,28 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜H1 桌面组合补充整改（待增量复验）
+
+- 固定起点 `09d8475796c85856aeeaee48ac550d16433ce361`。中台主管固定补充审查七项，范围仅既有生命周期与身份/证据留存；不重开已通过的 dispatch 证据门和终态 saga 读取。复用原 H1 worker/service、TaskHub coordinator、Delivery composer 及私有队列，不新增 Pi Skill/插件、公开协议、权限系统或状态机。
+- 生命周期：旧 Attempt 回调必须仍等于 TaskRun 当前 Attempt；`NOT_RUN` 经真实结果 mapper 保留原义；selection 返回失败后仍从权威 Delivery 状态协调。实际 Workflow/Composer 在变更摘要漂移时记 REJECTED，接口失败仍回传该终态，Apply 调用为0。测试使用既有内存 Store 替身与真实 Workflow/Composer/IPC/coordinator，不冒充真实 Hub 或 SQLite 全旅程。
+- 身份/留证：发送仅选当前 subject/node/key 的有序队头，精确 receipt/result ACK 同时核对该身份；旧身份证据仍原字节保存在原私有存储，不重签、不删除、不发送。配对后新凭据保存失败只清无效凭据，保留全部未ACK证据并明确UNCONFIGURED。草稿创建先要求当前凭据，并通过现有 downloadAssignment 用当前身份确认同一任务，再核对身份未变与 ACCEPTED/NOT_STARTED；不再凭旧缓存授权。故新草稿创建须当前身份在线确认，已经建立的本机 TaskHub 执行/恢复语义未改。
+- 启动：移除 composition 构造中的两个并发 recover；零参数默认 IPC 装配复用既有 coordinator 恢复屏障，Main 等屏障完成后才 poll/refresh。无 reporter 的独立默认 TaskHub 仍串行恢复执行器与 Delivery；普通 CODING 未改。可控 Promise 测试覆盖恢复顺序，构造期探针覆盖“不提前开始”。
+- 本轮实际改动文件以 `git diff --name-only 09d8475796c85856aeeaee48ac550d16433ce361..HEAD` 为固定交接清单，包含 worker-service/state、结果 mapper、lifecycle、delivery IPC、runtime/IPC/Main 启动与相应测试及本记录。不改70 Hub、d76、C2 outbox、Apply、Word/Office及安装包。原8951包/安装PARTIAL仍保留；BCJ重新封装已获总控确认，但须等新代码增量复验及最终组合后进行，不能将旧ASAR标成新SHA。
+
+### 已取得的聚焦证据
+
+证据目录 `E:/XiaoguiInternalCandidate/h1-supplement-20260909`。测试 TEMP/TMP 指向本次安装合成场景的 E 盘 temp；无外部模型、Word、Electron或Hub调用。
+
+- `node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/hub-execution-lifecycle.test.ts src/main/xiaogui/task-hub/delivery-ipc.test.ts src/main/xiaogui/hub-task/task-result-projection.test.ts src/main/xiaogui/task-hub/delivery-workflow.test.ts`：4文件24通过（root-focused.log）。前三处最小回归原3失败/8通过（root-red.log）；真实Composer链旧IPC gate的产品红灯单独保存delivery-chain-red.log，修后delivery-chain-v2.log通过。最早delivery-chain.log夹具触发的是另一异常而非REJECTED，不作为目标产品红灯。
+- `node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/ipc.test.ts src/main/xiaogui/task-hub/runtime-composition.test.ts`：2文件24通过（startup-raw.log）。构造测试初次导入缺Electron宿主替身、0测试（composition-focused.log），补测试宿主后才验证；不改真实配置。
+- `node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/execution-orchestrator.test.ts -t 'retains dispatch authority|does not report while'`：4通过/29跳过（dispatch-preserved.log），只检查本轮仍需保留的批准与终态dispatch门，不重跑原35项全组。
+- `node node_modules/vitest/vitest.mjs run src/main/xiaogui/hub-task/worker-result-projection.test.ts`：1通过（worker-result.log），真实Worker service→mapper→私有待发结果保存 NOT_RUN，非mock reporter。
+- `node node_modules/vitest/vitest.mjs run src/main/xiaogui/hub-task/worker-service-c2-gate.test.ts`：9通过（identity-green.log）；旧 identity-red.log 中第三项同时触发了夹具perform返回值问题，不把该TypeError单独称为目标业务失败。随后补同一准入测试的正确身份成功对照，`-t 'requires the current-token'` 1通过/8跳过（identity-admission-positive.log），该1项不重复累加。并发迟到错误经两个真实service.refresh端口返回验证，不调用私有方法伪造入口。
+- `npm run typecheck` Node/Web通过（typecheck-final.log）、增量16个TS/TSX文件 ESLint通过（eslint-final.log）、`git diff --check`通过。类型/lint后仅补上述现有测试的正向断言，单文件lint另过；生产代码无后续修改。提交后可复现lint：`$files = @(git diff --name-only --diff-filter=ACM 09d8475796c85856aeeaee48ac550d16433ce361..HEAD -- '*.ts' '*.tsx'); node node_modules/eslint/bin/eslint.js @files`。代码检查不构成真实两机结论。
+
+### 其他已授权问题的边界
+
+仅从安装合成profile的固定报告提取两个元数据：`versions.model=deepseek/deepseek-v4-flash-vision-exp`，MODEL_UNAVAILABLE消息为“临时模型分析不可用，已安全降级”。已回传WORK owner；不能由此恢复历史内部异常原因。WORK独立0c8819a分类修复已获桌面主管限定APPROVE但尚未摘入，本H1提交不声称关闭安装分析问题。共享模型预选仍在只读生命周期定位，不把直接IPC测试准备或单次403直接当产品绑定缺陷。旧冻结profile未触碰。下一步先交本固定H1增量复验，再进行已授权分类摘入/模型显示接缝补证和唯一新包；不合主线、不发布。
+
 ## 2026-09-09｜安装缺失资源根因定位（待重新封装）
 
 - 本轮起点 `c71439f821af12c88f9c1dff5c5ab0e4de48e4ff`，本地/远端一致、工作树干净、保护 stash 未变。没有重构建、重装、回填安装根或重跑模型。

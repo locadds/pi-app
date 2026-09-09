@@ -356,7 +356,6 @@ export function createXiaoguiRuntimeCompositionV1(
       },
       now: options.now,
     })
-    void taskExecution.recover().catch(() => undefined)
     deliveryApplyRegistry = new SqliteDeliveryApplyAttemptRegistryV1({
       dbPath: join(taskHubDir, 'delivery-apply-attempts.sqlite'),
     })
@@ -369,8 +368,6 @@ export function createXiaoguiRuntimeCompositionV1(
       applyPort: new MainProcessChangeApplyPortV1({ projectResolver, registry: deliveryApplyRegistry }),
       now: options.now,
     })
-    void deliveryWorkflow.recover().catch(() => undefined)
-
     return createCompositionInterface(
       application,
       taskExecution,

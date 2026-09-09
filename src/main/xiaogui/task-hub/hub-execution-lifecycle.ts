@@ -114,7 +114,7 @@ class HubTaskExecutionLifecycleCoordinatorImpl implements HubTaskExecutionLifecy
         : projection.attempts.filter((candidate) => candidate.taskRunId === taskRun.taskRunId).length === 1
           ? projection.attempts.find((candidate) => candidate.taskRunId === taskRun.taskRunId) ?? null
           : null
-      if (attempt?.taskRunId !== taskRun.taskRunId) return null
+      if (attempt?.taskRunId !== taskRun.taskRunId || taskRun.attemptId !== attempt.attemptId) return null
       return this.options.taskExecution.hasDispatchEvidence({
         ...trigger, taskRunId: taskRun.taskRunId, attemptId: attempt.attemptId,
       }) ? { taskRun, attempt } : null

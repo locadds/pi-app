@@ -8,6 +8,35 @@ const address = {
 } as const
 
 describe('HubTaskExecutionLifecycleCoordinatorV1', () => {
+  it('ignores a delayed former attempt even when it has genuine dispatch evidence', async () => {
+    const evidence = {
+      listExecutionBindings: vi.fn(() => []),
+      recordExecutionStarted: vi.fn(async () => {}),
+      reportDeliveryOutcome: vi.fn(async () => {}),
+      reportExecutionOutcome: vi.fn(async () => {}),
+    }
+    const readLatestDelivery = vi.fn(() => null)
+    const coordinator = createHubTaskExecutionLifecycleCoordinatorV1({
+      application: { observeM2B: vi.fn(async () => ({ ok: true, value: {
+        activeFlow: { flowId: 'flow-1' },
+        taskRuns: [{ taskRunId: 'run-1', attemptId: 'attempt-2', status: 'RUNNING' }],
+        attempts: [
+          { attemptId: 'attempt-1', taskRunId: 'run-1', status: 'FAILED' },
+          { attemptId: 'attempt-2', taskRunId: 'run-1', status: 'RUNNING' },
+        ],
+      } })) } as never,
+      taskExecution: { recover: vi.fn(async () => {}), hasDispatchEvidence: vi.fn(() => true) },
+      delivery: { recover: vi.fn(async () => {}), readLatestDelivery },
+      evidence,
+    })
+    await coordinator.reconcile({ address: address as never, flowId: 'flow-1', taskRunId: 'run-1', attemptId: 'attempt-1' })
+    expect(evidence.recordExecutionStarted).not.toHaveBeenCalled()
+    expect(evidence.reportExecutionOutcome).not.toHaveBeenCalled()
+    expect(readLatestDelivery).not.toHaveBeenCalled()
+    await coordinator.reconcile({ address: address as never, flowId: 'flow-1', taskRunId: 'run-1', attemptId: 'attempt-2' })
+    expect(evidence.recordExecutionStarted).toHaveBeenCalledOnce()
+  })
+
   it('records execution start but never invents a terminal result before verification or delivery is terminal', async () => {
     const evidence = {
       listExecutionBindings: vi.fn(() => []),

@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   deliveryChangeSetDigestV1,
@@ -30,6 +30,8 @@ import {
 } from '@shared/xiaogui-task-verification'
 
 import { XiaoguiDeliveryWorkflowV1 } from './delivery-workflow'
+import { registerXiaoguiDeliveryHandlers } from './delivery-ipc'
+import { createHubTaskExecutionLifecycleCoordinatorV1 } from './hub-execution-lifecycle'
 import type { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import { ChangeApplyErrorV1, type DeliveryApplyPortV1 } from './change-apply'
 import type { TaskVerificationExecutionPortV1, TaskVerificationExecutionResultV1 } from './verification-port'
@@ -40,7 +42,52 @@ const ADDRESS = {
   sessionKey: `xgs1_${'2'.repeat(64)}`,
 } as HubAddressV1
 
+const ipcHandlers = vi.hoisted(() => new Map<string, (payload: unknown) => Promise<unknown>>())
+vi.mock('../../ipc/registry', () => ({
+  registerHandler: (channel: string, handler: (payload: unknown) => Promise<unknown>) => ipcHandlers.set(channel, handler),
+}))
+
 describe('XiaoguiDeliveryWorkflowV1', () => {
+  it('reports the rejected composer state through selection IPC despite its failure return', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-rejected-'))
+    try {
+      const repo = join(root, 'repo')
+      await git(root, ['init', 'repo'])
+      await writeFile(join(repo, 'a.txt'), 'old-a')
+      await git(repo, ['add', 'a.txt'])
+      await git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'])
+      const baseRevision = (await git(repo, ['rev-parse', 'HEAD'])).trim()
+      const baselineTreeHash = (await git(repo, ['rev-parse', 'HEAD^{tree}'])).trim()
+      const store = new FakeDeliveryStore(deliveryTargetFingerprintV1({ projectId: ADDRESS.projectId, baseRevision, baselineTreeHash }))
+      // Genuine composer rejects a drifted change-set digest before integration.
+      store.taskChangeSets[0] = { ...store.taskChangeSets[0]!, digest: `sha256:${'0'.repeat(64)}` as Sha256Digest }
+      const applyPort = recordingApplyPort()
+      const workflow = workflowFor(store, repo, join(root, 'managed'), applyPort, baseRevision, baselineTreeHash)
+      const reportDeliveryOutcome = vi.fn(async () => {})
+      const lifecycle = createHubTaskExecutionLifecycleCoordinatorV1({
+        application: { observeM2B: async () => ({ ok: true, value: {
+          activeFlow: { flowId: 'flow-1' },
+          taskRuns: [{ taskRunId: 'task-a', attemptId: 'attempt-a', status: 'SUCCEEDED' }],
+          attempts: [{ attemptId: 'attempt-a', taskRunId: 'task-a', status: 'SUCCEEDED' }],
+        } }) } as never,
+        taskExecution: { recover: async () => {}, hasDispatchEvidence: () => true },
+        delivery: workflow,
+        evidence: { listExecutionBindings: () => [], recordExecutionStarted: async () => {}, reportDeliveryOutcome, reportExecutionOutcome: vi.fn(async () => {}) },
+      })
+      registerXiaoguiDeliveryHandlers(workflow, lifecycle)
+      const result = await ipcHandlers.get('ipc:xiaogui.delivery.selection.submit')!({
+        contractVersion: 'm4d.v1', address: ADDRESS,
+        request: { requestId: 'reject-compose', flowId: 'flow-1', taskRunIds: ['task-a', 'task-b'] },
+      })
+      expect(result).toMatchObject({ ok: false })
+      expect(store.projection.state).toBe('REJECTED')
+      expect(reportDeliveryOutcome).toHaveBeenCalledWith(ADDRESS, expect.objectContaining({ state: 'REJECTED' }))
+      expect(applyPort.applies).toHaveLength(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('composes two verified tasks, runs delivery verification, and opens review without applying', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-workflow-'))
     const repo = join(root, 'repo')
@@ -443,6 +490,13 @@ class FakeDeliveryStore {
   readDeliveryProjection(batchId?: DeliveryBatchId): DeliveryBatchProjectionV1 {
     if (batchId && this.recoveredProjection?.batchId === batchId) return this.recoveredProjection
     return this.projection
+  }
+
+  readActiveDelivery(): DeliveryBatchProjectionV1 { return this.projection }
+
+  rejectComposingDelivery(): void {
+    this.trace.push('reject-composing')
+    this.projection = { ...this.projection, state: 'REJECTED' }
   }
 
   readRecoveredDeliveryProjection(

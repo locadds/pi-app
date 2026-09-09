@@ -12,6 +12,37 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+// This composition unit reaches Worker configuration, which imports the
+// desktop config store. Keep that host-only persistence boundary out of this
+// startup-order test; the production configuration remains unmocked.
+vi.mock('electron-store', () => {
+  class ElectronStore {
+    private readonly values: Record<string, unknown>
+
+    constructor(options: { defaults?: Record<string, unknown> } = {}) {
+      this.values = { ...options.defaults }
+    }
+
+    get(key: string): unknown {
+      return this.values[key]
+    }
+
+    set(key: string, value: unknown): void {
+      this.values[key] = value
+    }
+
+    delete(key: string): void {
+      delete this.values[key]
+    }
+
+    get store(): Record<string, unknown> {
+      return { ...this.values }
+    }
+  }
+
+  return { default: ElectronStore }
+})
+
 import type {
   FlowId,
   HubAddressV1,
@@ -31,6 +62,7 @@ import type { KimiAcpProbeV1 } from '../agent-runtime/kimi-adapter'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
 import { digestJson } from './digest'
+import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
 import { resolvePiE2eScriptedRuntimeLaunchV1 } from './pi-e2e-scripted-runtime'
 import {
   createXiaoguiRuntimeCompositionV1,
@@ -67,6 +99,22 @@ afterEach(async () => {
 })
 
 describe('Xiaogui runtime composition v1', () => {
+  it('does not start TaskHub recovery before the lifecycle reporter is composed', () => {
+    const recovery = deferred<void>()
+    const recover = vi
+      .spyOn(XiaoguiTaskExecutionOrchestratorV1.prototype, 'recover')
+      .mockReturnValue(recovery.promise)
+
+    track(createXiaoguiRuntimeCompositionV1({
+      userDataDir: tempUserData(),
+      productionEnabled: false,
+      lookup: lookup('CODING'),
+      projectResolver: unusedProjectResolver(),
+    }))
+
+    expect(recover).not.toHaveBeenCalled()
+  })
+
   it('rejects a Scripted runtime scenario and event log outside the controlled journey roots', () => {
     const token = 'a'.repeat(64)
 
@@ -424,6 +472,14 @@ function rejectingTransportFactory(): AcpTransportFactoryV1 & { create: ReturnTy
       throw new Error('KIMI_TRANSPORT_MUST_NOT_START')
     }),
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((accept) => {
+    resolve = accept
+  })
+  return { promise, resolve }
 }
 
 function draft(): InitialPlanDraftInputV1 {

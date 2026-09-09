@@ -103,9 +103,9 @@ export function registerXiaoguiDeliveryHandlers(
     if (!parsed.success || containsUnsafeRendererValue(payload)) return invalidDeliveryInput()
     const typed = parsed.data as unknown as XiaoguiDeliverySelectTasksIpcRequestV1
     const outcome = await coordinator.selectTasks(typed.address, typed.request)
-    if (outcome.ok) {
-      await executionLifecycle?.reconcile({ address: typed.address, flowId: typed.request.flowId })
-    }
+    // Composer can persist REJECTED before returning a failure. Reconciliation
+    // reads authority; the return value is not the Delivery state.
+    await executionLifecycle?.reconcile({ address: typed.address, flowId: typed.request.flowId })
     return outcome
   })
 

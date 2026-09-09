@@ -48,6 +48,17 @@ function coordinator(): XiaoguiDeliveryCoordinatorPortV1 {
 }
 
 describe('M4D delivery IPC adapter', () => {
+  it('reconciles authoritative state even when selection returns a failure', async () => {
+    const port = coordinator()
+    const failure = { ok: false, error: { code: 'DELIVERY_INPUT_INVALID', messageKey: 'failed', traceId: 'trace' } } as const
+    vi.mocked(port.selectTasks).mockResolvedValue(failure)
+    const lifecycle = { recover: vi.fn(async () => {}), reconcile: vi.fn(async () => {}) }
+    registerXiaoguiDeliveryHandlers(port, lifecycle)
+    const request = { requestId: 'req-failed', flowId: 'xhbf_flow', taskRunIds: ['xhbtr_a'] }
+    await expect(mocks.handlers.get('ipc:xiaogui.delivery.selection.submit')!({ contractVersion: 'm4d.v1', address: ADDRESS, request })).resolves.toEqual(failure)
+    expect(lifecycle.reconcile).toHaveBeenCalledWith({ address: ADDRESS, flowId: request.flowId })
+  })
+
   it('accepts only full-task selection intent and rejects renderer-owned internals', async () => {
     const port = coordinator()
     registerXiaoguiDeliveryHandlers(port)

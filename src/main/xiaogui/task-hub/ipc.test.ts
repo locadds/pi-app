@@ -11,7 +11,9 @@ import { createCollaborationHubApplicationV1 } from './application'
 import {
   closeDefaultCollaborationHubRuntimeComposition,
   getDefaultCollaborationHubApplication,
+  recoverDefaultHubTaskExecutionLifecycleV1,
   registerCollaborationHubHandlers,
+  setHubTaskWorkerLifecycleReporterV1,
 } from './ipc'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 
@@ -26,7 +28,12 @@ const mocks = vi.hoisted(() => ({
     application: { generation: number }
     close: ReturnType<typeof vi.fn>
     stageAttemptInput: ReturnType<typeof vi.fn>
-    taskExecution: { start: ReturnType<typeof vi.fn>; startBatch: ReturnType<typeof vi.fn> }
+    taskExecution: {
+      start: ReturnType<typeof vi.fn>
+      startBatch: ReturnType<typeof vi.fn>
+      recover: ReturnType<typeof vi.fn>
+      setExecutionLifecycle: ReturnType<typeof vi.fn>
+    }
     delivery: {
       selectTasks: ReturnType<typeof vi.fn>
       approveGate: ReturnType<typeof vi.fn>
@@ -34,6 +41,8 @@ const mocks = vi.hoisted(() => ({
       reconcileApply: ReturnType<typeof vi.fn>
       retryApply: ReturnType<typeof vi.fn>
       prepareRecovery: ReturnType<typeof vi.fn>
+      recover: ReturnType<typeof vi.fn>
+      readLatestDelivery: ReturnType<typeof vi.fn>
     }
   }>,
   loginCoordinators: [] as Array<{
@@ -72,6 +81,8 @@ mocks.createRuntimeComposition.mockImplementation(() => {
           })),
         },
       })),
+      recover: vi.fn(async () => undefined),
+      setExecutionLifecycle: vi.fn(),
     },
     delivery: {
       selectTasks: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
@@ -80,6 +91,8 @@ mocks.createRuntimeComposition.mockImplementation(() => {
       reconcileApply: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
       retryApply: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
       prepareRecovery: vi.fn(async () => ({ ok: false, error: { code: 'INTERNAL', messageKey: 'x', traceId: 't' } })),
+      recover: vi.fn(async () => undefined),
+      readLatestDelivery: vi.fn(() => null),
     },
   }
   mocks.runtimeCompositions.push(composition)
@@ -145,6 +158,7 @@ const roots: string[] = []
 const CONTROLLED_EVIDENCE_ROOT = 'D:\\CodexTemp\\xiaogui-hub-m4g-real-journey-v1\\evidence'
 
 afterEach(async () => {
+  setHubTaskWorkerLifecycleReporterV1(null)
   await closeDefaultCollaborationHubRuntimeComposition()
   mocks.handlers.clear()
   mocks.runtimeCompositions.splice(0)
@@ -185,6 +199,14 @@ function lookup(mode: SessionMode): SessionScopeLookupV1 {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((accept) => {
+    resolve = accept
+  })
+  return { promise, resolve }
+}
+
 function draft(): InitialPlanDraftInputV1 {
   return {
     objective: '验证 IPC 与 Direct 共用同一应用接口',
@@ -206,6 +228,60 @@ async function appFor(dbPath: string) {
 }
 
 describe('M2A collaboration hub IPC adapter', () => {
+  it('keeps reporter-owned TaskHub recovery serial before it can release the startup barrier', async () => {
+    getDefaultCollaborationHubApplication()
+    const composition = mocks.runtimeCompositions[0]!
+    const execution = deferred<void>()
+    const delivery = deferred<void>()
+    composition.taskExecution.recover.mockReturnValueOnce(execution.promise)
+    composition.delivery.recover.mockReturnValueOnce(delivery.promise)
+    setHubTaskWorkerLifecycleReporterV1({
+      listExecutionBindings: vi.fn(() => []),
+      recordExecutionStarted: vi.fn(async () => undefined),
+      reportDeliveryOutcome: vi.fn(async () => undefined),
+      reportExecutionOutcome: vi.fn(async () => undefined),
+    })
+
+    let settled = false
+    const recovery = recoverDefaultHubTaskExecutionLifecycleV1().then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+
+    expect(composition.taskExecution.recover).toHaveBeenCalledOnce()
+    expect(composition.delivery.recover).not.toHaveBeenCalled()
+
+    execution.resolve()
+    await vi.waitFor(() => {
+      expect(composition.delivery.recover).toHaveBeenCalledOnce()
+    })
+    expect(settled).toBe(false)
+
+    delivery.resolve()
+    await recovery
+    expect(settled).toBe(true)
+  })
+
+  it('starts independent default TaskHub recovery when its default handlers are registered without a reporter', async () => {
+    getDefaultCollaborationHubApplication()
+    const composition = mocks.runtimeCompositions[0]!
+    const execution = deferred<void>()
+    const delivery = deferred<void>()
+    composition.taskExecution.recover.mockReturnValueOnce(execution.promise)
+    composition.delivery.recover.mockReturnValueOnce(delivery.promise)
+
+    registerCollaborationHubHandlers()
+    await Promise.resolve()
+    expect(composition.taskExecution.recover).toHaveBeenCalledOnce()
+    expect(composition.delivery.recover).not.toHaveBeenCalled()
+
+    execution.resolve()
+    await vi.waitFor(() => {
+      expect(composition.delivery.recover).toHaveBeenCalledOnce()
+    })
+    delivery.resolve()
+  })
+
   it('keeps PI_E2E alone from registering the Scripted adapter in a packaged application', async () => {
     const previousPiE2e = process.env.PI_E2E
     const previousScenario = process.env.PI_E2E_SCRIPTED_RUNTIME_SCENARIO

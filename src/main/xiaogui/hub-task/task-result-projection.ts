@@ -54,7 +54,7 @@ export function projectHubTaskResultFromExecutionTerminalV1(input: {
         outcome: 'EXECUTION_FAILED' as const,
         resultSummary: '本机执行已确定失败，未生成可应用交付。',
         verification: {
-          verdict: 'FAIL' as const,
+          verdict: input.verificationState,
           summary: input.verificationState === 'FAIL'
             ? '本机受控验证未通过。'
             : '未进入受控验证阶段。',

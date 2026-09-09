@@ -222,6 +222,18 @@ export function getDefaultDeliveryCoordinator(): XiaoguiDeliveryCoordinatorPortV
   return getDefaultRuntimeLifecycle().composition.delivery
 }
 
+/**
+ * Startup barrier for the Hub-owned recovery sequence. The coordinator owns
+ * TaskHub execution recovery, Delivery recovery, and only then evidence
+ * reconciliation; callers that start Hub polling must wait for this promise.
+ */
+export function recoverDefaultHubTaskExecutionLifecycleV1(): Promise<void> {
+  const lifecycle = getDefaultRuntimeLifecycle()
+  return hubTaskWorkerLifecycleReporter
+    ? ensureDefaultExecutionLifecycle(lifecycle, hubTaskWorkerLifecycleReporter).recover()
+    : recoverRuntimeCompositionWithoutReporter(lifecycle.composition)
+}
+
 export async function closeDefaultCollaborationHubRuntimeComposition(): Promise<void> {
   const lifecycle = defaultRuntimeLifecycle
   defaultRuntimeLifecycle = null
@@ -247,6 +259,7 @@ export function registerCollaborationHubHandlers(
     ?? (defaultLifecycle && lifecycleReporter
       ? ensureDefaultExecutionLifecycle(defaultLifecycle, lifecycleReporter)
       : null)
+  if (defaultLifecycle) void recoverDefaultHubTaskExecutionLifecycleV1().catch(() => undefined)
   if (deliveryCoordinator) {
     registerXiaoguiDeliveryHandlers(deliveryCoordinator, resolvedExecutionLifecycle)
   } else if (arguments.length === 0) {
@@ -347,6 +360,21 @@ function ensureDefaultExecutionLifecycle(
   lifecycle.composition.taskExecution.setExecutionLifecycle(coordinator)
   void coordinator.recover().catch(() => undefined)
   return coordinator
+}
+
+async function recoverRuntimeCompositionWithoutReporter(
+  composition: XiaoguiRuntimeCompositionV1,
+): Promise<void> {
+  try {
+    await composition.taskExecution.recover()
+  } catch {
+    // Each owned recovery remains fail-closed and retryable.
+  }
+  try {
+    await composition.delivery.recover()
+  } catch {
+    // Each owned recovery remains fail-closed and retryable.
+  }
 }
 
 function getDefaultRuntimeLifecycle(): DefaultRuntimeLifecycleV1 {

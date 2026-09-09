@@ -71,6 +71,12 @@ export type HubTaskWorkerPendingEvidenceV1 =
   | { kind: 'RECEIPT'; receipt: XiaoguiTaskDeliveryReceiptV1; queuedAt: string }
   | { kind: 'RESULT'; submission: XiaoguiTaskResultSubmissionV1; queuedAt: string }
 
+interface EvidenceIdentityV1 {
+  subjectId: string
+  nodeId: string
+  keyId: string
+}
+
 export interface HubTaskWorkerStateV1 {
   version: 1
   assignments: Record<string, HubTaskWorkerInboxEntryV1>
@@ -110,8 +116,8 @@ export interface HubTaskWorkerStateStoreV1 {
    * The event id is the idempotency key; an ACK for any other event is never
    * allowed to advance this local queue.
    */
-  acknowledgeReceipt(expectedEventId: string, ack: XiaoguiTaskReceiptAckV1): boolean
-  acknowledgeResult(expectedResultId: string, expectedEventId: string, ack: XiaoguiTaskResultAckV1): boolean
+  acknowledgeReceipt(expectedEventId: string, ack: XiaoguiTaskReceiptAckV1, identity?: EvidenceIdentityV1): boolean
+  acknowledgeResult(expectedResultId: string, expectedEventId: string, ack: XiaoguiTaskResultAckV1, identity?: EvidenceIdentityV1): boolean
   pendingReceipts(): readonly HubTaskWorkerPendingReceiptV1[]
   pendingEvidence(): readonly HubTaskWorkerPendingEvidenceV1[]
   hasPendingResultForAssignment(assignmentId: string): boolean
@@ -260,13 +266,14 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
     this.persist()
   }
 
-  acknowledgeReceipt(expectedEventId: string, ack: XiaoguiTaskReceiptAckV1): boolean {
+  acknowledgeReceipt(expectedEventId: string, ack: XiaoguiTaskReceiptAckV1, identity?: EvidenceIdentityV1): boolean {
     const pending = this.state.receipts[ack.eventId]
     if (
       !pending
       || ack.eventId !== expectedEventId
       || ack.verified !== true
       || pending.receipt.eventId !== expectedEventId
+      || (identity !== undefined && !receiptMatchesIdentity(pending.receipt, identity))
     ) return false
 
     const receipts = { ...this.state.receipts }
@@ -347,7 +354,7 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
     this.persist()
   }
 
-  acknowledgeResult(expectedResultId: string, expectedEventId: string, ack: XiaoguiTaskResultAckV1): boolean {
+  acknowledgeResult(expectedResultId: string, expectedEventId: string, ack: XiaoguiTaskResultAckV1, identity?: EvidenceIdentityV1): boolean {
     const results = this.state.results ?? {}
     const pending = results[ack.resultId]
     if (
@@ -357,6 +364,7 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
       || ack.verified !== true
       || pending.submission.result.resultId !== expectedResultId
       || pending.submission.receipt.eventId !== expectedEventId
+      || (identity !== undefined && !receiptMatchesIdentity(pending.submission.receipt, identity))
       || ack.executionState !== expectedExecutionState(pending.submission.result.outcome)
     ) return false
 
@@ -509,6 +517,15 @@ function cloneResultSubmission(submission: XiaoguiTaskResultSubmissionV1): Xiaog
 
 function canonicalReceipt(receipt: XiaoguiTaskDeliveryReceiptV1): string {
   return JSON.stringify(receipt)
+}
+
+function receiptMatchesIdentity(
+  receipt: XiaoguiTaskDeliveryReceiptV1,
+  identity: EvidenceIdentityV1,
+): boolean {
+  return receipt.subjectId === identity.subjectId
+    && receipt.nodeId === identity.nodeId
+    && receipt.keyId === identity.keyId
 }
 
 function canonicalResultSubmission(submission: XiaoguiTaskResultSubmissionV1): string {
