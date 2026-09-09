@@ -1,5 +1,13 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜最终分类/模型预选组合（分析验收前固定）
+
+- H1固定3a36abf已获中台Standards0/Spec0，本轮不再检查H1。已审WORK `0c8819a2ef7075e3c7bb0416073116d6543f3b20` 仅摘Worker分析分类与原对应测试，两个文件与固定源逐字节一致；复用19项/Node已有证据，不重跑分类组，不覆盖WORK分支或文档。
+- 共享模型问题先实际复现：真实Renderer `navigateToModeHome→refreshComposerRunDisplay/applyComposerDisplayMeta→materializePendingNewSession`，外围IPC/store为合成替身；原实现把无当前会话的旧Anthropic模型传给新会话model.set，回归失败。修复只在session-display-meta：空白视图不把旧Worker当绑定，用户当前预选先于defaults/last；异步返回若已切会话不写回。正常绑定仍以Runtime为准，无新模型体系/UI。
+- `node node_modules/vitest/vitest.mjs run src/renderer/src/lib/model-preselection-lifecycle.test.ts src/renderer/src/lib/__tests__/session-display-meta.test.ts`：6通过（原链1失败，model-red.log/model-green.log）。统一Node/Web typecheck、4文件定向ESLint、diff-check通过；类型/lint日志位于 `E:/XiaoguiInternalCandidate/final-combination-20260909`。Luna已按指定模型max委派，但两轮无落盘后暂停，根owner完成最小代码，不因换模型重做旧组。
+- 下一步按已有授权只做一次新隔离合成DOCX实际分析；锁定SHA4983f085dd243b81e1b61bb1774b5e23bfcd4f21a6544582da6b86df5224df55。利用Node inspector临时断点只收阶段/错误类别/stopReason/model，不收正文、思考或凭据，不新增生产观测框架。旧冻结profile和7d历史不再追查，旧MODEL_UNAVAILABLE根因仍未定。
+- 本提交是分析前代码固定点，尚无本组合真实分析或新NSIS通过结论。既有Word/Office证据复用；后续BCJ包须绑定本组合真实构建，不混旧8951安装器。
+
 ## 2026-09-09｜H1 三ID投影与人工打开入口（待增量复验）
 
 - 固定起点 `4d1016a2e4aae6e6550aa468e5897e8ccad4f2a4`。本轮仅两处：状态元数据不得展开复制凭据，以及同组件重登录后原打开按钮必须服从Main投影；已通过六项/在途隔离不重做。

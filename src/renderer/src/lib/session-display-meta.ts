@@ -66,7 +66,7 @@ export async function applyComposerDisplayMeta(meta?: SessionDisplayMeta | null)
   const patch: SessionDisplayMeta = {}
 
   const previewFile = store.historySessionFile
-  let workerBoundToView = !previewFile
+  let workerBoundToView = false
   let workerModel: string | undefined
   let workerThinking: string | undefined
 
@@ -75,8 +75,6 @@ export async function applyComposerDisplayMeta(meta?: SessionDisplayMeta | null)
     const st = res?.state as { sessionFile?: string; model?: string; thinkingLevel?: string } | null
     if (previewFile) {
       workerBoundToView = isViewingWorkerBoundSession(previewFile, st?.sessionFile)
-    } else if (st?.sessionFile) {
-      workerBoundToView = true
     }
     if (workerBoundToView && st) {
       workerModel = normalizeModelKey(st.model)
@@ -91,6 +89,9 @@ export async function applyComposerDisplayMeta(meta?: SessionDisplayMeta | null)
   // Bound: runtime only (plus fill missing thinking from defaults/last). Never JSONL model.
   // Unbound preview: JSONL meta is OK for display until first bind.
   if (!workerBoundToView) {
+    // A blank composer has no bound worker. Its user preselection outranks
+    // the previous session and global defaults.
+    if (!previewFile) patch.model = normalizeModelKey(store.runState.model)
     const fromMetaModel = normalizeModelKey(meta?.model)
     const fromMetaThink = normalizeThinkingLevel(meta?.thinkingLevel)
     if (!patch.model && fromMetaModel) patch.model = fromMetaModel
@@ -99,7 +100,7 @@ export async function applyComposerDisplayMeta(meta?: SessionDisplayMeta | null)
     // Prefer the current session's persisted model id when no live worker is bound yet.
     const currentSession = store.sessions.find((s) => s.sessionId === store.currentSessionId)
     const sessionModel = normalizeModelKey(currentSession?.modelId)
-    if (!patch.model && sessionModel) patch.model = sessionModel
+    if (!patch.model && previewFile && sessionModel) patch.model = sessionModel
   }
 
   if (!patch.model || !patch.thinkingLevel) {
@@ -116,7 +117,10 @@ export async function applyComposerDisplayMeta(meta?: SessionDisplayMeta | null)
   if (!workerBoundToView && !patch.model && lm) patch.model = lm
   if (!patch.thinkingLevel && lt) patch.thinkingLevel = lt
 
-  const cur = store.runState
+  const currentStore = useUIStore.getState()
+  if (currentStore.historySessionFile !== previewFile) return
+  const cur = currentStore.runState
+  if (!previewFile && normalizeModelKey(cur.model)) patch.model = normalizeModelKey(cur.model)
   // Bound without a model key: clear stale display rather than keep JSONL/lastModel
   let finalModel = patch.model ?? (!workerBoundToView ? normalizeModelKey(cur.model) : undefined)
   if (workerBoundToView && workerModel) finalModel = workerModel

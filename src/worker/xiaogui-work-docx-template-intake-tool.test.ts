@@ -480,7 +480,9 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
     expect(result).not.toHaveProperty('suggestions')
   })
 
-  it('repairs only once then safely degrades invalid model output', async () => {
+  it.each([
+    'invalid JSON', 'selection not found', 'selection overlap', 'provider unavailable',
+  ])('classifies analysis failure after one repair: %s', async (failure) => {
     requestWorkerHostToolMock
       .mockResolvedValueOnce({
         ok: true,
@@ -513,10 +515,23 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
           draftDecisions: [{ candidateId: 'candidate-1', decision: 'UNRESOLVED' }],
         },
       })
+    const selection = {
+      fragmentIds: ['F001'], scope: 'SELECTION', selectedText: '正文',
+      kind: 'VARIABLE', suggestedName: '内容', reason: '内容随项目变化', confidence: 0.9,
+    }
+    const repaired = failure === 'invalid JSON'
+      ? 'still invalid'
+      : JSON.stringify({ suggestions: failure === 'selection not found'
+        ? [{ ...selection, selectedText: '不存在的文字' }]
+        : [selection, selection] })
     const complete = vi
       .fn()
       .mockResolvedValueOnce(modelResponse('invalid'))
-      .mockResolvedValueOnce(modelResponse('still invalid'))
+    if (failure === 'provider unavailable') {
+      complete.mockRejectedValueOnce(new Error('PROVIDER_REQUEST_FAILED'))
+    } else {
+      complete.mockResolvedValueOnce(modelResponse(repaired))
+    }
     const execute = loadTool()?.execute as unknown as Execute
 
     await execute(
@@ -532,8 +547,10 @@ describe('xiaogui WORK finished-DOCX intake tool', () => {
       status: 'DEGRADED',
       modelVersion: 'test/model',
       warning: {
-        code: 'MODEL_OUTPUT_INVALID',
-        message: '模型输出经一次修复后仍不符合要求，已安全降级',
+        code: failure === 'provider unavailable' ? 'MODEL_UNAVAILABLE' : 'MODEL_OUTPUT_INVALID',
+        message: failure === 'provider unavailable'
+          ? '临时模型分析不可用，已安全降级'
+          : '模型输出经一次修复后仍不符合要求，已安全降级',
       },
     })
   })
