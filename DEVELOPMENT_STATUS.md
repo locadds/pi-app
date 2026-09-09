@@ -1,5 +1,13 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜安装缺失资源根因定位（待重新封装）
+
+- 本轮起点 `c71439f821af12c88f9c1dff5c5ab0e4de48e4ff`，本地/远端一致、工作树干净、保护 stash 未变。没有重构建、重装、回填安装根或重跑模型。
+- 最小对照已实跑：取固定载荷 `t64-arm.exe`，使用本次原 7-Zip 24.09 分别生成默认压缩和 `-mf=BCJ` 归档，再由本次原 NSIS `nsis7z.dll` 解压。默认归档实际方法 `ARM64 LZMA2:192k`，进程 exit0 但目标文件不存在；BCJ 归档实际方法 `BCJ LZMA2:192k`，文件存在，源/输出 SHA256 均 `ebc4c06b7d95e74e315419ee7e88e1d0f71e9e9477538c00a93a9ff8c66a6cfc`。因此最小复现支持压缩器自动 ARM64 filter 与固定解压插件不兼容，不再把缺失简单归因于杀软。
+- 可复核私有探针：`E:/XiaoguiInternalCandidate/nsis-arm64-probe-20260909/probe.nsi`，同目录 `auto.7z`、`bcj.7z`、`input`、`auto-out`、`bcj-out`。它只有原插件解压两个小归档，无注册表、产品安装或配置操作；留作本阻断证据，非待清理垃圾。
+- 现有 `app-builder-lib/out/targets/archive.js` 已支持 `ELECTRON_BUILDER_7Z_FILTER=BCJ`。建议仅对已核验 source7d 的展开产物使用该现有选项重新 NSIS 封装，不升级依赖、不改业务/模型/Office、不制作 Portable。已向总控提交最小修复范围；尚未执行重新封装，旧8951安装包及资源门仍为 PARTIAL，不能把单文件探针当完整安装通过。
+- 本轮仅文档 `git diff --check`，不重跑类型/业务测试。后续门为重新封装后的实际安装全资源核验，以及唯一 Hub 的 H1/C3 联用；原模型分析降级记录不变。
+
 ## 2026-09-09｜安装后最短验收（部分通过）
 
 - 固定7d源码、8951e165…最终NSIS实际安装exit0到 `E:/XiaoguiInstalledRC/7d18334`，新测试profile在 `E:/XiaoguiInternalCandidate/installed-7d18334-20260909/profile`。实际Main/Renderer来自安装根app.asar、packaged=true、版本/appId正确；未用展开目录或源树冒充安装版。详细证据索引：同测试根 `INSTALLATION-ACCEPTANCE.md`。
