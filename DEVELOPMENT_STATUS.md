@@ -1,5 +1,14 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜最终 BCJ NSIS 包核验通过，实际安装待腾空间
+
+- 固定代码/构建来源 `4511fc3c62c526e2d0b6f4b26c42b3520fb4078b`；后续仅记录提交。原 electron-builder/NSIS x64 构建退出0，实际7za进程参数含 `-mf=BCJ`，没有更换压缩器、依赖或产品架构。
+- 新安装器 `E:/XiaoguiInternalCandidate/final-combination-20260909/dist/小规 Agent 院内候选-Setup-0.3.0-rc.2-x64.exe`，570468959字节，SHA256 `96a1030245f37de5df4e755e6ff9fd31d95d54c9c2a2a2085e7a93819366c001`。ASAR SHA256 `75ed1dc4adc323fb556aa753b69dbc48c7b3744a982ee706be6fc7e71fead853`。
+- `node E:/XiaoguiInternalCandidate/final-combination-20260909/verify-package.cjs` 退出0：198个构建文件与ASAR一致；Word helper 2、LibreOffice 19487、Pi Skills 7、Office viewer 80项与固定来源一致，法律及图标资源相同。完整清单19864文件/2363474257字节；manifest SHA256 `efc08fb2e40a7975850370c0fd18c6366353ec92327345e6b03041aabd51101a`。可复核结果在同目录 `package-verification.json`、`unpacked-manifest.json`、`package.log`。
+- 未完成：新NSIS实际安装与已安装Main/IPC核验。E盘剩约2.02GB，不足新程序2.36GB；仅清理本轮已验证可再生 `dist/win-unpacked` 的PowerShell调用被执行环境策略拦截，未删除、未改用其他方式绕过。已请求用户手动清理该单一目录，安装器及清单保留。旧安装器、旧程序恢复清单/快照、用户配置及冻结证据未动。
+- 下一步只执行已准备的 `install-verify.cjs` 与 `installed-startup.mjs`：正常NSIS安装至独立 `E:/XiaoguiInstalledRC/4511fc3`、比对全部落盘文件和四项ARM64资源、最短Main/preload/Renderer IPC启动。不得将当前包内PASS当作安装PASS；不重跑模型、H1、Word、Office、Hub或全量测试，不合主线、不发布。
+- 本轮仓库实际修改仅本记录；没有源码变更。保护stash仍为 `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61`。
+
 ## 2026-09-09｜4511真正intake通过，BCJ装配进行中
 
 - 主管已限定批准4511代码（Standards0/Spec0）。纠正此前折叠菜单的无效点选后，用可见搜索完整模型名并实际点击，输入框短名与Renderer当前完整值同时确认为DeepSeek（model-confirmed-search.png、model-current-confirmed.png、model-ui-confirmation.json）。未改settings/JSON；当前空白视图通过正常Composer新会话流程确认model.set，不直接创建业务会话。
