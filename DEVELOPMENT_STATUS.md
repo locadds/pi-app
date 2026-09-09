@@ -1,5 +1,12 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜4511新隔离实际分析前置未通过（已停）
+
+- 代码source `4511fc3c62c526e2d0b6f4b26c42b3520fb4078b` 与live远端一致；E独立app/out构建通过，未修改原source out。新场景 `E:/XiaoguiInternalCandidate/final-combination-20260909/analysis`，只复制原已授权models/auth及锁定合成DOCX，不复制会话/报告/Hub凭据；节点依赖及只读资源junction指向本候选同版本资源，不冒充安装包。实际Main appPath/userData/agentDir均在新场景，PID54972（identity.json）。
+- 现有Node inspector临时断点已准备，无模型prepare通过；最初一次Main evaluate上下文销毁后仅重试无模型prepare，未变更产品。模型菜单点选后截图model-selected.png实际仍显示“选择模型”，root未在发送前及时核对；点击记录不能证明DeepSeek已选定。随后真实新会话为anthropic/claude-opus-4-8，stopReason=error、HTTP401、toolCalls=0，reports=[]、analysis debug=[]。没有intake分析或内部complete发生；不能把本次称为451内部分析故障，也不能算通过。
+- 已停止进一步请求并正常关闭本次测试应用；新现场保留。证据：该场景evidence/identity.json、model-selected.png、analysis-result.png、result.json；启动与调试脚本在上级analysis-probe.mjs，构建日志build.log。没有收集正文/思考/认证值，没有再次追查旧7d现场；旧冻结profile完全未动。
+- 当前阻断是本次UI选型准备未确认，不根据它新增生产模型修复。已回报主管，等待按最短范围纠正可见选择并确认后的真实intake安排；不直接换模型重试、不重包、不拿旧8951替代。源码6项Renderer模块链及已审0c证据仍保留；本次没有新安装器。
+
 ## 2026-09-09｜最终分类/模型预选组合（分析验收前固定）
 
 - H1固定3a36abf已获中台Standards0/Spec0，本轮不再检查H1。已审WORK `0c8819a2ef7075e3c7bb0416073116d6543f3b20` 仅摘Worker分析分类与原对应测试，两个文件与固定源逐字节一致；复用19项/Node已有证据，不重跑分类组，不覆盖WORK分支或文档。
