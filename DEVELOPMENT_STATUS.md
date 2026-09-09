@@ -1,5 +1,14 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜固定96a103安装包 C盘实际安装与最短IPC通过
+
+- 主管只读确认C盘独立落点有足够空间后明确授权继续；没有重试被策略拒绝的删除，也没有手动删除、换工具或移动绕过。此前提出的手动清理建议不再作为后续方案，E盘本轮 `dist/win-unpacked` 原地保留。仅将两个外部验收脚本的安装路径改为 `C:/Users/90662/AppData/Local/Programs/XiaoguiInternalRC-4511fc3`，无产品源码或安装器变更。
+- 同一96a1030245f37de5df4e755e6ff9fd31d95d54c9c2a2a2085e7a93819366c001包，经原NSIS `/S /currentuser /D=...` 安装：2026-09-09T04:38:13.032Z至04:45:44.538Z，退出0。安装前独立核验旧卸载登记仅指向7d测试程序，新目标不存在。原安装流程替换旧测试程序、未请求删除app data；旧8951包、恢复快照/manifest、所有旧profile和证据保留，旧程序字节可恢复。卸载登记由原安装器正常指向上述C目标，没有手改注册表。
+- `node E:/XiaoguiInternalCandidate/final-combination-20260909/install-verify.cjs` 退出0：19864/19864文件匹配，missing=[]、mismatch=[]；四个原缺失ARM64文件全部存在且SHA与打包清单一致，ASAR仍为75ed1dc4adc323fb556aa753b69dbc48c7b3744a982ee706be6fc7e71fead853。结果为同目录 `installation.json`、`installed-verification.json`，不是仅凭安装器退出码判成功。
+- `node E:/XiaoguiInternalCandidate/final-combination-20260909/installed-startup.mjs` 退出0，INSTALLED_MAIN_IPC_PASS。实际exe和app.asar来自C安装目录、app.isPackaged=true、版本0.3.0-rc.2；preload invoke可用、真实Main `ipc:xiaogui.mode.get` 返回WORK。截图 `installed-startup.png` 可见正常工作台；记录 `installed-startup.json`。应用已正常关闭。
+- 本次最短启动使用E盘新隔离 `final-combination-20260909/installed-startup-profile`，统一模型目录为其pi-agent；没有复制旧会话/Hub凭据，没有发模型请求，没有重跑H1、Word、Office。此前4511真实intake以及已验收Word/Office/H1证据按主管许可复用，当前不声称新两机/Hub联用通过。
+- 实际仓库修改仅本记录，文档diff-check通过；固定代码/包来源仍4511fc3，产品身份和旧恢复材料不变。桌面安装候选已完成本轮授权门，回交桌面主管统一复核及联用准备；不合主线、不发布、不制作Portable、不自行启动Hub。
+
 ## 2026-09-09｜最终 BCJ NSIS 包核验通过，实际安装待腾空间
 
 - 固定代码/构建来源 `4511fc3c62c526e2d0b6f4b26c42b3520fb4078b`；后续仅记录提交。原 electron-builder/NSIS x64 构建退出0，实际7za进程参数含 `-mf=BCJ`，没有更换压缩器、依赖或产品架构。
