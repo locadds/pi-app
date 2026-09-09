@@ -1,5 +1,13 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜4511真正intake通过，BCJ装配进行中
+
+- 主管已限定批准4511代码（Standards0/Spec0）。纠正此前折叠菜单的无效点选后，用可见搜索完整模型名并实际点击，输入框短名与Renderer当前完整值同时确认为DeepSeek（model-confirmed-search.png、model-current-confirmed.png、model-ui-confirmation.json）。未改settings/JSON；当前空白视图通过正常Composer新会话流程确认model.set，不直接创建业务会话。
+- 新报告 `xgti1_0cc136bc-1e52-4eab-bda8-4ecadf5ca611`：12候选=5变量/7固定，仅PAGE_COUNT_UNKNOWN和SCAN_COUNT_UNKNOWN；无MODEL_UNAVAILABLE/OUTPUT_INVALID。该新会话外层全部DeepSeek、唯一intake toolUse；内部completeBatch的临时inspector断点实测first/stop，无repair/异常。源DOCX SHA4983f085dd243b81e1b61bb1774b5e23bfcd4f21a6544582da6b86df5224df55不变。未生成正式模板，不重复Word/Office旅程。
+- 集中证据 `E:/XiaoguiInternalCandidate/final-combination-20260909/analysis/evidence/analysis-pass.json`、analysis-debug.json、analysis-result.png。旧401空报告/截图另存prior-401-result.json/png，旧model-selected.png和610f记录保留。该次真正intake已由桌面主管核定通过；应用已正常关闭，不再发模型请求。
+- 正在用相同source4511构建out、原electron-builder26.15.3/NSIS、既有ELECTRON_BUILDER_7Z_FILTER=BCJ生成替代包，仅NSIS x64、publish never。仍未形成新安装通过结论。代码不再改，不重测H1/分类/模型/Word等已过组。
+- 旧E:/XiaoguiInstalledRC/7d18334程序的完整19861项恢复清单与快速硬链接快照已准备；独立恢复依据为原8951 NSIS+已核内容manifest，以及额外卸载器独立副本（old-recovery-manifest.json、old-extra-independent）。主管允许原NSIS正常替换旧测试程序、保持KEEP_APP_DATA；旧包/profile/原始证据不动，不绕过注册表或安装逻辑。新安装目标必须独立，不能复用旧硬链接。
+
 ## 2026-09-09｜4511新隔离实际分析前置未通过（已停）
 
 - 代码source `4511fc3c62c526e2d0b6f4b26c42b3520fb4078b` 与live远端一致；E独立app/out构建通过，未修改原source out。新场景 `E:/XiaoguiInternalCandidate/final-combination-20260909/analysis`，只复制原已授权models/auth及锁定合成DOCX，不复制会话/报告/Hub凭据；节点依赖及只读资源junction指向本候选同版本资源，不冒充安装包。实际Main appPath/userData/agentDir均在新场景，PID54972（identity.json）。
