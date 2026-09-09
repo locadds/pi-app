@@ -1,5 +1,25 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜H1 身份恢复两个 P2 最小返修（待复验）
+
+- 固定起点 `2730172144c5b805606057aef6aa1bd34245df54`；本地/live远端一致、clean、保护stash未变。中台原七项已关闭六项，本轮只修在途发送归属与当前节点送达/打开事实。Terra只读方案后未落盘，已暂停；最终代码与公开调用回归由根owner落地，没有并发改树。
+- 在途发送仍是原来的一个私有slot，现在同时保存 credentials identity 和 Promise；只有同subject/node/key才复用，不同身份启动自己的发送。旧finally不能清掉新slot，旧错误仍携带旧身份，不能经B的refresh误清B；真正B的401/403继续清其失效凭据。未创建另一套持久队列或协议。
+- 原私有entry增加可选deliveryIdentity归属。首次/新节点接收QUEUED且PENDING/ACCEPTED、NOT_STARTED任务时重置当前openedAt/localDeliveryState并排入NODE_STORED；同任务本机计划保留，包变化原规则不改。旧数据缺字段仅作为未知归属，不清旧签名；旧/坏归属字段不会让normalizeState清空整个队列。四个原upsert消费者共用同一存入动作；await后重核当前身份，迟到旧响应不能写回旧归属。不同已知身份不能沿旧打开事实操作；USER_OPENED仍只由人工open生成。
+- 精确旧ACK可确认对应旧证据，但不得更新新节点的打开/执行/结果投影。未ACK历史签名完整JSON保持原字节。NODE_STORED不会自动生成USER_OPENED或START；Hub70保留在退役节点的RUNNING/OUTCOME_UNKNOWN任务不会被新节点自动接收或重跑。公开IPC仍是原手写白名单，未增加节点身份字段。
+- 修改文件仅 `worker-service.ts`、`worker-state.ts`、新增 `worker-identity-rebind.test.ts` 及本记录。Hub70/d76、C2 outbox、Apply、dispatch门、Word/Office、0c分类、共享模型显示、安装器均未改。
+
+### 定向证据
+
+集中目录 `E:/XiaoguiInternalCandidate/h1-identity-rebind-20260909`：
+
+- `node node_modules/vitest/vitest.mjs run src/main/xiaogui/hub-task/worker-identity-rebind.test.ts`：原在途A队头→B connect→A晚401/403，两项均因B凭据被清失败（inflight-red.log），修后两项通过（inflight-green.log），同测试继续验证真正B401/403仍正确处理。
+- 初版目标 `-t 'rebinds an accepted'`（测试随后参数化为tracked/legacy）原代码因新node没有NODE_STORED失败（delivery-red.log）。修后用固定70源码的subject/node/key、assignment/package、严格sequence与START前置条件验证；不是无条件成功ACK替身，不运行Hub或复测签名算法。
+- 最终可执行命令：`node node_modules/vitest/vitest.mjs run src/main/xiaogui/hub-task/worker-identity-rebind.test.ts src/main/xiaogui/hub-task/worker-service-c2-gate.test.ts src/main/xiaogui/hub-task/worker-result-projection.test.ts`：3文件16通过（focused-final.log）。含tracked与旧无归属entry两条同主体重配、人工打开和START序列、重启私有归属保留、旧签名编码不变及晚ACK不污染B；另两项退役RUNNING/UNKNOWN不得重跑。仅带回直接受影响的身份/结果绑定回归，不重跑原六项全组。
+- `npm run typecheck` Node/Web通过（typecheck-final.log）。首轮4处类型错误为新测试union未收窄及identity辅助函数参数要求过宽，已纠正，原typecheck.log保留。类型完成后仅补同一测试的legacy参数场景，无生产变化。
+- `node node_modules/eslint/bin/eslint.js src/main/xiaogui/hub-task/worker-service.ts src/main/xiaogui/hub-task/worker-state.ts src/main/xiaogui/hub-task/worker-identity-rebind.test.ts`通过（eslint-final.log）；最后legacy测试单文件lint另过；`git diff --check`通过。提交后固定差异基线为2730172144c5b805606057aef6aa1bd34245df54。
+
+这是客户端公开service/state调用与按70规则实现的受控端口测试，不是两机/真实Hub验收。没有模型、Word、Electron、NSIS或全量测试。下一步只交桌面主管统一转中台增量复验；通过前不混入其他候选、不重新出包、不合主线、不发布，旧7d/8951安装证据不代表本次源码。
+
 ## 2026-09-09｜H1 桌面组合补充整改（待增量复验）
 
 - 固定起点 `09d8475796c85856aeeaee48ac550d16433ce361`。中台主管固定补充审查七项，范围仅既有生命周期与身份/证据留存；不重开已通过的 dispatch 证据门和终态 saga 读取。复用原 H1 worker/service、TaskHub coordinator、Delivery composer 及私有队列，不新增 Pi Skill/插件、公开协议、权限系统或状态机。

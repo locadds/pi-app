@@ -51,6 +51,8 @@ export interface HubTaskWorkerPlanDraftBindingV1 extends HubAddressV1 {
 }
 
 export interface HubTaskWorkerInboxEntryV1 extends HubTaskWorkerAssignmentDetailV1 {
+  /** Private receipt attribution, never included in the renderer projection. */
+  deliveryIdentity?: EvidenceIdentityV1
   openedAt: string | null
   localDeliveryState: HubTaskWorkerLocalDeliveryStateV1
   localPlanDraft: HubTaskWorkerPlanDraftBindingV1 | null
@@ -101,7 +103,7 @@ export interface HubTaskWorkerStateStoreV1 {
   hasAssignment(assignmentId: string): boolean
   listAssignments(): readonly HubTaskWorkerInboxEntryV1[]
   requireAssignment(assignmentId: string): HubTaskWorkerInboxEntryV1
-  upsertAssignment(detail: HubTaskWorkerAssignmentDetailV1): void
+  upsertAssignment(detail: HubTaskWorkerAssignmentDetailV1, identity?: EvidenceIdentityV1): boolean
   /**
    * The H1-3 Worker endpoint returns a complete active-node snapshot. Remove
    * stale local package projections only after a successful authoritative poll.
@@ -194,7 +196,7 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
     return cloneEntry(entry)
   }
 
-  upsertAssignment(detail: HubTaskWorkerAssignmentDetailV1): void {
+  upsertAssignment(detail: HubTaskWorkerAssignmentDetailV1, identity?: EvidenceIdentityV1): boolean {
     assertDetail(detail)
     const assignmentId = detail.assignment.assignmentId
     const previous = this.state.assignments[assignmentId]
@@ -202,18 +204,25 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
       previous.assignment.taskId !== detail.assignment.taskId ||
       previous.offer.packageSha256 !== detail.offer.packageSha256
     )
+    const replacedDelivery = identity !== undefined
+      && !sameDeliveryIdentity(previous?.deliveryIdentity, identity)
+      && detail.assignment.deliveryState === 'QUEUED'
+      && detail.assignment.executionState === 'NOT_STARTED'
+      && ['PENDING', 'ACCEPTED'].includes(detail.assignment.decisionState)
     const next: HubTaskWorkerInboxEntryV1 = {
       assignment: cloneAssignment(detail.assignment),
       offer: cloneOffer(detail.offer),
-      openedAt: packageChanged ? null : previous?.openedAt ?? null,
-      localDeliveryState: packageChanged ? 'NOT_OPENED' : previous?.localDeliveryState ?? 'NOT_OPENED',
+      openedAt: packageChanged || replacedDelivery ? null : previous?.openedAt ?? null,
+      localDeliveryState: packageChanged || replacedDelivery ? 'NOT_OPENED' : previous?.localDeliveryState ?? 'NOT_OPENED',
       localPlanDraft: packageChanged ? null : previous?.localPlanDraft ?? null,
+      deliveryIdentity: identity ? { ...identity } : previous?.deliveryIdentity,
     }
     this.state = {
       ...this.state,
       assignments: { ...this.state.assignments, [assignmentId]: next },
     }
     this.persist()
+    return !previous || replacedDelivery
   }
 
   reconcileAssignments(authoritativeAssignmentIds: readonly string[]): void {
@@ -286,6 +295,7 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
         entry
         && entry.openedAt !== null
         && entry.assignment.taskId === pending.receipt.taskId
+        && (!entry.deliveryIdentity || receiptMatchesIdentity(pending.receipt, entry.deliveryIdentity))
         && entry.offer.packageSha256 === pending.receipt.packageSha256
       ) {
         assignments = {
@@ -304,6 +314,7 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
       if (
         entry
         && entry.assignment.taskId === pending.receipt.taskId
+        && (!entry.deliveryIdentity || receiptMatchesIdentity(pending.receipt, entry.deliveryIdentity))
         && entry.offer.packageSha256 === pending.receipt.packageSha256
       ) {
         assignments = {
@@ -375,6 +386,7 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
     if (
       entry
       && entry.assignment.taskId === pending.submission.result.taskId
+      && (!entry.deliveryIdentity || receiptMatchesIdentity(pending.submission.receipt, entry.deliveryIdentity))
       && entry.offer.packageSha256 === pending.submission.receipt.packageSha256
     ) {
       assignments = {
@@ -479,12 +491,21 @@ function cloneState(state: HubTaskWorkerStateV1): HubTaskWorkerStateV1 {
 
 function cloneEntry(entry: HubTaskWorkerInboxEntryV1): HubTaskWorkerInboxEntryV1 {
   return {
+    deliveryIdentity: validDeliveryIdentity(entry.deliveryIdentity) ? { ...entry.deliveryIdentity } : undefined,
     assignment: cloneAssignment(entry.assignment),
     offer: cloneOffer(entry.offer),
     openedAt: entry.openedAt,
     localDeliveryState: entry.localDeliveryState,
     localPlanDraft: entry.localPlanDraft ? { ...entry.localPlanDraft } : null,
   }
+}
+
+function validDeliveryIdentity(value: unknown): value is EvidenceIdentityV1 {
+  return isRecord(value) && isOpaqueId(value.subjectId) && isOpaqueId(value.nodeId) && isOpaqueId(value.keyId)
+}
+
+function sameDeliveryIdentity(left: EvidenceIdentityV1 | undefined, right: EvidenceIdentityV1): boolean {
+  return left?.subjectId === right.subjectId && left.nodeId === right.nodeId && left.keyId === right.keyId
 }
 
 function cloneAssignment(assignment: HubTaskWorkerAssignmentV1): HubTaskWorkerAssignmentV1 {

@@ -182,7 +182,7 @@ export function createHubTaskWorkerServiceV1(
 class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   private state: HubTaskWorkerPublicStatusV1
   private timer: NodeJS.Timeout | null = null
-  private evidenceFlush: Promise<void> | null = null
+  private evidenceFlush: { credentials: HubTaskWorkerCredentialBundleV1; promise: Promise<void> } | null = null
 
   constructor(private readonly options: CreateHubTaskWorkerServiceOptionsV1) {
     const configured = Boolean(options.credentials.read())
@@ -283,11 +283,11 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         if (this.terminalActionCode()) return { ok: false, code: this.portFailureCode(error) }
       }
       const snapshot = await port.pollAssignments(this.options.state.cursor())
+      if (!this.isCurrentIdentity(credentials)) return { ok: false, code: 'HUB_WORKER_STATE_CONFLICT' }
       for (const assignment of snapshot.assignments) {
-        const isNew = !this.options.state.hasAssignment(assignment.assignmentId)
         const detail = await port.downloadAssignment(assignment.assignmentId)
-        this.options.state.upsertAssignment(detail)
-        if (isNew) this.enqueueReceipt('NODE_STORED', detail, credentials)
+        if (!this.isCurrentIdentity(credentials)) return { ok: false, code: 'HUB_WORKER_STATE_CONFLICT' }
+        this.storeAssignment(detail, credentials)
       }
       // H1-3 polling is a full active-node snapshot, not a delta feed. A task
       // reassigned during node replacement must not remain actionable locally.
@@ -333,6 +333,9 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     } catch {
       return { ok: false, code: 'HUB_ASSIGNMENT_NOT_READY' }
     }
+    if (before.deliveryIdentity && !sameIdentity({ node: before.deliveryIdentity }, credentials)) {
+      return { ok: false, code: 'HUB_ASSIGNMENT_NOT_READY' }
+    }
     const opened = this.options.state.markOpened(assignmentId, this.now())
     if (!before.openedAt) {
       this.enqueueReceipt('USER_OPENED', opened, credentials)
@@ -361,7 +364,8 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     }
     try {
       const detail = await this.options.createPort(credentials).submitDecision(assignmentId, decision)
-      this.options.state.upsertAssignment(detail)
+      if (!this.isCurrentIdentity(credentials)) return { ok: false, code: 'HUB_WORKER_STATE_CONFLICT' }
+      this.storeAssignment(detail, credentials)
       this.enqueueReceipt(decision === 'ACCEPT' ? 'DIRECT_ACCEPTED' : 'DIRECT_REJECTED', detail, credentials)
       this.requestEvidenceFlush(credentials)
       return { ok: true, value: this.options.state.requireAssignment(assignmentId) }
@@ -378,7 +382,8 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     if (!credentials) return { ok: false, code: 'HUB_WORKER_UNCONFIGURED' }
     try {
       const detail = await this.options.createPort(credentials).returnAssignment(assignmentId)
-      this.options.state.upsertAssignment(detail)
+      if (!this.isCurrentIdentity(credentials)) return { ok: false, code: 'HUB_WORKER_STATE_CONFLICT' }
+      this.storeAssignment(detail, credentials)
       return { ok: true, value: this.options.state.requireAssignment(assignmentId) }
     } catch (error) {
       this.recordPortFailure(error, credentials)
@@ -419,7 +424,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         || current.offer.taskId !== entry.offer.taskId
         || current.offer.packageSha256 !== entry.offer.packageSha256
       ) return { ok: false, code: 'HUB_ASSIGNMENT_NOT_READY' }
-      this.options.state.upsertAssignment(current)
+      this.storeAssignment(current, credentials)
       entry = this.options.state.requireAssignment(assignmentId)
     } catch (error) {
       this.recordPortFailure(error, credentials)
@@ -577,8 +582,11 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
   }
 
   private findBoundAssignment(address: HubAddressV1, flowId: string): HubTaskWorkerInboxEntryV1 | null {
+    const credentials = this.options.credentials.read()
+    if (!credentials) return null
     return this.options.state.listAssignments().find((entry) => (
       entry.openedAt !== null
+      && (!entry.deliveryIdentity || sameIdentity({ node: entry.deliveryIdentity }, credentials))
       && entry.assignment.decisionState === 'ACCEPTED'
       && entry.localPlanDraft !== null
       && entry.localPlanDraft.projectId === address.projectId
@@ -633,12 +641,13 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     port: XiaoguiHubTaskWorkerPortV1,
     credentials: HubTaskWorkerCredentialBundleV1,
   ): Promise<void> {
-    if (this.evidenceFlush) return this.evidenceFlush
+    if (this.evidenceFlush && sameIdentity(this.evidenceFlush.credentials, credentials)) return this.evidenceFlush.promise
 
     const work = this.flushPendingEvidenceSerial(port, credentials)
-    this.evidenceFlush = work
+    const flight = { credentials, promise: work }
+    this.evidenceFlush = flight
     void work.finally(() => {
-      if (this.evidenceFlush === work) this.evidenceFlush = null
+      if (this.evidenceFlush === flight) this.evidenceFlush = null
     }).catch(() => undefined)
     return work
   }
@@ -689,6 +698,17 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
 
   private now(): string {
     return this.options.now?.() ?? new Date().toISOString()
+  }
+
+  private isCurrentIdentity(credentials: HubTaskWorkerCredentialBundleV1): boolean {
+    const current = this.options.credentials.read()
+    return current !== null && sameIdentity(current, credentials)
+  }
+
+  private storeAssignment(detail: HubTaskWorkerAssignmentDetailV1, credentials: HubTaskWorkerCredentialBundleV1): void {
+    if (this.options.state.upsertAssignment(detail, credentials.node)) {
+      this.enqueueReceipt('NODE_STORED', detail, credentials)
+    }
   }
 
   private id(prefix: string): string {
@@ -796,8 +816,8 @@ function evidenceMatchesIdentity(
 }
 
 function sameIdentity(
-  left: Pick<HubTaskWorkerCredentialBundleV1, 'node'>,
-  right: Pick<HubTaskWorkerCredentialBundleV1, 'node'>,
+  left: { node: Pick<HubTaskWorkerCredentialBundleV1['node'], 'subjectId' | 'nodeId' | 'keyId'> },
+  right: { node: Pick<HubTaskWorkerCredentialBundleV1['node'], 'subjectId' | 'nodeId' | 'keyId'> },
 ): boolean {
   return left.node.subjectId === right.node.subjectId
     && left.node.nodeId === right.node.nodeId
