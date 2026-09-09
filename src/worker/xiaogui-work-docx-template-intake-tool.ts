@@ -513,7 +513,7 @@ async function analyzeBatches(
     const invalid =
       error instanceof z.ZodError ||
       (error instanceof Error &&
-        ['MODEL_JSON_', 'MODEL_SCHEMA_', 'MODEL_FRAGMENT_', 'MODEL_OUTPUT_'].some((prefix) =>
+        ['MODEL_JSON_', 'MODEL_SCHEMA_', 'MODEL_FRAGMENT_', 'MODEL_OUTPUT_', 'MODEL_SELECTION_'].some((prefix) =>
           error.message.startsWith(prefix),
         ))
     return {

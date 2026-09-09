@@ -1,5 +1,11 @@
 # 小规开发阶段状态
 
+## 2026-09-09｜WORK intake 错误分类（阶段候选，未验收）
+
+- 安装 source `7d18334` 的补证确认内部模型为 DeepSeek，失败处于分析 catch；历史内部具体异常仍未定，不再请求模型猜测。
+- 最小修复将 repair 后文本定位不存在/重叠归为 `MODEL_OUTPUT_INVALID`，不再误报 `MODEL_UNAVAILABLE`；不改共享绑定、调用参数或一次 repair。红灯 2 项、修复后 intake 文件 19 项全绿。
+- 详见 `doc/WORK-INTAKE-ERROR-CLASSIFICATION-HANDOFF-2026-09-09.md`。分类缺陷已修复；真实安装故障未关闭、未进入主线、未发布。
+
 ## 2026-09-08｜WORK Word DOC 主转换（阶段候选，待验收）
 
 - 用户明确 Windows + Microsoft Word 部署基线，DOC 主转换接入现有 Renderer seam；失败不回退 LibreOffice，不改 DOCX/PDF、Pi、Univer 或确认状态机。
