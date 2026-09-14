@@ -52,8 +52,13 @@ function finish(requestId: string, outcome: WorkerHostToolOutcomeV1): boolean {
 }
 
 function requestTimeoutMs(request: WorkerHostToolRequestInputV1): number | null {
-  if (request.method === 'xiaogui.coding.direct.preflight.v4') {
+  if (request.method === 'xiaogui.coding.direct.preflight.v4' || request.method === 'xiaogui.taskhub.pi.tool.begin') {
     return INTERACTIVE_DIRECT_CODING_PERMISSION_TIMEOUT_MS
+  }
+  if (request.method === 'xiaogui.taskhub.design-project') {
+    // A project inspection can ask permission for multiple approved source
+    // files and its result. Each Main permission still has its own timeout.
+    return INTERACTIVE_REPORT_DOCX_TIMEOUT_MS
   }
   if (
     request.method === 'xiaogui.work.docx.v1' ||

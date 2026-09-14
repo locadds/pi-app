@@ -220,6 +220,14 @@ function planFor(draft: WorkReportDraftV1, content: Buffer): WorkReportDocxPlanV
   }
 }
 
+export async function renderWorkReportArtifactV1(
+  draft: WorkReportDraftV1,
+): Promise<{ content: Buffer; plan: WorkReportDocxPlanV1 }> {
+  const normalized = normalizeDraft(draft)
+  const content = await renderDraft(normalized)
+  return { content, plan: planFor(normalized, content) }
+}
+
 function pathWithin(root: string, path: string): boolean {
   const normalizedRoot = resolve(root).toLocaleLowerCase()
   const normalizedPath = resolve(path).toLocaleLowerCase()

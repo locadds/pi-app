@@ -94,6 +94,12 @@ export class WorkerManager {
     private promptContextResolver?: XiaoguiPromptContextResolverV1,
     private readonly capabilityAuthority: TrustedWorkerCapabilityAuthorityV1 =
       trustedWorkerCapabilityAuthorityV1,
+    private readonly attemptExecution?: {
+      readonly attemptId: string
+      readonly designExtensionPath?: string
+      readonly onEvent: (event: AppEvent) => void
+      readonly onExit: () => void
+    },
   ) {}
 
   private async getPromptContextResolver(): Promise<XiaoguiPromptContextResolverV1> {
@@ -327,6 +333,8 @@ export class WorkerManager {
       poolKey: key,
       sessionFile: null,
       promptContext,
+      taskHubAttemptId: this.attemptExecution?.attemptId,
+      taskHubDesignExtensionPath: this.attemptExecution?.designExtensionPath,
     })
     this.pool.set(key, slot)
     this.setForeground(slot)
@@ -499,6 +507,10 @@ export class WorkerManager {
     agentTurnActive: boolean
   }): void {
     const { event, fromCwd, sessionFile, agentTurnActive } = payload
+    if (this.attemptExecution) {
+      this.attemptExecution.onEvent(event)
+      return
+    }
     let enriched = event
     if (event && typeof event === 'object') {
       const base = { ...(event as object) } as Record<string, unknown>
@@ -516,6 +528,7 @@ export class WorkerManager {
   }
 
   private handleSlotExit(slot: WorkerSlot, code: number): void {
+    if (this.attemptExecution && !slot.stopping) this.attemptExecution.onExit()
     const key = slot.poolKey
     cancelDirectExtensionUIForSource(key, slot.sessionId)
     if (this.pool.get(key) === slot) this.pool.delete(key)
@@ -782,6 +795,13 @@ export class WorkerManager {
     codingContext?: CodingContextAgentPayloadV1,
   ): Promise<void> {
     await this.request('prompt', { text, sessionFile, codingContext })
+  }
+
+  /** Main-only private Attempt manager; never creates a Worker for cancellation. */
+  async abortCurrentAttempt(): Promise<void> {
+    if (!this.attemptExecution) throw new Error('PI_ATTEMPT_BINDING_REQUIRED')
+    const slot = this.foregroundSlot()
+    if (slot && !slot.stopping) await this.requestOnSlot(slot, 'abort')
   }
 
   /** Main-only role preflight. The private prompt body crosses only this Worker RPC. */

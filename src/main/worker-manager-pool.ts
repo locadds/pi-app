@@ -508,6 +508,8 @@ export async function forkWorkerForCwd(
     promptContext: XiaoguiPromptContextV1
     projectBinding: TrustedProjectBindingHandleV1
     projectIdentityDigest: string
+    taskHubAttemptId?: string
+    taskHubDesignExtensionPath?: string
   },
 ): Promise<{ slot: WorkerSlot; init: Promise<WorkerInitResult> }> {
   if (readProjectRootIdentityV2(cwd).digest !== opts.projectIdentityDigest) {
@@ -602,6 +604,8 @@ export async function forkWorkerForCwd(
     sdkPath,
     promptContext: opts.promptContext,
     bundledSkillPaths,
+    taskHubAttemptId: opts.taskHubAttemptId,
+    taskHubDesignExtensionPath: opts.taskHubDesignExtensionPath,
   })
   const guardedInit = initPromise.then((result) => {
       if (readProjectRootIdentityV2(cwd).digest !== slot.projectIdentityDigest) {

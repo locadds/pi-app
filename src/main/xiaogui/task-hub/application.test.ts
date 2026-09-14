@@ -370,6 +370,7 @@ describe('M2A collaboration hub application', () => {
     } satisfies SessionCollaborationProjectionM2BV1
     let activeDelivery: DeliveryBatchProjectionV1 | null = null
     const store = {
+      readProjection: () => projection,
       readProjectionM2B: () => projection,
       readActiveDelivery: () => activeDelivery,
       schedulerTasks: () => [],
@@ -489,20 +490,40 @@ describe('M2A collaboration hub application', () => {
     app.close()
   })
 
-  it('keeps DESIGN reserved in memory and does not create a SQLite file', async () => {
+  it('persists a DESIGN draft with the same explicit approval gate as other modes', async () => {
     const dbPath = await tempDb()
     const app = appFor(dbPath, 'DESIGN')
 
     await expect(app.observe(ADDRESS)).resolves.toMatchObject({
       ok: true,
-      value: { reserved: { code: 'DESIGN_RESERVED' }, availableActions: [] },
+      value: { sessionMode: 'DESIGN', authoritativeMode: 'DESIGN', availableActions: ['flow.start.with_draft'] },
     })
     await expect(
       execute(app, { requestId: 'req-design', intent: { type: 'flow.start.with_draft', draft: draft() } }),
-    ).resolves.toMatchObject({ ok: false, error: { code: 'DESIGN_RESERVED' } })
-    await expect(app.readEvents(ADDRESS)).resolves.toMatchObject({ ok: false, error: { code: 'DESIGN_RESERVED' } })
-    expect(existsSync(dbPath)).toBe(false)
+    ).resolves.toMatchObject({ ok: true })
+    await expect(app.observe(ADDRESS)).resolves.toMatchObject({ ok: true, value: {
+      sessionMode: 'DESIGN', authoritativeMode: 'DESIGN', activeFlow: { status: 'AWAITING_PLAN_APPROVAL' },
+    } })
+    await expect(app.readEvents(ADDRESS)).resolves.toMatchObject({ ok: true })
+    expect(existsSync(dbPath)).toBe(true)
     app.close()
+  })
+
+  it.each(['WORK', 'DESIGN', 'CODING'] as const)('refuses to reinterpret an existing %s plan after Main scope changes mode', async initialMode => {
+    const dbPath = await tempDb()
+    let mode: SessionMode = initialMode
+    const app = createCollaborationHubApplicationV1({
+      lookup: { lookup: async address => ({ kind: 'FOUND', scope: { ...address, sessionMode: mode } }) },
+      storeFactory: () => new CollaborationHubSqliteStoreV1(dbPath),
+    })
+    try {
+      await expect(execute(app, { requestId: 'start-frozen-mode', intent: { type: 'flow.start.with_draft', draft: draft() } })).resolves.toMatchObject({ ok: true })
+      mode = initialMode === 'WORK' ? 'CODING' : 'WORK'
+      await expect(app.observe(ADDRESS)).resolves.toMatchObject({ ok: false, error: { code: 'SESSION_SCOPE_MISMATCH' } })
+      await expect(executeSystem(app, { requestId: 'changed-mode', intent: { type: 'system.schedule', flowId: 'flow' as FlowId } })).resolves.toMatchObject({ ok: false, error: { code: 'SESSION_SCOPE_MISMATCH' } })
+      mode = initialMode
+      await expect(app.observe(ADDRESS)).resolves.toMatchObject({ ok: true, value: { sessionMode: initialMode, authoritativeMode: initialMode } })
+    } finally { app.close() }
   })
 
   it('starts a valid Chinese DAG draft and increments sessionVersion exactly once', async () => {
@@ -2173,13 +2194,12 @@ describe('M2A collaboration hub application', () => {
     store.close()
   })
 
-  it('rejects DESIGN system.schedule with zero SQLite writes', async () => {
+  it('does not schedule DESIGN without an existing approved plan', async () => {
     const dbPath = await tempDb()
     const app = appFor(dbPath, 'DESIGN')
 
     await expect(
       executeSystem(app, { requestId: 'sys-design', intent: { type: 'system.schedule', flowId: 'xhbf_flow' as FlowId } }),
-    ).resolves.toMatchObject({ ok: false, error: { code: 'DESIGN_RESERVED' } })
-    expect(existsSync(dbPath)).toBe(false)
+    ).resolves.toMatchObject({ ok: false })
     app.close()
   })

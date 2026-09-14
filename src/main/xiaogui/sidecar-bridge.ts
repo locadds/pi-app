@@ -240,6 +240,9 @@ export function buildSidecarEnv(
   effectiveAllowedRoots?: ReadonlyArray<string>,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base }
+  // Bundled/fixed source is immutable; Python caches must not change its
+  // manifest between two invocations of the same installed runtime.
+  env['PYTHONDONTWRITEBYTECODE'] = '1'
   const roots = effectiveAllowedRoots ?? resolveAllowedRoots(config.allowedRoots, projectRoot)
   env['XIAOGUI_ALLOWED_ROOTS'] = roots.join(path.delimiter)
   env['XIAOGUI_REQUEST_TIMEOUT'] = String(Math.ceil(config.requestTimeoutMs / 1000))
@@ -696,6 +699,11 @@ export const xiaogui = new XiaoguiIntegration()
 export function createXiaoguiIntegrationForTest(
   deps: XiaoguiIntegrationDeps,
 ): XiaoguiIntegrationTestInstance {
+  return createXiaoguiIntegration(deps)
+}
+
+/** Dedicated trusted invocation context, sharing the existing sidecar lifecycle. */
+export function createXiaoguiIntegration(deps: XiaoguiIntegrationDeps): XiaoguiIntegrationTestInstance {
   return new XiaoguiIntegration(deps)
 }
 

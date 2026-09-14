@@ -13,6 +13,9 @@ export type WorkerSessionExecutionLeaseV1 = Readonly<{
 }>
 
 export type WorkerIncomingMessage = {
+  /** Private Main-owned Attempt execution subject; never a Renderer input. */
+  taskHubAttemptId?: string
+  taskHubDesignExtensionPath?: string
   type?: string
   requestId?: string
   cwd?: string

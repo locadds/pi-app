@@ -120,6 +120,43 @@ describe('XiaoguiDeliveryWorkflowV1', () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  it('binds same-path Delivery evidence to the selected task Attempt, not an older verified task', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-source-attempt-'))
+    try {
+      const repo = join(root, 'repo')
+      await git(root, ['init', 'repo'])
+      await writeFile(join(repo, 'a.txt'), 'old-a')
+      await git(repo, ['add', 'a.txt'])
+      await git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'])
+      const baseRevision = (await git(repo, ['rev-parse', '--verify', 'HEAD'])).trim()
+      const baselineTreeHash = (await git(repo, ['rev-parse', '--verify', 'HEAD^{tree}'])).trim()
+      const targetFingerprint = deliveryTargetFingerprintV1({ projectId: ADDRESS.projectId, baseRevision, baselineTreeHash })
+      const store = new SamePathSecondTaskStore(targetFingerprint)
+      const applyPort = recordingApplyPort()
+      const sourceAttemptIds: string[][] = []
+      const verificationPort: TaskVerificationExecutionPortV1 = {
+        verify: async (request, context) => {
+          sourceAttemptIds.push([...(context.artifactSourceAttemptIds ?? [])])
+          return passVerificationResult(request, context.scopeEvidenceArtifactId)
+        },
+      }
+      const workflow = workflowFor(store, repo, join(root, 'managed'), applyPort, baseRevision, baselineTreeHash, verificationPort)
+
+      const outcome = await workflow.selectTasks(ADDRESS, {
+        requestId: 'select-same-path-second',
+        flowId: 'flow-1' as never,
+        taskRunIds: ['task-b'] as never,
+      })
+
+      expect(outcome).toMatchObject({ ok: true, value: { state: 'READY_FOR_REVIEW', selectedTaskRunIds: ['task-b'] } })
+      expect(sourceAttemptIds).toEqual([['attempt-b']])
+      expect(sourceAttemptIds[0]).not.toContain('attempt-a')
+      expect(applyPort.applies).toHaveLength(0)
+    } finally {
+      await rm(root, { recursive: true })
+    }
+  })
+
   it('returns a review batch without calling apply', async () => {
     const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
     store.projection = { ...store.projection, state: 'READY_FOR_REVIEW', gate: store.gate }
@@ -494,6 +531,8 @@ class FakeDeliveryStore {
 
   readActiveDelivery(): DeliveryBatchProjectionV1 { return this.projection }
 
+  readProjection() { return { authoritativeMode: 'CODING' as 'CODING' | 'WORK' | 'DESIGN' } }
+
   rejectComposingDelivery(): void {
     this.trace.push('reject-composing')
     this.projection = { ...this.projection, state: 'REJECTED' }
@@ -779,6 +818,36 @@ class FakeDeliveryStore {
       createdAt: '2026-08-18T00:00:00.000Z' as never,
     }
     return { ...withoutDigest, digest: deliveryChangeSetDigestV1(withoutDigest) }
+  }
+}
+
+class SamePathSecondTaskStore extends FakeDeliveryStore {
+  constructor(targetFingerprint: Sha256Digest) {
+    super(targetFingerprint)
+    this.taskChangeSets[1] = taskChangeSet('b', [], 'task-b' as never)
+    const samePathPatch = patchArtifact('a.txt', 'MODIFY', 'old-a', 'new-b')
+    this.artifacts.set('patch-b', { ...samePathPatch, artifactId: 'patch-b' as ArtifactId })
+    this.projection = {
+      ...this.projection,
+      selectedTaskRunIds: ['task-b'] as never,
+      taskChangeSetIds: ['xhbcs_b'] as TaskChangeSetId[],
+    }
+  }
+
+  override readDeliverySelectionDraft(): DeliverySelectionDraftV1 {
+    const draft = super.readDeliverySelectionDraft()
+    const selected = draft.resolvedTaskChangeSets.find((item) => item.taskChangeSetId === 'xhbcs_b')
+    if (!selected) throw new Error('SAME_PATH_SECOND_TASK_MISSING')
+    return {
+      ...draft,
+      selectedTaskRunIds: ['task-b'] as never,
+      resolvedTaskChangeSets: [selected],
+      dependencyTaskRunIds: ['task-b'] as never,
+    }
+  }
+
+  override readProjection() {
+    return { authoritativeMode: 'WORK' as const }
   }
 }
 

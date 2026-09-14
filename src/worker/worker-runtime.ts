@@ -15,7 +15,8 @@ import type {
 import type { CodingContextAgentPayloadV1 } from '@shared/xiaogui-coding-extension-pack'
 import type { CodingRoleAgentSnapshotV1 } from '@shared/xiaogui-coding-role-control'
 import { sessionFilePathsEqual } from '@shared/session-file-path'
-import { isAbsolute, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
+import { Type, type Static } from 'typebox'
 import {
   activeToolNamesForPromptContextV1,
   selectXiaoguiTurnCapabilitiesV1,
@@ -49,6 +50,8 @@ import { createXiaoguiCodingContextExtensionV1 } from './xiaogui-coding-extensio
 import { createXiaoguiCodingRoleGuardExtensionV1 } from './xiaogui-coding-extensions/role-guard-extension.js'
 import { CodingRoleRuntimeBindingV1 } from './xiaogui-coding-extensions/role-runtime-binding.js'
 import { createXiaoguiDirectCodingToolLifecycleV2 } from './xiaogui-coding-extensions/direct-coding-tool-extension.js'
+import { createPiAttemptToolLifecycleV1 } from './xiaogui-coding-extensions/attempt-tool-extension.js'
+import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 import type { WorkerSessionExecutionLeaseV1 } from './worker-port-types.js'
 
 export type WorkerModelRuntime = Pick<
@@ -63,6 +66,8 @@ export type WorkerExecutionIdentityV1 = Readonly<{
 }>
 
 export type WorkerMutableState = {
+  taskHubAttemptId?: string
+  taskHubDesignExtensionPath?: string
   sdk: typeof import('@earendil-works/pi-coding-agent') | null
   activeSdkPath: string | null
   sharedEventBus: EventBus | null
@@ -624,6 +629,62 @@ function noteModelFallbackFromRuntime(): void {
   emitSessionModelState({ modelFallbackMessage: fallback })
 }
 
+const TASK_HUB_DESIGN_PARAMETERS = Type.Object(
+  {
+    action: Type.Optional(
+      Type.Union([Type.Literal('inspect'), Type.Literal('open')], {
+        description: '操作类型，默认 inspect；项目由当前 TaskHub Attempt/Main 固定。',
+      }),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description: 'TaskHub DESIGN 仅操作当前 Attempt 的 Main 固定项目；模型无需提供路径。',
+  },
+)
+type TaskHubDesignParametersV1 = Static<typeof TASK_HUB_DESIGN_PARAMETERS>
+type TaskHubDesignExecutionParametersV1 = TaskHubDesignParametersV1 & { path?: unknown }
+
+async function loadTaskHubDesignTool(sdk: NonNullable<typeof st.sdk>, cwd: string) {
+  if (!st.taskHubDesignExtensionPath) throw new Error('DESIGN_RUNTIME_SOURCE_UNAVAILABLE')
+  // Reuse the fixed private DESIGN implementation via Pi's own loader, but
+  // expose only the TaskHub contract. Main owns the project binding, so the
+  // model must not choose an arbitrary path or private-runtime action.
+  const privateSourceDirectory = dirname(st.taskHubDesignExtensionPath)
+  const loaded = await sdk.discoverAndLoadExtensions(
+    [st.taskHubDesignExtensionPath], privateSourceDirectory, privateSourceDirectory, st.sharedEventBus ?? undefined,
+  )
+  if (loaded.errors.length) throw new Error('DESIGN_RUNTIME_EXTENSION_INVALID')
+  const definition = loaded.extensions.flatMap(extension => [...extension.tools.values()])
+    .find(tool => tool.definition.name === 'design_project')?.definition
+  if (!definition) throw new Error('DESIGN_PROJECT_TOOL_UNAVAILABLE')
+  return {
+    name: definition.name,
+    label: definition.label,
+    description: '受控规划设计项目概览。TaskHub Attempt 仅支持 action=inspect 或 action=open；项目由 Main 根据当前 Attempt 固定，模型无需提供项目路径；仅读取已批准文件并返回受控概览。',
+    promptSnippet: '受控项目概览：仅 inspect/open，项目由 Main 固定到当前 Attempt。',
+    promptGuidelines: [
+      '仅使用 action=open 建立项目概览，或 action=inspect 查看已批准文件明细。',
+      '不要提供 path；当前 Attempt 的项目与批准文件由 Main 固定。',
+      '只根据工具返回的受控结果回答，不把项目路径或私有运行时细节传播给用户。',
+    ],
+    parameters: TASK_HUB_DESIGN_PARAMETERS,
+    async execute(toolCallId: string, params: TaskHubDesignExecutionParametersV1, signal?: AbortSignal) {
+      const action: unknown = params.action ?? 'inspect'
+      if (action !== 'inspect' && action !== 'open') throw new Error('DESIGN_ACTION_NOT_SUPPORTED_IN_ATTEMPT')
+      const requestedPath = params.path
+      if (requestedPath !== undefined && (typeof requestedPath !== 'string' || resolve(cwd, requestedPath) !== resolve(cwd))) {
+        throw new Error('DESIGN_PROJECT_SCOPE_MISMATCH')
+      }
+      const outcome = await requestWorkerHostTool({ method: 'xiaogui.taskhub.design-project', payload: {
+        attemptId: st.taskHubAttemptId!, sourceSessionId: st.currentSessionId, toolCallId, action,
+      } }, signal)
+      if (!outcome.ok || outcome.value.kind !== 'PI_DESIGN_PROJECT_ARTIFACT') throw new Error('DESIGN_PROJECT_ATTEMPT_FAILED')
+      return { content: [{ type: 'text' as const, text: outcome.value.summary }], details: outcome.value }
+    },
+  }
+}
+
 function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
   const sdk = st.sdk!
   return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
@@ -634,11 +695,15 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
     // 只传首轮默认工具会把后续轮次按 Host Tool Policy 选中的能力工具永久踢出
     // 注册表，setActiveToolsByName 对未注册名字静默忽略。注册表必须覆盖本模式
     // 全部候选工具；初始激活集在会话创建后再按首轮策略收窄。
-    const sessionToolUniverse = workerPromptContextToolNamesForModeV1(promptContext.mode)
+    const sessionToolUniverse = st.taskHubAttemptId
+      ? (promptContext.mode === 'CODING' ? ['read', 'edit', 'write']
+        : promptContext.mode === 'WORK' ? ['read', 'xiaogui_work_report_docx']
+          : ['read', 'design_project'])
+      : workerPromptContextToolNamesForModeV1(promptContext.mode)
     const initialToolNames = codingRoleRuntimeBindingV1.activeToolNames(
       activeToolNamesForPromptContextV1(initialContext, sessionToolUniverse),
     )
-    const directCodingLifecycle = promptContext.mode === 'CODING'
+    const directCodingLifecycle = promptContext.mode === 'CODING' && !st.taskHubAttemptId
       ? createXiaoguiDirectCodingToolLifecycleV2({
           context: () => st.promptTurnContext ?? st.promptContext ?? initialContext,
           sourceSessionId: () => st.currentSessionId || undefined,
@@ -648,10 +713,19 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
           },
         })
       : null
+    const attemptLifecycle = st.taskHubAttemptId
+      ? createPiAttemptToolLifecycleV1({ attemptId: st.taskHubAttemptId, sourceSessionId: () => st.currentSessionId || undefined })
+      : null
+    const designDefinition = st.taskHubAttemptId && promptContext.mode === 'DESIGN'
+      ? await loadTaskHubDesignTool(sdk, cwd)
+      : null
     const services = await sdk.createAgentSessionServices({
       cwd,
       agentDir,
       resourceLoaderOptions: {
+        // TaskHub only grants native file tools. Unapproved executable extensions
+        // must not bypass their wrappers; declarative Pi Skills remain available.
+        ...(st.taskHubAttemptId ? { noExtensions: true } : {}),
         eventBus: st.sharedEventBus!,
         additionalSkillPaths: [...st.bundledSkillPaths],
         extensionFactories: [
@@ -660,7 +734,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
                 createXiaoguiCodingRoleGuardExtensionV1(
                   () => codingRoleRuntimeBindingV1.read(),
                 ).factory,
-                directCodingLifecycle!.factory,
+                ...(directCodingLifecycle ? [directCodingLifecycle.factory] : []),
               ]
             : []),
           createXiaoguiPromptSessionExtensionV1(
@@ -707,6 +781,16 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       sessionManager,
       sessionStartEvent,
       tools: [...sessionToolUniverse],
+      ...(attemptLifecycle ? {
+        customTools: [
+          sdk.defineTool(attemptLifecycle.wrapDefinition(sdk.createReadToolDefinition(cwd))),
+          ...(designDefinition ? [sdk.defineTool(designDefinition)] : []),
+          ...(promptContext.mode === 'CODING' ? [
+            sdk.defineTool(attemptLifecycle.wrapDefinition(sdk.createEditToolDefinition(cwd))),
+            sdk.defineTool(attemptLifecycle.wrapDefinition(sdk.createWriteToolDefinition(cwd))),
+          ] : []),
+        ],
+      } : {}),
       ...(directCodingLifecycle
         ? {
             customTools: [

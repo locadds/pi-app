@@ -170,6 +170,7 @@ describe('buildSidecarEnv（sidecar 子进程 env 构造）', () => {
     const env = buildSidecarEnv({ FOO: 'bar' }, { allowedRoots: [], requestTimeoutMs: 30_000 })
     expect(env['FOO']).toBe('bar')
     expect(env['XIAOGUI_REQUEST_TIMEOUT']).toBe('30')
+    expect(env['PYTHONDONTWRITEBYTECODE']).toBe('1')
   })
 
   it('传入 effectiveAllowedRoots 时直接采用，不再解析 projectRoot/configRoots', () => {

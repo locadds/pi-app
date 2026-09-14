@@ -14,6 +14,8 @@ The current ordinary-CODING direct-write lifecycle, V4 authorized execution path
 
 ## User guide (install, shortcuts, adapter list)
 
+TaskHub's in-progress Pi integration is tracked in [HUB-RUNTIME-01-CLOSEOUT](./runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md): reuse the existing WORK/DESIGN/CODING harnesses, freeze the Main-authorized mode, and retain Attempt workspaces, verification, Delivery and human Apply. This candidate is not an accepted new installation or an external-model journey; ordinary CODING remains a separate direct-write flow.
+
 | Path | Purpose |
 |------|---------|
 | [guide/getting-started.md](./guide/getting-started.md) · [zh-CN](./guide/getting-started.zh-CN.md) | First-run walkthrough |

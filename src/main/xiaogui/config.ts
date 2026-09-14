@@ -7,7 +7,7 @@
  *   由 sidecar 程序强制执行，不依赖模型自觉。
  *
  * 所有配置均可用环境变量覆盖，便于开发/测试与未来部署调整：
- * - XIAOGUI_PYTHON        Python 可执行文件（默认 'python'）
+ * - XIAOGUI_PYTHON        Python 可执行文件（默认优先打包 LibreOffice launcher，否则 'python'）
  * - XIAOGUI_RUNTIME_DIR   sidecar 工作目录（需包含 xiaogui_runtime 包）
  * - XIAOGUI_REPO          小规 Agent 代码仓库根（派生 <repo>/python）
  * - XIAOGUI_ALLOWED_ROOTS 项目根白名单（path.delimiter 分隔）
@@ -51,6 +51,7 @@ export type ExecutionPhase = XiaoguiExecutionPhase
 export { XIAOGUI_DEFAULT_EXECUTION_PHASE_V1 }
 
 const BUNDLED_XIAOGUI_DIR = 'xiaogui'
+const BUNDLED_PYTHON_LAUNCHER = path.join('libreoffice', 'program', 'python.exe')
 
 export type XiaoguiRuntimeSource = 'env-runtime-dir' | 'env-repo' | 'bundled-resource' | 'missing'
 
@@ -83,6 +84,13 @@ export interface XiaoguiBridgeConfig {
 function resourcesPath(): string | null {
   const value = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath?.trim()
   return value && existsSync(value) ? value : null
+}
+
+function bundledPythonCommand(): string | null {
+  const resources = resourcesPath()
+  if (!resources) return null
+  const launcher = path.join(resources, BUNDLED_PYTHON_LAUNCHER)
+  return existsSync(launcher) ? launcher : null
 }
 
 export function resolveXiaoguiRuntime(): XiaoguiRuntimeResolution {
@@ -136,9 +144,12 @@ export function resolveXiaoguiConfig(): XiaoguiBridgeConfig {
     .filter((p) => p.length > 0)
 
   const runtime = resolveXiaoguiRuntime()
+  const explicitPython = process.env['XIAOGUI_PYTHON']?.trim()
+  const defaultPython =
+    runtime.source === 'bundled-resource' ? bundledPythonCommand() ?? 'python' : 'python'
   return {
     repoRoot: runtime.repoRoot,
-    pythonCommand: process.env['XIAOGUI_PYTHON']?.trim() || 'python',
+    pythonCommand: explicitPython || defaultPython,
     pythonCwd: runtime.pythonCwd,
     runtimeSource: runtime.source,
     runtimeError: runtime.error,

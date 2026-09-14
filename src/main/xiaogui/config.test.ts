@@ -1,5 +1,4 @@
-import { mkdirSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
@@ -12,9 +11,10 @@ describe('resolveXiaoguiRuntime（小规 runtime 定位）', () => {
   const prevPython = process.env['XIAOGUI_PYTHON']
   const resourcesDescriptor = Object.getOwnPropertyDescriptor(process, 'resourcesPath')
   const dirs: string[] = []
+  const testRoot = 'E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/TEST-root'
 
   function tempDir(prefix: string): string {
-    const dir = join(tmpdir(), `${prefix}${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    const dir = join(testRoot, `${prefix}${Date.now()}-${Math.random().toString(16).slice(2)}`)
     mkdirSync(dir, { recursive: true })
     dirs.push(dir)
     return dir
@@ -44,6 +44,7 @@ describe('resolveXiaoguiRuntime（小规 runtime 定位）', () => {
     if (resourcesDescriptor) Object.defineProperty(process, 'resourcesPath', resourcesDescriptor)
     else Reflect.deleteProperty(process, 'resourcesPath')
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    rmSync(testRoot, { recursive: true, force: true })
   })
 
   it('显式 XIAOGUI_RUNTIME_DIR 优先，且不会补开发机默认仓库路径', () => {
@@ -69,17 +70,25 @@ describe('resolveXiaoguiRuntime（小规 runtime 定位）', () => {
     expect(cfg.pythonCwd).toBe(join('D:/xiaogui/repo', 'python'))
   })
 
-  it('未显式配置时回退 process.resourcesPath/xiaogui/python', () => {
+  it('未显式配置时回退 process.resourcesPath/xiaogui/python，并优先使用打包 LibreOffice launcher', () => {
     delete process.env['XIAOGUI_REPO']
     delete process.env['XIAOGUI_RUNTIME_DIR']
+    delete process.env['XIAOGUI_PYTHON']
     const resources = tempDir('xg-resources-')
     mkdirSync(join(resources, 'xiaogui', 'python'), { recursive: true })
+    const launcher = join(resources, 'libreoffice', 'program', 'python.exe')
+    mkdirSync(join(resources, 'libreoffice', 'program'), { recursive: true })
+    writeFileSync(launcher, '')
     setResourcesPath(resources)
 
     const cfg = resolveXiaoguiConfig()
     expect(cfg.runtimeSource).toBe('bundled-resource')
     expect(cfg.repoRoot).toBe(join(resources, 'xiaogui'))
     expect(cfg.pythonCwd).toBe(join(resources, 'xiaogui', 'python'))
+    expect(cfg.pythonCommand).toBe(launcher)
+
+    process.env['XIAOGUI_PYTHON'] = 'D:/explicit/python.exe'
+    expect(resolveXiaoguiConfig().pythonCommand).toBe('D:/explicit/python.exe')
   })
 
   it('未配置且未找到内置资源时返回结构化缺失错误，不出现开发机绝对路径', () => {

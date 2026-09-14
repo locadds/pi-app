@@ -1,5 +1,16 @@
 # 小规开发阶段状态
 
+## 2026-09-14｜HUB-RUNTIME-01 保留现场接续，剩余方案已更新
+
+- 当前独立分支 `codex/hub-runtime-01-pi-default-v1`，HEAD `a27b4ad9f5641d9e797cfde4296b94ff45206f4f`；现有未提交源码/测试完整保留，保护 stash 未动。本分支尚无上游，远端尚无同名分支，未交固定候选。
+- 仅接续三模式既有 Pi 执行、对应验证、Delivery 和结果恢复。剩余方案与责任划分见 [HUB-RUNTIME-01-CLOSEOUT](doc/runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md)。代码任务交 `gpt-5.6-luna/max`，根 owner 负责检查、固定提交、原 NSIS 内部候选和桌面主管交接。
+- 接续时存在的两处生命周期测试夹具类型错误已由 Luna 修正；9 月 14 日统一 `npm run typecheck`、42 个变更 TS/TSX 文件定向 ESLint 通过。三个新增模式冻结断言通过（其余 41 项跳过）；资源/config 2 文件 7 项通过。WORK/DESIGN 同链与恢复未回收完整结论，新安装包未生成，不将局部绿灯写成整体通过。未变且已通过的测试/模型/Office/H1 证据复用。
+- 本轮集中检查日志：`E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/closeout-20260914/typecheck.log`、`eslint.log`。资源 owner 已准备 `builder.cjs` 与 `resource-audit.cjs`，尚未执行新安装包构建。当前跨任务动态消息接口返回不可用；后续交接必须注明实际发送回执，不声称主管已收到。
+- WORK/DESIGN 真实产物、模式验证、Delivery 组合已通过；Luna 在同用例补充关闭/重建同配置、`recover()`、原模式/Attempt/Delivery 保持和 prompt 次数仍为 1 后再次 2/2 通过。已修 GitAttempt 的 CREATE 空占位文件与产物写入兼容，权限和摘要复核保留；未写原项目。根 owner 的初次组合日志为 `mode-composition.log`，新增恢复断言结果来自子 Agent 工具输出，不伪造独立日志。
+- 双轴只读审查：Standards 原三项疑点经具体契约/生产消费者复核全部撤回，当前 0 项；Spec 两项已定向改正：DESIGN 真实定义只暴露 inspect/open 的 TypeBox schema，不继承旧参数钩子；Delivery 从所选 Main TaskChangeSet 解析精确 Attempt 并在恢复时重新解析。实际 Adapter 对同路径两成功记录只返回所选第二摘要，缺失来源返回 null（新断言 1 通过，其他 4 跳过）；Delivery workflow 同路径选择断言 1 通过、verification 4 通过。DESIGN 最终实际 SDK/schema/host-tool 定向 1 通过、2 跳过；根 owner 对增量复核后两项关闭。新增测试 SHA 品牌类型由根 owner 最小补注后最终 Node tsc 退出 0（`typecheck-final-node.log`）；Web 沿用本轮先前通过且后续未改 Web 接口的证据。代码候选可交验，不代表安装或外部模型通过。
+- 2026-09-14 最终增量 42 文件 ESLint 通过（`eslint-final.log`）；必要 `node node_modules/electron-vite/bin/electron-vite.js build` 退出 0（`build.log`），复用未改动的 Office 构建产物，没有重跑 Office 测试。按仓库原换行配置 `git diff --check` 退出 0。一次临时关闭 autocrlf 的检查把 CRLF 全部误报为尾空白，未修改文件；以仓库原配置结果为准。
+- 原安装器、安装程序、用户配置、原 H1 任务/项目、Hub、保护 stash、私有仓库均不动；不新增功能、不发布、不合主线。
+
 ## 2026-09-09｜固定96a103安装包 C盘实际安装与最短IPC通过
 
 - 主管只读确认C盘独立落点有足够空间后明确授权继续；没有重试被策略拒绝的删除，也没有手动删除、换工具或移动绕过。此前提出的手动清理建议不再作为后续方案，E盘本轮 `dist/win-unpacked` 原地保留。仅将两个外部验收脚本的安装路径改为 `C:/Users/90662/AppData/Local/Programs/XiaoguiInternalRC-4511fc3`，无产品源码或安装器变更。

@@ -108,9 +108,6 @@ export function createXiaoguiWorkerToolHandlerV1(
     if (!scope) {
       return failure('SESSION_SCOPE_MISMATCH', '当前会话尚未完成小规作用域绑定，请重新进入会话后再试')
     }
-    if (scope.sessionMode === 'DESIGN') {
-      return failure('DESIGN_RESERVED', '规划设计模式目前只保留接口，不能创建执行计划')
-    }
 
     const outcome = await options.application.perform(
       { projectId: scope.projectId, sessionKey: scope.sessionKey },

@@ -85,6 +85,8 @@ function previewText(
 
 function publicText(details: SafeDetails): string {
   switch (details.kind) {
+    case 'XIAOGUI_WORK_REPORT_DOCX_ATTEMPT_ARTIFACT':
+      return `已在当前任务工作树生成标准报告：${details.relativePath}。产物等待 TaskHub 验证与交付审阅，尚未应用到原项目。`
     case 'XIAOGUI_WORK_REPORT_DOCX_PREPARED':
       return `已生成并打开标准 Word 预览：${details.plan.sectionCount} 个章节、${details.plan.paragraphCount} 段正文、${details.plan.bulletCount} 条项目符号。\n\n${previewText(details.plan)}\n\n最终文件尚未写入。如确认继续，请单独回复“确认”。`
     case 'XIAOGUI_WORK_REPORT_DOCX_TARGET_SELECTION_CANCELLED':

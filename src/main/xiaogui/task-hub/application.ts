@@ -191,18 +191,6 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     try {
       const scope = await this.resolve(address)
       if (!scope.ok) return scope
-      if (scope.value.mode === 'DESIGN') {
-        return {
-          ok: true,
-          value: {
-            ...reservedProjection(address, scope.value.mode),
-            version: 'm2b.v1',
-            taskRuns: [],
-            attempts: [],
-            availableActions: [],
-          },
-        }
-      }
       const store = this.getStore()
       const projection = store.readProjectionM2B(address) ?? {
         ...emptyProjection(address, scope.value.mode),
@@ -244,10 +232,6 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     try {
     const scope = await this.resolve(address)
     if (!scope.ok) return scope
-    if (scope.value.mode === 'DESIGN') {
-      if (request.type === 'session.current') return { ok: true, value: reservedProjection(address, scope.value.mode) }
-      return hubError('DESIGN_RESERVED')
-    }
     const projection = this.getStore().readProjection(address) ?? emptyProjection(address, scope.value.mode)
     if (request.type === 'flow.by_id' && projection.activeFlow?.flowId !== request.flowId) {
       const history = projection.history.find((flow) => flow.flowId === request.flowId)
@@ -263,7 +247,6 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     try {
     const scope = await this.resolve(address)
     if (!scope.ok) return scope
-    if (scope.value.mode === 'DESIGN') return hubError('DESIGN_RESERVED')
     return { ok: true, value: this.getStore().readEvents(address, request) }
     } catch {
       return hubError('INTERNAL')
@@ -282,9 +265,9 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
   async execute(request: HubCommandRequestV1): Promise<HubOutcomeV1<PerformReceiptV1>> {
     try {
     if (request.contractVersion !== 'm2a.v1') return hubError('IPC_VERSION_UNSUPPORTED')
+    if (!['flow.start.with_draft', 'plan.revision.submit', 'flow.cancel'].includes(request.intent.type)) return hubError('INTENT_DISABLED')
     const scope = await this.resolve(request.address)
     if (!scope.ok) return scope
-    if (scope.value.mode === 'DESIGN') return hubError('DESIGN_RESERVED')
     switch (request.intent.type) {
       case 'flow.start.with_draft':
         return this.startWithDraft(request.address, scope.value.mode, request as HubCommandRequestV1 & { intent: Extract<M2AUserIntentV1, { type: 'flow.start.with_draft' }> })
@@ -305,7 +288,6 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
       if (request.contractVersion !== 'm2b.v1' || request.trustedActor.kind !== 'main-process-system') return systemError('IPC_VERSION_UNSUPPORTED')
       const scope = await this.resolve(request.address)
       if (!scope.ok) return systemError(scope.error.code === 'SESSION_SCOPE_MISMATCH' ? 'SESSION_SCOPE_MISMATCH' : 'INTERNAL')
-      if (scope.value.mode === 'DESIGN') return systemError('DESIGN_RESERVED')
       switch (request.intent.type) {
         case 'system.schedule':
           return await this.schedule(request.address, scope.value.mode, request as HubSystemCommandRequestM2BV1 & { intent: Extract<HubSystemCommandRequestM2BV1['intent'], { type: 'system.schedule' }> })
@@ -350,7 +332,6 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     try {
       const scope = await this.resolve(address)
       if (!scope.ok) return systemError(scope.error.code === 'SESSION_SCOPE_MISMATCH' ? 'SESSION_SCOPE_MISMATCH' : 'INTERNAL')
-      if (scope.value.mode === 'DESIGN') return systemError('DESIGN_RESERVED')
       const bridge = this.options.workspaceBridge
       if (!bridge) return systemError('INTERNAL', { reason: 'NO_WORKSPACE_BRIDGE' })
       const store = this.getStore()
@@ -408,6 +389,8 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
   private async resolve(address: HubAddressV1): Promise<ResolvedScope> {
     const result = await this.options.lookup.lookup(address)
     if (result.kind !== 'FOUND') return hubError('SESSION_SCOPE_MISMATCH')
+    const persisted = this.getStore().readProjection(address)
+    if (persisted?.activeFlow && persisted.sessionMode !== result.scope.sessionMode) return hubError('SESSION_SCOPE_MISMATCH')
     return { ok: true, value: { mode: result.scope.sessionMode } }
   }
 
@@ -1064,17 +1047,18 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     const runtime = this.options.agentRuntime
     if (!runtime) return { ok: false, reasonCode: 'NO_AGENT_RUNTIME' }
     try {
-      if (requiredSelection) {
-        if (!isProductionCapability(requiredSelection)) return { ok: false, reasonCode: 'NO_APPROVED_RUNTIME' }
-        const health = await runtime.health(requiredSelection.adapterId)
+      const pinnedSelection = requiredSelection ?? this.options.agentSelection
+      if (pinnedSelection) {
+        if (!isProductionCapability(pinnedSelection)) return { ok: false, reasonCode: 'NO_APPROVED_RUNTIME' }
+        const health = await runtime.health(pinnedSelection.adapterId)
         if (
           !isProductionCapability(health) ||
-          runtimeSelectionKey(health) !== runtimeSelectionKey(requiredSelection) ||
+          runtimeSelectionKey(health) !== runtimeSelectionKey(pinnedSelection) ||
           health.health !== 'AVAILABLE'
         ) {
           return { ok: false, reasonCode: health.reasonCode ?? 'RUNTIME_NOT_AVAILABLE' }
         }
-        return { ok: true, runtime, selection: requiredSelection }
+        return { ok: true, runtime, selection: pinnedSelection }
       }
       const routed = await this.resolveRoutedAgent(runtime)
       if (routed) {
@@ -1083,7 +1067,7 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
           : routed
       }
       const capabilities = await runtime.discover()
-      const candidate = this.options.agentSelection ?? capabilities.find(isProductionCapability)
+      const candidate = capabilities.find(isProductionCapability)
       if (!candidate || !isProductionCapability(candidate)) return { ok: false, reasonCode: 'NO_APPROVED_RUNTIME' }
       const health = await runtime.health(candidate.adapterId)
       if (!isProductionCapability(health) || runtimeSelectionKey(health) !== runtimeSelectionKey(candidate) || health.health !== 'AVAILABLE') {
@@ -1194,10 +1178,14 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     attempt: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['attempt']>>,
     workspaceReceiptDigest: string,
   ): Promise<RuntimeCreateOrResumeRequestV1> {
+    const current = await this.resolve(address)
+    const approved = this.getStore().readProjection(address)
+    if (!current.ok || !approved || approved.sessionMode !== current.value.mode
+      || approved.activeFlow?.flowId !== request.intent.flowId) throw new Error('RUNTIME_MODE_BINDING_MISMATCH')
     const scope: RuntimeScopeBindingV1 = {
       projectId: address.projectId,
       sessionKey: address.sessionKey,
-      sessionMode: 'CODING',
+      sessionMode: approved.sessionMode,
       flowId: request.intent.flowId,
       taskRunId: request.intent.taskRunId,
       attemptId: request.intent.attemptId,
@@ -1399,7 +1387,6 @@ function withAuthoritativeM2BActions(
   )
   if (
     !runtimeConfigured ||
-    projection.authoritativeMode !== 'CODING' ||
     projection.activeFlow?.status !== 'PLAN_ACTIVE' ||
     projection.executionReadiness === undefined
   ) {
@@ -1435,7 +1422,7 @@ function withAuthoritativeDeliveryActions(
 ): SessionCollaborationProjectionM2BV1 {
   const availableActions = projection.availableActions.filter((action) => !DELIVERY_ACTIONS.has(action))
   const base = { ...projection, activeDelivery, availableActions }
-  if (projection.authoritativeMode !== 'CODING' || projection.activeFlow?.status !== 'PLAN_ACTIVE') return base
+  if (projection.activeFlow?.status !== 'PLAN_ACTIVE') return base
 
   if (!activeDelivery) {
     return projection.taskRuns.some((run) => run.status === 'VERIFIED')
@@ -1630,15 +1617,7 @@ function emptyProjection(address: HubAddressV1, mode: SessionMode): SessionColla
     taskSpecs: [],
     taskRuns: [],
     history: [],
-    availableActions: mode === 'DESIGN' ? [] : ['flow.start.with_draft'],
-  }
-}
-
-function reservedProjection(address: HubAddressV1, mode: SessionMode): SessionCollaborationProjectionV1 {
-  return {
-    ...emptyProjection(address, mode),
-    reserved: { code: 'DESIGN_RESERVED', messageKey: 'xiaogui.hub.design_reserved' },
-    availableActions: [],
+    availableActions: ['flow.start.with_draft'],
   }
 }
 

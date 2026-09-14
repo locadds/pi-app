@@ -263,7 +263,7 @@ describe('Xiaogui runtime composition v1', () => {
       },
     })).resolves.toMatchObject({
       ok: false,
-      error: { code: 'AGENT_UNAVAILABLE', safeArgs: { reason: 'NO_AGENT_RUNTIME' } },
+      error: { code: 'FLOW_NOT_FOUND' },
     })
     const taskHubDir = join(userDataDir, 'xiaogui', 'task-hub')
     expect([
@@ -312,7 +312,7 @@ describe('Xiaogui runtime composition v1', () => {
     expect(transportFactory.create).not.toHaveBeenCalled()
   })
 
-  it('pins the application preflight to the approved Kimi 0.34.0 production selection without running Git or Kimi', async () => {
+  it('uses the Pi preflight without discovering Kimi even when legacy Kimi configuration is enabled', async () => {
     const userDataDir = tempUserData()
     const probe = fakeKimiProbe()
     const transportFactory = rejectingTransportFactory()
@@ -371,12 +371,12 @@ describe('Xiaogui runtime composition v1', () => {
         safeArgs: { reason: 'BASELINE_PROVIDER_ERROR' },
       },
     })
-    expect(probe.findExecutable).toHaveBeenCalledTimes(2)
+    expect(probe.findExecutable).not.toHaveBeenCalled()
     expect(resolveProjectRoot).toHaveBeenCalledWith(ADDRESS.projectId)
     expect(transportFactory.create).not.toHaveBeenCalled()
   })
 
-  it('accepts an additional adapter and an explicit deterministic routing policy', async () => {
+  it('does not let a compatibility adapter or routing policy replace the Pi production selection', async () => {
     const adapter = new ScriptedAgentRuntimeAdapterV1({ capabilities: [localCapability()] })
     const health = vi.spyOn(adapter, 'health')
     const composition = track(createXiaoguiRuntimeCompositionV1({
@@ -417,7 +417,7 @@ describe('Xiaogui runtime composition v1', () => {
         authorizationScope: authorizationScope('second'),
       },
     })
-    expect(health).toHaveBeenCalledWith('scripted-local')
+    expect(health).not.toHaveBeenCalled()
   })
 })
 

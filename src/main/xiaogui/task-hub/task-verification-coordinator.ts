@@ -43,8 +43,7 @@ import { CollaborationHubSqliteStoreV1, type VerificationOutboxRecordV1 } from '
 import type { IdempotencyInput } from './sqlite-store'
 
 const VERIFIER_OWNER_ID = 'xiaogui-main-process-task-verifier'
-const QA_CONFIG_VERSION = 'xiaogui.coding.task.v1'
-const ACCEPTANCE_CRITERIA = ['approved-file-scope', 'typescript.web', 'typescript.node'] as const
+import { MODE_VERIFICATION_POLICY_V1 } from './mode-verification-policy'
 
 export interface TaskVerificationSucceededInputV1 {
   readonly address: HubAddressV1
@@ -203,8 +202,8 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
       candidateId: audited.candidate.candidateId,
       changeSetDigest: audited.candidate.proposedChangeSetDigest,
       preparedTreeHash: audited.candidate.resultTreeHash,
-      qaConfigVersion: QA_CONFIG_VERSION,
-      acceptanceCriteria: ACCEPTANCE_CRITERIA,
+      qaConfigVersion: MODE_VERIFICATION_POLICY_V1[projection!.authoritativeMode].task,
+      acceptanceCriteria: ['approved-file-scope', ...MODE_VERIFICATION_POLICY_V1[projection!.authoritativeMode].checks],
     }
     const request: TaskVerificationRequestV1 = Object.freeze({
       ...requestWithoutDigest,
@@ -281,6 +280,8 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
     let result: Awaited<ReturnType<TaskVerificationExecutionPortV1['verify']>>
     try {
       result = await this.options.verificationPort.verify(request, {
+        verificationScope: 'TASK',
+        artifactPaths: audited.changedFiles.map(file => file.relativePath),
         worktreeRoot: audited.privateVerificationContext.worktreeRoot,
         trustedToolchainRoot: projectRoot,
         scopeEvidenceArtifactId: ids.scopeEvidenceArtifactId,

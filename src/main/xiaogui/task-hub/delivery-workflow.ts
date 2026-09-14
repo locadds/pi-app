@@ -51,14 +51,19 @@ import type {
   XiaoguiDeliveryRetryApplyRequestV1,
   XiaoguiDeliverySelectTasksRequestV1,
 } from '@shared/xiaogui-delivery-ipc'
-import type { FlowId, HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
-import type { ArtifactId, Sha256Digest, TaskChangeSetId } from '@shared/xiaogui-task-verification'
+import type { AttemptId, FlowId, HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
+import {
+  taskChangeSetDigestV1,
+  type ArtifactId,
+  type Sha256Digest,
+  type TaskChangeSetId,
+} from '@shared/xiaogui-task-verification'
 import {
   MainProcessDeliveryBaselineRecoveryPortV1,
   type DeliveryBaselineRecoveryPortV1,
 } from './delivery-baseline-recovery'
 
-const DELIVERY_QA_CONFIG_VERSION_V1 = 'xiaogui.coding.delivery.v1'
+import { MODE_VERIFICATION_POLICY_V1 } from './mode-verification-policy'
 const DELIVERY_OUTBOX_OWNER_V1 = 'xiaogui-main-process-delivery'
 
 interface PrivateDeliveryVerificationRecoveryV1 {
@@ -144,7 +149,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           dependencyOrder: draft.resolvedTaskChangeSets.map((item) => item.taskChangeSetId),
           selectionDigest: draft.digest,
           target,
-          qaConfigVersion: DELIVERY_QA_CONFIG_VERSION_V1,
+          qaConfigVersion: MODE_VERIFICATION_POLICY_V1[this.store.readProjection(address)!.authoritativeMode].delivery,
           createdAt: now as never,
         })
         if (!composed.ok) {
@@ -393,12 +398,14 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           createdAt: now as never,
         }
         const changeSet = { ...changeSetWithoutDigest, digest: deliveryChangeSetDigestV1(changeSetWithoutDigest) }
+        const artifactSourceAttemptIds = this.deliveryArtifactSourceAttemptIds(changeSet)
         const verificationAttemptId = this.id('xhbdva') as DeliveryVerificationAttemptId
         const verificationRequest = deliveryVerificationRequest(verificationAttemptId, changeSet)
         const verification = await this.verificationService.verify({
           verificationAttemptId,
           verificationRequestDigest: verificationRequest.requestDigest,
           deliveryChangeSet: changeSet,
+          artifactSourceAttemptIds,
           worktreeRoot: recovered.privateIntegrationContext.worktreeRoot,
           trustedToolchainRoot: recovered.privateIntegrationContext.trustedToolchainRoot,
         })
@@ -515,10 +522,15 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
     verificationRequestDigest: Sha256Digest,
     recovery: PrivateDeliveryVerificationRecoveryV1,
   ): Promise<void> {
+    // Re-resolve source Attempts from Main's current TaskChangeSet records on
+    // every verification, including restart recovery. The private outbox
+    // carries the Delivery ChangeSet but not an additional source-id authority.
+    const artifactSourceAttemptIds = this.deliveryArtifactSourceAttemptIds(recovery.deliveryChangeSet)
     const verification = await this.verificationService.verify({
       verificationAttemptId,
       verificationRequestDigest: recovery.verificationRequestDigest ?? verificationRequestDigest,
       deliveryChangeSet: recovery.deliveryChangeSet,
+      artifactSourceAttemptIds,
       worktreeRoot: recovery.privateIntegrationContext.worktreeRoot,
       trustedToolchainRoot: recovery.privateIntegrationContext.trustedToolchainRoot,
     })
@@ -665,6 +677,44 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         },
       }
     })
+  }
+
+  /**
+   * Resolve Delivery artifact ownership only from the selected, Main-persisted
+   * task change sets. A flow may contain several attempts that produced the
+   * same path; selecting by flow alone would make those artifacts ambiguous.
+   */
+  private deliveryArtifactSourceAttemptIds(changeSet: DeliveryChangeSetV1): readonly AttemptId[] {
+    try {
+      const taskChangeSetIds = changeSet.taskChangeSetIds
+      const refs = changeSet.taskChangeSets
+      if (!Array.isArray(taskChangeSetIds) || taskChangeSetIds.length === 0 ||
+        !Array.isArray(refs) || refs.length !== taskChangeSetIds.length ||
+        new Set(taskChangeSetIds).size !== taskChangeSetIds.length ||
+        taskChangeSetIds.some((taskChangeSetId) => typeof taskChangeSetId !== 'string')) return []
+
+      const sourceAttemptIds: AttemptId[] = []
+      for (const taskChangeSetId of taskChangeSetIds) {
+        const ref = refs.find((candidate) => candidate.taskChangeSetId === taskChangeSetId)
+        const taskChangeSet = this.store.readTaskChangeSet(taskChangeSetId)
+        if (!ref || !taskChangeSet || typeof taskChangeSet.attemptId !== 'string' ||
+          taskChangeSet.taskChangeSetId !== ref.taskChangeSetId ||
+          taskChangeSet.flowId !== changeSet.flowId ||
+          taskChangeSet.taskRunId !== ref.taskRunId ||
+          taskChangeSet.patchArtifactId !== ref.patchArtifactId ||
+          taskChangeSet.digest !== ref.digest ||
+          taskChangeSetDigestV1(taskChangeSet) !== taskChangeSet.digest ||
+          JSON.stringify(taskChangeSet.ancestorTaskChangeSetIds) !== JSON.stringify(ref.dependsOn ?? [])) return []
+        sourceAttemptIds.push(taskChangeSet.attemptId as AttemptId)
+      }
+      if (!Array.isArray(changeSet.fileChanges) || changeSet.fileChanges.some((file) =>
+        !Array.isArray(file.sourceTaskChangeSetIds) ||
+        file.sourceTaskChangeSetIds.length === 0 ||
+        file.sourceTaskChangeSetIds.some((taskChangeSetId: TaskChangeSetId) => !taskChangeSetIds.includes(taskChangeSetId)))) return []
+      return [...new Set(sourceAttemptIds)]
+    } catch {
+      return []
+    }
   }
 
   private async captureDeliveryTarget(address: HubAddressV1, flowId: FlowId): Promise<DeliveryTargetV1> {

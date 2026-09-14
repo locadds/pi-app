@@ -20,6 +20,7 @@ import {
 import { KIMI_ACP_APPROVED_VERSION_V1 } from '../agent-runtime/acp/kimi-tool-policy'
 import type { AcpTransportFactoryV1 } from '../agent-runtime/acp/types'
 import { prepareKimiProductionHomeV1 } from '../agent-runtime/kimi-production-home'
+import { PiRuntimeAdapterV1, PI_PRODUCTION_SELECTION_V1, type PiRuntimeOptionsV1 } from '../agent-runtime/pi-adapter'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { createAgentRuntimeRegistryV1 } from '../agent-runtime/runtime-registry'
 import {
@@ -43,7 +44,7 @@ import { MainProjectWorkspaceResolverV1 } from './project-workspace-resolver'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
 import { TaskCandidateAuditServiceV1 } from './task-candidate-audit'
-import { FixedTypecheckVerificationPortV1 } from './verification-port'
+import { FixedTypecheckVerificationPortV1, ModeTaskVerificationPortV1 } from './verification-port'
 import { createRuntimeOutcomeMonitorV1, type RuntimeOutcomeMonitorV1 } from './runtime-outcome-monitor'
 import { createTaskVerificationCoordinatorV1, type TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import { MainProcessChangeApplyPortV1, SqliteDeliveryApplyAttemptRegistryV1 } from './change-apply'
@@ -69,6 +70,7 @@ import { CodingRoleProfileModuleV1 } from '../coding-extensions/role-profile-mod
 export interface XiaoguiRuntimeCompositionOptionsV1 {
   readonly userDataDir: string
   readonly productionEnabled: boolean
+  readonly piWorkerFactory?: PiRuntimeOptionsV1['workerFactory']
   readonly lookup: SessionScopeLookupV1
   readonly projectResolver?: ProjectWorkspaceResolverV1
   readonly kimiProbe?: KimiAcpProbeV1
@@ -200,6 +202,13 @@ export function createXiaoguiRuntimeCompositionV1(
     })
     runtimeRegistry = createAgentRuntimeRegistryV1()
     void runtimeRegistry.register(kimiAdapter)
+    const piAdapter = new PiRuntimeAdapterV1({
+      dbPath: join(taskHubDir, 'attempt-execution-inputs.sqlite'),
+      workspace: attemptWorkspaces,
+      payloads: payloadVault,
+      workerFactory: options.piWorkerFactory,
+    })
+    void runtimeRegistry.register(piAdapter)
     const piE2eAdapter = options.piE2eScriptedRuntimeLaunch
       ? new PiE2eWorkspaceScriptedRuntimeAdapterV1(
           attemptWorkspaces,
@@ -221,10 +230,17 @@ export function createXiaoguiRuntimeCompositionV1(
       now: options.now,
     })
 
-    const fixedVerificationPort = new FixedTypecheckVerificationPortV1()
+    const fixedVerificationPort = new ModeTaskVerificationPortV1(
+      new FixedTypecheckVerificationPortV1(),
+      (request, context) => piAdapter.verificationContext(request, context),
+    )
     taskVerificationCoordinator = createTaskVerificationCoordinatorV1({
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
-      candidateAudit: new TaskCandidateAuditServiceV1(attemptWorkspaces),
+      candidateAudit: new TaskCandidateAuditServiceV1(attemptWorkspaces, {
+        verify: async (input) => input.runtimeSessionId.startsWith('xhbrs_pi_')
+          ? input.runtimeCandidateDigest === input.hostResultTreeHash
+          : true,
+      }),
       verificationPort: fixedVerificationPort,
       projectResolver,
       attemptRoleProvider: {
@@ -240,21 +256,15 @@ export function createXiaoguiRuntimeCompositionV1(
       // Keep the existing desktop database location so installing the runtime
       // composition does not make previously created plans disappear.
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
-      ...(options.productionEnabled || piE2eAdapter
-        ? {
+      ...{
             agentRuntime: runtimeHost,
-            ...(options.productionEnabled && !piE2eAdapter
-              ? { agentSelection: KIMI_PRODUCTION_SELECTION_V1 }
+            ...(!piE2eAdapter
+              ? { agentSelection: PI_PRODUCTION_SELECTION_V1 }
               : {}),
-            agentRoutingPolicy: options.runtimeRoutingPolicy ?? {
-              mode: 'CODING' as const,
-              requiredCapabilities: ['CODING.GIT.CHANGESET' as const, 'CODING.TYPESCRIPT' as const],
-              dataEgressPolicy: 'EXTERNAL_ALLOWED' as const,
-              priorityAdapterIds: [KIMI_PRODUCTION_SELECTION_V1.adapterId],
-              requireProductionApproval: true as const,
-            },
-          }
-        : {}),
+            // The existing test-only route remains behind its packaged=false
+            // launch gate. Production has exactly one selection, not a menu.
+            ...(piE2eAdapter && options.runtimeRoutingPolicy ? { agentRoutingPolicy: options.runtimeRoutingPolicy } : {}),
+          },
       baselineProvider,
       derivedBaselineProvider,
       workspaceBridge: inputStore.bridge,

@@ -4,6 +4,7 @@ import {
   accessSync,
   constants as fsConstants,
   lstatSync,
+  readFileSync,
   realpathSync,
   statSync,
   symlinkSync,
@@ -21,6 +22,8 @@ import {
   type TaskVerificationRequestV1,
   type TaskVerificationUnknownReceiptV1,
 } from '@shared/xiaogui-task-verification'
+import type { AttemptId } from '@shared/xiaogui-collaboration-hub'
+import { inspectSafeDocxArchiveV1 } from '../docx-safety'
 
 const VERIFICATION_TIMEOUT_MS = 120_000
 const VERIFICATION_OUTPUT_LIMIT_BYTES = 256 * 1024
@@ -60,6 +63,10 @@ export interface TaskVerificationExecutionContextV1 extends NoVerificationExecut
   readonly trustedToolchainRoot: string
   readonly scopeEvidenceArtifactId: ArtifactId
   readonly inspectionArtifactId: ArtifactId
+  readonly verificationScope?: 'TASK' | 'DELIVERY'
+  readonly artifactPaths?: readonly string[]
+  /** Main-only Delivery binding; never serialized into a public request/receipt. */
+  readonly artifactSourceAttemptIds?: readonly AttemptId[]
 }
 
 /** Main-process-only artifact write. Content never enters a public receipt. */
@@ -134,7 +141,7 @@ export type TaskVerificationScriptV1 = (
 ) => TaskVerificationExecutionResultV1 | Promise<TaskVerificationExecutionResultV1>
 
 interface InspectionCheckV1 {
-  checkId: 'typescript.web' | 'typescript.node'
+  checkId: 'typescript.web' | 'typescript.node' | 'work.report-docx' | 'design.project'
   status: 'PASS' | 'FAIL' | 'TIMED_OUT' | 'SPAWN_FAILED'
   exitCode?: number
   stdout: string
@@ -430,6 +437,353 @@ export class FixedTypecheckVerificationPortV1 implements TaskVerificationExecuti
   }
 }
 
+export type ModeTaskVerificationModeV1 = 'WORK' | 'DESIGN' | 'CODING'
+export type ModeTaskVerificationArtifactKindV1 = 'WORK_REPORT_DOCX' | 'DESIGN_PROJECT_RESULT'
+
+export interface ModeTaskVerificationArtifactV1 {
+  readonly path: string
+  readonly sha256: string
+  readonly kind: ModeTaskVerificationArtifactKindV1
+}
+
+export interface ModeTaskVerificationResolutionV1 {
+  readonly mode: ModeTaskVerificationModeV1
+  readonly artifacts: readonly ModeTaskVerificationArtifactV1[]
+  readonly requireAll: boolean
+}
+
+/**
+ * Selects the authoritative verifier for a Task without allowing mode-specific
+ * summaries to manufacture a PASS. The resolver is Main-owned and may only
+ * expose the private, already-settled Attempt artifact projection.
+ */
+export class ModeTaskVerificationPortV1 implements TaskVerificationExecutionPortV1 {
+  constructor(
+    private readonly codePort: TaskVerificationExecutionPortV1,
+    private readonly resolveMode: (
+      request: FrozenTaskVerificationRequestV1,
+      executionContext: Readonly<TaskVerificationExecutionContextV1>,
+    ) => Promise<ModeTaskVerificationResolutionV1 | null>,
+  ) {}
+
+  async verify(
+    request: FrozenTaskVerificationRequestV1,
+    executionContext: Readonly<TaskVerificationExecutionContextV1>,
+  ): Promise<TaskVerificationExecutionResultV1> {
+    const invalidCode = validateInvocation(request, executionContext)
+    if (invalidCode) return unknownResult(request, executionContext, invalidCode, [])
+
+    let resolution: ModeTaskVerificationResolutionV1 | null
+    try {
+      resolution = await this.resolveMode(request, executionContext)
+    } catch {
+      return unknownResult(request, executionContext, 'ARTIFACT_RESOLUTION_UNKNOWN', [])
+    }
+    if (!isModeTaskVerificationResolution(resolution)) {
+      return unknownResult(request, executionContext, 'ARTIFACT_RESOLUTION_UNKNOWN', [])
+    }
+    if (resolution.mode === 'CODING') return this.codePort.verify(request, executionContext)
+    return this.verifyModeArtifacts(request, executionContext, resolution)
+  }
+
+  private async verifyModeArtifacts(
+    request: FrozenTaskVerificationRequestV1,
+    executionContext: Readonly<TaskVerificationExecutionContextV1>,
+    resolution: ModeTaskVerificationResolutionV1,
+  ): Promise<TaskVerificationExecutionResultV1> {
+    const checkId = resolution.mode === 'WORK' ? 'work.report-docx' : 'design.project'
+    const expectedKind = resolution.mode === 'WORK' ? 'WORK_REPORT_DOCX' : 'DESIGN_PROJECT_RESULT'
+    const allowedArtifactPaths = safeArtifactPathSet(executionContext.artifactPaths)
+    if (allowedArtifactPaths === null) {
+      return failedResult(
+        request,
+        executionContext,
+        checkId,
+        [{
+          checkId: 'workspace.scope',
+          summary: '文件范围审计通过',
+          artifactIds: [executionContext.scopeEvidenceArtifactId],
+          verdict: 'PASS' as const,
+        }],
+        [artifactInspection(checkId, 'FAIL')],
+        'ARTIFACT_VERIFICATION_FAILED',
+      )
+    }
+    const passedChecks = [{
+      checkId: 'workspace.scope',
+      summary: '文件范围审计通过',
+      artifactIds: [executionContext.scopeEvidenceArtifactId],
+      verdict: 'PASS' as const,
+    }]
+    const inspected: InspectionCheckV1[] = []
+    let verifiedCount = 0
+
+    for (const artifact of resolution.artifacts) {
+      if (!validModeArtifactDescriptor(artifact, expectedKind) ||
+        (allowedArtifactPaths !== undefined && !allowedArtifactPaths.has(artifact.path))) {
+        return failedResult(
+          request,
+          executionContext,
+          checkId,
+          passedChecks,
+          [artifactInspection(checkId, 'FAIL')],
+          'ARTIFACT_VERIFICATION_FAILED',
+        )
+      }
+
+      const content = readModeArtifact(executionContext.worktreeRoot, artifact.path)
+      if (content.kind === 'MISSING') {
+        if (resolution.requireAll) {
+          return failedResult(
+            request,
+            executionContext,
+            checkId,
+            passedChecks,
+            [artifactInspection(checkId, 'FAIL')],
+            'ARTIFACT_VERIFICATION_FAILED',
+          )
+        }
+        continue
+      }
+      if (content.kind !== 'PRESENT' || !digestMatches(content.bytes, artifact.sha256)) {
+        return failedResult(
+          request,
+          executionContext,
+          checkId,
+          passedChecks,
+          [artifactInspection(checkId, 'FAIL')],
+          'ARTIFACT_VERIFICATION_FAILED',
+        )
+      }
+
+      const structurallyValid = resolution.mode === 'WORK'
+        ? await validWorkReportArtifact(content.bytes)
+        : validDesignProjectArtifact(content.bytes)
+      if (!structurallyValid) {
+        return failedResult(
+          request,
+          executionContext,
+          checkId,
+          passedChecks,
+          [artifactInspection(checkId, 'FAIL')],
+          'ARTIFACT_VERIFICATION_FAILED',
+        )
+      }
+      verifiedCount += 1
+      inspected.push(artifactInspection(checkId, 'PASS'))
+    }
+
+    if (verifiedCount === 0) {
+      return failedResult(
+        request,
+        executionContext,
+        checkId,
+        passedChecks,
+        [artifactInspection(checkId, 'FAIL')],
+        'ARTIFACT_VERIFICATION_FAILED',
+      )
+    }
+
+    const evidenceArtifactId = taskVerificationEvidenceArtifactId(request, executionContext.inspectionArtifactId)
+    return passedResult(
+      request,
+      executionContext,
+      [...passedChecks, {
+        checkId,
+        summary: `${checkLabel(checkId)}通过`,
+        artifactIds: [evidenceArtifactId],
+        verdict: 'PASS' as const,
+      }],
+      inspected,
+      'ARTIFACTS_VERIFIED',
+    )
+  }
+}
+
+const MODE_ARTIFACT_MAX_BYTES_V1 = 16 * 1024 * 1024
+const SHA256_DIGEST_PATTERN_V1 = /^sha256:[0-9a-f]{64}$/i
+const PRIVATE_DESIGN_PATH_KEYS_V1 = new Set([
+  'root',
+  'rootpath',
+  'sourcepath',
+  'worktreeroot',
+  'worktreepath',
+  'projectroot',
+  'trustedtoolchainroot',
+  'absolutepath',
+  'privatepath',
+])
+
+type ModeArtifactReadResultV1 =
+  | { readonly kind: 'MISSING' }
+  | { readonly kind: 'INVALID' }
+  | { readonly kind: 'PRESENT'; readonly bytes: Buffer }
+
+function isModeTaskVerificationResolution(
+  value: ModeTaskVerificationResolutionV1 | null,
+): value is ModeTaskVerificationResolutionV1 {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.artifacts)) return false
+  return (value.mode === 'WORK' || value.mode === 'DESIGN' || value.mode === 'CODING') &&
+    typeof value.requireAll === 'boolean'
+}
+
+function validModeArtifactDescriptor(
+  value: unknown,
+  expectedKind: ModeTaskVerificationArtifactKindV1,
+): value is ModeTaskVerificationArtifactV1 {
+  if (!value || typeof value !== 'object') return false
+  const artifact = value as Partial<ModeTaskVerificationArtifactV1>
+  return artifact.kind === expectedKind &&
+    safeArtifactRelativePath(artifact.path) &&
+    typeof artifact.sha256 === 'string' &&
+    SHA256_DIGEST_PATTERN_V1.test(artifact.sha256)
+}
+
+function safeArtifactRelativePath(value: unknown): value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 4_096 ||
+    value !== value.trim() ||
+    value.includes('\0') ||
+    value.includes('\\') ||
+    path.isAbsolute(value) ||
+    path.win32.isAbsolute(value) ||
+    /^[a-z]:/i.test(value)
+  ) return false
+  const normalized = path.posix.normalize(value)
+  if (normalized !== value) return false
+  return value.split('/').every((part) => (
+    part.length > 0 && part !== '.' && part !== '..' && part.toLowerCase() !== '.git'
+  ))
+}
+
+function safeArtifactPathSet(
+  values: readonly string[] | undefined,
+): Set<string> | undefined | null {
+  if (values === undefined) return undefined
+  if (!Array.isArray(values)) return null
+  const paths = new Set<string>()
+  for (const value of values) {
+    if (!safeArtifactRelativePath(value)) return null
+    paths.add(value)
+  }
+  return paths
+}
+
+function readModeArtifact(root: string, relativePath: string): ModeArtifactReadResultV1 {
+  try {
+    const realRoot = realpathSync(root)
+    let target = realRoot
+    const parts = relativePath.split('/')
+    for (const [index, part] of parts.entries()) {
+      target = path.join(target, part)
+      let entry
+      try {
+        entry = lstatSync(target)
+      } catch (error) {
+        return isNodeErrorWithCode(error, 'ENOENT') ? { kind: 'MISSING' } : { kind: 'INVALID' }
+      }
+      if (entry.isSymbolicLink()) return { kind: 'INVALID' }
+      if (index < parts.length - 1) {
+        if (!entry.isDirectory()) return { kind: 'INVALID' }
+        continue
+      }
+      if (!entry.isFile()) return { kind: 'INVALID' }
+      const stat = statSync(target)
+      if (stat.nlink > 1 || stat.size > MODE_ARTIFACT_MAX_BYTES_V1) return { kind: 'INVALID' }
+      const realTarget = realpathSync(target)
+      const targetRelative = path.relative(realRoot, realTarget)
+      if (
+        !targetRelative ||
+        path.isAbsolute(targetRelative) ||
+        targetRelative === '..' ||
+        targetRelative.startsWith(`..${path.sep}`)
+      ) return { kind: 'INVALID' }
+      const bytes = readFileSync(target)
+      const after = lstatSync(target)
+      if (
+        after.isSymbolicLink() ||
+        !after.isFile() ||
+        after.nlink > 1 ||
+        after.size !== stat.size ||
+        bytes.byteLength > MODE_ARTIFACT_MAX_BYTES_V1
+      ) return { kind: 'INVALID' }
+      return { kind: 'PRESENT', bytes }
+    }
+    return { kind: 'INVALID' }
+  } catch {
+    return { kind: 'INVALID' }
+  }
+}
+
+function digestMatches(bytes: Uint8Array, expected: string): boolean {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}` === expected.toLowerCase()
+}
+
+async function validWorkReportArtifact(bytes: Buffer): Promise<boolean> {
+  try {
+    await inspectSafeDocxArchiveV1(bytes)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function validDesignProjectArtifact(bytes: Buffer): boolean {
+  let value: unknown
+  try {
+    value = JSON.parse(bytes.toString('utf8')) as unknown
+  } catch {
+    return false
+  }
+  if (!isRecord(value) || hasPrivateDesignPathData(value)) return false
+  if (
+    value.kind !== 'DESIGN_PROJECT_OVERVIEW_V1' ||
+    value.status !== 'ok' ||
+    !nonEmptyString(value.source_version) ||
+    !nonEmptyString(value.trace_id) ||
+    !Array.isArray(value.sources) ||
+    value.sources.length === 0
+  ) return false
+  return value.sources.every((source) => (
+    isRecord(source) &&
+    safeArtifactRelativePath(source.path) &&
+    typeof source.sha256 === 'string' &&
+    SHA256_DIGEST_PATTERN_V1.test(source.sha256)
+  ))
+}
+
+function hasPrivateDesignPathData(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasPrivateDesignPathData)
+  if (!isRecord(value)) return false
+  return Object.entries(value).some(([key, nested]) => {
+    const normalizedKey = key.replace(/[\s_-]/g, '').toLowerCase()
+    if (PRIVATE_DESIGN_PATH_KEYS_V1.has(normalizedKey)) return true
+    if (typeof nested === 'string' && looksLikeAbsolutePath(nested)) return true
+    return hasPrivateDesignPathData(nested)
+  })
+}
+
+function looksLikeAbsolutePath(value: string): boolean {
+  return value.startsWith('file://') || path.isAbsolute(value) || path.win32.isAbsolute(value)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function artifactInspection(
+  checkId: 'work.report-docx' | 'design.project',
+  status: 'PASS' | 'FAIL',
+): InspectionCheckV1 {
+  return { checkId, status, stdout: '', stderr: '', outputTruncated: false }
+}
+
 function lstatIfPresent(targetPath: string): ReturnType<typeof lstatSync> | null {
   try {
     return lstatSync(targetPath)
@@ -540,11 +894,12 @@ function passedResult(
   executionContext: Readonly<TaskVerificationExecutionContextV1>,
   checks: readonly { checkId: string; summary: string; artifactIds: readonly ArtifactId[]; verdict: 'PASS' }[],
   inspectionChecks: readonly InspectionCheckV1[],
+  safeCode = 'TYPECHECKS_PASSED',
 ): TaskVerificationExecutionResultV1 {
   const log = {
     version: 'task-verification-inspection.v1',
     outcome: 'PASS',
-    safeCode: 'TYPECHECKS_PASSED',
+    safeCode,
     checks: inspectionChecks,
   } satisfies InspectionLogV1
   const diagnosticArtifact = inspectionArtifact(executionContext.inspectionArtifactId, log)
@@ -570,6 +925,7 @@ function failedResult(
   failedCheckId: InspectionCheckV1['checkId'],
   passedChecks: readonly { checkId: string; summary: string; artifactIds: readonly ArtifactId[]; verdict: 'PASS' }[],
   inspectionChecks: readonly InspectionCheckV1[],
+  reason = 'FIXED_TYPECHECK_FAILED',
 ): TaskVerificationExecutionResultV1 {
   const log = {
     version: 'task-verification-inspection.v1',
@@ -600,7 +956,7 @@ function failedResult(
       retryOrdinal: 0 as const,
       safeCode: 'QA_CHECK_FAILED' as const,
     },
-    reason: 'FIXED_TYPECHECK_FAILED',
+    reason,
   } satisfies Omit<TaskVerificationFailedReceiptV1, 'receiptDigest'>
   return {
     receipt: { ...receiptWithoutDigest, receiptDigest: verificationReceiptDigestV1(receiptWithoutDigest) },
@@ -746,5 +1102,8 @@ function emptyProcessFailure(status: 'TIMED_OUT' | 'SPAWN_FAILED'): Verification
 }
 
 function checkLabel(checkId: InspectionCheckV1['checkId']): string {
-  return checkId === 'typescript.web' ? '界面 TypeScript 检查' : '主进程 TypeScript 检查'
+  if (checkId === 'typescript.web') return '界面 TypeScript 检查'
+  if (checkId === 'typescript.node') return '主进程 TypeScript 检查'
+  if (checkId === 'work.report-docx') return '工作报告 DOCX 产物校验'
+  return '设计项目结果校验'
 }

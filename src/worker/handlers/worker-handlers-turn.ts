@@ -28,6 +28,14 @@ export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply)
             projectIdentityDigest: msg.projectIdentityDigest,
             slotBindingDigest: msg.slotBindingDigest,
           })
+          if (msg.taskHubAttemptId !== undefined) {
+            if (typeof msg.taskHubAttemptId !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(msg.taskHubAttemptId)) {
+              throw new Error('PI_ATTEMPT_BINDING_INVALID')
+            }
+            if (st.taskHubAttemptId && st.taskHubAttemptId !== msg.taskHubAttemptId) throw new Error('PI_ATTEMPT_REBIND_DENIED')
+            st.taskHubAttemptId = msg.taskHubAttemptId
+            if (typeof msg.taskHubDesignExtensionPath === 'string') st.taskHubDesignExtensionPath = msg.taskHubDesignExtensionPath
+          } else if (st.taskHubAttemptId) throw new Error('PI_ATTEMPT_REBIND_DENIED')
           console.log('[Worker] Initializing st.session for:', cwd)
           st.activeSdkPath = typeof msg.sdkPath === 'string' && msg.sdkPath ? msg.sdkPath : null
           let sdkFallback = false

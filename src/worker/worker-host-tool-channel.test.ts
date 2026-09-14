@@ -9,6 +9,23 @@ import { receiveWorkerHostToolResponse, requestWorkerHostTool } from './worker-h
 beforeEach(() => sendToMainMock.mockClear())
 
 describe('worker host-tool response routing', () => {
+  it('keeps the TaskHub file permission channel open until Main can settle the prompt', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = requestWorkerHostTool({
+        method: 'xiaogui.taskhub.pi.tool.begin',
+        payload: { attemptId: 'attempt-1', sourceSessionId: 'session-1', toolCallId: 'read-1', toolName: 'read', input: { path: 'src/a.ts' } },
+      })
+      const requestId = sendToMainMock.mock.calls[0]?.[0]?.requestId as string
+      await vi.advanceTimersByTimeAsync(54_000)
+      expect(sendToMainMock).toHaveBeenCalledTimes(1)
+      receiveWorkerHostToolResponse({ type: 'host-tool-response', requestId,
+        outcome: { ok: true, value: { kind: 'PI_ATTEMPT_TOOL_ALLOWED', toolCallId: 'read-1', authorizedRelativePath: 'src/a.ts' } },
+      })
+      await expect(pending).resolves.toMatchObject({ ok: true, value: { kind: 'PI_ATTEMPT_TOOL_ALLOWED' } })
+    } finally { vi.useRealTimers() }
+  })
+
   it('consumes a valid late response instead of leaking it into ordinary RPC dispatch', () => {
     expect(
       receiveWorkerHostToolResponse({

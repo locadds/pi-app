@@ -20,6 +20,7 @@ import type {
   TaskArtifactWriteV1,
   TaskVerificationExecutionPortV1,
 } from './verification-port'
+import { MODE_VERIFICATION_POLICY_V1, modeForVerificationConfigV1 } from './mode-verification-policy'
 
 export interface DeliveryVerificationInputV1 {
   readonly verificationAttemptId: DeliveryVerificationAttemptId
@@ -27,6 +28,8 @@ export interface DeliveryVerificationInputV1 {
   readonly deliveryChangeSet: DeliveryChangeSetV1
   readonly worktreeRoot: string
   readonly trustedToolchainRoot: string
+  /** Main-only source binding for Delivery artifact verification. */
+  readonly artifactSourceAttemptIds?: readonly AttemptId[]
 }
 
 export interface DeliveryVerificationResultV1 {
@@ -43,10 +46,13 @@ export class DeliveryVerificationServiceV1 {
     const scopeArtifact = deliveryScopeArtifact(ids.scopeEvidenceArtifactId, input.deliveryChangeSet)
     try {
       const result = await this.verificationPort.verify(request, {
+        verificationScope: 'DELIVERY',
+        artifactPaths: deliveryFileChanges(input.deliveryChangeSet).map(file => file.relativePath),
         worktreeRoot: input.worktreeRoot,
         trustedToolchainRoot: input.trustedToolchainRoot,
         scopeEvidenceArtifactId: ids.scopeEvidenceArtifactId,
         inspectionArtifactId: ids.inspectionArtifactId,
+        artifactSourceAttemptIds: input.artifactSourceAttemptIds ?? [],
       })
       return {
         receipt: mapReceipt(input, result.receipt, result.artifacts),
@@ -93,7 +99,7 @@ function taskVerificationRequest(
     changeSetDigest: input.deliveryChangeSet.digest,
     preparedTreeHash: deliveryIntegrationTreeHash(input.deliveryChangeSet),
     qaConfigVersion: deliveryQaConfigVersion(input.deliveryChangeSet),
-    acceptanceCriteria: ['delivery.scope', 'typescript.web', 'typescript.node', input.verificationRequestDigest],
+    acceptanceCriteria: ['delivery.scope', ...MODE_VERIFICATION_POLICY_V1[deliveryVerificationMode(input.deliveryChangeSet)].checks, input.verificationRequestDigest],
   }
   return {
     ...requestWithoutDigest,
@@ -210,6 +216,12 @@ function deliveryIntegrationTreeHash(changeSet: DeliveryChangeSetV1): Sha256Dige
 function deliveryQaConfigVersion(changeSet: DeliveryChangeSetV1): string {
   if (!changeSet.qaConfigVersion) throw new Error('DELIVERY_QA_CONFIG_REQUIRED')
   return changeSet.qaConfigVersion
+}
+
+function deliveryVerificationMode(changeSet: DeliveryChangeSetV1) {
+  const mode = modeForVerificationConfigV1(deliveryQaConfigVersion(changeSet))
+  if (!mode) throw new Error('DELIVERY_VERIFICATION_MODE_UNAVAILABLE')
+  return mode
 }
 
 function deliveryFileChanges(changeSet: DeliveryChangeSetV1) {

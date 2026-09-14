@@ -367,6 +367,24 @@ export type WorkerHostToolRequestV1 =
       method: typeof XIAOGUI_DIRECT_CODING_SETTLE_METHOD_V2
       payload: DirectCodingSettlePayloadV2
     }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: 'xiaogui.taskhub.pi.tool.begin'
+      payload: { attemptId: string; sourceSessionId: string; toolCallId: string; toolName: string; input: unknown }
+    }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: 'xiaogui.taskhub.pi.tool.settle'
+      payload: { attemptId: string; sourceSessionId: string; toolCallId: string; isError: boolean }
+    }
+  | {
+      type: 'host-tool-request'
+      requestId: string
+      method: 'xiaogui.taskhub.design-project'
+      payload: { attemptId: string; sourceSessionId: string; toolCallId: string; action: string }
+    }
 
 /**
  * WORK 文档快照的模型侧接口同样不携带地址、路径、文件句柄或密码。
@@ -431,6 +449,7 @@ export type XiaoguiWorkDocxResultV1 =
     }
 
 export type XiaoguiWorkReportDocxResultV1 =
+  | { kind: 'XIAOGUI_WORK_REPORT_DOCX_ATTEMPT_ARTIFACT'; relativePath: string; sha256: string }
   | { kind: 'XIAOGUI_WORK_REPORT_DOCX_PREPARED'; plan: WorkReportDocxPlanV1 }
   | { kind: 'XIAOGUI_WORK_REPORT_DOCX_TARGET_SELECTION_CANCELLED' }
   | { kind: 'XIAOGUI_WORK_REPORT_DOCX_PUBLISHED'; receipt: WorkReportDocxReceiptV1 }
@@ -641,6 +660,9 @@ export type WorkerHostToolOutcomeV1 =
         | DirectCodingPreflightResultV4
         | DirectCodingBeginResultV4
         | DirectCodingSettleResultV2
+        | { kind: 'PI_ATTEMPT_TOOL_ALLOWED'; toolCallId: string; authorizedRelativePath: string }
+        | { kind: 'PI_ATTEMPT_TOOL_SETTLED'; toolCallId: string }
+        | { kind: 'PI_DESIGN_PROJECT_ARTIFACT'; relativePath: string; sha256: string; summary: string }
     }
   | {
       ok: false

@@ -146,7 +146,7 @@ export interface RuntimeContractTestPolicyV1 {
 export interface RuntimeScopeBindingV1 {
   projectId: string
   sessionKey: string
-  sessionMode: 'CODING'
+  sessionMode: RuntimeWorkModeV1
   flowId: string
   taskRunId: string
   attemptId: string
@@ -291,7 +291,7 @@ export interface RuntimePermissionRequestV1 {
   sequence: number
   challengeDigest: RuntimeDigestV1 | string
   decisionRequired: 'ALLOW_ONCE_OR_DENY'
-  permissionPurpose?: 'APPROVED_FILE_TOOL' | 'FILE_WRITE' | 'COMMAND' | 'DATA_EGRESS'
+  permissionPurpose?: 'APPROVED_FILE_TOOL' | 'FILE_READ' | 'FILE_WRITE' | 'COMMAND' | 'DATA_EGRESS'
   /** Exact requested targets; TaskHub verifies these against the Attempt manifest. */
   requestedRelativePaths?: readonly string[]
   /** Safe display metadata only. Raw commands and credentials remain private. */
@@ -500,7 +500,7 @@ function isRuntimeScopeBindingShape(value: unknown): value is RuntimeScopeBindin
     isPlainRecord(value) &&
     isNonEmptyString(value.projectId) &&
     isNonEmptyString(value.sessionKey) &&
-    value.sessionMode === 'CODING' &&
+    (value.sessionMode === 'CODING' || value.sessionMode === 'WORK' || value.sessionMode === 'DESIGN') &&
     isNonEmptyString(value.flowId) &&
     isNonEmptyString(value.taskRunId) &&
     isNonEmptyString(value.attemptId) &&

@@ -304,8 +304,6 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
   private async startOnce(input: CanonicalExecutionInputV1): Promise<XiaoguiTaskExecutionStartOutcomeV1> {
     const projection = await this.options.application.observeM2B(input.address)
     if (!projection.ok) return executionError('SESSION_SCOPE_MISMATCH')
-    if (projection.value.authoritativeMode === 'DESIGN') return executionError('DESIGN_RESERVED')
-    if (projection.value.authoritativeMode === 'WORK') return executionError('WORK_NOT_SUPPORTED')
     if (
       projection.value.activeFlow?.flowId !== input.flowId ||
       projection.value.activeFlow.status !== 'PLAN_ACTIVE'
@@ -795,6 +793,10 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
   ): RuntimePermissionDecisionFactoryV1 {
     return async (event) => {
       assertPermissionEventScope(operation, current, runtimeSessionId, event)
+      const projection = await this.options.application.observeM2B(addressOf(operation))
+      if (!projection.ok || projection.value.authoritativeMode !== event.scope.sessionMode) {
+        throw new Error('RUNTIME_PERMISSION_SCOPE_MISMATCH')
+      }
       const binding = {
         domain: 'xiaogui.task-execution.scope-approval-proof.v1',
         operationId: operation.operation_id,
@@ -978,6 +980,7 @@ function runtimePermissionOperation(
   purpose: RuntimePermissionRequestEventV1['permissionPurpose'],
 ): CodingPermissionIntentV1['operation'] | null {
   if (purpose === 'APPROVED_FILE_TOOL') return 'WRITE'
+  if (purpose === 'FILE_READ') return 'READ'
   if (purpose === 'FILE_WRITE') return 'WRITE'
   if (purpose === 'COMMAND') return 'COMMAND'
   if (purpose === 'DATA_EGRESS') return 'DATA_EGRESS'
@@ -1391,8 +1394,6 @@ function batchPreflightError(
     projection.address.projectId !== input.address.projectId ||
     projection.address.sessionKey !== input.address.sessionKey
   ) return 'SESSION_SCOPE_MISMATCH'
-  if (projection.authoritativeMode === 'DESIGN') return 'DESIGN_RESERVED'
-  if (projection.authoritativeMode === 'WORK') return 'WORK_NOT_SUPPORTED'
   if (
     projection.activeFlow?.flowId !== input.flowId ||
     projection.activeFlow.status !== 'PLAN_ACTIVE' ||
@@ -1463,7 +1464,6 @@ function composePrivateExecutionPrompt(
   projection: SessionCollaborationProjectionM2BV1,
 ): Buffer {
   if (
-    projection.authoritativeMode !== 'CODING' ||
     projection.activeFlow?.flowId !== operation.flow_id ||
     !operation.task_run_id
   ) throw new Error('TASK_EXECUTION_PLAN_CONTEXT_MISSING')
@@ -1480,7 +1480,7 @@ function composePrivateExecutionPrompt(
     `- ${grant.operation === 'MODIFY' ? '修改' : '新建'}：${JSON.stringify(grant.relativePath)}`
   ))
   const prompt = [
-    '你正在小规的受控 CODING 执行环境中完成一个已经由用户批准的任务。',
+    `你正在小规的受控 ${projection.authoritativeMode} 执行环境中完成一个已经由用户批准的任务。`,
     '',
     `总目标：${projection.activeFlow.objective}`,
     `当前任务：${taskSpec.title}`,
@@ -1492,7 +1492,7 @@ function composePrivateExecutionPrompt(
     '',
     '执行要求：',
     '1. 请实际完成文件修改，不要只回复说明、建议或计划。',
-    '2. 读取文件时使用 fs/read_text_file；写入文件时使用 fs/write_text_file。',
+    '2. 使用当前模式已提供的工具完成任务；工具产物仍须经过当前任务的授权和验证。',
     '3. 只能修改或新建上面列出的文件，不得删除文件，也不得操作清单外文件。',
     '4. 不得调用终端命令，不得启动子智能体。',
     '5. 保持现有项目结构和未要求改变的行为；完成写入后结束本次任务。',
@@ -1519,7 +1519,6 @@ function assertPermissionEventScope(
     event.runtimeSessionId !== runtimeSessionId ||
     event.scope.projectId !== operation.project_id ||
     event.scope.sessionKey !== operation.session_key ||
-    event.scope.sessionMode !== 'CODING' ||
     event.scope.flowId !== operation.flow_id ||
     event.scope.taskRunId !== current.taskRun.taskRunId ||
     event.scope.attemptId !== current.attempt.attemptId ||
