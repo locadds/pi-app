@@ -1,5 +1,36 @@
 # 小规开发阶段状态
 
+## 2026-09-14｜已批准 d8ff330 的独立安装候选
+
+- 桌面与中台已批准源码 `d8ff33029ab0c123aad956630ba401579b7bac2f`，Standards/Spec 无阻断；既有 LOW 本轮不扩修。当前只制作绑定该源码的 NSIS x64 候选。开工 HEAD 精确匹配、工作树干净，保护 stash `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61` 未变。
+- 先更新现有 `doc/runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md` 交付方案。本轮仅改两份记录，未改源码、依赖、构建配置；无新脚本编码。原 `builder.cjs`、`resource-audit.cjs`、`verify-package.cjs` 原字节复制到独立新输出目录，SHA-256 分别为 `9374fa40d1a9e5c9075da9feabdd97846502c61764d91a5276b77ff94b75a4cb`、`58770726406bc2dc188b63bf3bbc1a4cc65e683e7ec9885df4255ff44e0d4019`、`c12943fa04f7ccb82d20b4f2a696e4698a2999e7a3f0e2d59c3d0718b2574ee2`。
+- 新输出：`E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/checkout-bytes-package-d8ff330-20260914`。旧 `terminal-release-20260914` 的9c源码安装包原地保留；没有检查或恢复用户改动后的业务现场。三个脚本以新目录为输出基点，未复制或执行旧启动脚本。
+- 必要 `electron-vite build` exit0（`build.log`）；Office产物和固定资源复用，没有重跑功能测试。构建前后源码/依赖/配置相对固定SHA净差异为空。NSIS复用原E盘工具缓存与BCJ；`package-7zip-command.json`记录本轮真实7zip命令包含 `-mf=BCJ`，没有升级工具。
+- 构建/打包仅证明新候选文件。**不安装、不启动、不修改协议关联、不调用模型、不重试业务、不Apply、不合主线。** 真实业务复验由用户稍后安排。最终包结果及记录提交身份以本节交付数据和集中HANDOFF为准。
+
+### 本次包交付数据（源码固定 d8ff330）
+
+- NSIS构建与静态核对均 exit0，日志 `package-build.log`、`package-verify.log`；报告 `package-verification.json` 为 PASS，`sourceSha` 与核对时 HEAD 均为 `d8ff33029ab0c123aad956630ba401579b7bac2f`。
+- 安装器：`E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/checkout-bytes-package-d8ff330-20260914/dist/小规 Agent 院内候选-Setup-0.3.0-rc.2-x64.exe`；**570629303 字节**；SHA-256 **`88e988c5522cf4a8cc0329be906aaff1b16b70ad159b7e2c4ebc9065134248a3`**。
+- ASAR：`dist/win-unpacked/resources/app.asar`，SHA-256 **`6d7dbf7badbaca6a90b5e505a44578de6e612ca0821ebab44ac5522c885afc33`**。ASAR内198个out构建文件与本轮输出逐文件一致；固定DESIGN 40文件/manifest与原批准2d7来源一致。随包Word helper2、LibreOffice19488、Pi Skill7、Office Viewer80、legal5、图标2及既有codex-asr1文件一致；仅静态资源检查，不执行其中任何能力。
+- 源码与包完成后只追加本文件和既有收口文档。记录SHA是本次文档提交，不改变上面的源码SHA；完整记录SHA由集中 `HANDOFF.md` 和最终交接回填。无范围偏差，原9c包保留。下一门为桌面主管核包，不代表安装、启动或真实业务复验通过。
+- 新输出目录的构建 `temp` 清理请求被工具策略拒绝，未执行删除；临时缓存原地保留，不换工具或重试绕过。安装器、解包目录、脚本及证据均保留供核包，原现场从未作为清理目标。
+
+本轮命令（工作目录为当前隔离工作树；不需要重复运行）：
+
+```powershell
+$candidateDir='E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/checkout-bytes-package-d8ff330-20260914'
+node node_modules/electron-vite/bin/electron-vite.js build
+$env:ELECTRON_BUILDER_CACHE='E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/closeout-20260914/builder-cache'
+$env:ELECTRON_BUILDER_7Z_FILTER='BCJ'
+$env:TEMP="$candidateDir/temp"
+$env:TMP=$env:TEMP
+node node_modules/electron-builder/out/cli/cli.js --config "$candidateDir/builder.cjs" --win nsis --x64 --publish never
+node "$candidateDir/verify-package.cjs" --fixed-sha d8ff33029ab0c123aad956630ba401579b7bac2f
+# 内容核对须在文档提交前执行：核对脚本要求当时HEAD精确等于源码SHA。
+git diff --check d8ff33029ab0c123aad956630ba401579b7bac2f
+```
+
 ## 2026-09-14｜HUB-RUNTIME-01 checkout 授权字节一致性（候选，待桌面主管复验）
 
 > 接续结果：Main 来源接缝、派生 A→C 与恢复回归已完成，待桌面主管复验；不是原业务恢复授权。此前 `BASELINE_TREE_MISMATCH` 及原始字节验证记录保留在下文作为过程证据，以本节末尾“来源接缝收口”作为本次结果。代码和测试均由 Luna/max 完成，根 owner 审查、验证、记录并交付。

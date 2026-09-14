@@ -1,5 +1,19 @@
 # HUB-RUNTIME-01 剩余工作方案
 
+## 2026-09-14｜已批准源码 d8ff330 的安装候选交付
+
+- 桌面与中台已批准源码 `d8ff33029ab0c123aad956630ba401579b7bac2f`，Standards/Spec 无阻断，既有 LOW 不扩修。开工核对该 HEAD、当前隔离分支、干净工作树和保护 stash `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61` 不变。
+- 本轮只构建、NSIS x64 打包和内容核对。复用上一轮 `terminal-release-20260914` 的 builder/resource-audit/verify-package 三个脚本原字节，不复制启动脚本，不编码新脚本；如确需改脚本再交 Luna/max。使用已有 E 盘 builder 缓存、BCJ 与固定 DESIGN/Office/Pi 资源，不升级依赖。
+- 新输出独立放 `E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/checkout-bytes-package-d8ff330-20260914`；保留旧9c安装包及全部业务现场。必要 electron-vite build 后以固定 SHA 核对 ASAR/out、固定资源和安装器摘要，源码在此期间不变；不重复已过测试。
+- 完成后在现有阶段记录写入安装器路径、大小、SHA-256、ASAR摘要及内容报告；仅提交推送文档，区分源码 SHA 与记录 SHA，再停在桌面主管核包门。
+- 不安装或启动新包，不改协议关联，不检查或恢复用户改动后的现场，不调用模型、不重试任务、不 Apply、不合主线。真实业务由用户稍后安排。
+
+### 本次交付结果
+
+- 必要构建、NSIS打包与内容核对均退出0，实际7zip使用 `-mf=BCJ`，未升级依赖或改脚本。新安装器 **570629303字节**，SHA-256 `88e988c5522cf4a8cc0329be906aaff1b16b70ad159b7e2c4ebc9065134248a3`；ASAR SHA-256 `6d7dbf7badbaca6a90b5e505a44578de6e612ca0821ebab44ac5522c885afc33`。
+- 完整安装器位于新目录 `dist/小规 Agent 院内候选-Setup-0.3.0-rc.2-x64.exe`；`package-verification.json` 的源码固定为 `d8ff33029ab0c123aad956630ba401579b7bac2f`，198个out文件、40个固定DESIGN文件及既有全部随包资源一致。精确路径、资源数量和命令见 `DEVELOPMENT_STATUS.md` 最新条。
+- 最后只追加两份阶段文档并推送；记录SHA另列在集中HANDOFF，不能作为本包源码SHA。旧9c包和原现场不动，无功能/脚本改动、无额外测试，无安装/启动/模型/业务/Apply证据。停在桌面主管核包门。
+
 ## 2026-09-14｜主管已批准的接续：Main 基线来源透传（已实施，待主管复验）
 
 - 沿用 `f6b53b178ba39510ca360b61e7ac87150d40682d` 与现有6个文件的保留改动，不另开功能阶段、不撤销已完成字节修复。
