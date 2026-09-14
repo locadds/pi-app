@@ -8,11 +8,30 @@
 - 只补终态回收、重复结算、其他 Worker 隔离、关闭后从 SQLite 恢复不重派发的必要断言；必要 Node 类型、变更文件 lint/diff-check。DESIGN 参数、Delivery 精确 Attempt 绑定、模式验证及原业务已通过项不改、不重复测试。
 - 根 owner 复核增量，追加提交并推送；使用已有构建/NSIS/BCJ和固定资源，在新目录制作对应候选，原包原地保留。仅包内容核对，不安装、不启动，不改协议、配置、Hub、原任务或 stash。完成后停在桌面主管复验门，由主管转中台；不合主线、不执行 Apply。
 
-返修源码已由指定 Luna/max 完成：先持久化、单 live 共享 closing Promise、结束后移除对应活动引用、shutdown 等待在途结算及创建后关 SQLite。冷恢复只读已存结果，不重启 Worker/重发 prompt。新增 4 类断言，实际整文件 9/9（带入 5 个旧断言，包括 1 个已过 Delivery 来源断言；不再重复）；Node 类型、两文件 lint、diff-check、必要构建退出 0。准确命令与日志见 DEVELOPMENT_STATUS 顶部。根 owner 本次增量 Standards/Spec 自查均无未解决问题，尚待主管复验与新包内容核对，不覆盖下一节旧候选的人工验收身份。
+返修源码已由指定 Luna/max 完成：先持久化、单 live 共享 closing Promise、结束后移除对应活动引用、shutdown 等待在途结算及创建后关 SQLite。冷恢复只读已存结果，不重启 Worker/重发 prompt。新增 4 类断言，最终整文件 9/9（带入 5 个旧断言，包括 1 个已过 Delivery 来源断言；不再重复）；Node 类型、两文件 lint、diff-check、必要构建退出 0。准确命令与日志见 DEVELOPMENT_STATUS 顶部。根 owner 本次增量 Standards/Spec 自查均无未解决问题，新包内容核对通过，停在主管复验门。
+
+### 当前返修候选
+
+- 代码 SHA：`9c4042b8c796ee98a6c1213b18da44130c110a2f`，当前分支已推送。后续交接提交只改文档。
+- 新 NSIS：`E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/terminal-release-20260914/dist/小规 Agent 院内候选-Setup-0.3.0-rc.2-x64.exe`，570624890 字节，SHA-256 `06a4e5643c157ba8284aa972b80c0c3f511eb1b3050a5b6121d9bf8701ba12f6`。
+- ASAR：`3315de88ae7244bc01c4e52ecd8de7dadeec7b37e5dfa65dba602aee906f50a6`；新包 198 个 out 文件、40 个固定 DESIGN 文件及原资源一致，报告在新目录 `package-verification.json`。
+- 原 NSIS 工具缓存与 BCJ 参数复用，只有新输出目录；`package-build.log`、`package-7zip-command.json`、`package-verify.log` 留作证据。没有安装/启动、新协议关联、模型或业务执行。旧候选 e28c4bd1 保留。
+
+在代码固定点执行的本次包命令（工作目录为当前工作树）：
+
+```powershell
+$evidence='E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/terminal-release-20260914'
+$env:ELECTRON_BUILDER_CACHE='E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/closeout-20260914/builder-cache'
+$env:ELECTRON_BUILDER_7Z_FILTER='BCJ'
+$env:TEMP="$evidence/temp"
+$env:TMP=$env:TEMP
+node node_modules/electron-builder/out/cli/cli.js --config "$evidence/builder.cjs" --win nsis --x64 --publish never
+node "$evidence/verify-package.cjs" --fixed-sha 9c4042b8c796ee98a6c1213b18da44130c110a2f
+```
 
 更新：2026-09-14。状态：代码与安装包内容候选完成，待桌面主管复验；新包实际启动未执行。
 
-## 本轮交接结果
+## 初次候选交接结果（07f3d97，旧包保留）
 
 - 代码：`f5cf8cffb0ba4332aef2fc3e8b1836fa43d27983`，`codex/hub-runtime-01-pi-default-v1`，已推送 `xiaogui`，本地/上游/live 远端一致。后续仅文档交接提交，不改变本包源码。
 - NSIS：`E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/closeout-20260914/dist/小规 Agent 院内候选-Setup-0.3.0-rc.2-x64.exe`；570624454 字节；SHA-256 `e28c4bd19ef0d0ac2760c1325d02fda062c22f441d1e37417ad33bed6465fb4c`。

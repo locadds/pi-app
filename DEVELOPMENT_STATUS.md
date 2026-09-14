@@ -1,6 +1,6 @@
 # 小规开发阶段状态
 
-## 2026-09-14｜主管 P2 最小返修：Attempt 终态回收（源码候选）
+## 2026-09-14｜主管 P2 最小返修：Attempt 终态回收（待主管复验）
 
 - 主管对 `07f3d97012acc30deec1792d9dbb7bf204d7c808` 的 Standards 已通过；Spec 尚有一项 P2：Attempt 结束后专属 Pi Worker 未释放。原候选仍保留，不把上一轮实施者自查当成本轮主管放行。
 - 已先更新现有 `HUB-RUNTIME-01-CLOSEOUT.md`，再委派 `gpt-5.6-luna/max`，仅修改 Pi Adapter 与生命周期必要断言。现有 `pi-worker-port.close → WorkerManager.stop → disposeWorkerSlot` 已有 abort/dispose/kill 清理；本轮补上终态调用与幂等引用释放，不新建回收框架。
@@ -8,7 +8,15 @@
 - 实际仅修改 `src/main/xiaogui/agent-runtime/pi-adapter.ts`、`pi-adapter-lifecycle.test.ts` 和两份阶段文档。终态结果先写 SQLite；每个 live 共享唯一关闭 Promise，完成后只移除对应活动项；Adapter shutdown 加入同一关闭操作，等待 finishing/creating 后关数据库。关闭异常保留已存结果并只写静态诊断；结果写入失败降级 UNKNOWN，已有 pending 记录恢复不重新派发。没有新增数据库、公共契约或回收框架。
 - 新增 4 类断言：关闭回调发生前 SQLite 已有终态、重复事件及 onExit 重入、关闭 Adapter 后同 DB 冷恢复且 factory/prompt 仍为 1；成功结果持久化受真实 SQLite trigger 拒绝时降级 UNKNOWN；只关已结束 Attempt、不影响另一个 Worker；shutdown 与在途结算/关闭异常交错保留结果。根 owner 增量自查：Standards 0 项、Spec 本次回收缺口已实现，仍待桌面主管复验。
 - 实际验证命令：`node node_modules/vitest/vitest.mjs run src/main/xiaogui/agent-runtime/pi-adapter-lifecycle.test.ts --maxWorkers=1 --fileParallelism=false`，9/9 通过（4 新增 + 5 同文件既有）；该整文件运行带入了一个既有 Delivery 来源断言，是本轮测试范围的小偏差，未重跑其他 DESIGN/Delivery 文件或业务组合，此后不重复跑。Node `node node_modules/typescript/bin/tsc --noEmit -p tsconfig.node.json`、两变更文件 ESLint、`git diff --check` 全部退出 0。无 Web 改动，不重复 Web 检查。
-- 必要 `node node_modules/electron-vite/bin/electron-vite.js build` 退出 0；构建前后 Adapter 源文件 SHA 一致，未混入中间代码。证据位于 `E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/terminal-release-20260914`：`lifecycle-test.log`、`node-tsc.log`、`changed-files-eslint.log`、`diff-check.log`、`build.log`、`build-source-hash.json`。包尚待生成/核对；没有安装、启动或外部模型证据。
+- 必要 `node node_modules/electron-vite/bin/electron-vite.js build` 退出 0；构建前后 Adapter 源文件 SHA 一致，未混入中间代码。证据位于 `E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/terminal-release-20260914`：`lifecycle-test.log`、`node-tsc.log`、`changed-files-eslint.log`、`diff-check.log`、`build.log`、`build-source-hash.json`。新包结果见下；没有安装、启动或外部模型证据。
+
+### 本次固定交付
+
+- 返修代码 `9c4042b8c796ee98a6c1213b18da44130c110a2f` 已提交推送当前分支；随后只有本交接文档提交，不改变包源码。完整修改清单可用 `git diff --name-only 07f3d97012acc30deec1792d9dbb7bf204d7c808..9c4042b8c796ee98a6c1213b18da44130c110a2f` 复核，生产代码仅 Pi Adapter。
+- 新 NSIS：`E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/terminal-release-20260914/dist/小规 Agent 院内候选-Setup-0.3.0-rc.2-x64.exe`；570624890 字节；SHA-256 `06a4e5643c157ba8284aa972b80c0c3f511eb1b3050a5b6121d9bf8701ba12f6`。ASAR SHA-256 `3315de88ae7244bc01c4e52ecd8de7dadeec7b37e5dfa65dba602aee906f50a6`。
+- 原 NSIS/BCJ 流程退出 0，复用既有 E 盘工具缓存，无工具升级。新包静态内容核对退出 0：198 个构建文件、40 个固定 DESIGN 文件及既有随包资源一致（`package-verification.json`），不等同实际安装/运行。原 e28c4bd1 包保留，没有启动新包，没有修改系统协议关联、原配置、Hub、原任务或 stash。
+- 最终测试的先存后关断言位于 close 回调外，不会被被测关闭异常捕获吞掉；13:00 的最终 `lifecycle-test.log` 为 9/9，以代码固定点中的 `persistedBeforeClose` 外部断言为准。
+- 停在桌面主管复验门，由主管转中台。新包实际安装、启动、真实模型与业务旅程均未执行；本轮没有合主线、发布或 Apply。
 
 ## 2026-09-14｜HUB-RUNTIME-01 代码候选已固定，包验证收尾
 
