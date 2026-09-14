@@ -1,5 +1,15 @@
 # 小规开发阶段状态
 
+## 2026-09-14｜主管 P2 最小返修：Attempt 终态回收（源码候选）
+
+- 主管对 `07f3d97012acc30deec1792d9dbb7bf204d7c808` 的 Standards 已通过；Spec 尚有一项 P2：Attempt 结束后专属 Pi Worker 未释放。原候选仍保留，不把上一轮实施者自查当成本轮主管放行。
+- 已先更新现有 `HUB-RUNTIME-01-CLOSEOUT.md`，再委派 `gpt-5.6-luna/max`，仅修改 Pi Adapter 与生命周期必要断言。现有 `pi-worker-port.close → WorkerManager.stop → disposeWorkerSlot` 已有 abort/dispose/kill 清理；本轮补上终态调用与幂等引用释放，不新建回收框架。
+- 只验证终态回收、重复结算、任务间隔离及关闭后 SQLite 恢复不重复派发，必要类型/lint/build。DESIGN 参数、Delivery 精确绑定、模式/业务既有通过项不改不重跑。新候选输出到独立 `terminal-release-20260914`，旧 e28c4bd1 包不覆盖；明确不安装、不启动、不改协议、配置、Hub、原任务或 stash。
+- 实际仅修改 `src/main/xiaogui/agent-runtime/pi-adapter.ts`、`pi-adapter-lifecycle.test.ts` 和两份阶段文档。终态结果先写 SQLite；每个 live 共享唯一关闭 Promise，完成后只移除对应活动项；Adapter shutdown 加入同一关闭操作，等待 finishing/creating 后关数据库。关闭异常保留已存结果并只写静态诊断；结果写入失败降级 UNKNOWN，已有 pending 记录恢复不重新派发。没有新增数据库、公共契约或回收框架。
+- 新增 4 类断言：关闭回调发生前 SQLite 已有终态、重复事件及 onExit 重入、关闭 Adapter 后同 DB 冷恢复且 factory/prompt 仍为 1；成功结果持久化受真实 SQLite trigger 拒绝时降级 UNKNOWN；只关已结束 Attempt、不影响另一个 Worker；shutdown 与在途结算/关闭异常交错保留结果。根 owner 增量自查：Standards 0 项、Spec 本次回收缺口已实现，仍待桌面主管复验。
+- 实际验证命令：`node node_modules/vitest/vitest.mjs run src/main/xiaogui/agent-runtime/pi-adapter-lifecycle.test.ts --maxWorkers=1 --fileParallelism=false`，9/9 通过（4 新增 + 5 同文件既有）；该整文件运行带入了一个既有 Delivery 来源断言，是本轮测试范围的小偏差，未重跑其他 DESIGN/Delivery 文件或业务组合，此后不重复跑。Node `node node_modules/typescript/bin/tsc --noEmit -p tsconfig.node.json`、两变更文件 ESLint、`git diff --check` 全部退出 0。无 Web 改动，不重复 Web 检查。
+- 必要 `node node_modules/electron-vite/bin/electron-vite.js build` 退出 0；构建前后 Adapter 源文件 SHA 一致，未混入中间代码。证据位于 `E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/terminal-release-20260914`：`lifecycle-test.log`、`node-tsc.log`、`changed-files-eslint.log`、`diff-check.log`、`build.log`、`build-source-hash.json`。包尚待生成/核对；没有安装、启动或外部模型证据。
+
 ## 2026-09-14｜HUB-RUNTIME-01 代码候选已固定，包验证收尾
 
 - 代码固定点 `f5cf8cffb0ba4332aef2fc3e8b1836fa43d27983`，分支 `codex/hub-runtime-01-pi-default-v1`；已推送既有公共远端 `xiaogui`，live `ls-remote` 与本地一致。相对 a27 基线共 46 文件，实际清单使用 `git diff --name-only a27b4ad9f5641d9e797cfde4296b94ff45206f4f f5cf8cffb0ba4332aef2fc3e8b1836fa43d27983`。私有 DESIGN 源码、安装包、配置、证据、`.omo` 未提交，stash 未动。

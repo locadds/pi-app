@@ -44,15 +44,20 @@ async function fixture() {
     promptEnvelopeRef: { refId: 'prompt-1', digest: sha('approved task'), mediaType: 'application/vnd.xiaogui.runtime-prompt+json' },
   }
   let onTool!: Parameters<NonNullable<PiRuntimeOptionsV1['workerFactory']>>[0]['onTool']
-  let onEvent!: (event: AppEvent) => void
   let tree = sha('result')
   const prompt = vi.fn(async () => {})
   const abort = vi.fn(async () => {})
+  const closes: Array<ReturnType<typeof vi.fn>> = []
+  const workerEvents: Array<(event: AppEvent) => void> = []
+  const workerExits: Array<() => void> = []
   const factory: NonNullable<PiRuntimeOptionsV1['workerFactory']> = vi.fn(input => {
     onTool = input.onTool
-    onEvent = input.onEvent
+    workerEvents.push(input.onEvent)
+    workerExits.push(input.onExit)
+    const close = vi.fn(async () => {})
+    closes.push(close)
     return { start: async () => ({ sessionId: 'pi-1', sessionFile: join(root, 'session.jsonl'), model: 'fixture/model' }),
-      setModel: async () => 'fixture/model', prompt, abort, close: async () => {} }
+      setModel: async () => 'fixture/model', prompt, abort, close }
   })
   const options: PiRuntimeOptionsV1 = {
     dbPath: join(root, 'runtime.sqlite'), workerFactory: factory,
@@ -74,8 +79,9 @@ async function fixture() {
   const ready = await adapter.createOrResume(request)
   if (ready.state !== 'READY') throw new Error('fixture did not start')
   return { root, request, adapter, options, factory, prompt, abort, id: ready.runtimeSessionId,
+    close: closes[0], closes, workerEvents, workerExits,
     drift: () => { tree = sha('changed') },
-    finish: () => onEvent({ type: 'run', phase: 'idle', settled: true } as AppEvent),
+    finish: () => workerEvents[0]({ type: 'run', phase: 'idle', settled: true } as AppEvent),
     begin: () => onTool({ fromCwd: root, fromPoolKey: root, fromSessionId: 'pi-1', sessionFile: join(root, 'session.jsonl'),
       request: { type: 'host-tool-request', requestId: 'tool-1', method: 'xiaogui.taskhub.pi.tool.begin',
         payload: { attemptId: 'attempt-1', sourceSessionId: 'pi-1', toolCallId: 'read-1', toolName: 'read', input: { path: 'a.txt' } } } }),
@@ -242,4 +248,109 @@ it('cancels a pending permission, aborts Pi, and cannot settle that run as succe
   expect(f.abort).toHaveBeenCalledTimes(1)
   f.finish()
   await vi.waitFor(async () => expect(await f.adapter.inspect(f.id)).toMatchObject({ state: 'INTERRUPTED' }))
+})
+
+it('persists a terminal result before releasing the worker, and ignores duplicate terminal events', async () => {
+  const f = await fixture()
+  let persistedBeforeClose = false
+  f.close.mockImplementationOnce(async () => {
+    const db = new DatabaseSync(f.options.dbPath)
+    try {
+      const stored = db.prepare('SELECT data_json FROM pi_attempt_runtime_v1 WHERE id=?').get(f.id) as { data_json: string }
+      persistedBeforeClose = JSON.parse(stored.data_json).outcome?.state === 'SUCCEEDED'
+    } finally {
+      db.close()
+    }
+    f.workerExits[0]()
+  })
+  f.finish()
+  f.finish()
+
+  await vi.waitFor(async () => {
+    await expect(f.adapter.inspect(f.id)).resolves.toMatchObject({ state: 'SUCCEEDED' })
+    expect(f.close).toHaveBeenCalledTimes(1)
+  })
+  expect(persistedBeforeClose).toBe(true)
+  const db = new DatabaseSync(f.options.dbPath)
+  try {
+    const stored = db.prepare('SELECT data_json FROM pi_attempt_runtime_v1 WHERE id=?').get(f.id) as { data_json: string }
+    expect(JSON.parse(stored.data_json)).toMatchObject({ id: f.id, outcome: { state: 'SUCCEEDED' } })
+  } finally {
+    db.close()
+  }
+  await f.adapter.close()
+  adapters.delete(f.adapter)
+  const restored = new PiRuntimeAdapterV1(f.options)
+  adapters.add(restored)
+  await expect(restored.createOrResume(f.request)).resolves.toMatchObject({ state: 'SUCCEEDED' })
+  expect(f.factory).toHaveBeenCalledTimes(1)
+  expect(f.prompt).toHaveBeenCalledTimes(1)
+})
+
+it('downgrades a terminal persist failure to UNKNOWN before releasing the worker', async () => {
+  const f = await fixture()
+  const db = new DatabaseSync(f.options.dbPath)
+  try {
+    db.exec(`CREATE TRIGGER reject_success_persist BEFORE UPDATE OF data_json ON pi_attempt_runtime_v1
+      WHEN json_extract(NEW.data_json, '$.outcome.state') = 'SUCCEEDED'
+      BEGIN SELECT RAISE(ABORT, 'fixture persist failure'); END`)
+  } finally {
+    db.close()
+  }
+
+  f.finish()
+  await vi.waitFor(async () => expect(await f.adapter.inspect(f.id)).toMatchObject({
+    state: 'OUTCOME_UNKNOWN', reasonCode: 'PI_OUTCOME_PERSIST_FAILED',
+  }))
+  expect(f.close).toHaveBeenCalledTimes(1)
+  await expect(f.adapter.createOrResume(f.request)).resolves.toMatchObject({
+    state: 'OUTCOME_UNKNOWN', reasonCode: 'PI_OUTCOME_PERSIST_FAILED',
+  })
+  expect(f.factory).toHaveBeenCalledTimes(1)
+  expect(f.prompt).toHaveBeenCalledTimes(1)
+})
+
+it('releases only the worker for the Attempt that reached a terminal state', async () => {
+  const f = await fixture()
+  const secondRequest = runtimeRequestForSource(f.request, 'create-2', 'attempt-2', 'task-2')
+  const second = await f.adapter.createOrResume(secondRequest)
+  if (second.state !== 'READY') throw new Error('second fixture did not start')
+  expect(f.factory).toHaveBeenCalledTimes(2)
+
+  f.finish()
+  await vi.waitFor(() => expect(f.closes[0]).toHaveBeenCalledTimes(1))
+  expect(f.closes[1]).not.toHaveBeenCalled()
+
+  f.workerEvents[1]({ type: 'run', phase: 'failed', settled: true } as AppEvent)
+  await vi.waitFor(async () => expect(await f.adapter.inspect(second.runtimeSessionId)).toMatchObject({ state: 'FAILED' }))
+  expect(f.closes[0]).toHaveBeenCalledTimes(1)
+  expect(f.closes[1]).toHaveBeenCalledTimes(1)
+})
+
+it('waits for an in-flight finish during shutdown and retains the persisted UNKNOWN after close failure', async () => {
+  const f = await fixture()
+  let releasePatch!: () => void
+  vi.spyOn(f.options.workspace, 'captureTaskPatch').mockImplementation(async () => {
+    await new Promise<void>(resolve => { releasePatch = resolve })
+    return { resultTreeHash: sha('result') } as never
+  })
+  f.finish()
+  await vi.waitFor(() => expect(f.options.workspace.captureTaskPatch).toHaveBeenCalledTimes(1))
+  f.close.mockRejectedValueOnce(new Error('fixture close failure'))
+
+  let shutdownFinished = false
+  const shutdown = f.adapter.close().then(() => { shutdownFinished = true })
+  await Promise.resolve()
+  expect(shutdownFinished).toBe(false)
+  releasePatch()
+  await shutdown
+  expect(f.close).toHaveBeenCalledTimes(1)
+
+  const db = new DatabaseSync(f.options.dbPath)
+  try {
+    const stored = db.prepare('SELECT data_json FROM pi_attempt_runtime_v1 WHERE id=?').get(f.id) as { data_json: string }
+    expect(JSON.parse(stored.data_json)).toMatchObject({ outcome: { state: 'OUTCOME_UNKNOWN', reasonCode: 'PI_SHUTDOWN_UNKNOWN' } })
+  } finally {
+    db.close()
+  }
 })

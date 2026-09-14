@@ -1,5 +1,15 @@
 # HUB-RUNTIME-01 剩余工作方案
 
+## 主管 P2 返修方案：Attempt 终态 Worker 回收
+
+- 基线：`07f3d97012acc30deec1792d9dbb7bf204d7c808`，当前隔离分支不变。主管 Standards 已通过；只处理终态专属 Pi Worker 积累这一项 Spec P2。旧代码/安装包记录保留，不代表本次返修已通过。
+- 编码交 `gpt-5.6-luna/max`，所有权限定 `pi-adapter.ts` 及既有生命周期测试。先持久化结果，再通过已有 Worker port `close()` → `WorkerManager.stop()` 幂等回收对应 Worker，并解除 Adapter 的活动引用；SQLite 结果/事件/产物继续用于验证与恢复。重复终态、主动 shutdown、启动失败和 Worker exit 的交错只能关闭本任务，不重复派发。持久化失败不能被回收流程伪装成成功或丢掉 UNKNOWN 语义。
+- 复用门：已实查 `pi-worker-port.ts` 的现有关闭实现，直接使用已批准的生命周期接口。Skill/插件无权管理 Main 持有的专属 Worker；本轮不新增能力、不升级 Pi，不重跑上一轮复用调查。
+- 只补终态回收、重复结算、其他 Worker 隔离、关闭后从 SQLite 恢复不重派发的必要断言；必要 Node 类型、变更文件 lint/diff-check。DESIGN 参数、Delivery 精确 Attempt 绑定、模式验证及原业务已通过项不改、不重复测试。
+- 根 owner 复核增量，追加提交并推送；使用已有构建/NSIS/BCJ和固定资源，在新目录制作对应候选，原包原地保留。仅包内容核对，不安装、不启动，不改协议、配置、Hub、原任务或 stash。完成后停在桌面主管复验门，由主管转中台；不合主线、不执行 Apply。
+
+返修源码已由指定 Luna/max 完成：先持久化、单 live 共享 closing Promise、结束后移除对应活动引用、shutdown 等待在途结算及创建后关 SQLite。冷恢复只读已存结果，不重启 Worker/重发 prompt。新增 4 类断言，实际整文件 9/9（带入 5 个旧断言，包括 1 个已过 Delivery 来源断言；不再重复）；Node 类型、两文件 lint、diff-check、必要构建退出 0。准确命令与日志见 DEVELOPMENT_STATUS 顶部。根 owner 本次增量 Standards/Spec 自查均无未解决问题，尚待主管复验与新包内容核对，不覆盖下一节旧候选的人工验收身份。
+
 更新：2026-09-14。状态：代码与安装包内容候选完成，待桌面主管复验；新包实际启动未执行。
 
 ## 本轮交接结果

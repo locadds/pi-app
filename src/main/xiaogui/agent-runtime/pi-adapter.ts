@@ -53,6 +53,8 @@ interface LiveV1 {
   worker: PiAttemptWorkerPortV1
   permissions: Map<string, { event: Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }>; resolve: (allowed: boolean) => void }>
   finishing?: Promise<void>
+  outcomePersisted?: boolean
+  closing?: Promise<void>
 }
 export interface PiRuntimeOptionsV1 {
   /** Existing Attempt input database; these are private adapter records, not another session framework. */
@@ -69,6 +71,7 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
   private readonly live = new Map<string, LiveV1>()
   private closed = false
   private creating: Promise<unknown> = Promise.resolve()
+  private closing?: Promise<void>
   constructor(private readonly options: PiRuntimeOptionsV1) {
     this.db = new DatabaseSync(options.dbPath)
     this.db.exec('PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS pi_attempt_runtime_v1 (id TEXT PRIMARY KEY, create_id TEXT UNIQUE NOT NULL, request_digest TEXT NOT NULL, data_json TEXT NOT NULL)')
@@ -114,7 +117,7 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
           : {}),
         onTool: input => live ? this.tool(live, input) : Promise.resolve(denied()),
         onEvent: event => { if (live) this.workerEvent(live, event) },
-        onExit: () => { if (live && !live.row.outcome) this.settle(live, unknown(id, 'PI_WORKER_EXITED')) },
+        onExit: () => { if (live && !live.row.outcome) void this.settle(live, unknown(id, 'PI_WORKER_EXITED')) },
       })
       live = { row, root: access.rootPath, worker, permissions: new Map() }
       this.live.set(id, live)
@@ -134,11 +137,11 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
       this.event(row, { type: 'SESSION_READY', runtimeSessionId: id, sequence: 0 })
       this.save(row) // dispatch intent is durable before prompt; a crash cannot replay it
       void worker.prompt(Buffer.from(payload.payloadBytes).toString('utf8')).catch(() => {
-        if (live && !row.outcome) this.settle(live, failed(id, 'PI_PROMPT_FAILED'))
+        if (live && !row.outcome) void this.settle(live, failed(id, 'PI_PROMPT_FAILED'))
       })
       return { state: 'READY', runtimeSessionId: id }
     } catch {
-      if (live) { this.settle(live, failed(id, 'PI_START_FAILED')); await live.worker.close() }
+      if (live) await this.settle(live, failed(id, 'PI_START_FAILED'))
       return live?.row.outcome ?? failed(id, 'PI_START_FAILED')
     }
   }
@@ -211,13 +214,19 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
   }
 
   async close() {
+    if (this.closing) return this.closing
     this.closed = true
-    for (const live of this.live.values()) {
-      if (!live.row.outcome) this.settle(live, unknown(live.row.id, 'PI_SHUTDOWN_UNKNOWN'))
-      for (const pending of live.permissions.values()) pending.resolve(false)
-      await live.worker.close()
-    }
-    this.live.clear()
+    this.closing = this.closeLiveAttempts()
+    return this.closing
+  }
+  private async closeLiveAttempts() {
+    const lives = [...this.live.values()]
+    await Promise.all(lives.map(async live => {
+      await this.settle(live, unknown(live.row.id, 'PI_SHUTDOWN_UNKNOWN'))
+      await live.finishing?.catch(() => undefined)
+      await live.closing?.catch(() => undefined)
+    }))
+    await this.creating.catch(() => undefined)
     this.db.close()
   }
   private read(id: string): RecordV1 | undefined {
@@ -233,30 +242,51 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
       .run(row.id, row.request.requestId, row.requestDigest, JSON.stringify(row))
   }
   private event(row: RecordV1, event: RuntimeEventV1) { row.events.push({ ...event, sequence: row.events.length + 1 }) }
-  private settle(live: LiveV1, outcome: RuntimeOutcomeV1) {
-    if (live.row.outcome) return
-    live.row.outcome = outcome
-    try { this.save(live.row) } catch { live.row.outcome = unknown(live.row.id, 'PI_OUTCOME_PERSIST_FAILED') }
+  private settle(live: LiveV1, outcome: RuntimeOutcomeV1): Promise<void> {
+    if (live.closing) return live.closing
+    if (!live.outcomePersisted) {
+      const requested = live.row.outcome ?? outcome
+      live.row.outcome = requested
+      try {
+        this.save(live.row)
+        live.outcomePersisted = true
+      } catch {
+        live.row.outcome = unknown(live.row.id, 'PI_OUTCOME_PERSIST_FAILED')
+        try {
+          this.save(live.row)
+          live.outcomePersisted = true
+        } catch { /* Keep the in-memory UNKNOWN and still release the worker. */ }
+      }
+    }
     for (const pending of live.permissions.values()) pending.resolve(false)
     live.permissions.clear()
+    live.closing = Promise.resolve()
+      .then(() => live.worker.close())
+      .catch(() => {
+        try { process.stderr.write('[PiRuntime] Pi worker close failed after terminal settlement\n') } catch { /* ignore */ }
+      })
+      .finally(() => {
+        if (this.live.get(live.row.id) === live) this.live.delete(live.row.id)
+      })
+    return live.closing
   }
   private workerEvent(live: LiveV1, event: AppEvent) {
     if (event.type !== 'run' || !event.settled || live.row.outcome || live.finishing) return
     live.finishing = (async () => {
       if (live.row.cancelled || event.phase === 'cancelled') {
-        this.settle(live, { ...failed(live.row.id, 'PI_CANCELLED'), state: 'INTERRUPTED' }); return
+        await this.settle(live, { ...failed(live.row.id, 'PI_CANCELLED'), state: 'INTERRUPTED' }); return
       }
       if (event.phase !== 'idle' || Object.values(live.row.calls).some(call => call.state !== 'SETTLED')) {
-        this.settle(live, failed(live.row.id, 'PI_RUN_FAILED')); return
+        await this.settle(live, failed(live.row.id, 'PI_RUN_FAILED')); return
       }
       if (live.row.request.scope.sessionMode !== 'CODING' && !live.row.artifacts?.length) {
-        this.settle(live, failed(live.row.id, 'PI_MODE_ARTIFACT_MISSING')); return
+        await this.settle(live, failed(live.row.id, 'PI_MODE_ARTIFACT_MISSING')); return
       }
       try {
         const patch = await this.options.workspace.captureTaskPatch(live.row.request.scope.attemptId, { allowNoApprovedChanges: true })
-        this.settle(live, { state: 'SUCCEEDED', runtimeSessionId: live.row.id,
+        await this.settle(live, { state: 'SUCCEEDED', runtimeSessionId: live.row.id,
           candidateDigest: patch.resultTreeHash, receiptDigest: digest({ attempt: live.row.request.scope.attemptId, result: patch.resultTreeHash, model: live.row.model }) })
-      } catch { this.settle(live, failed(live.row.id, 'PI_RESULT_AUDIT_FAILED')) }
+      } catch { await this.settle(live, failed(live.row.id, 'PI_RESULT_AUDIT_FAILED')) }
     })()
   }
   private async tool(live: LiveV1, input: WorkerHostToolRequestForward, artifactWrite = false): Promise<WorkerHostToolOutcomeV1> {
