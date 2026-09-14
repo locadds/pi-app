@@ -14,7 +14,7 @@
 
 ## 用户指南（安装、快捷键、适配器列表）
 
-TaskHub 的 Pi 接线施工见 [HUB-RUNTIME-01-CLOSEOUT](./runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md)：复用现有 WORK/DESIGN/CODING Harness，冻结 Main 授权模式，保留 Attempt 工作树、验证、Delivery 和人工 Apply。当前候选不代表新安装或外部模型旅程已验收；普通 CODING 仍为独立的直接写入流程。
+TaskHub 的 Pi 代码/包候选见 [HUB-RUNTIME-01-CLOSEOUT](./runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md)：复用现有 WORK/DESIGN/CODING Harness，冻结 Main 授权模式，保留 Attempt 工作树、验证、Delivery 和人工 Apply。包内容核对已通过；实际安装启动及外部模型验收仍待完成。普通 CODING 仍为独立的直接写入流程。
 
 | 路径 | 用途 |
 |------|------|

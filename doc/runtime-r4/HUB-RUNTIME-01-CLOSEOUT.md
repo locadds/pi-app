@@ -1,12 +1,37 @@
 # HUB-RUNTIME-01 剩余工作方案
 
-更新：2026-09-14。状态：施工中，未交验。
+更新：2026-09-14。状态：代码与安装包内容候选完成，待桌面主管复验；新包实际启动未执行。
+
+## 本轮交接结果
+
+- 代码：`f5cf8cffb0ba4332aef2fc3e8b1836fa43d27983`，`codex/hub-runtime-01-pi-default-v1`，已推送 `xiaogui`，本地/上游/live 远端一致。后续仅文档交接提交，不改变本包源码。
+- NSIS：`E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/closeout-20260914/dist/小规 Agent 院内候选-Setup-0.3.0-rc.2-x64.exe`；570624454 字节；SHA-256 `e28c4bd19ef0d0ac2760c1325d02fda062c22f441d1e37417ad33bed6465fb4c`。
+- ASAR：`6b7b06738c8de0e6c556f0360fc4eaf0cb0579299c0d6bece1b7ced4a353013a`；实际核对 198 个 out 文件、固定 DESIGN 40 文件、LibreOffice 19488 文件及其余原资源一致。证据根为上述 `closeout-20260914`，报告 `package-verification.json`。
+- Standards：本轮最终 0 项；Spec：原两项代码缺口已定向关闭。此前真实 Pi/native 工具与真实产物、Main 权限/验证/Delivery/恢复证据按下文分层复用；不是三模式外部模型/两机业务旅程证明。
+- 未覆盖：新包实际启动、NSIS 实际安装、模型、原 H1/Apply。既有 Main 启动会注册 `xiaogui://`，独立 user-data-dir 不隔离系统协议关联；为保留旧验收入口，未启动新包，也不注入 shim/改 Main。由主管安排不影响原入口的启动环境后补该门。
+- 回交只发桌面主管 `01a065e1-4b51-7ba1-ae49-d42b0b1e0ee4`，再由其转中台；当前动态消息工具不可用，知识库进度保留完整索引，未确认主管收到。未合并、未发布，旧现场和保护 stash 未动。
+
+### 打包复核命令
+
+以下命令在代码固定点 f5cf8cff、当前工作树执行；文档提交后的 HEAD 不冒充包源码。外部脚本与原始日志均留在集中证据目录，不把私有资源上传公共仓库。
+
+```powershell
+$evidence='E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/closeout-20260914'
+$env:ELECTRON_BUILDER_7Z_FILTER='BCJ'
+$env:ELECTRON_BUILDER_CACHE="$evidence/builder-cache"
+$env:TEMP="$evidence/temp"
+$env:TMP=$env:TEMP
+node node_modules/electron-builder/out/cli/cli.js --config "$evidence/builder.cjs" --prepackaged "$evidence/dist/win-unpacked" --win nsis --x64 --publish never
+node "$evidence/verify-package.cjs" --fixed-sha f5cf8cffb0ba4332aef2fc3e8b1836fa43d27983
+```
+
+首次完整打包已生成程序目录，只在 NSIS 工具缓存解包处失败；旧 C 缓存带 EFS，未删除。后续使用上述原 `--prepackaged` 入口续做，避免再编译/复制依赖；NSIS 与内容核对退出码均 0。启动脚本保留但本轮未运行。
 
 ## 固定现场
 
 - 工作树：`D:/CodexWorktrees/xiaogui-windows-internal-rc-20260908-v1`。
 - 分支：`codex/hub-runtime-01-pi-default-v1`；HEAD `a27b4ad9f5641d9e797cfde4296b94ff45206f4f`。
-- 9 月 14 日核对：保留修改仍在；本分支尚无上游，远端无同名分支。不得声称已提交或已远端一致。
+- 9 月 14 日接续时：保留修改仍在，当时本分支尚无上游、远端无同名分支；随后已按顶部固定代码提交并推送。此项仅保留开工事实。
 - 保护 stash `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61` 不变。
 - 原 4511 安装、96a103 安装器、H1 任务/样例/profile、Hub 及私有仓库现场不动。
 
@@ -37,7 +62,7 @@ WORK 本次仅新建标准 DOCX 报告；DESIGN 仅固定私有来源的 `design
 
 9 月 14 日新增通过：两处类型夹具修正后统一 typecheck 通过；42 文件定向 lint 通过；三个模式冻结断言通过（其余 41 跳过）；固定资源/config 7 项通过。WORK/DESIGN 真实产物至 Delivery 组合 2/2 通过；在同用例增加关闭重建、恢复后模式/Attempt/Delivery 不变及 prompt 仍只执行一次，2/2 通过。后者由子 Agent 工具输出证明，不伪称已有独立日志。
 
-双轴收口：Standards 三项疑点经来源与消费者核对全部撤回。Spec 两项定向关闭：DESIGN 仅暴露 inspect/open 的真实 TypeBox 参数；Delivery 从选中的 Main TaskChangeSet 重解析精确 Attempt，恢复沿用同一解析，不持久化第二份 ID 权威。真实 Adapter 同路径精确选择与缺失拒绝的新用例通过。最终 Node tsc、42 文件 lint、仓库原配置 diff-check 及必要 Electron 构建通过；Web 复用本轮先前通过结果。仍待固定提交、新包及主管交接。跨任务消息接口当前不可用，不以发送尝试冒充交接回执。
+双轴收口：Standards 三项疑点经来源与消费者核对全部撤回。Spec 两项定向关闭：DESIGN 仅暴露 inspect/open 的真实 TypeBox 参数；Delivery 从选中的 Main TaskChangeSet 重解析精确 Attempt，恢复沿用同一解析，不持久化第二份 ID 权威。真实 Adapter 同路径精确选择与缺失拒绝的新用例通过。最终 Node tsc、42 文件 lint、仓库原配置 diff-check 及必要 Electron 构建通过；Web 复用本轮先前通过结果。代码与新包已固定，具体摘要见顶部；仍待主管复验与无副作用启动安排。跨任务消息接口当前不可用，不以发送尝试冒充交接回执。
 
 ### 本轮最小增量命令
 

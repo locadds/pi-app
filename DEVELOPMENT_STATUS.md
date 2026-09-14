@@ -1,5 +1,15 @@
 # 小规开发阶段状态
 
+## 2026-09-14｜HUB-RUNTIME-01 代码候选已固定，包验证收尾
+
+- 代码固定点 `f5cf8cffb0ba4332aef2fc3e8b1836fa43d27983`，分支 `codex/hub-runtime-01-pi-default-v1`；已推送既有公共远端 `xiaogui`，live `ls-remote` 与本地一致。相对 a27 基线共 46 文件，实际清单使用 `git diff --name-only a27b4ad9f5641d9e797cfde4296b94ff45206f4f f5cf8cffb0ba4332aef2fc3e8b1836fa43d27983`。私有 DESIGN 源码、安装包、配置、证据、`.omo` 未提交，stash 未动。
+- 以下接续记录保留其时间点事实；“无上游/未提交”已由本条覆盖。代码与必要聚焦证据可以送主管复验，不等于三模式外部模型/两机/原任务验收通过。
+- 新包启动门暂不执行：既有 Main `src/main/index.ts` 在 packaged `whenReady` 中调用 `setAsDefaultProtocolClient('xiaogui')`，独立 user-data-dir 不隔离 HKCU 协议关联。只读核对未发现现成无副作用开关；不为了验收修改 Main、注入 shim 或改旧注册表。交主管确定不影响旧入口的启动环境后再执行集中目录的 `package-startup.mjs`，本轮不能记为新包 IPC/启动通过。
+- 新 NSIS x64 候选已生成且内容核对通过：`E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/closeout-20260914/dist/小规 Agent 院内候选-Setup-0.3.0-rc.2-x64.exe`，570624454 字节，SHA-256 `e28c4bd19ef0d0ac2760c1325d02fda062c22f441d1e37417ad33bed6465fb4c`。ASAR SHA-256 `6b7b06738c8de0e6c556f0360fc4eaf0cb0579299c0d6bece1b7ced4a353013a`；198 个 out 构建文件一致，40 个固定 DESIGN 文件（含 manifest）、19488 个 LibreOffice、2 个 Word helper、80 个 Office Viewer、7 个 Pi Skill 等资源一致。完整结果 `package-verification.json`，验证命令与固定点见收口文档。
+- 首次装配的 ASAR/资源已完成，NSIS 工具在旧 C 盘加密缓存重命名时发生 EXDEV。未删/改旧缓存；复制缓存归档因 EFS 失败，随后工具在本轮 E 盘非加密缓存下载固定版本，使用 `--prepackaged` 续做已生成目录，退出 0，不重编译/扫描依赖。实际 7zip 命令含 `-mf=BCJ`（`package-7zip-command.json`）；原始失败、NSIS 续做与核对日志分别为 `package-build.log`、`package-nsis.log`、`package-verify.log`。
+- 包源码仍为 f5cf8cff；随后追加的交接提交只改文档，不改二进制。状态为“代码与包内容阶段候选，待桌面主管复验并转中台”；不等于已安装、新包 IPC/外部模型/原任务通过。仍不合主线、不发布、不安装覆盖旧版。
+- 尝试清理本轮独立 `closeout-20260914/temp` 时，工具策略拒绝执行，未发生删除；保留该临时目录，不换工具或改命令绕过。原缓存、旧证据与旧安装现场均保持不动。
+
 ## 2026-09-14｜HUB-RUNTIME-01 保留现场接续，剩余方案已更新
 
 - 当前独立分支 `codex/hub-runtime-01-pi-default-v1`，HEAD `a27b4ad9f5641d9e797cfde4296b94ff45206f4f`；现有未提交源码/测试完整保留，保护 stash 未动。本分支尚无上游，远端尚无同名分支，未交固定候选。
