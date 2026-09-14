@@ -1,5 +1,65 @@
 # 小规开发阶段状态
 
+## 2026-09-14｜HUB-RUNTIME-01 checkout 授权字节一致性（候选，待桌面主管复验）
+
+> 接续结果：Main 来源接缝、派生 A→C 与恢复回归已完成，待桌面主管复验；不是原业务恢复授权。此前 `BASELINE_TREE_MISMATCH` 及原始字节验证记录保留在下文作为过程证据，以本节末尾“来源接缝收口”作为本次结果。代码和测试均由 Luna/max 完成，根 owner 审查、验证、记录并交付。
+
+- 本轮基线 `f6b53b178ba39510ca360b61e7ac87150d40682d`。主管已接收独立 true/false 复现并批准局部代码整改，未批准恢复原任务。历史 J1 `b12a4b5b098a5d88d947864edf5f4e32f661c796` 不在本分支历史；只复用其授权原始字节实现思路/测试，未整包 cherry-pick。
+- 初次字节修复修改：`src/main/xiaogui/task-hub/attempt-workspace.ts`、`attempt-workspace.test.ts`、`delivery-integration-worktree.ts`、`delivery-integration-worktree.test.ts`、本文件及 `doc/runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md`。追加来源接缝的完整清单见下文；所有产品代码和测试由 Luna/max 编写，根 owner 未代写脚本或产品返修。
+- 已完成：原项目 HEAD/tree/clean、路径、普通单链接文件及授权原始摘要校验；仅新建受控工作树播种相同字节，并先核对 Git checkout 表示、再复验精确摘要及 Git clean。capture 和 Delivery 继续用同一授权原始基线，不做宽松换行归一化。prepared Attempt 重放不播种；含 MODIFY 的未完成工作树不覆盖；重复 Delivery 根拒绝而非 force remove。既有 CREATE 批次恢复和精确错误语义保留。
+- 最终目标验证 6 项闭合，采用“5 项通过＋仅重跑修正后的 1 项”，没有宣称最终整套重跑全绿。首次最终组合为 5 passed / 1 failed / 17 skipped；失败只在 raw-byte drift 夹具的 Git clean 前提。Luna 在合成仓库对指定文件刷新 index，并断言 HEAD/tree 不变和原始字节仍漂移，单独复跑为 1 passed / 20 skipped、exit 0。根 owner 复查其断言，遵照不重复已通过验证要求未再独立复跑这 1 项。
+- 6 项覆盖：LF + local autocrlf=true 的 prepare→capture→Delivery 真实 Git 文件字节贯通；源 raw-byte drift 在 prepare/capture 拒绝；prepared 重放保留成果；中断工作树拒绝覆盖；Delivery 重复根保留成果；先前受影响的无变更/硬链接与 CREATE 恢复错误路径。
+- Node typecheck 和四个变更 TS 文件 ESLint 均 exit 0；之后只改测试夹具的索引刷新/不变断言与超时，不改生产代码，增量测试文件再 lint/diff-check。早期实现运行两个受影响测试文件曾为 17 passed / 2 failed，错误优先级与 CREATE 恢复问题已在最终定向项关闭；保留失败日志，不重复其他已通过用例。没有模型、Electron、构建或打包证据。
+- 新证据独立保存 `E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/checkout-bytes-fix-20260914`，原 `checkout-bytes-repro-20260914` 未改。`final-focused-tests.log` 保留首次 5/1 结果，`final-node-typecheck.log`、`final-eslint.log` 的空输出对应 exit 0；单项复跑按 Luna 实际执行报告记录于下面命令与证据摘要，不伪称已保存其原始控制台文件。
+- 历史自查：初次 Spec 曾有1项派生基线兼容阻断，主管随后批准 Main 来源接缝，当前已定向关闭。成果保护边界不变：未完成 MODIFY 工作树、已存在 Delivery 根继续拒绝，不能据此自动修复或重跑原失败 Attempt。
+- 未覆盖/下一门：桌面主管复验本次代码与合成证据。无新安装包、模型、Electron、原业务或两机结果，不合主线。原 Attempt、失败工作树、profile、数据库、节点、旧包及 stash 保留；未重派、Apply、重置或清理原现场。
+
+### 初次字节修复命令与历史失败（仓库根目录，固定起点 f6b53b1）
+
+```powershell
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/delivery-integration-worktree.test.ts --maxWorkers=1 --fileParallelism=false --reporter=verbose -t 'preserves approved LF|authoritative source raw-byte|interrupted existing worktree|repeat integration|captures only actual approved|recovers owned CREATE'
+# 首次 5 passed / 1 failed；只修上述测试夹具后单独执行下一条：
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/attempt-workspace.test.ts -t 'rejects authoritative source raw-byte drift during capture' --maxWorkers=1 --fileParallelism=false
+# 1 passed / 20 skipped，exit 0；其他 5 项未重跑。
+node node_modules/typescript/bin/tsc --noEmit -p tsconfig.node.json
+node node_modules/eslint/bin/eslint.js src/main/xiaogui/task-hub/attempt-workspace.ts src/main/xiaogui/task-hub/delivery-integration-worktree.ts src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/delivery-integration-worktree.test.ts
+git diff --check f6b53b178ba39510ca360b61e7ac87150d40682d
+# 提交前发现新疑点，仅加跑这一条既有消费者回归，失败 BASELINE_TREE_MISMATCH：
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/git-derived-execution-baseline.test.ts --maxWorkers=1 --fileParallelism=false --reporter=verbose -t 'materializes verified task A into task C baseline'
+```
+
+### 来源接缝收口：实际实现与证据
+
+- **生产修改仅4文件**：`src/main/xiaogui/task-hub/attempt-workspace.ts`、`delivery-integration-worktree.ts`、`runtime-composition.ts`、`sqlite-store.ts`。Main resolver 从现有 task/flow baseline、composition Attempt、私有 staged grants 及精确 derived cache 重新核验来源。PROJECT 核验原项目字节；DERIVED 读取已登记 commit 的不可变 blob，失败不换来源。
+- 来源只冻结在既有 lease JSON；恢复重新核对 Main 记录，旧 lease 缺来源仅在精确匹配时补齐。prepare、capture 沿用同一绑定，原始 grants 不因后续 CREATE 授权扩展而重解释。Delivery 从原项目基线及有序已验证成果构建，同一路径后续 MODIFY 校验前一结果；CREATE→MODIFY 不错误读取不存在的原文件。没有新增数据库、状态机、IPC 或 Renderer/模型来源参数。
+- **测试修改6文件**：`attempt-workspace.test.ts`、`delivery-integration-worktree.test.ts`、`git-derived-execution-baseline.test.ts`、新增 `main-baseline-source.test.ts`、`agent-runtime-integration.test.ts`（均在上述 task-hub 目录），以及 `src/main/xiaogui/agent-runtime/omp-acp-production.test.ts`。后两者仅迁移受影响构造夹具的显式测试来源；OMP 测试未执行，不代表重新接入 OMP。文档修改本文件及 `doc/runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md`，合计12文件。
+- 新 Main 三例使用真实 application/scheduler、Git derived provider、SQLite 记录及生产 Main resolver/prepare。上游已验证 A 的记录由夹具建立，不调用模型；C 的派生与准备真实执行。覆盖 PROJECT、A→C、缓存核对、冷恢复、旧 lease 删除来源后精确补齐，以及缺失/未登记/错绑定拒绝。不是原 Attempt、真实模型或业务全旅程证据。
+- **新增落盘证据**（`checkout-bytes-fix-20260914/source-binding/`）：Main `3/3`（`test-main-baseline-source-20260914.log`）；CREATE→MODIFY `1/1`（`test-derived-create-modify-20260914.log`）；受影响调度夹具 `1/1`（`test-agent-runtime-worktree-source-fixture-20260914.log`）；CREATE expansion `1/1`（`test-attempt-workspace-source-expansion-20260914.log`）；错 Attempt 与缺 Main 证据的旧 lease 拒绝 `2/2`（`source-negative-final.log`）。这些是分次定向执行，不拼称一次全套绿灯。
+- **复用本轮已通过的委派终端结果**：`runtime-composition.test.ts` + `attempt-execution-input.test.ts` `13/13`；既有 derived 文件 `6/6`；workspace 的缺来源、冷恢复冲突、legacy补齐、LF贯通、原字节漂移5个定向项分别 `1/1`。没有补造这些运行的原始日志，也不重复未受后续改动影响的验证。后续有序 CREATE 修改已由新增1项覆盖。
+- 最终检查曾发现新增 Main 测试的品牌类型/导入及一处 `prefer-const`，仅修测试声明；失败日志 `final-node-typecheck.log`、`final-eslint.log` 保留，随后补显式循环依赖类型，运行时接线不变。最终 Node typecheck exit 0（`node-typecheck-final-pass.log`）；10个变更TS文件lint先为9文件通过/新测试1处错误，修正后仅重跑新测试 exit 0（`main-test-eslint-final.log`），未重复其余9文件。最终 diff-check exit 0（`diff-check-final.log`）。不因此重复已通过运行时测试。
+- **Standards 自查**：无规范阻断；保留1项 LOW 维护观察（原始字节 helper 与测试来源构造有局部重复，不在本次扩重构）。**Spec 自查**：当前授权范围无未关闭阻断；不等于主管验收。来源缺失/冲突及现存未完成成果仍停止，无静默默认。复用 karpathy-guidelines 限定修改，code-review 分别核对规范与用户要求。
+- 计划偏差：为不留新构造依赖导致的旧测试回归，额外迁移两个既有 integration 夹具；仅一个受影响非 OMP 用例执行。无其他功能扩展。最终 SHA 由本次追加提交确定，提交后交接提供完整值，不把记录中的源码起点当交付 SHA。
+
+新增可执行命令（在仓库根目录；已通过部分不再次运行）：
+
+```powershell
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/main-baseline-source.test.ts --maxWorkers=1 --fileParallelism=false
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/git-derived-execution-baseline.test.ts -t 'applies a verified CREATE then MODIFY chain for a path absent from the source checkout' --maxWorkers=1 --fileParallelism=false
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/agent-runtime-integration.test.ts -t 'bootstraps schedule to real attempt worktree' --maxWorkers=1 --fileParallelism=false
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/attempt-workspace.test.ts -t 'keeps source proof grants bound to the initial request while approving a CREATE-only scope expansion' --maxWorkers=1 --fileParallelism=false
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/attempt-workspace.test.ts -t 'rejects a source binding for another Attempt|does not supplement a source-less legacy lease' --maxWorkers=1 --fileParallelism=false
+# 已由实现者通过的本轮受影响回归（委派终端记录，不声称另有原始日志）：
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/runtime-composition.test.ts src/main/xiaogui/task-hub/attempt-execution-input.test.ts --maxWorkers=1 --fileParallelism=false
+node node_modules/vitest/vitest.mjs run src/main/xiaogui/task-hub/git-derived-execution-baseline.test.ts --maxWorkers=1 --fileParallelism=false
+# 上一条当时为6项，随后只新增并单跑CREATE→MODIFY，第2条为该新增项。
+node node_modules/typescript/bin/tsc --noEmit -p tsconfig.node.json
+$changedTs = @(git diff --name-only --diff-filter=ACMR f6b53b178ba39510ca360b61e7ac87150d40682d HEAD -- '*.ts' '*.tsx')
+node node_modules/eslint/bin/eslint.js @changedTs
+git diff --check f6b53b178ba39510ca360b61e7ac87150d40682d HEAD
+```
+
+最终两条 Git 命令按追加提交后的固定 HEAD 复核；施工前 lint 使用相同起点的工作树差异加当时未跟踪的新 Main 测试，共10个 TS 文件。无共享/Renderer改动，Web 类型沿用既有结果；不跑 build、全量 lint/test、OMP、模型、Electron、Portable或原业务。
+
 ## 2026-09-14｜主管 P2 最小返修：Attempt 终态回收（待主管复验）
 
 - 主管对 `07f3d97012acc30deec1792d9dbb7bf204d7c808` 的 Standards 已通过；Spec 尚有一项 P2：Attempt 结束后专属 Pi Worker 未释放。原候选仍保留，不把上一轮实施者自查当成本轮主管放行。

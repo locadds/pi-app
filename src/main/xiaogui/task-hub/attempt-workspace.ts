@@ -10,6 +10,7 @@ import {
   readFileSync,
   realpathSync,
   unlinkSync,
+  writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 
@@ -36,6 +37,55 @@ export interface AttemptFileScopeResolverV1 {
     projectId: string,
     selections: readonly UserApprovedFileSelectionV1[],
   ): Promise<readonly AttemptFileGrantV1[]>
+}
+
+export type AttemptWorkspaceBaselineSourceKindV1 = 'PROJECT' | 'DERIVED'
+
+/**
+ * Main-process-only proof of where an Attempt workspace baseline came from.
+ * The effective task baseline may be a private derived Git commit, while the
+ * source baseline remains the immutable project checkout captured by Main.
+ */
+export interface AttemptWorkspaceBaselineSourceBindingV1 {
+  readonly version: 1
+  readonly kind: AttemptWorkspaceBaselineSourceKindV1
+  readonly attemptId: string
+  readonly projectId: string
+  readonly sessionKey: string
+  readonly flowId: string
+  readonly taskRunId: string
+  readonly source: {
+    readonly baselineId: string
+    readonly baseRevision: string
+    readonly baselineTreeHash: string
+    readonly initialTargetFingerprint: string
+    readonly baselineDigest: string
+    readonly baselineBindingDigest: string
+  }
+  readonly task: {
+    readonly baselineId: string
+    readonly baseRevision: string
+    readonly baselineTreeHash: string
+    readonly initialTargetFingerprint: string
+    readonly baselineDigest: string
+    readonly baselineBindingDigest: string
+    readonly derivationDigest: string
+    readonly ancestorTaskChangeSetIds: readonly string[]
+  }
+  readonly grantsDigest: string
+  readonly derivation?: {
+    readonly derivationInputDigest: string
+    readonly cacheDigest: string
+  }
+  readonly bindingDigest: string
+}
+
+export interface AttemptWorkspaceBaselineSourceResolverV1 {
+  /** Return null when Main has no exact, trusted source proof for this Attempt. */
+  resolve(input: {
+    readonly request: AttemptWorkspacePrepareRequestV1
+    readonly grants: readonly AttemptFileGrantV1[]
+  }): AttemptWorkspaceBaselineSourceBindingV1 | null
 }
 
 export interface AttemptFileManifestV1 {
@@ -154,6 +204,8 @@ export type AttemptWorkspaceReasonCodeV1 =
   | 'ATTEMPT_ID_INVALID'
   | 'BASE_REVISION_NOT_COMMIT'
   | 'BASELINE_TREE_MISMATCH'
+  | 'BASELINE_SOURCE_MISSING'
+  | 'BASELINE_SOURCE_MISMATCH'
   | 'CREATE_BATCH_PENDING'
   | 'DELETE_FORBIDDEN'
   | 'GIT_COMMAND_FAILED'
@@ -215,6 +267,8 @@ export interface AttemptWorkspaceLeaseV1 {
   readonly baselineTreeHash: string
   readonly ownerId: string
   readonly attemptWorktreeId: string
+  /** Main-process-only source proof frozen at first successful preparation. */
+  readonly baselineSource?: AttemptWorkspaceBaselineSourceBindingV1
 }
 
 export interface AttemptWorkspaceRegistryV1 {
@@ -255,6 +309,9 @@ export class InMemoryAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegis
   putLease(lease: AttemptWorkspaceLeaseV1): void {
     const existing = this.leases.get(lease.attemptId)
     if (existing && existing.requestConflictDigest !== lease.requestConflictDigest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    if (existing && !sameBaselineSource(existing.baselineSource, lease.baselineSource) && existing.baselineSource) {
+      throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    }
     this.leases.set(lease.attemptId, lease)
   }
 
@@ -350,11 +407,33 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
   }
 
   putLease(lease: AttemptWorkspaceLeaseV1): void {
-    this.db
-      .prepare('insert or ignore into attempt_workspace_leases (attempt_id, request_conflict_digest, lease_json) values (?, ?, ?)')
-      .run(lease.attemptId, lease.requestConflictDigest, JSON.stringify(lease))
     const existing = this.getLease(lease.attemptId)
-    if (!existing || existing.requestConflictDigest !== lease.requestConflictDigest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    if (!existing) {
+      this.db
+        .prepare('insert or ignore into attempt_workspace_leases (attempt_id, request_conflict_digest, lease_json) values (?, ?, ?)')
+        .run(lease.attemptId, lease.requestConflictDigest, JSON.stringify(lease))
+      const inserted = this.getLease(lease.attemptId)
+      if (!inserted || inserted.requestConflictDigest !== lease.requestConflictDigest) {
+        throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+      }
+      if (!sameBaselineSource(inserted.baselineSource, lease.baselineSource)) {
+        throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+      }
+      return
+    }
+    if (existing.requestConflictDigest !== lease.requestConflictDigest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    if (sameBaselineSource(existing.baselineSource, lease.baselineSource)) return
+    if (existing.baselineSource || !lease.baselineSource) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    const updated = this.db
+      .prepare(
+        'update attempt_workspace_leases set lease_json = ? where attempt_id = ? and request_conflict_digest = ? and lease_json = ?',
+      )
+      .run(JSON.stringify(lease), lease.attemptId, lease.requestConflictDigest, JSON.stringify(existing))
+    if (updated.changes !== 1) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    const repaired = this.getLease(lease.attemptId)
+    if (!repaired || !sameBaselineSource(repaired.baselineSource, lease.baselineSource)) {
+      throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    }
   }
 
   getManifest(attemptId: string): AttemptFileManifestV1 | undefined {
@@ -525,10 +604,16 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
   constructor(
     private readonly registry: AttemptWorkspaceRegistryV1,
     private readonly resolver: ProjectWorkspaceResolverV1,
-    options: { managedRoot: string },
+    options: {
+      managedRoot: string
+      baselineSourceResolver?: AttemptWorkspaceBaselineSourceResolverV1
+    },
   ) {
     this.managedRoot = ensureManagedRoot(options.managedRoot)
+    this.baselineSourceResolver = options.baselineSourceResolver
   }
+
+  private readonly baselineSourceResolver?: AttemptWorkspaceBaselineSourceResolverV1
 
   async resolveApprovedFiles(
     projectId: string,
@@ -552,9 +637,13 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     assertCommitOid(request.baseRevision)
     const repoRoot = safeRealpath(resolve(await this.resolver.resolveProjectRoot(projectId)), 'REPO_NOT_GIT')
     assertGitRepository(repoRoot)
-    const existingLease = this.registry.getLease(attemptId)
-    if (!existingLease) await assertCleanRepository(repoRoot)
-    await assertBaseTree(repoRoot, request.baseRevision, request.baselineTreeHash)
+    const canonicalGrants = canonicalStoredGrants(request.manifest.grants)
+    const baselineSource = await this.resolveBaselineSource(request, canonicalGrants)
+    const hasApprovedModify = canonicalGrants.some((grant) => grant.operation === 'MODIFY')
+    await assertWorkspaceBaseline(repoRoot, request, baselineSource)
+    const approvedBaselines = hasApprovedModify
+      ? await readApprovedModifyBaselines(repoRoot, canonicalGrants, baselineSource)
+      : []
 
     const managedRoot = this.managedRoot
     const worktreeRoot = resolve(managedRoot, safeAttemptDirectoryName(attemptId))
@@ -568,7 +657,9 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
       managedRoot,
       worktreeRoot,
       attemptWorktreeId,
+      baselineSource,
     })
+    assertLeaseMatchesRequest(lease, { ...request, attemptId, projectId })
     if (existing) {
       const realWorktreeRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
       await assertExistingWorktreeIdentity(realWorktreeRoot, lease)
@@ -587,10 +678,25 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
           grants: normalizeManifestGrants(realWorktreeRoot, request.manifest.grants, { existingCreatesAreAllowed: true }),
         })
         if (replayedManifest.manifestDigest === expectedManifestDigest) {
-          const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, replayedManifest, attemptWorktreeId)
+          const result = buildPreparedResult(
+            request,
+            attemptId,
+            repoRoot,
+            realWorktreeRoot,
+            replayedManifest,
+            attemptWorktreeId,
+          )
           this.registry.putPrepared({ request: { ...request, attemptId, projectId }, result })
           return result
         }
+      }
+      // A worktree without a persisted prepared/manifest record is an
+      // interrupted create. Never reseed it: an existing task result may be
+      // indistinguishable from a checkout-filtered byte difference. CREATE-only
+      // batches remain recoverable through materializeManifest's owned-target
+      // checks; MODIFY batches fail closed instead.
+      if (request.manifest.grants.some((grant) => grant.operation === 'MODIFY')) {
+        throw new AttemptWorkspaceError('WORKTREE_DRIFT')
       }
       const manifest = await materializeManifest({
         rootPath: realWorktreeRoot,
@@ -601,7 +707,14 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
         registry: this.registry,
         faultInjection: request.faultInjection,
       })
-      const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, manifest, attemptWorktreeId)
+      const result = buildPreparedResult(
+        request,
+        attemptId,
+        repoRoot,
+        realWorktreeRoot,
+        manifest,
+        attemptWorktreeId,
+      )
       this.registry.putPrepared({ request: { ...request, attemptId, projectId }, result })
       return result
     }
@@ -614,6 +727,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     if (pathKey(realWorktreeRoot) !== pathKey(worktreeRoot) || !isInside(managedRoot, realWorktreeRoot)) {
       throw new AttemptWorkspaceError('WORKTREE_DRIFT')
     }
+    await seedApprovedModifyBaselines(realWorktreeRoot, request.baseRevision, approvedBaselines)
 
     const manifest = await materializeManifest({
       rootPath: realWorktreeRoot,
@@ -625,7 +739,14 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
       faultInjection: request.faultInjection,
     })
 
-    const result = buildPreparedResult(request, attemptId, repoRoot, realWorktreeRoot, manifest, attemptWorktreeId)
+    const result = buildPreparedResult(
+      request,
+      attemptId,
+      repoRoot,
+      realWorktreeRoot,
+      manifest,
+      attemptWorktreeId,
+    )
     this.registry.putPrepared({ request: { ...request, attemptId, projectId }, result })
     return result
   }
@@ -680,21 +801,48 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     return this.inspect(prepared.result.handle)
   }
 
+  private async resolveBaselineSource(
+    request: AttemptWorkspacePrepareRequestV1,
+    grants: readonly AttemptFileGrantV1[],
+  ): Promise<AttemptWorkspaceBaselineSourceBindingV1> {
+    if (!this.baselineSourceResolver) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISSING')
+    let source: AttemptWorkspaceBaselineSourceBindingV1 | null
+    try {
+      source = await this.baselineSourceResolver.resolve({ request, grants })
+    } catch (error) {
+      if (error instanceof AttemptWorkspaceError) throw error
+      throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    }
+    if (!source) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISSING')
+    try {
+      assertBaselineSourceBinding(request, grants, source)
+    } catch (error) {
+      if (error instanceof AttemptWorkspaceError) throw error
+      throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    }
+    return source
+  }
+
   async captureTaskPatch(
     attemptId: string,
     options: { readonly allowNoApprovedChanges?: boolean } = {},
   ): Promise<AttemptTaskPatchCaptureV1> {
     const audit = await this.auditChanges(attemptId)
     if (!audit.ok) throw new AttemptWorkspaceError(audit.rejectedReasonCode ?? 'PATH_FORBIDDEN')
+    const manifest = this.registry.getManifest(attemptId)
+    if (!manifest) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    const prepared = await this.validateCurrentWorkspace(attemptId, manifest)
+    const lease = this.registry.getLease(attemptId)
+    if (!lease?.baselineSource) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISSING')
+    const rootPath = prepared.result.handle.rootPath
+    const approvedBaselines = await readApprovedModifyBaselines(
+      lease.projectRoot,
+      canonicalStoredGrants(manifest.grants),
+      lease.baselineSource,
+    )
     if (audit.actualRelativePaths.length === 0 && !options.allowNoApprovedChanges) {
       throw new AttemptWorkspaceError('NO_APPROVED_CHANGES')
     }
-
-    const manifest = this.registry.getManifest(attemptId)
-    const lease = this.registry.getLease(attemptId)
-    if (!manifest || !lease) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
-    const prepared = await this.validateCurrentWorkspace(attemptId, manifest)
-    const rootPath = prepared.result.handle.rootPath
     const beforeStatus = parsePorcelainStatus(
       (await git(rootPath, ['status', '--porcelain=v1', '--untracked-files=all'])).stdout,
     )
@@ -709,23 +857,34 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
       throw new AttemptWorkspaceError('PATH_FORBIDDEN')
     }
 
-    const changedFiles: TaskPatchFileSnapshotV1[] = []
+    const candidateFiles: Array<{
+      readonly grant: AttemptFileGrantV1 & { readonly operation: 'MODIFY' | 'CREATE' }
+      readonly current: { readonly bytes: Buffer; readonly contentDigest: string }
+    }> = []
     for (const change of beforeStatus) {
       const grant = manifest.grants.find((candidate) => candidate.relativePath === change.relativePath)
-      if (!grant || grant.operation === 'DELETE') throw new AttemptWorkspaceError('PATH_FORBIDDEN')
-      if (grant.operation === 'MODIFY') {
-        const baselineBytes = await gitBytes(lease.projectRoot, [
-          'cat-file',
-          '--filters',
-          `--path=${grant.relativePath}`,
-          `${lease.baseRevision}:${grant.relativePath}`,
-        ])
-        if (!grant.baselineDigest || digestBytes(baselineBytes) !== grant.baselineDigest) {
-          throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
-        }
+      if (!grant || (grant.operation !== 'MODIFY' && grant.operation !== 'CREATE')) {
+        throw new AttemptWorkspaceError('PATH_FORBIDDEN')
       }
       const target = resolveManifestPath(rootPath, grant.relativePath)
       const current = readStableTaskFile(target.realPath)
+      candidateFiles.push({ grant: { ...grant, operation: grant.operation }, current })
+      if (grant.operation === 'MODIFY') {
+        const baseline = approvedBaselines.find((candidate) => candidate.relativePath === grant.relativePath)
+        if (!baseline || !grant.baselineDigest || baseline.contentDigest !== grant.baselineDigest) {
+          throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
+        }
+      }
+    }
+
+    await assertWorkspaceBaseline(
+      lease.projectRoot,
+      prepared.request,
+      lease.baselineSource,
+    )
+
+    const changedFiles: TaskPatchFileSnapshotV1[] = []
+    for (const { grant, current } of candidateFiles) {
       if (grant.operation === 'MODIFY' && current.contentDigest === grant.baselineDigest) {
         // A mode-only or index-only Git change cannot be represented by the
         // content-only TASK_PATCH_V1 format, so it must not become a candidate.
@@ -914,16 +1073,36 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
   }
 
   private async validateCurrentWorkspace(attemptId: string, manifest: AttemptFileManifestV1): Promise<PreparedRecord> {
-    const lease = this.registry.getLease(attemptId)
+    let lease = this.registry.getLease(attemptId)
     if (!lease || manifest.attemptId !== attemptId) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
     const realWorktreeRoot = safeRealpath(lease.worktreeRoot, 'WORKTREE_DRIFT')
     await assertExistingWorktreeIdentity(realWorktreeRoot, lease)
+    const prepared = this.registry.getPrepared(attemptId)
+    if (!prepared) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    assertLeaseMatchesRequest(lease, prepared.request)
+    const source = await this.resolveBaselineSource(
+      prepared.request,
+      canonicalStoredGrants(prepared.request.manifest.grants),
+    )
+    if (!lease.baselineSource) {
+      // Recovery may find a legacy lease without source metadata. Only add
+      // the freshly verified Main proof; never reinterpret the lease's
+      // effective baseline or grants.
+      this.registry.putLease({ ...lease, baselineSource: source })
+      lease = this.registry.getLease(attemptId)
+      if (!lease) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    }
+    if (!sameBaselineSource(source, lease.baselineSource)) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    // Runtime access/audit may run while the source checkout is unrelated to
+    // the private Attempt worktree. Keep the effective immutable Git tree
+    // check here; capture performs the stricter source HEAD/clean/raw check at
+    // its commit boundary.
     await assertBaseTree(lease.projectRoot, lease.baseRevision, lease.baselineTreeHash)
-    const prepared = this.refreshPreparedForManifest(attemptId, manifest)
-    if (pathKey(prepared.result.handle.rootPath) !== pathKey(realWorktreeRoot)) {
+    const refreshed = this.refreshPreparedForManifest(attemptId, manifest)
+    if (pathKey(refreshed.result.handle.rootPath) !== pathKey(realWorktreeRoot)) {
       throw new AttemptWorkspaceError('WORKTREE_DRIFT')
     }
-    return prepared
+    return refreshed
   }
 
   private ensureLease(input: {
@@ -934,6 +1113,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     managedRoot: string
     worktreeRoot: string
     attemptWorktreeId: string
+    baselineSource: AttemptWorkspaceBaselineSourceBindingV1
   }): AttemptWorkspaceLeaseV1 {
     const requestConflictDigest = prepareConflictDigest(input.request)
     const existing = this.registry.getLease(input.attemptId)
@@ -946,6 +1126,21 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
         existing.attemptWorktreeId !== input.attemptWorktreeId
       ) {
         throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+      }
+      assertLeaseMatchesRequest(existing, input.request)
+      if (!sameBaselineSource(existing.baselineSource, input.baselineSource)) {
+        if (existing.baselineSource || !input.baselineSource) {
+          throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+        }
+        // A legacy private lease may predate source binding. The resolver has
+        // already proved an exact Main record for the existing request; this
+        // write only fills that missing proof and never changes its identity.
+        this.registry.putLease({ ...existing, baselineSource: input.baselineSource })
+        const repaired = this.registry.getLease(input.attemptId)
+        if (!repaired || !sameBaselineSource(repaired.baselineSource, input.baselineSource)) {
+          throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+        }
+        return repaired
       }
       return existing
     }
@@ -960,8 +1155,10 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
       baselineTreeHash: input.request.baselineTreeHash,
       ownerId: input.request.ownerId,
       attemptWorktreeId: input.attemptWorktreeId,
+      baselineSource: input.baselineSource,
     }
     this.registry.putLease(lease)
+    assertLeaseMatchesRequest(lease, input.request)
     return lease
   }
 }
@@ -1163,6 +1360,95 @@ function sortManifestGrants(grants: readonly AttemptFileGrantV1[]): readonly Att
   return [...grants].sort((a, b) => a.relativePath.localeCompare(b.relativePath) || a.operation.localeCompare(b.operation))
 }
 
+interface ApprovedModifyBaselineV1 {
+  readonly relativePath: string
+  readonly baselineDigest: string
+  readonly contentDigest: string
+  readonly bytes: Buffer
+}
+
+async function readApprovedModifyBaselines(
+  projectRoot: string,
+  grants: readonly AttemptFileGrantV1[],
+  source: AttemptWorkspaceBaselineSourceBindingV1,
+): Promise<readonly ApprovedModifyBaselineV1[]> {
+  const modifyGrants = canonicalStoredGrants(grants).filter(
+    (grant): grant is AttemptFileGrantV1 & { readonly operation: 'MODIFY'; readonly baselineDigest: string } => {
+      if (grant.operation !== 'MODIFY') return false
+      if (!grant.baselineDigest) throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
+      return true
+    },
+  )
+  const baselines: ApprovedModifyBaselineV1[] = []
+  for (const grant of modifyGrants) {
+    const baseline = source.kind === 'DERIVED'
+      ? await readImmutableGitBaseline(projectRoot, source.task.baseRevision, grant.relativePath)
+      : readApprovedModifyBaseline(projectRoot, grant)
+    if (baseline.contentDigest !== grant.baselineDigest) throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
+    baselines.push({
+      relativePath: grant.relativePath,
+      baselineDigest: grant.baselineDigest,
+      contentDigest: baseline.contentDigest,
+      bytes: baseline.bytes,
+    })
+  }
+  return baselines
+}
+
+function readApprovedModifyBaseline(
+  projectRoot: string,
+  grant: Pick<AttemptFileGrantV1, 'relativePath' | 'baselineDigest'>,
+): { readonly bytes: Buffer; readonly contentDigest: string } {
+  const target = resolveManifestPath(projectRoot, grant.relativePath)
+  return readStableTaskFile(target.realPath)
+}
+
+async function readImmutableGitBaseline(
+  repositoryRoot: string,
+  baseRevision: string,
+  relativePath: string,
+): Promise<{ readonly bytes: Buffer; readonly contentDigest: string }> {
+  let bytes: Buffer
+  try {
+    // Derived baselines are private immutable Git inputs. Use the blob bytes,
+    // never the current checkout or a checkout filter, so an autocrlf setting
+    // cannot reinterpret the grant's byte identity.
+    bytes = await gitBytes(repositoryRoot, ['cat-file', 'blob', `${baseRevision}:${relativePath}`])
+  } catch {
+    throw new AttemptWorkspaceError('TARGET_DIGEST_MISMATCH')
+  }
+  return { bytes, contentDigest: digestBytes(bytes) }
+}
+
+async function seedApprovedModifyBaselines(
+  worktreeRoot: string,
+  baseRevision: string,
+  baselines: readonly ApprovedModifyBaselineV1[],
+): Promise<void> {
+  for (const baseline of baselines) {
+    const target = resolveManifestPath(worktreeRoot, baseline.relativePath)
+    const current = readStableTaskFile(target.realPath)
+    if (current.contentDigest !== baseline.baselineDigest) {
+      const checkoutBytes = await gitBytes(worktreeRoot, [
+        'cat-file',
+        '--filters',
+        `--path=${baseline.relativePath}`,
+        `${baseRevision}:${baseline.relativePath}`,
+      ])
+      // Only replace Git's known checkout-filtered representation. An
+      // arbitrary pre-existing result must never be overwritten by seeding.
+      if (!current.bytes.equals(checkoutBytes)) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+      writeFileSync(target.realPath, baseline.bytes)
+    }
+    const seeded = readStableTaskFile(target.realPath)
+    if (seeded.contentDigest !== baseline.baselineDigest || !seeded.bytes.equals(baseline.bytes)) {
+      throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+    }
+  }
+  if (baselines.length > 0) await git(worktreeRoot, ['add', '--', ...baselines.map((baseline) => baseline.relativePath)])
+  await assertCleanAttemptWorktree(worktreeRoot)
+}
+
 function assertNoManifestConflict(existing: readonly AttemptFileGrantV1[], next: readonly AttemptFileGrantV1[]): void {
   const seen = new Set(existing.map((grant) => pathKey(grant.relativePath)))
   for (const grant of next) {
@@ -1284,10 +1570,147 @@ function rollbackCreatedTarget(target: CreateBatchTargetV1): void {
 }
 
 async function assertBaseTree(repoRoot: string, baseRevision: string, expectedTreeHash: string): Promise<void> {
-  const type = (await git(repoRoot, ['cat-file', '-t', baseRevision])).stdout.trim()
-  if (type !== 'commit') throw new AttemptWorkspaceError('BASE_REVISION_NOT_COMMIT')
-  const tree = (await git(repoRoot, ['rev-parse', `${baseRevision}^{tree}`])).stdout.trim()
+  let resolved: readonly string[]
+  try {
+    resolved = (await git(repoRoot, ['rev-parse', `${baseRevision}^{commit}`, `${baseRevision}^{tree}`])).stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+  } catch {
+    throw new AttemptWorkspaceError('BASE_REVISION_NOT_COMMIT')
+  }
+  if (resolved[0]?.toLowerCase() !== baseRevision.toLowerCase()) {
+    throw new AttemptWorkspaceError('BASE_REVISION_NOT_COMMIT')
+  }
+  const tree = resolved[1]
   if (tree !== expectedTreeHash) throw new AttemptWorkspaceError('BASELINE_TREE_MISMATCH')
+}
+
+async function assertWorkspaceBaseline(
+  repoRoot: string,
+  request: AttemptWorkspacePrepareRequestV1,
+  source: AttemptWorkspaceBaselineSourceBindingV1,
+): Promise<void> {
+  // Main's source checkout is authoritative even when the effective task
+  // baseline is a private derived commit.
+  await assertAuthoritativeProjectBaseline(
+    repoRoot,
+    source.source.baseRevision,
+    source.source.baselineTreeHash,
+  )
+  await assertBaseTree(repoRoot, request.baseRevision, request.baselineTreeHash)
+}
+
+function assertBaselineSourceBinding(
+  request: AttemptWorkspacePrepareRequestV1,
+  grants: readonly AttemptFileGrantV1[],
+  source: AttemptWorkspaceBaselineSourceBindingV1,
+): void {
+  if (
+    source.version !== 1 ||
+    (source.kind !== 'PROJECT' && source.kind !== 'DERIVED') ||
+    source.attemptId !== String(request.attemptId) ||
+    source.projectId !== request.projectId ||
+    source.task.baseRevision !== request.baseRevision ||
+    source.task.baselineTreeHash !== request.baselineTreeHash ||
+    source.task.baselineBindingDigest !== request.baselineBindingDigest ||
+    source.grantsDigest !== digestJson(canonicalStoredGrants(grants)) ||
+    source.bindingDigest !== sourceBindingDigest(source)
+  ) {
+    throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+  }
+  const task = source.task
+  const sourceBaseline = source.source
+  if (
+    !isCommitOid(sourceBaseline.baseRevision) ||
+    !isCommitOid(task.baseRevision) ||
+    !isTreeOid(sourceBaseline.baselineTreeHash) ||
+    !isTreeOid(task.baselineTreeHash) ||
+    typeof source.sessionKey !== 'string' ||
+    typeof source.flowId !== 'string' ||
+    typeof source.taskRunId !== 'string' ||
+    !Array.isArray(task.ancestorTaskChangeSetIds)
+  ) {
+    throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+  }
+  if (source.kind === 'PROJECT') {
+    if (source.derivation || task.ancestorTaskChangeSetIds.length !== 0 || !sameProjectAndTaskBaseline(sourceBaseline, task)) {
+      throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    }
+  } else {
+    if (
+      !source.derivation ||
+      task.ancestorTaskChangeSetIds.length === 0 ||
+      typeof source.derivation.derivationInputDigest !== 'string' ||
+      typeof source.derivation.cacheDigest !== 'string'
+    ) {
+      throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    }
+  }
+}
+
+function sourceBindingDigest(source: AttemptWorkspaceBaselineSourceBindingV1): string {
+  const { bindingDigest: _ignored, ...withoutDigest } = source
+  return digestJson(withoutDigest)
+}
+
+function sameProjectAndTaskBaseline(
+  source: AttemptWorkspaceBaselineSourceBindingV1['source'],
+  task: AttemptWorkspaceBaselineSourceBindingV1['task'],
+): boolean {
+  return (
+    source.baselineId === task.baselineId &&
+    source.baseRevision === task.baseRevision &&
+    source.baselineTreeHash === task.baselineTreeHash &&
+    source.initialTargetFingerprint === task.initialTargetFingerprint &&
+    source.baselineDigest === task.baselineDigest
+  )
+}
+
+function sameBaselineSource(
+  left: AttemptWorkspaceBaselineSourceBindingV1 | undefined,
+  right: AttemptWorkspaceBaselineSourceBindingV1 | undefined,
+): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
+}
+
+function assertLeaseMatchesRequest(
+  lease: AttemptWorkspaceLeaseV1,
+  request: AttemptWorkspacePrepareRequestV1,
+): void {
+  if (
+    lease.attemptId !== String(request.attemptId) ||
+    lease.projectId !== request.projectId ||
+    lease.baseRevision !== request.baseRevision ||
+    lease.baselineTreeHash !== request.baselineTreeHash ||
+    lease.ownerId !== request.ownerId ||
+    lease.requestConflictDigest !== prepareConflictDigest(request)
+  ) {
+    throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+  }
+}
+
+function isCommitOid(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{40}$/i.test(value)
+}
+
+function isTreeOid(value: unknown): value is string {
+  return isCommitOid(value)
+}
+
+async function assertAuthoritativeProjectBaseline(
+  repoRoot: string,
+  baseRevision: string,
+  expectedTreeHash: string,
+): Promise<void> {
+  await assertBaseTree(repoRoot, baseRevision, expectedTreeHash)
+  await assertCleanCheckoutAtRevision(repoRoot, baseRevision)
+}
+
+async function assertCleanCheckoutAtRevision(repoRoot: string, baseRevision: string): Promise<void> {
+  const head = (await git(repoRoot, ['rev-parse', '--verify', 'HEAD'])).stdout.trim()
+  if (head.toLowerCase() !== baseRevision.toLowerCase()) throw new AttemptWorkspaceError('BASELINE_TREE_MISMATCH')
+  const status = await git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])
+  if (status.stdout.trim().length > 0) throw new AttemptWorkspaceError('REPO_NOT_CLEAN_FOR_BASELINE')
 }
 
 async function assertExistingWorktreeIdentity(realWorktreeRoot: string, lease: AttemptWorkspaceLeaseV1): Promise<void> {
@@ -1310,9 +1733,9 @@ async function assertExistingWorktreeIdentity(realWorktreeRoot: string, lease: A
   }
 }
 
-async function assertCleanRepository(repoRoot: string): Promise<void> {
-  const status = await git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])
-  if (status.stdout.trim().length > 0) throw new AttemptWorkspaceError('REPO_NOT_CLEAN_FOR_BASELINE')
+async function assertCleanAttemptWorktree(worktreeRoot: string): Promise<void> {
+  const status = await git(worktreeRoot, ['status', '--porcelain=v1', '--untracked-files=all'])
+  if (status.stdout.trim().length > 0) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
 }
 
 function assertGitRepository(repoRoot: string): void {

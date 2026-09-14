@@ -76,6 +76,69 @@ describe('MainProcessDeliveryIntegrationWorktreePortV1', () => {
 
     await rm(root, { recursive: true, force: true })
   })
+
+  it('rejects a repeat integration without overwriting an existing result root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-integration-repeat-'))
+    const repo = join(root, 'repo')
+    const managedRoot = join(root, 'managed')
+    let integrationWorktreeRoot: string | undefined
+    try {
+      await git(root, ['init', 'repo'])
+      await writeFile(join(repo, 'a.txt'), 'old')
+      await git(repo, ['add', 'a.txt'])
+      await git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'])
+      const baseRevision = (await git(repo, ['rev-parse', '--verify', 'HEAD'])).trim()
+      const baselineTreeHash = (await git(repo, ['rev-parse', '--verify', 'HEAD^{tree}'])).trim()
+      const projectId = `xgp1_${'3'.repeat(64)}`
+      const target = {
+        projectId,
+        baseRevision,
+        baselineTreeHash,
+        initialTargetFingerprint: deliveryTargetFingerprintV1({ projectId, baseRevision, baselineTreeHash }),
+      } satisfies DeliveryTargetV1
+      const port = new MainProcessDeliveryIntegrationWorktreePortV1({
+        projectResolver: { resolveProjectRoot: () => repo },
+        managedRoot,
+        target,
+        batchId: 'xhbd_repeat_result',
+      })
+      const firstContent = Buffer.from('first result')
+      const first = await port.integrate([
+        {
+          operation: 'MODIFY',
+          relativePath: 'a.txt',
+          baselineDigest: digest('old'),
+          contentDigest: digest('first result'),
+          contentArtifactId: 'artifact-first' as never,
+          content: firstContent,
+          sourceTaskChangeSetId: 'xhbcs_repeat' as never,
+        },
+      ])
+      integrationWorktreeRoot = first.privateIntegrationContext.worktreeRoot
+      await expect(readFile(join(integrationWorktreeRoot, 'a.txt'), 'utf8')).resolves.toBe('first result')
+
+      await expect(
+        port.integrate([
+          {
+            operation: 'MODIFY',
+            relativePath: 'a.txt',
+            baselineDigest: digest('old'),
+            contentDigest: digest('second result'),
+            contentArtifactId: 'artifact-second' as never,
+            content: Buffer.from('second result'),
+            sourceTaskChangeSetId: 'xhbcs_repeat' as never,
+          },
+        ]),
+      ).rejects.toMatchObject({ reasonCode: 'DELIVERY_WORKTREE_BASELINE_DRIFT' })
+      await expect(readFile(join(integrationWorktreeRoot, 'a.txt'), 'utf8')).resolves.toBe('first result')
+      await expect(readFile(join(repo, 'a.txt'), 'utf8')).resolves.toBe('old')
+    } finally {
+      if (integrationWorktreeRoot) {
+        await cleanupDeliveryIntegrationWorktreeRootV1(repo, integrationWorktreeRoot)
+      }
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 function digest(value: string): Sha256Digest {

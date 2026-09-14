@@ -1,5 +1,42 @@
 # HUB-RUNTIME-01 剩余工作方案
 
+## 2026-09-14｜主管已批准的接续：Main 基线来源透传（已实施，待主管复验）
+
+- 沿用 `f6b53b178ba39510ca360b61e7ac87150d40682d` 与现有6个文件的保留改动，不另开功能阶段、不撤销已完成字节修复。
+- Luna/max 接续全部代码、脚本及定向测试；根 owner 只更新方案/记录、审查、验证、提交推送。本次准许在既有 Main 准备适配、基线记录及必要私有接口补齐来源，除已改两个工作树模块外，只改来源绑定和对应恢复/测试实际需要的消费者。
+- 来源必须从 Main 已登记的 task_execution_baselines / derived_execution_baselines 核验，绑定当前 Attempt/task、commit/tree、授权 grants 摘要和派生记录。Renderer/模型传参、HEAD差异、parent形状、commit文案和无依据的布尔开关均不能签发来源。
+- 原项目来源严格检查原项目原始字节及漂移；派生来源使用已登记不可变输入核验精确授权字节。prepare、capture、Delivery 必须一致，不在不匹配时换来源求通过。
+- 使用既有私有记录冻结来源和绑定；恢复重新核验 Main 证据且沿用原来源。旧记录只有精确匹配的 Main 证据才能补齐，缺失/冲突停止，不默认PROJECT或DERIVED。不建状态机、平行数据库，不改变普通CODING、TaskHub、Delivery/人工Apply产品边界。
+- 新验证限定：原失败 A→C 派生基线链、缺来源/绑定冲突拒绝、恢复来源不被重解释，以及被此接缝影响的LF/漂移/捕获→Delivery回归；必要类型、定向lint、diff-check。复用其他已通过结果，不跑模型/Electron/原业务/无关全量测试。新日志保存原修复证据目录下 source-binding 子目录，不覆盖既有日志。
+- 完成后追加提交并推送原隔离分支，交固定SHA及证据给桌面主管后停止。严禁重试原 xhba_17649067-201c-458a-b007-3d8bdef64906；原失败记录、工作树、项目、profile、DB、节点、stash不动，不prune/reset、不改角色模型、不Apply、不合主线。
+
+### 接续收口结果
+
+- Luna/max 已补齐 Main resolver、现有 SQLite 记录查询和 lease 来源绑定。来源由真实 Attempt/flow/task baseline、staged grants 与派生缓存共同核验，不从 HEAD 差异、提交形状或调用方声明签发。PROJECT 精确读取源文件；DERIVED 精确读取登记 commit blob。恢复重新核对原绑定，旧缺来源记录只在精确 Main 证据下补齐，不默认或改释来源。
+- prepare/capture 使用同一来源；Delivery 从原基线与有序已验证结果逐步核验。已修合法 MODIFY→MODIFY 和 CREATE→MODIFY 的前置字节语义，后续 MODIFY 以此前结果为准，不用原项目缺失/旧字节替代。旧成果及原业务现场仍保留。
+- 新 Main 三例3/3、新 CREATE→MODIFY 1/1、受影响调度夹具1/1、CREATE expansion 1/1、错绑定/缺证据恢复2/2通过。其余本轮受影响13/13、既有派生6/6和5个workspace单项的已过委派终端结果复用，不重跑。完整命令、文件清单、真实Git/SQLite与夹具边界见 `DEVELOPMENT_STATUS.md` 的“来源接缝收口”。
+- 仅4个生产文件、6个测试文件和2个既有文档。额外两个integration文件只迁移测试构造来源，不运行OMP。没有来源平台、平行DB或新状态机，没有改普通CODING、TaskHub/Delivery/Apply产品边界。
+- Standards：无规范阻断，1项LOW局部helper重复观察；Spec：当前授权范围无未关闭阻断，仍待桌面主管复验。新测试类型/lint错误按原分工仅由Luna修正，最终检查记录及未覆盖门见状态文档。此前失败日志不删除，不以合成证据冒充恢复原日志/原任务。
+- 下一门仅桌面主管定向复验；本次不构建安装包，不跑模型、Electron、原Attempt、重派发、Apply或主线合并。推送本次单一追加提交后停止。
+
+## 2026-09-14｜已批准：checkout 授权字节一致性最小返修
+
+- 基线 `f6b53b178ba39510ca360b61e7ac87150d40682d`，当前隔离分支不变。主管已接收两组合成复现：true 创建 exit 0 后摘要拒绝，false 准备成功；不是恢复原业务 Git 日志。
+- 复用已只读实查的 J1 `b12a4b5b098a5d88d947864edf5f4e32f661c796` 中原始字节保持实现与定向测试，局部适配，不整包 cherry-pick。当前故障在 Pi 调度之前，复用既有 Main 准备/捕获/Delivery 模块，不新增 Skill、插件、换行框架或重跑已完成复用调查。
+- Luna/max 负责全部脚本、产品代码及测试编码；根 owner 只更新方案/记录、审查、运行必要验证和提交推送。授权文件限定 attempt-workspace.ts、delivery-integration-worktree.ts 及其对应测试；不带入旧 J1 Hub、UI、终态协调或 Apply 变更。
+- 严格核验权威原项目实体、HEAD/tree、clean、批准路径及原始摘要，再向受控工作树放入相同字节，复验字节及 Git clean。已准备或含任务成果的工作树不覆盖；恢复不得以播种掩盖任何成果/漂移。captureTaskPatch 和 Delivery 使用同一授权原字节基线；不宽松归一化，不修改原项目或全局 autocrlf。
+- 必要验证：LF + local autocrlf=true 的 prepare→capture→Delivery 贯通；原内容漂移拒绝；已有成果不覆盖。复用既有定向回归及 Node typecheck、增量 ESLint、diff-check，不跑无关测试、模型、Electron 或打包。新结果存独立 checkout-bytes-fix-20260914 证据目录，不覆盖原复现。
+- 完成后追加提交推送当前分支，回交固定 SHA 和简短证据给桌面主管，停止等待复验。原 Attempt、失败工作树、profile、DB、节点和 stash 均保留；不重派、不 Apply、不合主线。
+
+### 实施交接
+
+**历史阻断，现已由本页顶部批准的来源接缝关闭。** 以下保留发现时的情况：原始字节6项验证闭合后，新增消费者审查发现既有派生基线回归失败。Main 的 TaskExecutionBaselineRecordV1 已保存 ancestor/derivation 字段，但准备请求未传递来源。不能直接将旧 J1 的 `HEAD === baseRevision` 用于合法 derived commit，也不能根据 HEAD 差异/单父提交猜来源。
+
+- Luna/max 完成两个生产模块及两个测试文件，根 owner 审查并验证。只局部复用 J1 原始字节保持逻辑，未带入 Hub/UI/终态协调/Apply。
+- 最终6个目标验证按5项通过＋单个夹具修正后1项通过闭合，精确命令/早期失败/证据限制见 DEVELOPMENT_STATUS.md 最新条；没有重复其余已通过测试。Node typecheck、增量lint及diff-check通过。
+- 成果保护采取 fail-closed：prepared重放不播种；未完成MODIFY工作树不自动重播种；已有Delivery根不删除。不要把此候选视作授权恢复既有失败任务。
+- 当时停点为桌面主管确认接缝补充；现已获批准并实施，按本页顶部收口结果回交。未打新包、未恢复原任务、未合主线，旧复现目录与原现场保持不变。
+
 ## 主管 P2 返修方案：Attempt 终态 Worker 回收
 
 - 基线：`07f3d97012acc30deec1792d9dbb7bf204d7c808`，当前隔离分支不变。主管 Standards 已通过；只处理终态专属 Pi Worker 积累这一项 Spec P2。旧代码/安装包记录保留，不代表本次返修已通过。

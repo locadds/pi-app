@@ -31,9 +31,12 @@ export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryInt
     if (!isInside(managedRoot, worktreeRoot)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_OUTSIDE_ROOT')
 
     await assertGitBaseline(repositoryRoot, this.options.target)
+    const approvedBaselines = await readApprovedModifyBaselines(repositoryRoot, files)
     if (existsSync(worktreeRoot)) {
-      await git(repositoryRoot, ['worktree', 'remove', '--force', worktreeRoot], 'DELIVERY_WORKTREE_WRITE_FAILED')
-      await git(repositoryRoot, ['worktree', 'prune'], 'DELIVERY_WORKTREE_WRITE_FAILED')
+      // A delivery root may contain a prior integration result. Never remove
+      // it merely to make a retry convenient; the caller must choose a fresh
+      // batch/root after resolving the conflict.
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
     }
     let worktreeAdded = false
     let failed: DeliveryIntegrationWorktreeErrorV1 | null = null
@@ -44,12 +47,16 @@ export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryInt
       if (pathKey(realWorktreeRoot) !== pathKey(worktreeRoot) || !isInside(managedRoot, realWorktreeRoot)) {
         throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_OUTSIDE_ROOT')
       }
+      await seedApprovedModifyBaselines(realWorktreeRoot, this.options.target.baseRevision, approvedBaselines)
+      await assertGitBaseline(realWorktreeRoot, this.options.target)
       for (const file of files) {
         const relativePath = normalizeRelativePath(file.relativePath)
         const target = resolve(realWorktreeRoot, relativePath.replace(/\//g, sep))
         if (!isInside(realWorktreeRoot, target)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+        await assertDeliveryParentChain(realWorktreeRoot, target)
         await assertFilePrecondition(target, file)
         await mkdir(dirname(target), { recursive: true })
+        await assertDeliveryParentChain(realWorktreeRoot, target)
         await writeFile(target, Buffer.from(file.content))
       }
       await git(realWorktreeRoot, ['add', '--', ...files.map((file) => normalizeRelativePath(file.relativePath))], 'DELIVERY_WORKTREE_WRITE_FAILED')
@@ -158,13 +165,141 @@ async function assertGitBaseline(repositoryRoot: string, target: DeliveryTargetV
 async function assertFilePrecondition(realPath: string, file: DeliveryIntegrationFileV1): Promise<void> {
   try {
     const info = await lstat(realPath)
-    if (info.isSymbolicLink() || !info.isFile()) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    if (info.isSymbolicLink() || !info.isFile() || info.nlink !== 1) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    }
     if (file.operation === 'CREATE') throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
     const current = await readFile(realPath)
     if (digestBytes(current) !== file.baselineDigest) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
   } catch (error) {
     if (error instanceof DeliveryIntegrationWorktreeErrorV1) throw error
     if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT' && file.operation === 'CREATE') return
+    throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+  }
+}
+
+interface ApprovedModifyBaselineV1 {
+  readonly relativePath: string
+  readonly baselineDigest: Sha256Digest
+  readonly bytes: Buffer
+}
+
+async function readApprovedModifyBaselines(
+  repositoryRoot: string,
+  files: readonly DeliveryIntegrationFileV1[],
+): Promise<readonly ApprovedModifyBaselineV1[]> {
+  const baselines: ApprovedModifyBaselineV1[] = []
+  const seen = new Set<string>()
+  for (const file of files) {
+    const relativePath = normalizeRelativePath(file.relativePath)
+    // Ordered same-file changes are valid when each later precondition names
+    // the previous verified result. Only the first MODIFY for a path must be
+    // anchored to the captured source checkout; a CREATE first occurrence has
+    // no source precondition, and later changes are checked in the integration
+    // worktree after earlier files have been applied.
+    const key = pathKey(relativePath)
+    if (seen.has(key)) continue
+    seen.add(key)
+    if (file.operation !== 'MODIFY') continue
+    const target = resolve(repositoryRoot, relativePath.replace(/\\/g, sep))
+    if (!isInside(repositoryRoot, target)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    await assertDeliveryParentChain(repositoryRoot, target)
+    const bytes = await readStableRegularFile(target)
+    if (digestBytes(bytes) !== file.baselineDigest) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    }
+    baselines.push({ relativePath, baselineDigest: file.baselineDigest, bytes })
+  }
+  return baselines
+}
+
+async function seedApprovedModifyBaselines(
+  worktreeRoot: string,
+  baseRevision: string,
+  baselines: readonly ApprovedModifyBaselineV1[],
+): Promise<void> {
+  for (const baseline of baselines) {
+    const target = resolve(worktreeRoot, baseline.relativePath.replace(/\\/g, sep))
+    if (!isInside(worktreeRoot, target)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    await assertDeliveryParentChain(worktreeRoot, target)
+    const current = await readStableRegularFile(target)
+    if (digestBytes(current) !== baseline.baselineDigest) {
+      const checkoutBytes = await gitBytes(worktreeRoot, [
+        'cat-file',
+        '--filters',
+        `--path=${baseline.relativePath}`,
+        `${baseRevision}:${baseline.relativePath}`,
+      ])
+      // Only replace Git's known checkout-filtered representation. An
+      // arbitrary result written after worktree creation must remain intact.
+      if (!current.equals(checkoutBytes)) {
+        throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+      }
+      await writeFile(target, baseline.bytes)
+    }
+    const seeded = await readStableRegularFile(target)
+    if (digestBytes(seeded) !== baseline.baselineDigest || !seeded.equals(baseline.bytes)) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    }
+  }
+  if (baselines.length > 0) {
+    await git(
+      worktreeRoot,
+      ['add', '--', ...baselines.map((baseline) => baseline.relativePath)],
+      'DELIVERY_WORKTREE_BASELINE_DRIFT',
+    )
+  }
+}
+
+async function assertDeliveryParentChain(rootPath: string, target: string): Promise<void> {
+  let current = dirname(target)
+  while (true) {
+    try {
+      const info = await lstat(current)
+      if (info.isSymbolicLink() || !info.isDirectory()) {
+        throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+      }
+      const realParent = await realpath(current)
+      if (!isInside(rootPath, realParent) || pathKey(realParent) !== pathKey(current)) {
+        throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+      }
+      return
+    } catch (error) {
+      if (error instanceof DeliveryIntegrationWorktreeErrorV1) throw error
+      if ((error as { code?: unknown }).code !== 'ENOENT') {
+        throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+      }
+      const parent = dirname(current)
+      if (parent === current || !isInside(rootPath, parent)) {
+        throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+      }
+      current = parent
+    }
+  }
+}
+
+async function readStableRegularFile(realPath: string): Promise<Buffer> {
+  try {
+    const before = await lstat(realPath)
+    if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    }
+    const bytes = await readFile(realPath)
+    const after = await lstat(realPath)
+    if (
+      after.isSymbolicLink() ||
+      !after.isFile() ||
+      after.nlink !== 1 ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs
+    ) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    }
+    return bytes
+  } catch (error) {
+    if (error instanceof DeliveryIntegrationWorktreeErrorV1) throw error
     throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
   }
 }
@@ -227,5 +362,29 @@ async function git(cwd: string, args: readonly string[], failure: DeliveryIntegr
       }
       resolvePromise(stdout ?? '')
     })
+  })
+}
+
+async function gitBytes(cwd: string, args: readonly string[]): Promise<Buffer> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(
+      'git',
+      [...args],
+      { cwd, encoding: 'buffer', windowsHide: true, timeout: 30_000, maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          const diagnostic = Buffer.isBuffer(stderr) ? stderr.toString('utf8') : String(stderr ?? '')
+          reject(
+            new DeliveryIntegrationWorktreeErrorV1(
+              diagnostic.includes('not a git repository')
+                ? 'DELIVERY_WORKTREE_BASELINE_DRIFT'
+                : 'DELIVERY_WORKTREE_WRITE_FAILED',
+            ),
+          )
+          return
+        }
+        resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? ''))
+      },
+    )
   })
 }

@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { link, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,16 +9,26 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { AttemptId } from '@shared/xiaogui-collaboration-hub'
 import {
+  deliveryTargetFingerprintV1,
+  type DeliveryTargetV1,
+} from '@shared/xiaogui-delivery'
+import {
   AttemptWorkspaceError,
   GitAttemptWorkspaceServiceV1,
   SqliteAttemptWorkspaceRegistryV1,
   digestBytes,
   digestJson,
   type AttemptFileGrantV1,
+  type AttemptWorkspaceBaselineSourceBindingV1,
+  type AttemptWorkspaceBaselineSourceResolverV1,
   type AttemptFileManifestV1,
   type AttemptWorkspacePrepareRequestV1,
   type UserApprovedFileSelectionV1,
 } from './attempt-workspace'
+import {
+  cleanupDeliveryIntegrationWorktreeRootV1,
+  MainProcessDeliveryIntegrationWorktreePortV1,
+} from './delivery-integration-worktree'
 
 const roots: string[] = []
 const PROJECT_ID = 'xgp1_test_project'
@@ -45,11 +56,29 @@ async function gitRepo() {
   return root
 }
 
+async function gitLfAutocrlfRepo() {
+  const root = await gitRepo()
+  const target = join(root, 'src', 'existing.txt')
+  const approvedBytes = Buffer.from('before\nsecond line\n')
+  writeFileSync(target, approvedBytes)
+  git(root, ['add', 'src/existing.txt'])
+  git(root, ['commit', '-m', 'add LF baseline fixture'])
+  git(root, ['config', '--local', 'core.autocrlf', 'true'])
+  // Keep the authoritative source bytes exactly LF while Git's newly-added
+  // worktrees smudge text files to CRLF.
+  writeFileSync(target, approvedBytes)
+  return { root, target, approvedBytes }
+}
+
 function git(cwd: string, args: string[]) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }).trim()
 }
 
-function service(dbPath: string, managedRoot = join(dbPath, '..', 'managed-worktrees')) {
+function service(
+  dbPath: string,
+  managedRoot = join(dbPath, '..', 'managed-worktrees'),
+  baselineSourceResolver: AttemptWorkspaceBaselineSourceResolverV1 | undefined = testBaselineSourceResolver(),
+) {
   const registry = new SqliteAttemptWorkspaceRegistryV1({ dbPath })
   return {
     registry,
@@ -62,8 +91,71 @@ function service(dbPath: string, managedRoot = join(dbPath, '..', 'managed-workt
           return projectRoot
         },
       },
-      { managedRoot },
+      { managedRoot, baselineSourceResolver },
     ),
+  }
+}
+
+function testBaselineSourceResolver(): AttemptWorkspaceBaselineSourceResolverV1 {
+  return {
+    resolve({ request, grants }) {
+      const baseline = {
+        baselineId: `test-baseline-${request.baseRevision}`,
+        baseRevision: request.baseRevision,
+        baselineTreeHash: request.baselineTreeHash,
+        initialTargetFingerprint: 'test-target-fingerprint',
+        baselineDigest: 'test-baseline-digest',
+        baselineBindingDigest: request.baselineBindingDigest,
+      }
+      const source = {
+        version: 1 as const,
+        kind: 'PROJECT' as const,
+        attemptId: String(request.attemptId),
+        projectId: request.projectId,
+        sessionKey: 'test-session',
+        flowId: 'test-flow',
+        taskRunId: 'test-task',
+        source: baseline,
+        task: {
+          ...baseline,
+          derivationDigest: 'test-derivation',
+          ancestorTaskChangeSetIds: [],
+        },
+        grantsDigest: digestJson(grants),
+      }
+      return { ...source, bindingDigest: digestJson(source) }
+    },
+  }
+}
+
+function testSourceResolverWithFlowId(flowId: string): AttemptWorkspaceBaselineSourceResolverV1 {
+  const delegate = testBaselineSourceResolver()
+  return {
+    resolve(input) {
+      const source = delegate.resolve(input)
+      if (!source) return null
+      const { bindingDigest: _ignored, ...withoutDigest } = source
+      const rebound = { ...withoutDigest, flowId }
+      return { ...rebound, bindingDigest: digestJson(rebound) }
+    },
+  }
+}
+
+function removeLeaseBaselineSource(dbPath: string, attemptId: string): void {
+  const db = new DatabaseSync(dbPath)
+  try {
+    const row = db
+      .prepare('select lease_json from attempt_workspace_leases where attempt_id = ?')
+      .get(attemptId) as { lease_json: string } | undefined
+    if (!row) throw new Error('missing lease')
+    const lease = JSON.parse(row.lease_json) as Record<string, unknown>
+    delete lease.baselineSource
+    db.prepare('update attempt_workspace_leases set lease_json = ? where attempt_id = ?').run(
+      JSON.stringify(lease),
+      attemptId,
+    )
+  } finally {
+    db.close()
   }
 }
 
@@ -373,6 +465,378 @@ describe('GitAttemptWorkspaceServiceV1', () => {
       ],
     })
     registry.close()
+  })
+
+  it('preserves approved LF bytes through prepare, capture, and Delivery, then replays results without reseeding', async () => {
+    const { root: projectRoot, target, approvedBytes } = await gitLfAutocrlfRepo()
+    projectRoots.set(PROJECT_ID, projectRoot)
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'), managedRoot)
+    let deliveryWorktreeRoot: string | undefined
+    try {
+      const [grant] = await workspace.resolveApprovedFiles(PROJECT_ID, [
+        { operation: 'MODIFY', relativePath: 'src/existing.txt' },
+      ])
+      const request = prepareRequest({
+        projectRoot,
+        managedRoot,
+        attemptId: 'xhba_lf_source' as AttemptId,
+        grants: [grant],
+      })
+      const prepared = await workspace.prepare(request)
+
+      expect(readFileSync(join(prepared.handle.rootPath, 'src', 'existing.txt'))).toEqual(approvedBytes)
+      expect(git(prepared.handle.rootPath, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
+
+      const resultBytes = Buffer.from('after\nsecond line\n')
+      const resultPath = join(prepared.handle.rootPath, 'src', 'existing.txt')
+      writeFileSync(resultPath, resultBytes)
+      const capture = await workspace.captureTaskPatch(prepared.handle.attemptId)
+      expect(capture).toMatchObject({
+        changedFiles: [
+          {
+            operation: 'MODIFY',
+            relativePath: 'src/existing.txt',
+            baselineDigest: digestBytes(approvedBytes),
+            contentDigest: digestBytes(resultBytes),
+          },
+        ],
+      })
+
+      await expect(workspace.prepare(request)).resolves.toMatchObject({ handle: { rootPath: prepared.handle.rootPath } })
+      expect(readFileSync(resultPath)).toEqual(resultBytes)
+      expect(readFileSync(target)).toEqual(approvedBytes)
+
+      const baseRevision = git(projectRoot, ['rev-parse', 'HEAD'])
+      const baselineTreeHash = git(projectRoot, ['rev-parse', `${baseRevision}^{tree}`])
+      const deliveryTarget = {
+        projectId: PROJECT_ID,
+        baseRevision,
+        baselineTreeHash,
+        initialTargetFingerprint: deliveryTargetFingerprintV1({
+          projectId: PROJECT_ID,
+          baseRevision,
+          baselineTreeHash,
+        }),
+      } satisfies DeliveryTargetV1
+      const delivery = new MainProcessDeliveryIntegrationWorktreePortV1({
+        projectResolver: { resolveProjectRoot: () => projectRoot },
+        managedRoot: await tempRoot('xiaogui-delivery-managed-'),
+        target: deliveryTarget,
+        batchId: 'xhbd_lf_delivery',
+      })
+      const integration = await delivery.integrate(
+        capture.changedFiles.map((file) => ({
+          operation: file.operation,
+          relativePath: file.relativePath,
+          baselineDigest: file.baselineDigest as never,
+          contentDigest: file.contentDigest as never,
+          contentArtifactId: `artifact-${file.relativePath}` as never,
+          content: Buffer.from(file.contentBase64, 'base64'),
+          sourceTaskChangeSetId: 'xhbcs_lf_delivery' as never,
+        })),
+      )
+      deliveryWorktreeRoot = integration.privateIntegrationContext.worktreeRoot
+      expect(readFileSync(join(deliveryWorktreeRoot, 'src', 'existing.txt'))).toEqual(resultBytes)
+      expect(readFileSync(target)).toEqual(approvedBytes)
+      expect(git(projectRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
+    } finally {
+      try {
+        if (deliveryWorktreeRoot) await cleanupDeliveryIntegrationWorktreeRootV1(projectRoot, deliveryWorktreeRoot)
+      } finally {
+        registry.close()
+      }
+    }
+  }, 30000)
+
+  it('rejects authoritative source raw-byte drift during capture', async () => {
+    const { root: projectRoot, target, approvedBytes } = await gitLfAutocrlfRepo()
+    projectRoots.set(PROJECT_ID, projectRoot)
+    const sourceHead = git(projectRoot, ['rev-parse', 'HEAD'])
+    const sourceTree = git(projectRoot, ['rev-parse', 'HEAD^{tree}'])
+    const sourceStatus = git(projectRoot, ['status', '--porcelain=v1', '--untracked-files=all'])
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'))
+    try {
+      const [grant] = await workspace.resolveApprovedFiles(PROJECT_ID, [
+        { operation: 'MODIFY', relativePath: 'src/existing.txt' },
+      ])
+      const prepared = await workspace.prepare(
+        prepareRequest({
+          projectRoot,
+          grants: [grant],
+        }),
+      )
+      writeFileSync(join(prepared.handle.rootPath, 'src', 'existing.txt'), Buffer.from('task result\n'))
+
+      const driftedBytes = Buffer.from('before\r\nsecond line\r\n')
+      writeFileSync(target, driftedBytes)
+      // Refresh only the synthetic source index. Git normalizes this CRLF
+      // worktree byte sequence back to the existing LF blob; it must not
+      // rewrite the authoritative file or move HEAD/tree.
+      git(projectRoot, ['add', '--', 'src/existing.txt'])
+      expect(git(projectRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('')
+      expect(readFileSync(target)).not.toEqual(approvedBytes)
+      await expect(
+        workspace.prepare(
+          prepareRequest({
+            projectRoot,
+            attemptId: 'xhba_drift_prepare' as AttemptId,
+            grants: [grant],
+          }),
+        ),
+      ).rejects.toMatchObject({ reasonCode: 'TARGET_DIGEST_MISMATCH' })
+      await expect(workspace.captureTaskPatch(prepared.handle.attemptId)).rejects.toMatchObject({
+        reasonCode: 'TARGET_DIGEST_MISMATCH',
+      })
+      expect(readFileSync(target)).toEqual(driftedBytes)
+      expect(git(projectRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead)
+      expect(git(projectRoot, ['rev-parse', 'HEAD^{tree}'])).toBe(sourceTree)
+      expect(git(projectRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe(sourceStatus)
+    } finally {
+      registry.close()
+    }
+  }, 30000)
+
+  it('fails closed on an interrupted existing worktree instead of overwriting a result', async () => {
+    const { root: projectRoot } = await gitLfAutocrlfRepo()
+    projectRoots.set(PROJECT_ID, projectRoot)
+    const dbPath = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const first = service(dbPath, managedRoot)
+    const [grant] = await first.workspace.resolveApprovedFiles(PROJECT_ID, [
+      { operation: 'MODIFY', relativePath: 'src/existing.txt' },
+    ])
+    const request = prepareRequest({
+      projectRoot,
+      managedRoot,
+      attemptId: 'xhba_interrupted_result' as AttemptId,
+      grants: [grant, { operation: 'CREATE', relativePath: 'src/new.txt' }],
+      faultInjection: 'AFTER_CREATE_BEFORE_MANIFEST_COMMIT',
+    })
+    try {
+      await expect(first.workspace.prepare(request)).rejects.toMatchObject({ reasonCode: 'CREATE_BATCH_PENDING' })
+      const worktreeRoot = first.registry.getLease(request.attemptId)?.worktreeRoot
+      if (!worktreeRoot) throw new Error('missing worktree lease')
+      const resultBytes = Buffer.from('interrupted task result\n')
+      const resultPath = join(worktreeRoot, 'src', 'existing.txt')
+      writeFileSync(resultPath, resultBytes)
+      first.registry.close()
+
+      const recovered = service(dbPath, managedRoot)
+      try {
+        await expect(recovered.workspace.prepare({ ...request, faultInjection: undefined })).rejects.toMatchObject({
+          reasonCode: 'WORKTREE_DRIFT',
+        })
+        expect(readFileSync(resultPath)).toEqual(resultBytes)
+      } finally {
+        recovered.registry.close()
+      }
+    } finally {
+      // The normal path closes above before reopening; this guard only closes
+      // the first registry if the injected failure happened before that point.
+      try {
+        first.registry.close()
+      } catch {
+        // already closed
+      }
+    }
+  })
+
+  it('fails closed when no trusted Main baseline source proof is available', async () => {
+    const projectRoot = await gitRepo()
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const { workspace, registry } = service(
+      join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'),
+      managedRoot,
+      { resolve: () => null },
+    )
+    try {
+      await expect(
+        workspace.prepare(prepareRequest({
+          projectRoot,
+          managedRoot,
+          attemptId: 'xhba_source_missing' as AttemptId,
+          grants: [{ operation: 'CREATE', relativePath: 'src/new.txt' }],
+        })),
+      ).rejects.toMatchObject({ reasonCode: 'BASELINE_SOURCE_MISSING' })
+    } finally {
+      registry.close()
+    }
+  })
+
+  it('rejects a source binding for another Attempt even when its digest is internally consistent', async () => {
+    const projectRoot = await gitRepo()
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const delegate = testBaselineSourceResolver()
+    const mismatchedResolver: AttemptWorkspaceBaselineSourceResolverV1 = {
+      resolve(input) {
+        const source = delegate.resolve(input)
+        if (!source) return null
+        const { bindingDigest: _ignored, ...withoutDigest } = source
+        const mismatched = { ...withoutDigest, attemptId: 'xhba_different_attempt' }
+        return { ...mismatched, bindingDigest: digestJson(mismatched) }
+      },
+    }
+    const { workspace, registry } = service(
+      join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'),
+      managedRoot,
+      mismatchedResolver,
+    )
+    try {
+      await expect(
+        workspace.prepare(prepareRequest({
+          projectRoot,
+          managedRoot,
+          attemptId: 'xhba_source_binding_conflict' as AttemptId,
+          grants: [{ operation: 'CREATE', relativePath: 'src/new.txt' }],
+        })),
+      ).rejects.toMatchObject({ reasonCode: 'BASELINE_SOURCE_MISMATCH' })
+    } finally {
+      registry.close()
+    }
+  })
+
+  it('freezes the first source proof and refuses a conflicting proof after a cold registry recovery', async () => {
+    const projectRoot = await gitRepo()
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const dbPath = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
+    const request = prepareRequest({
+      projectRoot,
+      managedRoot,
+      attemptId: 'xhba_source_frozen' as AttemptId,
+      grants: [{ operation: 'CREATE', relativePath: 'src/new.txt' }],
+    })
+    const first = service(dbPath, managedRoot)
+    let firstSource: AttemptWorkspaceBaselineSourceBindingV1 | undefined
+    let firstRoot = ''
+    try {
+      const prepared = await first.workspace.prepare(request)
+      firstRoot = prepared.handle.rootPath
+      firstSource = first.registry.getLease(request.attemptId)?.baselineSource
+      expect(firstSource).toBeDefined()
+    } finally {
+      first.registry.close()
+    }
+    const recovered = service(dbPath, managedRoot, testSourceResolverWithFlowId('recovered-but-different'))
+    try {
+      await expect(recovered.workspace.prepare(request)).rejects.toMatchObject({
+        reasonCode: 'BASELINE_SOURCE_MISMATCH',
+      })
+      expect(recovered.registry.getLease(request.attemptId)?.baselineSource).toEqual(firstSource)
+      expect(recovered.registry.getLease(request.attemptId)?.worktreeRoot).toBe(firstRoot)
+    } finally {
+      recovered.registry.close()
+    }
+  })
+
+  it('fills only a legacy source-less lease when the exact Main proof is replayed', async () => {
+    const projectRoot = await gitRepo()
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const dbPath = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
+    const request = prepareRequest({
+      projectRoot,
+      managedRoot,
+      attemptId: 'xhba_source_legacy_exact' as AttemptId,
+      grants: [{ operation: 'CREATE', relativePath: 'src/new.txt' }],
+    })
+    const first = service(dbPath, managedRoot)
+    let expectedSource: AttemptWorkspaceBaselineSourceBindingV1 | undefined
+    let expectedRoot = ''
+    try {
+      const prepared = await first.workspace.prepare(request)
+      expectedRoot = prepared.handle.rootPath
+      expectedSource = first.registry.getLease(request.attemptId)?.baselineSource
+      expect(expectedSource).toBeDefined()
+    } finally {
+      first.registry.close()
+    }
+    removeLeaseBaselineSource(dbPath, String(request.attemptId))
+
+    const recovered = service(dbPath, managedRoot)
+    try {
+      const replayed = await recovered.workspace.prepare(request)
+      expect(replayed.handle.rootPath).toBe(expectedRoot)
+      expect(recovered.registry.getLease(request.attemptId)?.baselineSource).toEqual(expectedSource)
+    } finally {
+      recovered.registry.close()
+    }
+  })
+
+  it('does not supplement a source-less legacy lease when Main proof is missing', async () => {
+    const projectRoot = await gitRepo()
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const dbPath = join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite')
+    const request = prepareRequest({
+      projectRoot,
+      managedRoot,
+      attemptId: 'xhba_source_legacy_missing' as AttemptId,
+      grants: [{ operation: 'CREATE', relativePath: 'src/new.txt' }],
+    })
+    const first = service(dbPath, managedRoot)
+    try {
+      await first.workspace.prepare(request)
+    } finally {
+      first.registry.close()
+    }
+    removeLeaseBaselineSource(dbPath, String(request.attemptId))
+
+    const recovered = service(dbPath, managedRoot, { resolve: () => null })
+    try {
+      await expect(recovered.workspace.prepare(request)).rejects.toMatchObject({
+        reasonCode: 'BASELINE_SOURCE_MISSING',
+      })
+      expect(recovered.registry.getLease(request.attemptId)?.baselineSource).toBeUndefined()
+    } finally {
+      recovered.registry.close()
+    }
+  })
+
+  it('keeps source proof grants bound to the initial request while approving a CREATE-only scope expansion', async () => {
+    const projectRoot = await gitRepo()
+    const managedRoot = await tempRoot('xiaogui-attempt-managed-')
+    const initialGrant = { operation: 'CREATE' as const, relativePath: 'src/initial.txt' }
+    const expansionGrant = { operation: 'CREATE' as const, relativePath: 'src/expanded.txt' }
+    const observedGrants: AttemptFileGrantV1[][] = []
+    const delegate = testBaselineSourceResolver()
+    const resolver: AttemptWorkspaceBaselineSourceResolverV1 = {
+      resolve(input) {
+        observedGrants.push([...input.grants])
+        return delegate.resolve(input)
+      },
+    }
+    const { workspace, registry } = service(
+      join(await tempRoot('xiaogui-attempt-db-'), 'workspace.sqlite'),
+      managedRoot,
+      resolver,
+    )
+    const request = prepareRequest({
+      projectRoot,
+      managedRoot,
+      attemptId: 'xhba_source_scope_expansion' as AttemptId,
+      grants: [initialGrant],
+    })
+    try {
+      await workspace.prepare(request)
+      const expansion = workspace.requestScopeExpansion({
+        requestId: 'xhbs_scope_expansion',
+        attemptId: String(request.attemptId),
+        baseManifestVersion: 1,
+        requestedGrants: [expansionGrant],
+        reasonDigest: 'sha256:scope-expansion-reason',
+      })
+      const manifest = await workspace.approveScopeExpansion({
+        requestId: expansion.requestId,
+        attemptId: expansion.attemptId,
+        baseManifestVersion: expansion.baseManifestVersion,
+        requestDigest: expansion.requestDigest,
+        ownerId: request.ownerId,
+      })
+      expect(manifest.grants).toEqual([expansionGrant, initialGrant])
+      expect(observedGrants.length).toBeGreaterThanOrEqual(2)
+      expect(observedGrants.every((grants) => JSON.stringify(grants) === JSON.stringify([initialGrant]))).toBe(true)
+    } finally {
+      registry.close()
+    }
   })
 
   it('replays the same request and rejects manifest or source-worktree drift', async () => {

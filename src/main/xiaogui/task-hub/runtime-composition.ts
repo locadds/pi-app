@@ -9,6 +9,9 @@ import type {
   RuntimeRoutingPolicyV1,
 } from '@shared/xiaogui-agent-runtime'
 import type { SessionScopeLookupV1 } from '@shared/xiaogui-session-scope'
+import { taskChangeSetDigestV1 } from '@shared/xiaogui-task-verification'
+import type { AttemptId, FlowId } from '@shared/xiaogui-collaboration-hub'
+import type { ArtifactId, TaskChangeSetId } from '@shared/xiaogui-task-verification'
 
 import { KimiAttemptWorkspaceResolverV1 } from '../agent-runtime/kimi-attempt-workspace'
 import {
@@ -35,8 +38,14 @@ import {
 import {
   GitAttemptWorkspaceServiceV1,
   SqliteAttemptWorkspaceRegistryV1,
+  digestBytes as workspaceDigestBytes,
+  digestJson as workspaceDigestJson,
+  type AttemptFileGrantV1,
+  type AttemptWorkspaceBaselineSourceBindingV1,
+  type AttemptWorkspaceBaselineSourceResolverV1,
   type ProjectWorkspaceResolverV1,
 } from './attempt-workspace'
+import { payloadDigest } from './digest'
 import { GitExecutionBaselineProviderV1 } from './git-execution-baseline'
 import { GitDerivedExecutionBaselineProviderV1 } from './git-derived-execution-baseline'
 import { PrivateRuntimePayloadVaultV1 } from './private-payload-vault'
@@ -161,8 +170,13 @@ export function createXiaoguiRuntimeCompositionV1(
     workspaceRegistry = new SqliteAttemptWorkspaceRegistryV1({
       dbPath: join(taskHubDir, 'attempt-workspaces.sqlite'),
     })
+    const baselineSourceResolver = createMainAttemptWorkspaceBaselineSourceResolverV1(
+      hubDbPath,
+      () => inputStore,
+    )
     const attemptWorkspaces = new GitAttemptWorkspaceServiceV1(workspaceRegistry, projectResolver, {
       managedRoot: join(xiaoguiDir, 'attempt-worktrees'),
+      baselineSourceResolver,
     })
     const derivedBaselineProvider = new GitDerivedExecutionBaselineProviderV1({
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
@@ -478,6 +492,385 @@ function createCompositionInterface(
       })()
       return closePromise
     },
+  }
+}
+
+export function createMainAttemptWorkspaceBaselineSourceResolverV1(
+  hubDbPath: string,
+  inputStoreProvider: () => AttemptExecutionInputStoreV1 | undefined,
+): AttemptWorkspaceBaselineSourceResolverV1 {
+  return {
+    resolve({ request, grants }) {
+      const inputStore = inputStoreProvider()
+      if (!inputStore) return null
+      let staged: ResolvedAttemptExecutionInputV1
+      try {
+        staged = inputStore.resolve(request.attemptId)
+      } catch {
+        return null
+      }
+      const store = new CollaborationHubSqliteStoreV1(hubDbPath)
+      try {
+        return resolveMainAttemptWorkspaceBaselineSourceV1(store, request, grants, staged)
+      } finally {
+        store.close()
+      }
+    },
+  }
+}
+
+function resolveMainAttemptWorkspaceBaselineSourceV1(
+  store: CollaborationHubSqliteStoreV1,
+  request: Parameters<AttemptWorkspaceBaselineSourceResolverV1['resolve']>[0]['request'],
+  grants: readonly AttemptFileGrantV1[],
+  staged: ResolvedAttemptExecutionInputV1,
+): AttemptWorkspaceBaselineSourceBindingV1 | null {
+  const attemptId = String(request.attemptId)
+  const attempt = store.attemptExecutionScope(attemptId as AttemptId)
+  const composition = store.compositionAttempt(attemptId as AttemptId)
+  const task = store.taskExecutionBaseline(attemptId as AttemptId)
+  if (!attempt || !composition || !task) return null
+  if (
+    attempt.attempt_id !== attemptId ||
+    attempt.project_id !== staged.projectId ||
+    attempt.session_key !== staged.sessionKey ||
+    staged.attemptId !== attemptId ||
+    staged.projectId !== request.projectId ||
+    staged.grants.length !== grants.length ||
+    JSON.stringify(staged.grants) !== JSON.stringify(grants) ||
+    composition.attemptId !== attemptId ||
+    composition.compositionAttemptId !== request.compositionAttemptId ||
+    composition.requestDigest !== request.requestDigest ||
+    composition.baselineBindingDigest !== request.baselineBindingDigest ||
+    composition.compositionDigest !== request.compositionDigest ||
+    task.attempt_id !== attemptId ||
+    task.task_run_id !== attempt.task_run_id ||
+    task.flow_id !== attempt.flow_id ||
+    task.baseline_binding_digest !== request.baselineBindingDigest ||
+    task.base_revision !== request.baseRevision ||
+    task.baseline_tree_hash !== request.baselineTreeHash ||
+    workspaceDigestJson(grants) !== workspaceDigestJson(staged.grants)
+  ) {
+    return null
+  }
+
+  const flow = store.flowExecutionBaseline(attempt.flow_id as FlowId)
+  if (!flow || flow.flow_id !== attempt.flow_id) return null
+  const sourceBaseline = sourceBaselineFromRecord(flow)
+  if (!sourceBaseline || sourceBaseline.baselineBindingDigest !== flow.baseline_binding_digest) return null
+  if (
+    flow.baseline_digest !== payloadDigest({
+      baselineId: sourceBaseline.baselineId,
+      ...(sourceBaseline.baseRevision ? { baseRevision: sourceBaseline.baseRevision } : {}),
+      baselineTreeHash: sourceBaseline.baselineTreeHash,
+      initialTargetFingerprint: sourceBaseline.initialTargetFingerprint,
+    }) ||
+    flow.baseline_binding_digest !== payloadDigest({
+      flowId: attempt.flow_id,
+      baseline: {
+        baselineId: sourceBaseline.baselineId,
+        ...(sourceBaseline.baseRevision ? { baseRevision: sourceBaseline.baseRevision } : {}),
+        baselineTreeHash: sourceBaseline.baselineTreeHash,
+        initialTargetFingerprint: sourceBaseline.initialTargetFingerprint,
+        baselineDigest: sourceBaseline.baselineDigest,
+      },
+    })
+  ) {
+    return null
+  }
+
+  const ancestors = parseStringArray(task.ancestor_task_change_set_ids_json)
+  if (!ancestors || JSON.stringify(ancestors) !== task.ancestor_task_change_set_ids_json) return null
+  const taskBaseline = taskBaselineFromRecord(task, ancestors)
+  if (!taskBaseline) return null
+  if (
+    task.baseline_binding_digest !== payloadDigest({
+      version: 1,
+      flowId: attempt.flow_id,
+      taskRunId: attempt.task_run_id,
+      taskBaseline: taskBaselinePayload(taskBaseline, attempt.task_run_id),
+    })
+  ) {
+    return null
+  }
+
+  const common = {
+    version: 1 as const,
+    attemptId,
+    projectId: staged.projectId,
+    sessionKey: staged.sessionKey,
+    flowId: attempt.flow_id,
+    taskRunId: attempt.task_run_id,
+    source: sourceBaseline,
+    task: taskBaseline,
+    grantsDigest: workspaceDigestJson(grants),
+  }
+  if (ancestors.length === 0) {
+    const expectedTaskDerivation = payloadDigest({
+      version: 1,
+      taskRunId: attempt.task_run_id,
+      ancestorTaskChangeSetIds: [],
+      baselineId: sourceBaseline.baselineId,
+      ...(sourceBaseline.baseRevision ? { baseRevision: sourceBaseline.baseRevision } : {}),
+      baselineTreeHash: sourceBaseline.baselineTreeHash,
+      initialTargetFingerprint: sourceBaseline.initialTargetFingerprint,
+      baselineDigest: sourceBaseline.baselineDigest,
+    })
+    if (
+      taskBaseline.derivationDigest !== expectedTaskDerivation ||
+      !sameBaselineFields(sourceBaseline, taskBaseline)
+    ) {
+      return null
+    }
+    return withSourceBindingDigest({ ...common, kind: 'PROJECT' })
+  }
+
+  const derivationInputDigest = derivedInputDigest(
+    store,
+    staged,
+    attempt.flow_id,
+    attempt.task_run_id,
+    sourceBaseline,
+    ancestors,
+  )
+  if (!derivationInputDigest) return null
+  const cache = store.derivedExecutionBaseline(derivationInputDigest)
+  if (!cache || cache.project_id !== staged.projectId || cache.flow_id !== attempt.flow_id || cache.task_run_id !== attempt.task_run_id) {
+    return null
+  }
+  const cachedBaseline = parseCanonicalDerivedBaseline(
+    cache.baseline_json,
+    attempt.task_run_id,
+    ancestors,
+  )
+  if (
+    !cachedBaseline ||
+    !sameBaselineFields(cachedBaseline, taskBaseline) ||
+    cachedBaseline.initialTargetFingerprint !== sourceBaseline.initialTargetFingerprint ||
+    cachedBaseline.derivationDigest !== taskBaseline.derivationDigest ||
+    taskBaseline.baselineBindingDigest !== payloadDigest({
+      version: 1,
+      flowId: attempt.flow_id,
+      taskRunId: attempt.task_run_id,
+      taskBaseline: taskBaselinePayload(cachedBaseline, attempt.task_run_id),
+    })
+  ) {
+    return null
+  }
+  return withSourceBindingDigest({
+    ...common,
+    kind: 'DERIVED',
+    derivation: {
+      derivationInputDigest,
+      cacheDigest: workspaceDigestBytes(Buffer.from(cache.baseline_json, 'utf8')),
+    },
+  })
+}
+
+function sourceBaselineFromRecord(
+  record: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['flowExecutionBaseline']>>,
+): AttemptWorkspaceBaselineSourceBindingV1['source'] | null {
+  if (
+    typeof record.baseline_id !== 'string' ||
+    typeof record.base_revision !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(record.base_revision) ||
+    typeof record.baseline_tree_hash !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(record.baseline_tree_hash) ||
+    typeof record.initial_target_fingerprint !== 'string' ||
+    typeof record.baseline_digest !== 'string' ||
+    typeof record.baseline_binding_digest !== 'string'
+  ) return null
+  return {
+    baselineId: record.baseline_id,
+    baseRevision: record.base_revision,
+    baselineTreeHash: record.baseline_tree_hash,
+    initialTargetFingerprint: record.initial_target_fingerprint,
+    baselineDigest: record.baseline_digest,
+    baselineBindingDigest: record.baseline_binding_digest,
+  }
+}
+
+function taskBaselineFromRecord(
+  record: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['taskExecutionBaseline']>>,
+  ancestors: readonly string[],
+): AttemptWorkspaceBaselineSourceBindingV1['task'] | null {
+  if (
+    typeof record.baseline_id !== 'string' ||
+    typeof record.base_revision !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(record.base_revision) ||
+    typeof record.baseline_tree_hash !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(record.baseline_tree_hash) ||
+    typeof record.initial_target_fingerprint !== 'string' ||
+    typeof record.baseline_digest !== 'string' ||
+    typeof record.baseline_binding_digest !== 'string' ||
+    typeof record.derivation_digest !== 'string'
+  ) return null
+  return {
+    baselineId: record.baseline_id,
+    baseRevision: record.base_revision,
+    baselineTreeHash: record.baseline_tree_hash,
+    initialTargetFingerprint: record.initial_target_fingerprint,
+    baselineDigest: record.baseline_digest,
+    baselineBindingDigest: record.baseline_binding_digest,
+    derivationDigest: record.derivation_digest,
+    ancestorTaskChangeSetIds: [...ancestors],
+  }
+}
+
+function sameBaselineFields(
+  left: Pick<AttemptWorkspaceBaselineSourceBindingV1['task'], 'baselineId' | 'baseRevision' | 'baselineTreeHash' | 'initialTargetFingerprint' | 'baselineDigest'>,
+  right: Pick<AttemptWorkspaceBaselineSourceBindingV1['task'], 'baselineId' | 'baseRevision' | 'baselineTreeHash' | 'initialTargetFingerprint' | 'baselineDigest'>,
+): boolean {
+  return left.baselineId === right.baselineId &&
+    left.baseRevision === right.baseRevision &&
+    left.baselineTreeHash === right.baselineTreeHash &&
+    left.initialTargetFingerprint === right.initialTargetFingerprint &&
+    left.baselineDigest === right.baselineDigest
+}
+
+function taskBaselinePayload(
+  task: AttemptWorkspaceBaselineSourceBindingV1['task'],
+  taskRunId: string,
+): Record<string, unknown> {
+  return {
+    version: 1,
+    taskRunId,
+    ancestorTaskChangeSetIds: task.ancestorTaskChangeSetIds,
+    baselineId: task.baselineId,
+    baseRevision: task.baseRevision,
+    baselineTreeHash: task.baselineTreeHash,
+    initialTargetFingerprint: task.initialTargetFingerprint,
+    baselineDigest: task.baselineDigest,
+    derivationDigest: task.derivationDigest,
+  }
+}
+
+function parseStringArray(value: string): readonly string[] | null {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string') || new Set(parsed).size !== parsed.length) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function derivedInputDigest(
+  store: CollaborationHubSqliteStoreV1,
+  staged: ResolvedAttemptExecutionInputV1,
+  flowId: string,
+  taskRunId: string,
+  flowBaseline: AttemptWorkspaceBaselineSourceBindingV1['source'],
+  ancestors: readonly string[],
+): string | null {
+  const taskChangeSets = []
+  for (const id of ancestors) {
+    const changeSet = store.readTaskChangeSet(id as TaskChangeSetId)
+    if (!changeSet || changeSet.flowId !== flowId || changeSet.taskChangeSetId !== id) return null
+    if (
+      taskChangeSetDigestV1({
+        inputTreeHash: changeSet.inputTreeHash,
+        resultTreeHash: changeSet.resultTreeHash,
+        ancestorTaskChangeSetIds: changeSet.ancestorTaskChangeSetIds,
+        patchArtifactId: changeSet.patchArtifactId,
+      }) !== changeSet.digest
+    ) return null
+    const artifact = store.readArtifact(changeSet.patchArtifactId as ArtifactId)
+    if (
+      !artifact ||
+      artifact.kind !== 'PATCH' ||
+      artifact.artifactId !== changeSet.patchArtifactId ||
+      workspaceDigestBytes(artifact.content) !== artifact.contentDigest
+    ) return null
+    taskChangeSets.push({
+      taskChangeSetId: changeSet.taskChangeSetId,
+      digest: changeSet.digest,
+      patchArtifactId: artifact.artifactId,
+      patchArtifactDigest: artifact.contentDigest,
+    })
+  }
+  return payloadDigest({
+    version: 1,
+    address: { projectId: staged.projectId, sessionKey: staged.sessionKey },
+    flowId,
+    taskRunId,
+    flowBaseline: {
+      baselineId: flowBaseline.baselineId,
+      baseRevision: flowBaseline.baseRevision,
+      baselineTreeHash: flowBaseline.baselineTreeHash,
+      initialTargetFingerprint: flowBaseline.initialTargetFingerprint,
+      baselineDigest: flowBaseline.baselineDigest,
+    },
+    dependencyOrder: ancestors,
+    taskChangeSets,
+  })
+}
+
+function parseCanonicalDerivedBaseline(
+  value: string,
+  taskRunId: string,
+  ancestors: readonly string[],
+): (AttemptWorkspaceBaselineSourceBindingV1['task'] & { readonly version: 1; readonly taskRunId: string }) | null {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>
+    const expectedKeys = [
+      'version',
+      'taskRunId',
+      'ancestorTaskChangeSetIds',
+      'baselineId',
+      'baseRevision',
+      'baselineTreeHash',
+      'initialTargetFingerprint',
+      'baselineDigest',
+      'derivationDigest',
+    ].sort()
+    if (JSON.stringify(Object.keys(parsed).sort()) !== JSON.stringify(expectedKeys)) return null
+    if (
+      parsed.version !== 1 ||
+      parsed.taskRunId !== taskRunId ||
+      !Array.isArray(parsed.ancestorTaskChangeSetIds) ||
+      JSON.stringify(parsed.ancestorTaskChangeSetIds) !== JSON.stringify(ancestors) ||
+      typeof parsed.baselineId !== 'string' ||
+      typeof parsed.baseRevision !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(parsed.baseRevision) ||
+      typeof parsed.baselineTreeHash !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(parsed.baselineTreeHash) ||
+      typeof parsed.initialTargetFingerprint !== 'string' ||
+      typeof parsed.baselineDigest !== 'string' ||
+      typeof parsed.derivationDigest !== 'string' ||
+      JSON.stringify(parsed) !== value
+    ) return null
+    const expectedBaselineDigest = payloadDigest({
+      baselineId: parsed.baselineId,
+      baseRevision: parsed.baseRevision,
+      baselineTreeHash: parsed.baselineTreeHash,
+      initialTargetFingerprint: parsed.initialTargetFingerprint,
+    })
+    const { derivationDigest: _ignored, ...withoutDerivation } = parsed
+    if (parsed.baselineDigest !== expectedBaselineDigest || parsed.derivationDigest !== payloadDigest(withoutDerivation)) return null
+    return {
+      version: 1,
+      taskRunId,
+      ancestorTaskChangeSetIds: ancestors,
+      baselineId: parsed.baselineId,
+      baseRevision: parsed.baseRevision,
+      baselineTreeHash: parsed.baselineTreeHash,
+      initialTargetFingerprint: parsed.initialTargetFingerprint,
+      baselineDigest: parsed.baselineDigest,
+      baselineBindingDigest: '',
+      derivationDigest: parsed.derivationDigest,
+    }
+  } catch {
+    return null
+  }
+}
+
+function withSourceBindingDigest(
+  source: Omit<AttemptWorkspaceBaselineSourceBindingV1, 'bindingDigest'>,
+): AttemptWorkspaceBaselineSourceBindingV1 {
+  return {
+    ...source,
+    bindingDigest: workspaceDigestJson(source),
   }
 }
 

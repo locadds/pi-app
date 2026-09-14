@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -28,6 +28,8 @@ import {
   GitAttemptWorkspaceServiceV1,
   SqliteAttemptWorkspaceRegistryV1,
   digestBytes,
+  digestJson,
+  type AttemptWorkspaceBaselineSourceResolverV1,
 } from './attempt-workspace'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 
@@ -61,7 +63,10 @@ describe('GitDerivedExecutionBaselineProviderV1', () => {
       const workspace = new GitAttemptWorkspaceServiceV1(
         registry,
         { resolveProjectRoot: () => fixture.repo },
-        { managedRoot: join(fixture.root, 'attempt-worktrees') },
+        {
+          managedRoot: join(fixture.root, 'attempt-worktrees'),
+          baselineSourceResolver: derivedTestSourceResolver(fixture.repo),
+        },
       )
       const prepared = await workspace.prepare({
         attemptId: 'xhba_task_c' as AttemptId,
@@ -132,6 +137,33 @@ describe('GitDerivedExecutionBaselineProviderV1', () => {
     expect(await git(fixture.repo, ['show', `${baseline.baseRevision}:src/value.txt`])).toBe('from B\n')
     await expectSourceGitState(fixture.repo, before)
     expect(await git(fixture.repo, ['branch', '--contains', baseline.baseRevision!])).toBe('')
+    expect((await git(fixture.repo, ['worktree', 'list', '--porcelain'])).includes('delivery-')).toBe(false)
+  })
+
+  it('applies a verified CREATE then MODIFY chain for a path absent from the source checkout', async () => {
+    const fixture = await fixtureRoot()
+    const first = taskMaterial('ordered-create-a', null, 'from A\n', [], 'src/new.txt')
+    const second = taskMaterial(
+      'ordered-create-b',
+      'from A\n',
+      'from B\n',
+      [first.changeSet.taskChangeSetId],
+      'src/new.txt',
+    )
+    const before = await sourceGitState(fixture.repo)
+    const provider = derivedProvider(fixture, new Map([
+      [first.changeSet.taskChangeSetId, first],
+      [second.changeSet.taskChangeSetId, second],
+    ]))
+
+    const baseline = await provider.derive(await deriveInput(fixture.repo, [
+      first.changeSet.taskChangeSetId,
+      second.changeSet.taskChangeSetId,
+    ]))
+
+    expect(await git(fixture.repo, ['show', `${baseline.baseRevision}:src/new.txt`])).toBe('from B\n')
+    expect(existsSync(join(fixture.repo, 'src/new.txt'))).toBe(false)
+    await expectSourceGitState(fixture.repo, before)
     expect((await git(fixture.repo, ['worktree', 'list', '--porcelain'])).includes('delivery-')).toBe(false)
   })
 
@@ -223,6 +255,54 @@ async function fixtureRoot() {
     managedRoot: join(root, 'derived-baseline-worktrees'),
     dbPath: join(root, 'hub.sqlite'),
   }
+}
+
+function derivedTestSourceResolver(repo: string): AttemptWorkspaceBaselineSourceResolverV1 {
+  return {
+    resolve({ request, grants }) {
+      const sourceBaseRevision = gitSync(repo, ['rev-parse', 'HEAD'])
+      const sourceTree = gitSync(repo, ['rev-parse', `${sourceBaseRevision}^{tree}`])
+      const source = {
+        baselineId: 'test-flow-baseline',
+        baseRevision: sourceBaseRevision,
+        baselineTreeHash: sourceTree,
+        initialTargetFingerprint: 'test-target',
+        baselineDigest: 'test-flow-digest',
+        baselineBindingDigest: 'test-flow-binding',
+      }
+      const task = {
+        baselineId: 'test-derived-baseline',
+        baseRevision: request.baseRevision,
+        baselineTreeHash: request.baselineTreeHash,
+        initialTargetFingerprint: 'test-task-target',
+        baselineDigest: 'test-task-digest',
+        baselineBindingDigest: request.baselineBindingDigest,
+        derivationDigest: 'test-derived-digest',
+        ancestorTaskChangeSetIds: ['test-ancestor'],
+      }
+      const binding = {
+        version: 1 as const,
+        kind: 'DERIVED' as const,
+        attemptId: String(request.attemptId),
+        projectId: request.projectId,
+        sessionKey: 'test-session',
+        flowId: String(request.compositionAttemptId),
+        taskRunId: 'test-task-run',
+        source,
+        task,
+        grantsDigest: digestJson(grants),
+        derivation: {
+          derivationInputDigest: 'test-input-digest',
+          cacheDigest: 'test-cache-digest',
+        },
+      }
+      return { ...binding, bindingDigest: digestJson(binding) }
+    },
+  }
+}
+
+function gitSync(cwd: string, args: readonly string[]): string {
+  return execFileSync('git', [...args], { cwd, encoding: 'utf8', windowsHide: true }).trim()
 }
 
 function derivedProvider(

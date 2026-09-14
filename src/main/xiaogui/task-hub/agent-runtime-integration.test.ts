@@ -29,7 +29,13 @@ import type { VerificationAttemptId } from '@shared/xiaogui-task-verification'
 import { createAgentRuntimeHostV1 } from '../agent-runtime/runtime-host'
 import { ScriptedAgentRuntimeAdapterV1 } from '../agent-runtime/scripted-adapter'
 import { createCollaborationHubApplicationV1, type ExecutionWorkspaceBridgeV1, type RuntimePromptVaultV1 } from './application'
-import { GitAttemptWorkspaceServiceV1, SqliteAttemptWorkspaceRegistryV1, digestBytes } from './attempt-workspace'
+import {
+  GitAttemptWorkspaceServiceV1,
+  SqliteAttemptWorkspaceRegistryV1,
+  digestBytes,
+  digestJson as workspaceDigestJson,
+  type AttemptWorkspaceBaselineSourceResolverV1,
+} from './attempt-workspace'
 import { digestJson } from './digest'
 import { PrivateRuntimePayloadVaultV1 } from './private-payload-vault'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
@@ -323,6 +329,38 @@ function gitBaseline(projectRoot: string) {
   return { ...base, baselineDigest: digestJson(base) }
 }
 
+function testWorkspaceBaselineSourceResolver(): AttemptWorkspaceBaselineSourceResolverV1 {
+  return {
+    resolve({ request, grants }) {
+      const baseline = {
+        baselineId: `test-main-baseline-${request.baseRevision}`,
+        baseRevision: request.baseRevision,
+        baselineTreeHash: request.baselineTreeHash,
+        initialTargetFingerprint: 'test-main-target-fingerprint',
+        baselineDigest: 'test-main-baseline-digest',
+        baselineBindingDigest: request.baselineBindingDigest,
+      }
+      const source = {
+        version: 1 as const,
+        kind: 'PROJECT' as const,
+        attemptId: String(request.attemptId),
+        projectId: request.projectId,
+        sessionKey: 'test-main-session',
+        flowId: 'test-main-flow',
+        taskRunId: 'test-main-task',
+        source: baseline,
+        task: {
+          ...baseline,
+          derivationDigest: 'test-main-derivation',
+          ancestorTaskChangeSetIds: [],
+        },
+        grantsDigest: workspaceDigestJson(grants),
+      }
+      return { ...source, bindingDigest: workspaceDigestJson(source) }
+    },
+  }
+}
+
 function runtimeRequest(scope: RuntimeScopeBindingV1): RuntimeCreateOrResumeRequestV1 {
   return {
     requestId: 'runtime-create',
@@ -425,7 +463,7 @@ describe('M2B fake agent runtime integration', () => {
     const workspaceService = new GitAttemptWorkspaceServiceV1(
       workspaceRegistry,
       { resolveProjectRoot: (projectId) => (projectId === ADDRESS.projectId ? projectRoot : '') },
-      { managedRoot },
+      { managedRoot, baselineSourceResolver: testWorkspaceBaselineSourceResolver() },
     )
     const promptVault = new PrivateRuntimePayloadVaultV1({ dbPath: join(payloadDbRoot, 'payload.sqlite') })
     const app = createCollaborationHubApplicationV1({

@@ -46,6 +46,7 @@ import {
   GitAttemptWorkspaceServiceV1,
   SqliteAttemptWorkspaceRegistryV1,
   digestBytes,
+  type AttemptWorkspaceBaselineSourceResolverV1,
 } from '../task-hub/attempt-workspace'
 import { DeliveryComposerV1 } from '../task-hub/delivery-composer'
 import { createRuntimeOutcomeMonitorV1 } from '../task-hub/runtime-outcome-monitor'
@@ -456,7 +457,10 @@ describe('Oh My Pi ACP P1C production seam', () => {
     const managedRoot = join(root, 'attempt-worktrees')
     const projectResolver = { resolveProjectRoot: () => projectRoot }
     let workspaceRegistry = trackClose(new SqliteAttemptWorkspaceRegistryV1({ dbPath: workspaceDb }))
-    let workspaces = new GitAttemptWorkspaceServiceV1(workspaceRegistry, projectResolver, { managedRoot })
+    let workspaces = new GitAttemptWorkspaceServiceV1(workspaceRegistry, projectResolver, {
+      managedRoot,
+      baselineSourceResolver: testWorkspaceBaselineSourceResolver(),
+    })
     const baseRevision = git(projectRoot, ['rev-parse', 'HEAD'])
     const baselineTreeHash = git(projectRoot, ['rev-parse', `${baseRevision}^{tree}`])
     const prepared = await workspaces.prepare({
@@ -698,7 +702,10 @@ describe('Oh My Pi ACP P1C production seam', () => {
     workspaceRegistry.close()
 
     workspaceRegistry = trackClose(new SqliteAttemptWorkspaceRegistryV1({ dbPath: workspaceDb }))
-    workspaces = new GitAttemptWorkspaceServiceV1(workspaceRegistry, projectResolver, { managedRoot })
+    workspaces = new GitAttemptWorkspaceServiceV1(workspaceRegistry, projectResolver, {
+      managedRoot,
+      baselineSourceResolver: testWorkspaceBaselineSourceResolver(),
+    })
     const driftRecovery = trackClose(new SqliteOmpAcpRecoveryStoreV1({ dbPath: recoveryDb }))
     const driftFactory = new JourneyTransportFactory()
     const driftRuntime = trackClose(createAgentRuntimeRegistryV1())
@@ -768,7 +775,10 @@ describe('Oh My Pi ACP P1C production seam', () => {
     const workspaces = new GitAttemptWorkspaceServiceV1(
       workspaceRegistry,
       { resolveProjectRoot: () => projectRoot },
-      { managedRoot: join(root, 'attempt-worktrees') },
+      {
+        managedRoot: join(root, 'attempt-worktrees'),
+        baselineSourceResolver: testWorkspaceBaselineSourceResolver(),
+      },
     )
     const baseRevision = git(projectRoot, ['rev-parse', 'HEAD'])
     const baselineTreeHash = git(projectRoot, ['rev-parse', `${baseRevision}^{tree}`])
@@ -1251,6 +1261,38 @@ function createGitProject(root: string): string {
   git(root, ['add', '.'])
   git(root, ['commit', '-m', 'baseline'])
   return root
+}
+
+function testWorkspaceBaselineSourceResolver(): AttemptWorkspaceBaselineSourceResolverV1 {
+  return {
+    resolve({ request, grants }) {
+      const baseline = {
+        baselineId: `test-omp-baseline-${request.baseRevision}`,
+        baseRevision: request.baseRevision,
+        baselineTreeHash: request.baselineTreeHash,
+        initialTargetFingerprint: 'test-omp-target-fingerprint',
+        baselineDigest: 'test-omp-baseline-digest',
+        baselineBindingDigest: request.baselineBindingDigest,
+      }
+      const source = {
+        version: 1 as const,
+        kind: 'PROJECT' as const,
+        attemptId: String(request.attemptId),
+        projectId: request.projectId,
+        sessionKey: 'test-omp-session',
+        flowId: 'test-omp-flow',
+        taskRunId: 'test-omp-task',
+        source: baseline,
+        task: {
+          ...baseline,
+          derivationDigest: 'test-omp-derivation',
+          ancestorTaskChangeSetIds: [],
+        },
+        grantsDigest: testDigestJson(grants),
+      }
+      return { ...source, bindingDigest: testDigestJson(source) }
+    },
+  }
 }
 
 function git(cwd: string, args: string[]): string {

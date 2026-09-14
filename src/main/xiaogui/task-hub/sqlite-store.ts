@@ -130,6 +130,14 @@ interface AttemptRecord {
   outcome_receipt_digest: string | null
 }
 
+export interface AttemptExecutionScopeRecordV1 {
+  readonly attempt_id: AttemptId
+  readonly project_id: string
+  readonly session_key: string
+  readonly flow_id: FlowId
+  readonly task_run_id: TaskRunId
+}
+
 interface WorkspaceReceiptRecord {
   workspace_receipt_id: WorkspaceReceiptId
   attempt_id: AttemptId
@@ -1877,6 +1885,15 @@ export class CollaborationHubSqliteStoreV1 {
     const row = this.db
       .prepare('select attempt_id, task_run_id, flow_id, status, attempt_digest, workspace_receipt_id, runtime_session_id, outcome_receipt_digest from attempts where attempt_id = ?')
       .get(attemptId) as AttemptRecord | undefined
+    return row ?? null
+  }
+
+  attemptExecutionScope(attemptId: AttemptId): AttemptExecutionScopeRecordV1 | null {
+    const row = this.db
+      .prepare(
+        'select attempt_id, project_id, session_key, flow_id, task_run_id from attempts where attempt_id = ?',
+      )
+      .get(attemptId) as AttemptExecutionScopeRecordV1 | undefined
     return row ?? null
   }
 
