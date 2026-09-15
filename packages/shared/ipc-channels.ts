@@ -165,6 +165,7 @@ export const IPC_INVOKE_CHANNELS = [
   'ipc:xiaogui.hubTask.inbox.decision',
   'ipc:xiaogui.hubTask.inbox.return',
   'ipc:xiaogui.hubTask.inbox.createPlanDraft',
+  'ipc:xiaogui.hubTask.inbox.acceptAndExecute',
   'ipc:xiaogui.c2.status',
   'ipc:xiaogui.c2.confirm',
   'ipc:xiaogui.c2.cancel',

@@ -21,6 +21,7 @@ describe('H1 Hub IPC bridge', () => {
       decideAssignment: vi.fn(),
       returnAssignment: vi.fn(),
       createPlanDraft: vi.fn(),
+      acceptAndExecuteV2: vi.fn(),
     } as unknown as HubTaskWorkerServiceV1
     registerHubTaskWorkerHandlers(
       service,
@@ -30,6 +31,7 @@ describe('H1 Hub IPC bridge', () => {
 
     expect([...handlers.keys()].sort()).toEqual([
       'ipc:xiaogui.hubTask.connect',
+      'ipc:xiaogui.hubTask.inbox.acceptAndExecute',
       'ipc:xiaogui.hubTask.inbox.createPlanDraft',
       'ipc:xiaogui.hubTask.inbox.decision',
       'ipc:xiaogui.hubTask.inbox.list',
@@ -46,5 +48,38 @@ describe('H1 Hub IPC bridge', () => {
       endpoint: 'http://hub.intranet:3000', username: 'planner', password: 'password-123',
     })).resolves.toMatchObject({ ok: true })
     expect(service.connect).toHaveBeenCalledWith(expect.objectContaining({ installationIdDigest: `sha256:${'a'.repeat(64)}` }))
+  })
+
+  it('acceptAndExecute IPC is strict and forwards only the four Renderer fields', async () => {
+    const acceptAndExecuteV2 = vi.fn(async () => ({
+      ok: true as const,
+      value: { executionState: 'PREPARED' as const, flowId: 'flow-private', revisionId: 'revision-private' },
+    }))
+    const service = {
+      status: vi.fn(() => ({ configured: true, state: 'READY' as const, lastSyncedAt: null, pendingReceiptCount: 0 })),
+      listInbox: vi.fn(() => []),
+      acceptAndExecuteV2,
+    } as unknown as HubTaskWorkerServiceV1
+    registerHubTaskWorkerHandlers(service, `sha256:${'a'.repeat(64)}`)
+
+    const address = { projectId: `xgp1_${'b'.repeat(64)}`, sessionKey: `xgs1_${'c'.repeat(64)}` }
+    const payload = {
+      assignmentId: 'assignment-1',
+      address,
+      observedPackageSha256: `sha256:${'d'.repeat(64)}`,
+      requestId: 'request-1',
+    }
+    await expect(handlers.get('ipc:xiaogui.hubTask.inbox.acceptAndExecute')!(payload)).resolves.toEqual({
+      ok: true,
+      value: { executionState: 'PREPARED', flowId: 'flow-private', revisionId: 'revision-private' },
+    })
+    expect(acceptAndExecuteV2).toHaveBeenCalledWith({
+      contractVersion: 'hub.accept-execute.v2',
+      ...payload,
+    })
+    await expect(handlers.get('ipc:xiaogui.hubTask.inbox.acceptAndExecute')!({ ...payload, taskContent: 'must reject' })).resolves.toEqual({
+      ok: false, code: 'HUB_WORKER_INPUT_INVALID',
+    })
+    expect(acceptAndExecuteV2).toHaveBeenCalledOnce()
   })
 })

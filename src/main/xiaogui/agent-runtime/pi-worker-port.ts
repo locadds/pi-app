@@ -20,6 +20,7 @@ export interface PiAttemptWorkerPortV1 {
 export function createPiAttemptWorkerPortV1(input: {
   rootPath: string
   scope: RuntimeScopeBindingV1
+  worktreeAuthorized?: boolean
   designExtensionPath?: string
   onTool: WorkerHostToolRequestHandler
   onEvent: (event: AppEvent) => void
@@ -41,7 +42,9 @@ export function createPiAttemptWorkerPortV1(input: {
     forWorkspace: async () => context,
     forSession: async () => context,
   }, capabilities.authority, {
-    attemptId: input.scope.attemptId, designExtensionPath: input.designExtensionPath, onEvent: input.onEvent, onExit: input.onExit,
+    attemptId: input.scope.attemptId, designExtensionPath: input.designExtensionPath,
+    ...(input.worktreeAuthorized === true ? { worktreeAuthorized: true } : {}),
+    onEvent: input.onEvent, onExit: input.onExit,
   })
   manager.setHostToolRequestHandler(input.onTool)
   let sessionFile = ''

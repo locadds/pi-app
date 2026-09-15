@@ -1,5 +1,18 @@
 # 小规开发阶段状态
 
+## 2026-09-15｜第2门生产接线候选（实施完成，待桌面主管定向复验）
+
+- 固定接续基线 `c99faaa97f31e09f3a75e2b6b26ff9e0758898ad`；接纳关联恢复P2已经中台 Standards/Spec APPROVE 并关闭，既有LOW不扩修。开工和提交前本地/上游/live一致，保护stash及另外两stash未变。下面旧章节保留当时状态，本节为当前结论。
+- 已按主管三项补充实施：默认UI/IPC接入Main可信一次接纳；Pi工具消费Attempt工作树授权，真实执行使用Main规范路径；未结算候选由原mode verifier核验，冻结写入、同会话最多两轮修正，UNKNOWN/已结算不重派；真实V2 capture→QA/TaskChangeSet→自动Delivery→待人工审阅。WORK/DESIGN不增加通用编辑能力，普通CODING/V1保持原入口。
+- 最终审阅使用真实Git Diff及验证结果，删除/重命名前后语义完整。V1/V2 gate、ChangeSet、receipt版本明确隔离，人工批准才分派既有相应Apply port；精确自动Delivery去重覆盖拒绝/已Apply/未知状态，重复旧idle不多耗修正预算。UI接受/恢复后刷新当前地址投影，串行只读跟进到待审阅/终态，切换或卸载停止。
+- 具体文件、冻结方案、完成判据及限制见 `doc/runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md` 顶部“本批回收与证据边界”。Sol `/root/acceptance_recovery_p2`负责跨模块Main/Pi/验证/Delivery；经用户后续授权，Luna/max `/root/single_accept_ui_ipc`负责局部UI/IPC，主任务审查纠偏、文档与提交。两子任务均已回收停止。主会话精确Astra标识未暴露，未声称切换；无automation接口，15分钟heartbeat未启用、无ID，没有旁路脚本。
+- 证据集中 `D:/CodexTemp/hub-runtime-01-single-accept-spike-20260915/production-wiring/`。最终 `25-production-final-integration.log`：**1/1、exit0**，41.86s；实际组件→注册handler→默认Main装配工厂→实际接纳/Saga/工作树/PiAdapter→真实SDK工具/capture/固定验证/自动Delivery/Review，H1 RESULT一次、prompt一次、Worker关闭一次、无Apply。替身在离线传输/合成身份与worker/model port，不是实际Electron或模型。
+- 聚焦证据复用：04 adapter9项，05工具8项，06锁定SDK三模式3项，07规范专业路径2项，17存活WORK/DESIGN verifier2项；13前段Pi/审计/协调器和14修复后Delivery/review通过；21 V2人工gate分派spy/错误版本/拒绝重复自动Delivery及重复idle预算两项通过。22/23 Node/Web类型、24全部变化TS/TSX ESLint退出码0（成功stdout为空）。UI证据 `ui-ipc-01`～`08`是工具回执汇总；最后08：Panel32、Inbox6、Web类型/UI lint/diff-check通过，含无flow接受后自动显示Ready及停止跟进。重叠运行不累计成新增用例数。
+- 核心命令：`npx vitest run src/main/xiaogui/task-hub/production-wiring-v2.test.ts --maxWorkers=1 --fileParallelism=false`；`npx tsc -p tsconfig.node.json --noEmit`、`npx tsc -p tsconfig.web.json --noEmit`；仅变化TS/TSX的eslint；标准 `git diff --check`。未重跑旧P2/Delivery/Apply引擎、模型、Electron、build或包扫描。
+- 过程偏差如实保留：03为SDK active tools漏接失败，06已证明修复；09/10 H1断言误用type而非kind，曾误判生产生命周期竞态，所加临时hooks已撤回，main/xiaogui/index.ts无差异；12为无效多-t命令；13末段旧media alias失败由14修复验证；18 lint失败由19/24清零。不能以日志名或前段通过掩盖失败。
+- 自动Delivery保存恢复测试仅覆盖已封存候选扫描/回调失败后的精确重试，不代表全链在途进程崩溃恢复。V2 baseline recovery仍明确拒绝旧V1入口，case-only rename仍拒绝，检查点可信会话登记缺口未修。原业务/profile/数据库/安装现场/stash未操作，无业务Apply、合主线或发布。
+- 本批完成仅交第2门代码定向复验；第3门Electron窗口、真实模型、真实业务旅程仍未实施，不能宣布完整一次接纳验收通过。追加提交推送当前隔离分支，完整SHA及远端一致性证据写入原HANDOFF顶部，阶段交付后停工等待主管验收。
+
 ## 2026-09-15｜接纳关联恢复P2（返修候选，待桌面主管定向复验）
 
 - 方案及NOT_DISPATCHED补充已获Standards/Spec方案层面APPROVE；开工本地/上游/live远端固定64553cff62c5542303326cd0d25a7c9306b174ff、clean、保护stash未变。先更新既有CLOSEOUT再交唯一gpt-5.6-sol子任务acceptance_recovery_p2，主任务审查/纠偏/交付。

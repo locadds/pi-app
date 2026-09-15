@@ -1,5 +1,36 @@
 # HUB-RUNTIME-01 剩余工作方案
 
+## 2026-09-15｜第2门生产接线（实施回收，待桌面主管定向复验）
+
+### 本批回收与证据边界
+
+- 接续基线为 `c99faaa97f31e09f3a75e2b6b26ff9e0758898ad`；该接纳关联恢复 P2 已获中台 Standards/Spec APPROVE 并关闭。以下历史章节保留当时状态，以本节为当前状态。本批是第2门生产接线候选，尚不是主管代码验收通过。
+- Main 默认 worker 与接纳 IPC 复用同一 runtime composition 的可信端口、Application、Saga、项目解析和权威数据库身份。UI 只提交原 assignment、目标引用、已见摘要和稳定 requestId；取消新流程角色/文件清单/重复计划门，并保持已恢复关联的实际状态。普通 CODING 与 FILE_LIST_V1 保持原入口。
+- Pi 工作树授权经 worker init、工具注册、每轮 active tools 到 Main begin/settle 全程接通。仅 V2 TaskHub CODING EXECUTE 开放 delete/rename；实际 SDK 文件工具和专业工具执行使用 Main 规范路径。WORK/DESIGN 仅选择原专业工具产物路径，允许受信同路径修正，不获得通用编辑能力。
+- 未结算候选验证复用实际 mode verification port：冻结写入、核验前后候选摘要、持久化诊断/receipt 和修正预算；同一存活 Pi 会话最多两轮修正。通过、耗尽、取消或 UNKNOWN 才结算关闭 Worker；旧 runId 重复结束事件不重复消费预算。空变化不能伪造成功，未知不能重放。
+- 真实 V2 capture 经 candidate audit、QA/Evidence/TaskChangeSet、ComposerV2 到 READY_FOR_REVIEW；精确绑定 Attempt/candidate/TaskChangeSet，自动选择按所有状态的既有精确批次去重，人工拒绝后不重建相同批次。Review 使用实际 Git diff，DELETE/rename 前后语义保留。V1/V2 gate、ChangeSet、receipt 使用明确联合类型，人工批准按实际版本进入既有 Apply port，共用原 SQLite registry；自动链路无 Apply 调用。
+- 生产文件按模块：`packages/shared/{ipc-channels,worker-host-tools,xiaogui-delivery,xiaogui-delivery-ipc}.ts`；`src/main/worker-manager{,-pool}.ts`；`agent-runtime/{pi-adapter,pi-worker-port}.ts`；`coding-extensions/attempt-review-module.ts`；`hub-task/{worker-composition,worker-ipc}.ts`；`task-hub/{attempt-workspace,delivery-ipc,delivery-verification,delivery-workflow,ipc,runtime-composition,sqlite-store,task-candidate-audit,task-verification-coordinator,verification-port}.ts`；Renderer Inbox/Panel/client；worker init、runtime、port types、Attempt tool extension、WORK report tool。路径中 main 小规模块相对 `src/main/xiaogui/`。新增真实 handler 组合测试和 production-wiring-v2 测试，更新对应聚焦测试。没有新增依赖、Agent Loop、数据库或模型配置。
+- 原 HANDOFF 下 `production-wiring/25-production-final-integration.log`：最终版本接线后组合用例 **1/1，exit0**。实际组件点击→实际注册 handler→默认 Main 装配工厂→真实接纳/Saga/工作树/PiAdapter→实际 SDK 工具→真实 capture/固定验证/自动 Delivery→真实 review diff；H1 RESULT 一次，prompt 一次、Worker 关闭一次、无 Apply。替身仅离线传输、合成身份及 Worker/model port；不是 Electron、真实 Worker 进程或模型旅程。
+- 分层证据：04 adapter 9项、05工具8项、06锁定 SDK 三模式3项；07专业规范路径2项；17存活 WORK/DESIGN 实际 verifier 2项；13前段 Pi/审计/协调器通过、14修复后 Delivery/review 通过；21人工 V2 gate 分派 spy/错误版本/拒绝重放及重复 idle 预算2项。22/23 Node/Web类型、24全部变化TS/TSX lint退出码0，空日志仅表示成功无stdout。UI/IPC证据见同目录 `ui-ipc-*`（工具回执汇总，非原始stdout）。重叠用例不累计为新增数量。
+- 自动 Delivery 保存窗口证据仅为已封存候选扫描、回调第一次保存失败后精确重试；不是整个生产链路在途进程崩溃注入。P2 原 SQLite 关联恢复证据复用，未重跑。人工 Apply 的本轮测试只使用 port spy，不重跑已验收引擎或业务 Apply。
+- 最后 UI 回收：接受/恢复回调刷新同地址投影；组件挂载期间串行调用既有只读 observe/refresh，自动跟进待审阅，失败/UNKNOWN/取消/已确认 Delivery 状态停止，切换地址或卸载清理 timer。没有自动业务派发。`ui-ipc-08-panel-refresh.log` 为工具回执：Panel 32项、Inbox 6项、Web类型/UI lint/diff-check通过；包含初始无flow→接受→运行→自动READY_FOR_REVIEW及停止跟进验证。这是组件测试，不是窗口点击证明。
+- 过程偏差保留：03发现 SDK active tools 漏接已修；09/10 的 H1 失败实际是测试误用 `item.type` 而非 `kind`，曾误判生命周期竞态，临时生产 hooks 已全部撤销，`src/main/xiaogui/index.ts` 无差异；12为非法多 `-t` 命令；13末段旧 media alias 失败由14修复验证；18初始lint失败由19/24清零。不能将这些失败日志计为通过。
+- 未完成/下一门：主管第2门定向复验；通过后才安排第3门 Electron/真实模型和真实业务旅程。检查点可信会话登记缺口仍未修；V2 的既有 V1 baseline recovery 入口明确拒绝，不冒充已支持；case-only rename 仍拒绝。没有操作原业务/profile/数据库/安装现场/stash，没有构建、包扫描、业务 Apply、合主线或发布。最终完整 SHA、推送与 UI 最后刷新证据见原 HANDOFF 顶部。
+
+### 已批准方案与实施分工（保留开工记录）
+
+- 基线 `c99faaa97f31e09f3a75e2b6b26ff9e0758898ad`；中台定向复核Standards/Spec APPROVE，接纳关联恢复P2已关闭。既有LOW不扩修。当前HEAD/上游一致、工作树clean，原Sol已停止；接续同一个Sol分批编码，主任务审查集成与文档。automation接口缺失，heartbeat未启用，无后台替代。
+- 批次依赖：①Main默认可信接纳装配/IPC及Pi工作树工具授权；②未结算候选验证与最多两轮修正；③V2 candidate audit/verification/自动Delivery；④UI同步开放一次接受入口及分层组合验证。均属原第2门，不新增逐项审批；UI只能在依赖接通后开放。普通CODING独立流程、V1授权不变。
+- 编码所有权依批交唯一Sol：worker-composition/worker-ipc及桌面调用契约；agent-runtime/pi-adapter、既有Pi第一方工具/Attempt IPC；task-verification-coordinator/verification-port/candidate audit/delivery-workflow及关联私有存储；最后HubTaskInboxSection及必要任务详情消费点。具体变更清单按实查回收更新，不同时派多个共享模块owner。主任务拥有本方案、DEVELOPMENT_STATUS和HANDOFF。
+- 用户随后授权编码任务可自行分配Sol/Luna：在工具批回收后，局部UI/IPC交 `single_accept_ui_ipc`（gpt-5.6-luna/max），仅拥有worker-composition/worker-ipc、共享IPC频道、HubTaskInboxSection/CollaborationHubPanel及相关测试；原Sol保留Pi、验证、Delivery、runtime-composition/task-hub/ipc。冻结getter为getDefaultHubTaskAcceptAndExecuteTrustedPortV2，由Sol从同composition暴露，Luna注入默认worker；不重复创建运行时、不增加负责人或验收门。
+- Main默认worker复用同一个Application、orchestrator和project resolver，authorityDatabaseIdentity绑定同一hubDbPath；Renderer只传assignment/可信目标引用/已见摘要/requestId，任务正文与授权在Main重新核验。重复点击/刷新/重启沿原绑定恢复，不新增执行。接纳恢复不投影成任务成功。
+- **主管补充1：结算前验证真实接缝。** 为未结算Attempt提供受信候选验证上下文，复用verification port，不提前写SUCCEEDED，不调用会提交最终失败状态的协调流程做中途验证。模型结束但未验证时Main必须最终验证；可修正失败且预算尚余，将诊断送回同一存活Pi会话。通过、两轮预算耗尽、取消或UNKNOWN后才结算释放Worker。验证期间冻结写入，候选变化使旧receipt失效。初始验证之外最多两轮修正，预算持久后再允许副作用；已结算/UNKNOWN不得复活或自动重派。
+- **主管补充2：模式能力不扩大。** delete/rename只在该模式既有或本次批准的工具范围开放；WORK/DESIGN取消预报路径，不获得CODING通用编辑能力，复用专业工具并由Main核验Agent选定产物路径。工具实际执行必须使用Main返回规范目标，rename源目标均一致；根外/.git/链接/硬链接/子模块/碰撞拒绝，ASK/PLAN只读及命令外传策略保持，case-only rename继续拒绝。
+- 真实capture与已过V2 Composer/Apply复用。补V2 audit/verification/Delivery消费者，对DELETE核前像及后态不存在；rename保持DELETE+CREATE。最终验证PASS后按本任务精确Attempt集合+候选摘要稳定键生成并验证一次Delivery，READY_FOR_REVIEW停止写入，空diff不伪造成功。Apply必须人工确认，不自动调用；不得捞同flow历史成功Attempt替代本次。
+- UI保留任务/项目展示，接受、生成草稿、重复正文/文件清单/角色/计划批准合并一次接受并执行；计划只读展示。新流程无隐藏默认角色。装配失败显示明确原因，不落回旧路径。检查点可信会话登记缺口仍单列，仅发现真实执行依赖才报最小必要接缝，不扩重构。
+- **主管补充3：合成分层。** 组件事件经实际接纳handler、默认Main装配到Scripted Runtime，传输可替身但授权/业务不得替换；本次Pi工具补无模型的真实Pi工具生命周期检查，验证实际参数与Main规范目标一致。Electron窗口点击/真实模型保留第3门，本轮不启动。三模式只测受影响门，复用成熟本体。
+- 聚焦验证：重复点击/关联恢复；无角色文件预报的新会话；四种实际文件效果与边界拒绝；失败修正成功/两轮耗尽/候选receipt失效/UNKNOWN；精确Delivery重复事件及保存失败恢复；H1结果与人工Apply门。只跑受影响测试、Node/Web类型、变化TS lint、diff-check。完成更新两份仓库文档及原HANDOFF，追加提交推送隔离分支，固定SHA停桌面主管第2门验收。禁止原业务/profile/DB/安装现场/stash、模型、Electron、包扫描/构建、业务Apply、主线合并或发布。
+
 ## 2026-09-15｜接纳关联恢复 P2（方案 Standards/Spec APPROVE，返修候选待复验）
 
 - 固定基线 `64553cff62c5542303326cd0d25a7c9306b174ff`；开工本地/上游/live远端一致、clean，保护stash未变。仅修派发后最后接纳保存失败造成的关联丢失；不扩大默认UI、Pi工具、自动修正或自动Delivery，不操作原任务/profile/数据库/安装现场/stash。

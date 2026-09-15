@@ -268,6 +268,7 @@ export interface AttemptTaskPatchCapturePortV1 {
     attemptId: string,
     options?: { readonly allowNoApprovedChanges?: boolean },
   ): Promise<AttemptTaskPatchCaptureV1>
+  captureTaskPatchV2?(attemptId: string, options?: { readonly allowNoApprovedChanges?: boolean }): Promise<AttemptTaskPatchCaptureV2>
 }
 
 export interface AttemptRuntimeAllowedFileV1 {
@@ -279,6 +280,9 @@ export interface AttemptRuntimeWorkspaceAccessV1 {
   readonly workspace: RuntimeWorkspaceBindingV1
   readonly rootPath: string
   readonly allowedFiles: readonly AttemptRuntimeAllowedFileV1[]
+  /** Present only for a Main-verified V2 Attempt worktree lease. */
+  readonly worktreeAuthorization?: AttemptWorkspaceAuthorizationBindingV2
+  readonly baselineLedger?: AttemptBaselineLedgerV2
 }
 
 interface PorcelainChangeV1 {
@@ -699,7 +703,7 @@ export interface AttemptWorkspacePortV1 {
     attemptId: string,
     options?: { readonly allowNoApprovedChanges?: boolean },
   ): Promise<AttemptTaskPatchCaptureV1>
-  captureTaskPatchV2?(attemptId: string): Promise<AttemptTaskPatchCaptureV2>
+  captureTaskPatchV2?(attemptId: string, options?: { readonly allowNoApprovedChanges?: boolean }): Promise<AttemptTaskPatchCaptureV2>
 }
 
 export interface ProjectWorkspaceResolverV1 {
@@ -917,11 +921,15 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
   async runtimeAccess(attemptId: string): Promise<AttemptRuntimeWorkspaceAccessV1 | undefined> {
     const v2Lease = this.registry.getLease(attemptId)
     if (v2Lease?.worktreeAuthorization) {
+      const baselineLedger = v2Lease.baselineLedger
+      if (!baselineLedger) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
       assertAcceptedProjectIdentityV2(v2Lease)
       const rootPath = safeRealpath(v2Lease.worktreeRoot, 'WORKTREE_DRIFT')
       await assertExistingWorktreeIdentity(rootPath, v2Lease)
       assertV2LeaseIntegrity(v2Lease)
-      return { workspace: runtimeWorkspaceBinding(v2Lease), rootPath, allowedFiles: [] }
+      return { workspace: runtimeWorkspaceBinding(v2Lease), rootPath, allowedFiles: [],
+        worktreeAuthorization: { ...v2Lease.worktreeAuthorization },
+        baselineLedger: { ...baselineLedger, entries: baselineLedger.entries.map(entry => ({ ...entry })) } }
     }
     const manifest = this.registry.getManifest(attemptId)
     if (!manifest) return undefined
@@ -1123,7 +1131,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     }
   }
 
-  async captureTaskPatchV2(attemptId: string): Promise<AttemptTaskPatchCaptureV2> {
+  async captureTaskPatchV2(attemptId: string, options?: { readonly allowNoApprovedChanges?: boolean }): Promise<AttemptTaskPatchCaptureV2> {
     const cleanAttemptId = cleanId(attemptId)
     const lease = this.registry.getLease(cleanAttemptId)
     if (!lease?.worktreeRequest || !lease.baselineSource || !lease.baselineLedger) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
@@ -1133,7 +1141,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     await assertWorkspaceBaseline(lease.projectRoot, lease.worktreeRequest, source)
     const rebuilt = await buildAttemptBaselineLedgerV2(lease.projectRoot, source)
     if (JSON.stringify(rebuilt.ledger) !== JSON.stringify(lease.baselineLedger)) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
-    return captureTaskPatchV2FromLease(this.registry, cleanAttemptId)
+    return captureTaskPatchV2FromLease(this.registry, cleanAttemptId, options?.allowNoApprovedChanges === true)
   }
 
   requestScopeExpansion(input: {
@@ -2245,6 +2253,7 @@ function sameScannedFilesV2(left: readonly ScannedAttemptFileV2[], right: readon
 async function captureTaskPatchV2FromLease(
   registry: AttemptWorkspaceRegistryV1,
   attemptId: string,
+  allowNoApprovedChanges = false,
 ): Promise<AttemptTaskPatchCaptureV2> {
   const lease = registry.getLease(attemptId)
   if (!lease?.baselineSource || !lease.worktreeAuthorization || !lease.baselineLedger) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
@@ -2269,7 +2278,7 @@ async function captureTaskPatchV2FromLease(
   }
   for (const entry of before) if (!baseline.has(pathKey(entry.relativePath))) changed.push({ operation: 'CREATE',
     relativePath: entry.relativePath, baselineDigest: null, contentDigest: entry.contentDigest, contentBase64: entry.bytes.toString('base64') })
-  if (changed.length === 0) throw new AttemptWorkspaceError('NO_APPROVED_CHANGES')
+  if (changed.length === 0 && !allowNoApprovedChanges) throw new AttemptWorkspaceError('NO_APPROVED_CHANGES')
   const canonicalFiles = [...changed].sort((a, b) => a.relativePath.localeCompare(b.relativePath))
   const inputTreeHash = digestJson({ kind: 'GIT_TREE_INPUT_V2', gitTreeOid: lease.baselineTreeHash, ledgerDigest: lease.baselineLedger.ledgerDigest })
   const resultTreeHash = digestJson({ kind: 'TASK_RESULT_TREE_V2', inputTreeHash, files: canonicalFiles })

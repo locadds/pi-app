@@ -25,7 +25,7 @@ import {
   type VerificationAttemptId,
 } from '@shared/xiaogui-task-verification'
 
-import { createTaskVerificationCoordinatorV1 } from './task-verification-coordinator'
+import { createTaskVerificationCoordinatorV1, MainUnsettledTaskVerificationPortV1 } from './task-verification-coordinator'
 import type { TaskCandidateAuditResultV1 } from './task-candidate-audit'
 import type { CompleteTaskVerificationRecordV1, VerificationOutboxRecordV1 } from './sqlite-store'
 
@@ -45,6 +45,79 @@ const RUNTIME_OUTCOME = {
 } satisfies Extract<RuntimeOutcomeV1, { state: 'SUCCEEDED' }>
 
 describe('SqliteTaskVerificationCoordinatorV1', () => {
+  it('verifies an unsettled candidate without writing Hub completion state', async () => {
+    const candidate = candidateFixture([])
+    const audited = { ...auditFixture(candidate), captureVersion: 2 as const }
+    const verificationPort = { verify: vi.fn(async (request, context) => passVerification(
+      request, context.scopeEvidenceArtifactId, context.inspectionArtifactId,
+    )) }
+    const port = new MainUnsettledTaskVerificationPortV1(
+      { captureTaskCandidate: vi.fn(async () => audited) } as never,
+      verificationPort,
+      { resolveProjectRoot: vi.fn(async () => process.cwd()) },
+    )
+    await expect(port.verify({
+      projectId: ADDRESS.projectId,
+      sessionMode: 'CODING', flowId: FLOW_ID, taskRunId: TASK_RUN_ID, attemptId: ATTEMPT_ID,
+      runtimeSessionId: 'xhbrs_pi_live', candidateDigest: candidate.resultTreeHash,
+      createdAt: '2026-08-17T00:00:01.000Z',
+    })).resolves.toMatchObject({ verdict: 'PASS', candidateDigest: candidate.resultTreeHash,
+      receiptDigest: expect.stringMatching(/^sha256:/), receiptJson: expect.stringContaining('"verdict":"PASS"') })
+    expect(verificationPort.verify).toHaveBeenCalledOnce()
+  })
+
+  it('returns a corrective FAIL for a real empty unsettled candidate before typecheck can pass it', async () => {
+    const candidate = candidateFixture([])
+    const verificationPort = { verify: vi.fn() }
+    const port = new MainUnsettledTaskVerificationPortV1(
+      { captureTaskCandidate: vi.fn(async () => ({ ...auditFixture(candidate), changedFiles: [], captureVersion: 2 })) } as never,
+      verificationPort as never,
+      { resolveProjectRoot: vi.fn(async () => process.cwd()) },
+    )
+    await expect(port.verify({ projectId: ADDRESS.projectId, sessionMode: 'CODING', flowId: FLOW_ID,
+      taskRunId: TASK_RUN_ID, attemptId: ATTEMPT_ID, runtimeSessionId: 'xhbrs_pi_live',
+      candidateDigest: candidate.resultTreeHash, createdAt: '2026-08-17T00:00:01.000Z' }))
+      .resolves.toMatchObject({ verdict: 'FAIL', diagnostic: expect.stringContaining('未产生可交付变更') })
+    expect(verificationPort.verify).not.toHaveBeenCalled()
+  })
+
+  it('allows final verification without a legacy role only for a Main-audited V2 capture', async () => {
+    const candidate = candidateFixture([])
+    const completed: CompleteTaskVerificationRecordV1[] = []
+    const coordinator = createTaskVerificationCoordinatorV1({
+      storeFactory: () => fakeStore(completed) as never,
+      candidateAudit: { captureTaskCandidate: vi.fn(async () => ({ ...auditFixture(candidate), captureVersion: 2 })) } as never,
+      verificationPort: { verify: vi.fn(async (request, context) => passVerification(
+        request, context.scopeEvidenceArtifactId, context.inspectionArtifactId,
+      )) },
+      projectResolver: { resolveProjectRoot: vi.fn(async () => process.cwd()) },
+      attemptRoleProvider: { readAttemptRole: vi.fn(() => null) },
+      now: () => '2026-08-17T00:00:02.000Z',
+    })
+    await expect(coordinator.handleSucceeded({ address: ADDRESS, flowId: FLOW_ID, taskRunId: TASK_RUN_ID,
+      attemptId: ATTEMPT_ID, outcome: RUNTIME_OUTCOME, createdAt: '2026-08-17T00:00:01.000Z' }))
+      .resolves.toMatchObject({ ok: true, verdict: 'PASS' })
+    expect(completed).toHaveLength(1)
+  })
+
+  it('retries only an exact authorized V2 automatic Delivery candidate during recovery', async () => {
+    const onVerifiedTask = vi.fn().mockRejectedValueOnce(new Error('delivery save window')).mockResolvedValue(undefined)
+    const candidate = { address: ADDRESS, flowId: FLOW_ID, taskRunId: TASK_RUN_ID, attemptId: ATTEMPT_ID,
+      candidateDigest: `sha256:${'a'.repeat(64)}` as Sha256Digest,
+      taskChangeSetDigest: `sha256:${'b'.repeat(64)}` as Sha256Digest,
+      taskChangeSetId: 'xhbcs_recover' as TaskChangeSetId }
+    const store = { pendingTaskVerifications: () => [], automaticDeliveryCandidates: () => [candidate] }
+    const coordinator = createTaskVerificationCoordinatorV1({
+      storeFactory: () => store as never,
+      candidateAudit: {} as never, verificationPort: {} as never, projectResolver: {} as never,
+      isAuthorizedV2Attempt: vi.fn(async attemptId => attemptId === ATTEMPT_ID), onVerifiedTask,
+    })
+    await coordinator.recoverPending()
+    await coordinator.recoverPending()
+    expect(onVerifiedTask).toHaveBeenCalledTimes(2)
+    expect(onVerifiedTask).toHaveBeenLastCalledWith(candidate)
+  })
+
   it('allows an empty host candidate only for an immutable read-only role', async () => {
     const candidate = candidateFixture([])
     const audited = { ...auditFixture(candidate), changedFiles: [] }

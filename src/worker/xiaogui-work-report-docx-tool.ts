@@ -51,6 +51,7 @@ const ActionSchema = Type.Object(
       Type.Literal('REVEAL'),
     ]),
     draft: Type.Optional(DraftSchema),
+    targetPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
   },
   { additionalProperties: false },
 )

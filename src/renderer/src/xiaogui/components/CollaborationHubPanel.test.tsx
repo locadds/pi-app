@@ -585,6 +585,23 @@ function deliveryProjection(address: HubAddressV1): SessionCollaborationProjecti
         contentArtifactId: 'xhbartifact_hidden_new_bytes' as never,
         sourceTaskChangeSetIds: ['xhbtcs_delivery_b'] as never,
       },
+      {
+        operation: 'DELETE',
+        relativePath: 'src/old.ts',
+        baselineDigest: `sha256:${'7'.repeat(64)}` as never,
+        contentDigest: null,
+        sourceTaskChangeSetIds: ['xhbtcs_delivery_a'] as never,
+        rename: { groupId: 'rename-1', counterpartPath: 'src/renamed.ts', role: 'SOURCE' },
+      },
+      {
+        operation: 'CREATE',
+        relativePath: 'src/renamed.ts',
+        baselineDigest: null,
+        contentDigest: `sha256:${'8'.repeat(64)}` as never,
+        contentArtifactId: 'xhbartifact_hidden_renamed_bytes' as never,
+        sourceTaskChangeSetIds: ['xhbtcs_delivery_a'] as never,
+        rename: { groupId: 'rename-1', counterpartPath: 'src/old.ts', role: 'TARGET' },
+      },
     ],
     evidenceArtifactIds: ['xhbartifact_evidence_a' as never, 'xhbartifact_evidence_b' as never],
     gate: {
@@ -776,6 +793,7 @@ describe('CollaborationHubPanel', () => {
     showSession(sessionWith('s-design', scopeDesign))
     render(<CollaborationHubPanel />)
     expect(await screen.findByTestId('hub-design-reserved')).toHaveTextContent('当前是规划设计会话')
+    expect(screen.getByTestId('hub-task-inbox')).toBeInTheDocument()
     expect(screen.getByTestId('hub-design-reserved')).not.toHaveTextContent('DESIGN_RESERVED')
     expect(screen.queryByRole('button', { name: '建立草稿' })).toBeNull()
     expect(screen.queryByRole('button', { name: '批准计划' })).toBeNull()
@@ -805,6 +823,88 @@ describe('CollaborationHubPanel', () => {
     expect(screen.queryByLabelText('协作计划目标')).toBeNull()
     expect(screen.queryByRole('button', { name: '建立草稿' })).toBeNull()
     expect(performMock).not.toHaveBeenCalled()
+  })
+
+  it('V2 accept refreshes the projection and follows it to automatic Ready without a manual refresh', async () => {
+    const address: HubAddressV1 = { projectId: scopeCoding.projectId, sessionKey: scopeCoding.sessionKey }
+    const running = activeProjection(address)
+    const readyDelivery = deliveryProjection(address).activeDelivery!
+    const ready = {
+      ...running,
+      attempts: running.attempts.map((attempt) => ({ ...attempt, status: 'SUCCEEDED' as const })),
+      activeDelivery: { ...readyDelivery, state: 'READY_FOR_REVIEW' as const },
+    }
+    observeMock
+      .mockResolvedValueOnce({ ok: true, value: baseProjection(address) })
+      .mockResolvedValueOnce({ ok: true, value: running })
+      .mockResolvedValueOnce({ ok: true, value: ready })
+    let accepted = false
+    window.piDesktop = {
+      ...window.piDesktop,
+      invoke: async (channel: string) => {
+        if (channel === 'ipc:xiaogui.hubTask.status') return { ok: true, value: { configured: true, state: 'READY' } }
+        if (channel === 'ipc:xiaogui.hubTask.inbox.list') {
+          return {
+            ok: true,
+            value: [{
+              assignmentId: 'assignment-v2-refresh',
+              title: 'V2 task',
+              taskContent: 'trusted body',
+              constraints: [],
+              acceptanceRequirements: [],
+              attachmentCount: 0,
+              mode: 'DIRECT',
+              decisionState: 'ACCEPTED',
+              hubDeliveryState: 'OPENED',
+              executionState: 'NOT_STARTED',
+              openedAt: '2026-09-15T00:00:00.000Z',
+              receiptPendingSync: false,
+              localPlanDraftCreated: false,
+              acceptAndExecuteV2: accepted
+                ? {
+                    state: 'BOUND',
+                    requestId: 'request-v2-refresh',
+                    observedPackageSha256: `sha256:${'a'.repeat(64)}`,
+                    phase: 'EXECUTION_REQUESTED',
+                    projectId: address.projectId,
+                    sessionKey: address.sessionKey,
+                    flowId: 'xhbf_flow1',
+                    revisionId: 'xhbr_rev1',
+                  }
+                : {
+                    state: 'AVAILABLE',
+                    requestId: 'request-v2-refresh',
+                    observedPackageSha256: `sha256:${'a'.repeat(64)}`,
+                    phase: null,
+                  },
+            }],
+          }
+        }
+        if (channel === 'ipc:xiaogui.hubTask.inbox.acceptAndExecute') {
+          accepted = true
+          return { ok: true, value: { executionState: 'STARTED', flowId: 'xhbf_flow1', revisionId: 'xhbr_rev1' } }
+        }
+        return {}
+      },
+    } as Window['piDesktop']
+    showSession(sessionWith('s-v2-refresh', scopeCoding))
+    const user = userEvent.setup()
+    render(<CollaborationHubPanel />)
+
+    await user.click(await screen.findByRole('button', { name: '接受并执行' }))
+    await screen.findByTestId('hub-delivery-review')
+    expect(observeMock).toHaveBeenCalledTimes(3)
+
+    const readyCallCount = observeMock.mock.calls.length
+    await new Promise((resolve) => setTimeout(resolve, 1_200))
+    expect(observeMock).toHaveBeenCalledTimes(readyCallCount)
+
+    observeMock.mockReset()
+    observeMock.mockResolvedValue({ ok: true, value: baseProjection(scopeWork) })
+    showSession(sessionWith('s-v2-refresh-switched', scopeWork))
+    await waitFor(() => expect(observeMock).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 1_200))
+    expect(observeMock).toHaveBeenCalledTimes(1)
   })
 
   it('同一会话成功创建草稿后自动刷新为待批准状态', async () => {
@@ -938,6 +1038,61 @@ describe('CollaborationHubPanel', () => {
     // 不出现任何执行/领取/交付类按钮
     expect(screen.queryByRole('button', { name: '批准计划' })).toBeNull()
     expect(performMock).not.toHaveBeenCalled()
+  })
+
+  it('V2 flow hides legacy role/plan/checkpoint gates but keeps the read-only modification review', async () => {
+    const address: HubAddressV1 = {
+      projectId: scopeCoding.projectId,
+      sessionKey: scopeCoding.sessionKey,
+    }
+    observeMock.mockResolvedValue({ ok: true, value: activeProjection(address) })
+    window.piDesktop = {
+      ...window.piDesktop,
+      invoke: async (channel: string) => {
+        if (channel === 'ipc:xiaogui.hubTask.status') return { ok: true, value: { configured: true, state: 'READY' } }
+        if (channel === 'ipc:xiaogui.hubTask.inbox.list') {
+          return {
+            ok: true,
+            value: [{
+              assignmentId: 'assignment-v2',
+              title: 'V2 task',
+              taskContent: 'trusted body',
+              constraints: [],
+              acceptanceRequirements: [],
+              attachmentCount: 0,
+              mode: 'DIRECT',
+              decisionState: 'ACCEPTED',
+              hubDeliveryState: 'OPENED',
+              executionState: 'RUNNING',
+              openedAt: '2026-09-15T00:00:00.000Z',
+              receiptPendingSync: false,
+              localPlanDraftCreated: false,
+              acceptAndExecuteV2: {
+                state: 'BOUND',
+                requestId: 'request-v2',
+                observedPackageSha256: `sha256:${'c'.repeat(64)}`,
+                phase: 'EXECUTION_REQUESTED',
+                projectId: address.projectId,
+                sessionKey: address.sessionKey,
+                flowId: 'xhbf_flow1',
+                revisionId: 'xhbr_rev1',
+                attemptId: 'xhba_1',
+              },
+            }],
+          }
+        }
+        return {}
+      },
+    } as Window['piDesktop']
+    showSession(sessionWith('s-v2-coding', scopeCoding))
+    render(<CollaborationHubPanel />)
+
+    const view = await screen.findByTestId('hub-active-plan')
+    await screen.findByRole('button', { name: '查看真实修改' })
+    expect(view).not.toHaveTextContent('执行角色')
+    expect(view).not.toHaveTextContent('执行计划')
+    expect(view).not.toHaveTextContent('Git 检查点与恢复')
+    expect(view).toHaveTextContent('修改与验证')
   })
 
   it('Attempt 已就绪但计划待批准时归入“等待批准计划”并显示批准入口', async () => {
@@ -1438,6 +1593,11 @@ describe('CollaborationHubPanel', () => {
     expect(delivery).toHaveTextContent('完整任务 2 个')
     expect(delivery).toHaveTextContent('src/a.ts')
     expect(delivery).toHaveTextContent('src/new.ts')
+    expect(delivery).toHaveTextContent('src/old.ts')
+    expect(delivery).toHaveTextContent('src/renamed.ts')
+    expect(delivery).toHaveTextContent('删除')
+    expect(delivery).toHaveTextContent('重命名源：src/renamed.ts')
+    expect(delivery).toHaveTextContent('重命名目标：src/old.ts')
     expect(delivery).toHaveTextContent('证据摘要 2 项')
     expect(delivery).not.toHaveTextContent('xhbartifact_hidden_bytes')
     expect(delivery).not.toHaveTextContent(`sha256:${'3'.repeat(64)}`)

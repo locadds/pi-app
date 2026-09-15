@@ -34,6 +34,10 @@ export async function handleInit(msg: WorkerIncomingMessage, reply: WorkerReply)
             }
             if (st.taskHubAttemptId && st.taskHubAttemptId !== msg.taskHubAttemptId) throw new Error('PI_ATTEMPT_REBIND_DENIED')
             st.taskHubAttemptId = msg.taskHubAttemptId
+            if (msg.taskHubWorktreeAuthorized !== undefined && typeof msg.taskHubWorktreeAuthorized !== 'boolean') {
+              throw new Error('PI_ATTEMPT_BINDING_INVALID')
+            }
+            st.taskHubWorktreeAuthorized = msg.taskHubWorktreeAuthorized === true
             if (typeof msg.taskHubDesignExtensionPath === 'string') st.taskHubDesignExtensionPath = msg.taskHubDesignExtensionPath
           } else if (st.taskHubAttemptId) throw new Error('PI_ATTEMPT_REBIND_DENIED')
           console.log('[Worker] Initializing st.session for:', cwd)

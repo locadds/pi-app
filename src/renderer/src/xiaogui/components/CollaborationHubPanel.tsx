@@ -6,11 +6,11 @@
  * execution.next.confirm 只开放本地两阶段确认，本批任务取自
  * projection.executionReadiness（readyTaskRunIds + availableSlots，最多 2 个），
  * 最终只调用一次批量执行 IPC（xiaogui.task-execution.batch.v1）。
- * DESIGN 模式只显示预留说明，不出现任何动作按钮。
+ * DESIGN 模式保留专业协作区只读边界；Hub 任务收件箱仍可显示一次接受入口。
  * 不展示绝对路径、异常栈或原始对象；错误只显示安全码 + 中文短文案 + traceId。
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
   AttemptProjectionM2BV1,
@@ -36,7 +36,7 @@ import { CodingAttemptPlanCard } from './CodingAttemptPlanCard'
 import { CodingAttemptReviewCard } from './CodingAttemptReviewCard'
 import { CodingCheckpointCard } from './CodingCheckpointCard'
 import { CodingRoleCard } from './CodingRoleCard'
-import { HubTaskInboxSection } from './HubTaskInboxSection'
+import { HubTaskInboxSection, type HubTaskV2FlowBinding } from './HubTaskInboxSection'
 import { useCodingAttemptStore } from '../stores/coding-attempt-store'
 
 import {
@@ -128,6 +128,7 @@ const DELIVERY_APPLY_INTEGRITY_TEXT: Record<string, string> = {
 
 const DELIVERY_NON_RETRYABLE_SAFE_CODES = new Set(Object.keys(DELIVERY_APPLY_INTEGRITY_TEXT))
 const DELIVERY_FAILED_APPLY_STATES = new Set<DeliveryApplyAttemptV1['state']>(['FAILED', 'FAILED_ROLLED_BACK'])
+const V2_READONLY_REFRESH_DELAY_MS = 1_000
 
 /** runtimeBinding 只向用户暴露 Agent 类型；OTHER 时退回 adapter 名称。 */
 const AGENT_KIND_TEXT: Record<RuntimeAdapterSelectionV1['runtimeKind'], string> = {
@@ -700,16 +701,26 @@ function DeliveryReviewSection({ delivery }: { delivery: DeliveryBatchProjection
         {files.length === 0 ? (
           <div className="text-[11px] text-muted-foreground">暂无文件摘要</div>
         ) : (
-          <ul className="flex flex-col gap-1">
-            {files.map((file) => (
-              <li key={`${file.operation}:${file.relativePath}`} className="flex items-start justify-between gap-2 text-[11px]">
-                <span className="min-w-0 break-all font-mono text-foreground-secondary">{file.relativePath}</span>
-                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  {file.operation === 'CREATE' ? '新建' : '修改'}
-                </span>
-              </li>
-            ))}
-          </ul>
+            <ul className="flex flex-col gap-1">
+              {files.map((file) => {
+                const rename = 'rename' in file ? file.rename : undefined
+                return (
+                  <li key={`${file.operation}:${file.relativePath}`} className="flex items-start justify-between gap-2 text-[11px]">
+                    <span className="min-w-0 break-all font-mono text-foreground-secondary">
+                      {file.relativePath}
+                      {rename && (
+                        <span className="ml-1 font-sans text-[10px] text-muted-foreground">
+                          · {rename.role === 'SOURCE' ? '重命名源' : '重命名目标'}：{rename.counterpartPath}
+                        </span>
+                      )}
+                    </span>
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {file.operation === 'CREATE' ? '新建' : file.operation === 'DELETE' ? '删除' : '修改'}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
         )}
       </div>
       {deliveryError && (
@@ -886,18 +897,28 @@ function ReadonlyExecutionPaths({ title, paths }: { title: string; paths: string
   )
 }
 
-function AwaitingApprovalView({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
+function AwaitingApprovalView({
+  projection,
+  v2Flow,
+}: {
+  projection: SessionCollaborationProjectionM2BV1
+  v2Flow: boolean
+}) {
   const submitting = useCollaborationHubStore((s) => s.submitting)
   const approveActiveRevision = useCollaborationHubStore((s) => s.approveActiveRevision)
   const flow = projection.activeFlow
   const revision = projection.activeRevision
   if (!flow || !revision) return null
-  const canApprove = projection.availableActions.includes('plan.revision.submit')
+  const canApprove = !v2Flow && projection.availableActions.includes('plan.revision.submit')
   const titleByKey = new Map(revision.draft.tasks.map((task) => [task.taskKey, task.title]))
   return (
     <div data-testid="hub-awaiting-approval">
       <div className="mb-1 text-[12px] font-medium text-foreground">{flow.objective}</div>
-      <div className="mb-2 text-[11px] text-muted-foreground">小规已整理出 {revision.draft.tasks.length} 项任务，请确认是否按此执行。</div>
+      <div className="mb-2 text-[11px] text-muted-foreground">
+        {v2Flow
+          ? `任务已通过一次接受入口提交，${revision.draft.tasks.length} 项计划由主进程继续处理。`
+          : `小规已整理出 ${revision.draft.tasks.length} 项任务，请确认是否按此执行。`}
+      </div>
       <ul className="flex flex-col gap-1.5">
         {revision.draft.tasks.map((task) => (
           <li key={task.taskKey} className="rounded-lg border border-border/40 p-2">
@@ -935,6 +956,8 @@ function TaskRunCard({
   attempts,
   reason,
   codingAddress,
+  reviewAddress,
+  hideLegacyCodingGates,
 }: {
   run: TaskRunProjectionM2BV1
   title: string
@@ -942,6 +965,8 @@ function TaskRunCard({
   attempts: readonly AttemptProjectionM2BV1[]
   reason: string | null
   codingAddress: HubAddressV1 | null
+  reviewAddress: HubAddressV1 | null
+  hideLegacyCodingGates: boolean
 }) {
   return (
     <li className="rounded-md border border-border/30 px-2 py-1 text-[11px]">
@@ -966,7 +991,7 @@ function TaskRunCard({
           {attempt.verificationSummary && (
             <TaskVerificationSummaryCard attemptId={attempt.attemptId} summary={attempt.verificationSummary} />
           )}
-          {codingAddress && (
+          {codingAddress && !hideLegacyCodingGates && (
             <>
               <CodingRoleCard
                 address={codingAddress}
@@ -980,11 +1005,13 @@ function TaskRunCard({
                 restoreEnabled={attempt.status === 'READY' || attempt.status === 'SUCCEEDED'}
               />
               <CodingAttemptPlanCard attemptId={attempt.attemptId} />
-              <CodingAttemptReviewCard
-                attemptId={attempt.attemptId}
-                available={['VERIFYING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED', 'OUTCOME_UNKNOWN'].includes(attempt.status)}
-              />
             </>
+          )}
+          {reviewAddress && (
+            <CodingAttemptReviewCard
+              attemptId={attempt.attemptId}
+              available={['VERIFYING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED', 'OUTCOME_UNKNOWN'].includes(attempt.status)}
+            />
           )}
         </div>
       ))}
@@ -992,7 +1019,13 @@ function TaskRunCard({
   )
 }
 
-function ActivePlanView({ projection }: { projection: SessionCollaborationProjectionM2BV1 }) {
+function ActivePlanView({
+  projection,
+  v2Flow,
+}: {
+  projection: SessionCollaborationProjectionM2BV1
+  v2Flow: boolean
+}) {
   const plansByAttempt = useCodingAttemptStore((state) => state.plansByAttempt)
   const flow = projection.activeFlow
   if (!flow) return null
@@ -1066,6 +1099,8 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
                       attempts={runAttempts}
                       reason={reason}
                       codingAddress={projection.authoritativeMode === 'CODING' ? projection.address : null}
+                      reviewAddress={v2Flow || projection.authoritativeMode === 'CODING' ? projection.address : null}
+                      hideLegacyCodingGates={v2Flow}
                     />
                   )
                 })}
@@ -1074,9 +1109,9 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
           ))}
         </div>
       )}
-      <DeliverySelectionSection projection={projection} />
+      {!v2Flow && <DeliverySelectionSection projection={projection} />}
       {projection.activeDelivery && <DeliveryReviewSection delivery={projection.activeDelivery} />}
-      <TaskExecutionSection projection={projection} />
+      {!v2Flow && <TaskExecutionSection projection={projection} />}
       <div className="mt-3">
         <CancelFlowSection />
       </div>
@@ -1087,6 +1122,7 @@ function ActivePlanView({ projection }: { projection: SessionCollaborationProjec
 export function CollaborationHubPanel() {
   const currentSessionId = useUIStore((s) => s.currentSessionId)
   const sessions = useUIStore((s) => s.sessions)
+  const currentWorkspace = useUIStore((s) => s.currentWorkspace)
   const currentSession = useMemo(
     () => sessions.find((session) => session.sessionId === currentSessionId),
     [sessions, currentSessionId],
@@ -1102,6 +1138,19 @@ export function CollaborationHubPanel() {
   const clearError = useCollaborationHubStore((s) => s.clearError)
   const codingPlansLoading = useCodingAttemptStore((s) => s.loadingPlans)
   const refreshCodingPlans = useCodingAttemptStore((s) => s.refreshPlans)
+  const [v2FlowBindings, setV2FlowBindings] = useState<readonly HubTaskV2FlowBinding[]>([])
+  const flow = projection?.activeFlow ?? null
+  const currentV2Flow = Boolean(
+    flow
+    && flow.activeRevisionId
+    && scope
+    && v2FlowBindings.some((binding) => (
+      binding.projectId === scope.projectId
+      && binding.sessionKey === scope.sessionKey
+      && binding.flowId === flow.flowId
+      && binding.revisionId === flow.activeRevisionId
+    )),
+  )
 
   // address 只来自当前会话 canonicalScope 的 projectId + sessionKey；
   // 切换会话时 setAddress 会清空旧投影与临时表单
@@ -1109,10 +1158,41 @@ export function CollaborationHubPanel() {
     const next = scope ? { projectId: scope.projectId, sessionKey: scope.sessionKey } : null
     useCollaborationHubStore.getState().setAddress(next)
     if (next) void useCollaborationHubStore.getState().refresh()
-    const codingAddress = scope?.sessionMode === 'CODING' ? next : null
-    useCodingAttemptStore.getState().setAddress(codingAddress)
-    if (codingAddress) void useCodingAttemptStore.getState().refreshPlans()
-  }, [addressKey, scope?.sessionMode])
+    const reviewAddress = scope && (scope.sessionMode === 'CODING' || currentV2Flow) ? next : null
+    useCodingAttemptStore.getState().setAddress(reviewAddress)
+    if (scope?.sessionMode === 'CODING' && reviewAddress) void useCodingAttemptStore.getState().refreshPlans()
+  }, [addressKey, scope?.sessionMode, currentV2Flow])
+
+  useEffect(() => {
+    if (!currentV2Flow || !scope || !flow) return
+    let disposed = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let inFlight = false
+
+    const poll = async (): Promise<void> => {
+      if (disposed || inFlight) return
+      inFlight = true
+      try {
+        const before = useCollaborationHubStore.getState().projection
+        if (isV2ReadonlyRefreshTerminal(before)) return
+        await useCollaborationHubStore.getState().refresh()
+      } finally {
+        inFlight = false
+      }
+      if (disposed || isV2ReadonlyRefreshTerminal(useCollaborationHubStore.getState().projection)) return
+      timer = setTimeout(() => { void poll() }, V2_READONLY_REFRESH_DELAY_MS)
+    }
+
+    timer = setTimeout(() => { void poll() }, V2_READONLY_REFRESH_DELAY_MS)
+    return () => {
+      disposed = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [addressKey, currentV2Flow, flow?.activeRevisionId, flow?.flowId])
+
+  useEffect(() => {
+    setV2FlowBindings([])
+  }, [addressKey])
 
   const attemptStateKey = projection?.attempts
     .map((attempt) => `${attempt.attemptId}:${attempt.status}`)
@@ -1156,7 +1236,6 @@ export function CollaborationHubPanel() {
   }
 
   const reserved = projection?.reserved
-  const flow = projection?.activeFlow ?? null
 
   return (
     <div className="flex h-full flex-col overflow-y-auto p-3" data-testid="collaboration-hub-panel">
@@ -1191,18 +1270,20 @@ export function CollaborationHubPanel() {
         </button>
       </div>
 
-      {scope.sessionMode !== 'DESIGN' && (
-        <HubTaskInboxSection
-          address={{ projectId: scope.projectId, sessionKey: scope.sessionKey }}
-          onPlanDraftCreated={() => void refresh()}
-        />
-      )}
+      <HubTaskInboxSection
+        address={{ projectId: scope.projectId, sessionKey: scope.sessionKey }}
+        targetProjectLabel={workspaceProjectLabel(currentWorkspace)}
+        targetProjectPath={currentWorkspace ?? undefined}
+        onPlanDraftCreated={() => void refresh()}
+        onV2ExecutionResult={() => refresh()}
+        onV2FlowBindingsChange={setV2FlowBindings}
+      />
 
       {error && <ErrorBanner error={error} onDismiss={clearError} />}
 
       {!projection && loading && <div className="text-[12px] text-muted-foreground">加载中…</div>}
 
-      {projection && reserved && (
+      {projection && reserved && !currentV2Flow && (
         <div
           className="rounded-lg border border-dashed border-border/60 p-3 text-[12px] text-muted-foreground"
           data-testid="hub-design-reserved"
@@ -1214,8 +1295,8 @@ export function CollaborationHubPanel() {
       {projection && !reserved && !flow && (
         <NaturalLanguagePlanEntry available={projection.availableActions.includes('flow.start.with_draft')} />
       )}
-      {projection && !reserved && flow?.status === 'AWAITING_PLAN_APPROVAL' && <AwaitingApprovalView projection={projection} />}
-      {projection && !reserved && flow?.status === 'PLAN_ACTIVE' && <ActivePlanView projection={projection} />}
+      {projection && (!reserved || currentV2Flow) && flow?.status === 'AWAITING_PLAN_APPROVAL' && <AwaitingApprovalView projection={projection} v2Flow={currentV2Flow} />}
+      {projection && (!reserved || currentV2Flow) && flow?.status === 'PLAN_ACTIVE' && <ActivePlanView projection={projection} v2Flow={currentV2Flow} />}
 
       {projection && projection.history.length > 0 && (
         <div className="mt-4">
@@ -1232,4 +1313,40 @@ export function CollaborationHubPanel() {
       )}
     </div>
   )
+}
+
+function workspaceProjectLabel(path: string | null): string | undefined {
+  if (!path) return undefined
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path
+}
+
+function isV2ReadonlyRefreshTerminal(projection: SessionCollaborationProjectionM2BV1 | null): boolean {
+  if (!projection) return false
+  if (projection.activeFlow?.status === 'CANCELLED') return true
+  const deliveryState = projection.activeDelivery?.state
+  if (deliveryState && new Set([
+    'READY_FOR_REVIEW',
+    'APPROVED',
+    'REJECTED',
+    'APPLYING',
+    'APPLIED',
+    'SUPERSEDED',
+    'OUTCOME_UNKNOWN',
+  ]).has(deliveryState)) return true
+  const attempts = projection.attempts
+  if (attempts.length === 0) return false
+  const activeStatuses = new Set([
+    'CREATED',
+    'WORKSPACE_PREPARING',
+    'READY',
+    'STARTING',
+    'RUNNING',
+    'VERIFYING',
+    'INTERRUPT_REQUESTED',
+  ])
+  if (attempts.some((attempt) => activeStatuses.has(attempt.status))) return false
+  const terminalStatuses = new Set(['SUCCEEDED', 'FAILED', 'INTERRUPTED', 'CANCELLED', 'OUTCOME_UNKNOWN'])
+  const failedStatuses = new Set(['FAILED', 'INTERRUPTED', 'CANCELLED', 'OUTCOME_UNKNOWN'])
+  return attempts.every((attempt) => terminalStatuses.has(attempt.status))
+    && attempts.some((attempt) => failedStatuses.has(attempt.status))
 }

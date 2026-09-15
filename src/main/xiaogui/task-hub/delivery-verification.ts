@@ -4,7 +4,7 @@ import type { AttemptId, TaskRunId } from '@shared/xiaogui-collaboration-hub'
 import {
   deliveryVerificationReceiptDigestV1,
   type DeliveryBatchId,
-  type DeliveryChangeSetV1,
+  type DeliveryChangeSetAnyV1,
   type DeliveryVerificationAttemptId,
   type DeliveryVerificationReceiptV1,
 } from '@shared/xiaogui-delivery'
@@ -25,7 +25,7 @@ import { MODE_VERIFICATION_POLICY_V1, modeForVerificationConfigV1 } from './mode
 export interface DeliveryVerificationInputV1 {
   readonly verificationAttemptId: DeliveryVerificationAttemptId
   readonly verificationRequestDigest: Sha256Digest
-  readonly deliveryChangeSet: DeliveryChangeSetV1
+  readonly deliveryChangeSet: DeliveryChangeSetAnyV1
   readonly worktreeRoot: string
   readonly trustedToolchainRoot: string
   /** Main-only source binding for Delivery artifact verification. */
@@ -176,7 +176,7 @@ function deliveryVerificationIds(seed: string): {
   }
 }
 
-function deliveryScopeArtifact(artifactId: ArtifactId, changeSet: DeliveryChangeSetV1): TaskArtifactWriteV1 {
+function deliveryScopeArtifact(artifactId: ArtifactId, changeSet: DeliveryChangeSetAnyV1): TaskArtifactWriteV1 {
   const content = Buffer.from(JSON.stringify({
     version: 'delivery-scope-evidence.v1',
     deliveryChangeSetId: changeSet.deliveryChangeSetId,
@@ -198,33 +198,33 @@ function deliveryScopeArtifact(artifactId: ArtifactId, changeSet: DeliveryChange
   }
 }
 
-function deliveryBatchId(changeSet: DeliveryChangeSetV1): DeliveryBatchId {
+function deliveryBatchId(changeSet: DeliveryChangeSetAnyV1): DeliveryBatchId {
   if (!changeSet.batchId) throw new Error('DELIVERY_BATCH_ID_REQUIRED')
   return changeSet.batchId
 }
 
-function deliverySelectionDigest(changeSet: DeliveryChangeSetV1): Sha256Digest {
+function deliverySelectionDigest(changeSet: DeliveryChangeSetAnyV1): Sha256Digest {
   if (!changeSet.selectionDigest) throw new Error('DELIVERY_SELECTION_DIGEST_REQUIRED')
   return changeSet.selectionDigest
 }
 
-function deliveryIntegrationTreeHash(changeSet: DeliveryChangeSetV1): Sha256Digest {
+function deliveryIntegrationTreeHash(changeSet: DeliveryChangeSetAnyV1): Sha256Digest {
   if (!changeSet.integrationTreeHash) throw new Error('DELIVERY_INTEGRATION_TREE_REQUIRED')
   return changeSet.integrationTreeHash
 }
 
-function deliveryQaConfigVersion(changeSet: DeliveryChangeSetV1): string {
+function deliveryQaConfigVersion(changeSet: DeliveryChangeSetAnyV1): string {
   if (!changeSet.qaConfigVersion) throw new Error('DELIVERY_QA_CONFIG_REQUIRED')
   return changeSet.qaConfigVersion
 }
 
-function deliveryVerificationMode(changeSet: DeliveryChangeSetV1) {
+function deliveryVerificationMode(changeSet: DeliveryChangeSetAnyV1) {
   const mode = modeForVerificationConfigV1(deliveryQaConfigVersion(changeSet))
   if (!mode) throw new Error('DELIVERY_VERIFICATION_MODE_UNAVAILABLE')
   return mode
 }
 
-function deliveryFileChanges(changeSet: DeliveryChangeSetV1) {
+function deliveryFileChanges(changeSet: DeliveryChangeSetAnyV1) {
   return changeSet.fileChanges ?? []
 }
 

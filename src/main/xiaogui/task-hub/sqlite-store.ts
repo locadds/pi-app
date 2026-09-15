@@ -4,8 +4,11 @@ import { existsSync, statSync } from 'node:fs'
 
 import {
   deliveryApplyReceiptDigestV1,
+  deliveryApplyReceiptDigestV2,
   deliveryChangeSetDigestV1,
+  deliveryChangeSetDigestV2,
   deliveryGateDecisionDigestV1,
+  deliveryGateDecisionDigestV2,
   deliverySelectionDigestV1,
   deliveryTargetFingerprintV1,
   deliveryVerificationReceiptDigestV1,
@@ -22,6 +25,10 @@ import type {
   DeliveryBatchStateV1,
   DeliveryChangeSetId,
   DeliveryChangeSetV1,
+  DeliveryChangeSetV2,
+  DeliveryChangeSetAnyV1,
+  DeliveryApplyReceiptAnyV1,
+  DeliveryGateSubjectAnyV1,
   DeliveryGateId,
   DeliveryHumanGateV1,
   DeliveryRecoveryLineageV1,
@@ -735,6 +742,13 @@ export interface CreateDeliverySelectionRecordV1 {
   flowId: FlowId
   selectedTaskRunIds: readonly TaskRunId[]
   targetFingerprint: Sha256Digest
+  expectedTaskBindings?: readonly {
+    taskRunId: TaskRunId
+    attemptId: AttemptId
+    candidateDigest: Sha256Digest
+    taskChangeSetDigest: Sha256Digest
+    taskChangeSetId: TaskChangeSetId
+  }[]
   now: string
 }
 
@@ -742,6 +756,19 @@ export interface CreateDeliverySelectionResultV1 {
   batchId: DeliveryBatchId
   selectionDigest: Sha256Digest
   replayed: boolean
+}
+
+export interface VerifiedDeliveryTaskBindingV1 {
+  taskRunId: TaskRunId
+  attemptId: AttemptId
+  candidateDigest: Sha256Digest
+  taskChangeSetDigest: Sha256Digest
+  taskChangeSetId: TaskChangeSetId
+}
+
+export interface AutomaticDeliveryCandidateV1 extends VerifiedDeliveryTaskBindingV1 {
+  address: HubAddressV1
+  flowId: FlowId
 }
 
 export interface BeginDeliveryVerificationRecordV1 {
@@ -771,7 +798,7 @@ export interface DeliveryVerificationOutboxRecordV1 {
 
 export interface CompleteDeliveryVerificationRecordV1 {
   receipt: DeliveryVerificationReceiptV1
-  deliveryChangeSet?: DeliveryChangeSetV1
+  deliveryChangeSet?: DeliveryChangeSetAnyV1
   deliveryFileArtifacts?: readonly DeliveryFileArtifactWriteV1[]
   evidenceArtifacts?: readonly TaskArtifactWriteV1[]
   diagnosticArtifacts?: readonly TaskArtifactWriteV1[]
@@ -789,7 +816,7 @@ export interface DecideDeliveryGateRecordV1 {
   gateId: DeliveryGateId
   batchId: DeliveryBatchId
   deliveryChangeSetId: DeliveryChangeSetId
-  version: 1
+  version: 1 | 2
   digest: Sha256Digest
   decision: 'APPROVE' | 'REJECT'
   decisionDigest: Sha256Digest
@@ -821,7 +848,7 @@ export interface DeliveryApplyBeginResultV1 {
 export interface CompleteDeliveryApplyRecordV1 {
   applyAttemptId: DeliveryApplyAttemptId
   outcome: 'SUCCEEDED' | 'FAILED' | 'OUTCOME_UNKNOWN'
-  receipt: DeliveryApplyReceiptV1
+  receipt: DeliveryApplyReceiptAnyV1
   now: string
 }
 
@@ -884,7 +911,7 @@ export interface DeliveryApplyOutboxRecordV1 {
 
 export interface DeliveryApplyPackageRecordV1 {
   applyAttempt: DeliveryApplyAttemptV1
-  changeSet: DeliveryChangeSetV1
+  changeSet: DeliveryChangeSetAnyV1
   fileArtifacts: readonly DeliveryArtifactContentRecordV1[]
 }
 
@@ -1102,10 +1129,15 @@ export class CollaborationHubSqliteStoreV1 {
     record: CreateDeliverySelectionRecordV1,
   ): CreateDeliverySelectionResultV1 {
     return this.transaction(() => {
+      if (record.expectedTaskBindings) {
+        const exact = this.findExactDeliverySelection(record)
+        if (exact) return exact
+      }
       const active = this.activeDeliveryBatch(address, record.flowId)
       if (active) {
         const existingDraft = this.readDeliverySelectionDraft(active.batch_id)
         if (existingDraft && sameStringArray(existingDraft.selectedTaskRunIds, record.selectedTaskRunIds)) {
+          this.assertExpectedDeliveryBindings(record.expectedTaskBindings, existingDraft)
           return { batchId: active.batch_id, selectionDigest: active.selection_digest, replayed: true }
         }
         throw deliveryStoreError('DELIVERY_ACTIVE_BATCH_EXISTS')
@@ -1252,16 +1284,16 @@ export class CollaborationHubSqliteStoreV1 {
     return row ? JSON.parse(row.change_set_json) as TaskChangeSetV1 : null
   }
 
-  readDeliveryChangeSet(deliveryChangeSetId: DeliveryChangeSetId): DeliveryChangeSetV1 | null {
+  readDeliveryChangeSet(deliveryChangeSetId: DeliveryChangeSetId): DeliveryChangeSetAnyV1 | null {
     const row = this.deliveryChangeSet(deliveryChangeSetId)
-    return row ? JSON.parse(row.change_set_json) as DeliveryChangeSetV1 : null
+    return row ? JSON.parse(row.change_set_json) as DeliveryChangeSetAnyV1 : null
   }
 
-  readDeliveryChangeSetForBatch(batchId: DeliveryBatchId): DeliveryChangeSetV1 | null {
+  readDeliveryChangeSetForBatch(batchId: DeliveryBatchId): DeliveryChangeSetAnyV1 | null {
     const row = this.db
       .prepare('select change_set_json from delivery_change_sets where batch_id = ? order by rowid desc limit 1')
       .get(batchId) as { change_set_json: string } | undefined
-    return row ? JSON.parse(row.change_set_json) as DeliveryChangeSetV1 : null
+    return row ? JSON.parse(row.change_set_json) as DeliveryChangeSetAnyV1 : null
   }
 
   readDeliveryGate(gateId: DeliveryGateId): DeliveryHumanGateV1 | null {
@@ -1501,7 +1533,7 @@ export class CollaborationHubSqliteStoreV1 {
           batchId: batch.batch_id,
           subject: {
             deliveryChangeSetId: record.deliveryChangeSet.deliveryChangeSetId,
-            version: 1,
+            version: record.deliveryChangeSet.version,
             digest: record.deliveryChangeSet.digest,
           },
           state: 'OPEN',
@@ -1556,7 +1588,9 @@ export class CollaborationHubSqliteStoreV1 {
 
   decideDeliveryGate(address: HubAddressV1, record: DecideDeliveryGateRecordV1): DeliveryGateDecisionResultV1 {
     return this.transaction(() => {
-      const expectedDigest = deliveryGateDecisionDigestV1(record)
+      const expectedDigest = record.version === 2
+        ? deliveryGateDecisionDigestV2(record as Parameters<typeof deliveryGateDecisionDigestV2>[0])
+        : deliveryGateDecisionDigestV1(record as Parameters<typeof deliveryGateDecisionDigestV1>[0])
       if (expectedDigest !== record.decisionDigest) throw deliveryStoreError('DELIVERY_GATE_DECISION_DIGEST_MISMATCH')
       const gateRow = this.deliveryGate(record.gateId)
       if (!gateRow || gateRow.batch_id !== record.batchId) throw deliveryStoreError('DELIVERY_GATE_NOT_FOUND')
@@ -1706,7 +1740,7 @@ export class CollaborationHubSqliteStoreV1 {
     if (!attempt) return null
     const changeSet = this.readDeliveryChangeSet(attempt.delivery_change_set_id)
     if (!changeSet) throw deliveryStoreError('DELIVERY_CHANGESET_NOT_FOUND')
-    const fileArtifacts = changeSet.fileChanges.map((file) => {
+    const fileArtifacts = changeSet.fileChanges.filter(file => file.operation !== 'DELETE').map((file) => {
       const artifact = this.readArtifact(file.contentArtifactId)
       if (!artifact || artifact.kind !== 'DELIVERY_FILE_CONTENT' || artifact.contentDigest !== file.contentDigest) {
         throw deliveryStoreError('DELIVERY_ARTIFACT_NOT_FOUND')
@@ -1735,7 +1769,9 @@ export class CollaborationHubSqliteStoreV1 {
     return this.transaction(() => {
       const attempt = this.deliveryApplyAttempt(record.applyAttemptId)
       if (!attempt) throw deliveryStoreError('DELIVERY_APPLY_NOT_FOUND')
-      validateDeliveryApplyReceipt(record.receipt, attempt, record.outcome)
+      const changeSet = this.readDeliveryChangeSet(attempt.delivery_change_set_id)
+      if (!changeSet) throw deliveryStoreError('DELIVERY_CHANGESET_NOT_FOUND')
+      validateDeliveryApplyReceipt(record.receipt, attempt, record.outcome, changeSet.version)
       const batch = this.deliveryBatch(attempt.batch_id)
       if (!batch || batch.project_id !== address.projectId || batch.session_key !== address.sessionKey) {
         throw deliveryStoreError('DELIVERY_SCOPE_MISMATCH')
@@ -2078,6 +2114,48 @@ export class CollaborationHubSqliteStoreV1 {
       .prepare('select attempt_id, task_run_id, flow_id, status, attempt_digest, workspace_receipt_id, runtime_session_id, outcome_receipt_digest from attempts where attempt_id = ?')
       .get(attemptId) as AttemptRecord | undefined
     return row ?? null
+  }
+
+  verifiedDeliveryBindings(address: HubAddressV1, flowId: FlowId, rootTaskRunId: TaskRunId): readonly VerifiedDeliveryTaskBindingV1[] {
+    const runs = this.taskRunsForFlow(flowId)
+    const byId = new Map(runs.map(run => [run.task_run_id, run]))
+    if (!byId.has(rootTaskRunId)) throw deliveryStoreError('DELIVERY_TASK_NOT_VERIFIED')
+    const active = this.activeDeliveryBatch(address, flowId)
+    const draft = active ? this.readDeliverySelectionDraft(active.batch_id) : null
+    const selectedIds = draft?.selectedTaskRunIds ?? runs.map(run => run.task_run_id)
+    if (!selectedIds.includes(rootTaskRunId) || (!draft && runs.some(run => run.status !== 'VERIFIED'))) {
+      throw deliveryStoreError('DELIVERY_TASK_NOT_VERIFIED')
+    }
+    return selectedIds.map(taskRunId => {
+      const run = byId.get(taskRunId)
+      if (!run || (draft && run.status !== 'DELIVERY_PENDING' && run.status !== 'VERIFIED')) throw deliveryStoreError('DELIVERY_TASK_NOT_VERIFIED')
+      const row = this.db.prepare('select t.task_change_set_id, t.attempt_id, t.digest, c.candidate_digest from task_change_sets t join change_set_candidates c on c.candidate_id=t.candidate_id where t.task_run_id=?')
+        .get(run.task_run_id) as { task_change_set_id: TaskChangeSetId; attempt_id: AttemptId; digest: Sha256Digest; candidate_digest: Sha256Digest } | undefined
+      if (!row) throw deliveryStoreError('DELIVERY_TASK_CHANGESET_NOT_FOUND')
+      const fixed = draft?.resolvedTaskChangeSets.find(ref => ref.taskRunId === run.task_run_id)
+      if (draft && (!fixed || fixed.taskChangeSetId !== row.task_change_set_id || fixed.digest !== row.digest)) {
+        throw deliveryStoreError('DELIVERY_TASK_CHANGESET_NOT_FOUND')
+      }
+      return { taskRunId: run.task_run_id, attemptId: row.attempt_id, candidateDigest: row.candidate_digest,
+        taskChangeSetDigest: row.digest, taskChangeSetId: row.task_change_set_id }
+    })
+  }
+
+  automaticDeliveryCandidates(): readonly AutomaticDeliveryCandidateV1[] {
+    return this.db.prepare(`select f.project_id, f.session_key, t.flow_id, t.task_run_id, t.attempt_id,
+      t.task_change_set_id, t.digest, c.candidate_digest
+      from task_change_sets t
+      join change_set_candidates c on c.candidate_id=t.candidate_id
+      join task_runs tr on tr.task_run_id=t.task_run_id
+      join flows f on f.flow_id=t.flow_id
+      where tr.status in ('VERIFIED','DELIVERY_PENDING')
+      order by t.rowid asc`).all().map((row) => {
+        const value = row as Record<string, string>
+        return { address: { projectId: value.project_id, sessionKey: value.session_key } as HubAddressV1,
+          flowId: value.flow_id as FlowId, taskRunId: value.task_run_id as TaskRunId,
+          attemptId: value.attempt_id as AttemptId, taskChangeSetId: value.task_change_set_id as TaskChangeSetId,
+          taskChangeSetDigest: value.digest as Sha256Digest, candidateDigest: value.candidate_digest as Sha256Digest }
+      })
   }
 
   attemptExecutionScope(attemptId: AttemptId): AttemptExecutionScopeRecordV1 | null {
@@ -4181,6 +4259,10 @@ export class CollaborationHubSqliteStoreV1 {
     if (record.selectedTaskRunIds.length === 0) throw deliveryStoreError('DELIVERY_SELECTION_EMPTY')
     const selected = new Set(record.selectedTaskRunIds)
     if (selected.size !== record.selectedTaskRunIds.length) throw deliveryStoreError('DELIVERY_SELECTION_DUPLICATE')
+    if (record.expectedTaskBindings && (record.expectedTaskBindings.length !== selected.size ||
+      record.expectedTaskBindings.some(binding => !selected.has(binding.taskRunId)))) {
+      throw deliveryStoreError('DELIVERY_TASK_CHANGESET_NOT_FOUND')
+    }
     const allRuns = this.taskRunsForFlow(record.flowId)
     const byId = new Map(allRuns.map((run) => [run.task_run_id, run]))
     const dependencyTaskRunIds: TaskRunId[] = []
@@ -4198,16 +4280,23 @@ export class CollaborationHubSqliteStoreV1 {
     }
     const refs = dependencyTaskRunIds.map((taskRunId) => {
       const row = this.db
-        .prepare('select task_run_id, task_change_set_id, digest, patch_artifact_id from task_change_sets where task_run_id = ?')
+        .prepare('select t.task_run_id, t.task_change_set_id, t.digest, t.patch_artifact_id, t.attempt_id, c.candidate_digest from task_change_sets t join change_set_candidates c on c.candidate_id=t.candidate_id where t.task_run_id = ?')
         .get(taskRunId) as
         | {
             task_run_id: TaskRunId
             task_change_set_id: TaskChangeSetId
             digest: Sha256Digest
             patch_artifact_id: ArtifactId
+            attempt_id: AttemptId
+            candidate_digest: Sha256Digest
           }
         | undefined
       if (!row) throw deliveryStoreError('DELIVERY_TASK_CHANGESET_NOT_FOUND')
+      const expected = record.expectedTaskBindings?.find(binding => binding.taskRunId === taskRunId)
+      if (record.expectedTaskBindings && (!expected || expected.attemptId !== row.attempt_id ||
+        expected.candidateDigest !== row.candidate_digest || expected.taskChangeSetDigest !== row.digest)) {
+        throw deliveryStoreError('DELIVERY_TASK_CHANGESET_NOT_FOUND')
+      }
       return {
         taskRunId: row.task_run_id,
         taskChangeSetId: row.task_change_set_id,
@@ -4233,6 +4322,40 @@ export class CollaborationHubSqliteStoreV1 {
       createdAt: record.now as never,
     }
     return { ...draftWithoutDigest, digest: deliverySelectionDigestV1(draftWithoutDigest) }
+  }
+
+  private assertExpectedDeliveryBindings(
+    bindings: CreateDeliverySelectionRecordV1['expectedTaskBindings'],
+    draft?: DeliverySelectionDraftV1,
+  ): void {
+    if (!bindings) return
+    if (bindings.length === 0 || new Set(bindings.map(binding => binding.taskRunId)).size !== bindings.length) {
+      throw deliveryStoreError('DELIVERY_TASK_CHANGESET_NOT_FOUND')
+    }
+    for (const binding of bindings) {
+      const row = this.db.prepare('select t.task_change_set_id, t.attempt_id, t.digest, c.candidate_digest from task_change_sets t join change_set_candidates c on c.candidate_id=t.candidate_id where t.task_run_id=?')
+        .get(binding.taskRunId) as { task_change_set_id: TaskChangeSetId; attempt_id: AttemptId; digest: Sha256Digest; candidate_digest: Sha256Digest } | undefined
+      if (!row || row.attempt_id !== binding.attemptId || row.digest !== binding.taskChangeSetDigest ||
+        row.candidate_digest !== binding.candidateDigest) throw deliveryStoreError('DELIVERY_TASK_CHANGESET_NOT_FOUND')
+      const fixed = draft?.resolvedTaskChangeSets.find(ref => ref.taskRunId === binding.taskRunId)
+      if (draft && (!fixed || fixed.taskChangeSetId !== binding.taskChangeSetId || fixed.digest !== binding.taskChangeSetDigest)) {
+        throw deliveryStoreError('DELIVERY_TASK_CHANGESET_NOT_FOUND')
+      }
+    }
+  }
+
+  private findExactDeliverySelection(record: CreateDeliverySelectionRecordV1): CreateDeliverySelectionResultV1 | null {
+    const rows = this.db.prepare('select batch_id, selection_digest, draft_json from delivery_selection_drafts where flow_id=? order by rowid asc')
+      .all(record.flowId) as Array<{ batch_id: DeliveryBatchId; selection_digest: Sha256Digest; draft_json: string }>
+    for (const row of rows) {
+      let draft: DeliverySelectionDraftV1
+      try { draft = JSON.parse(row.draft_json) as DeliverySelectionDraftV1 } catch { continue }
+      if (!sameStringArray(draft.selectedTaskRunIds, record.selectedTaskRunIds) ||
+        draft.targetFingerprint !== record.targetFingerprint || draft.digest !== row.selection_digest) continue
+      this.assertExpectedDeliveryBindings(record.expectedTaskBindings, draft)
+      return { batchId: row.batch_id, selectionDigest: row.selection_digest, replayed: true }
+    }
+    return null
   }
 
   private deliveryProjection(batchId: DeliveryBatchId): DeliveryBatchProjectionV1 | null {
@@ -4286,7 +4409,7 @@ export class CollaborationHubSqliteStoreV1 {
     }
   }
 
-  private insertDeliveryChangeSet(changeSet: DeliveryChangeSetV1): void {
+  private insertDeliveryChangeSet(changeSet: DeliveryChangeSetAnyV1): void {
     const batchId = changeSet.batchId
     if (!batchId) throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
     if (!changeSet.selectionDigest) throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
@@ -4566,9 +4689,10 @@ const DELIVERY_APPLY_SAFE_CODES_V1 = new Set<DeliveryApplySafeCodeV1>([
 ])
 
 function validateDeliveryApplyReceipt(
-  receipt: DeliveryApplyReceiptV1,
+  receipt: DeliveryApplyReceiptAnyV1,
   attempt: Pick<DeliveryApplyAttemptRow, 'apply_attempt_id' | 'delivery_change_set_id'>,
   expectedOutcome: CompleteDeliveryApplyRecordV1['outcome'],
+  version: 1 | 2 = 1,
 ): void {
   if (
     !receipt ||
@@ -4583,7 +4707,8 @@ function validateDeliveryApplyReceipt(
   ) {
     throw deliveryStoreError('DELIVERY_APPLY_RECEIPT_SHAPE_INVALID')
   }
-  if (deliveryApplyReceiptDigestV1(receipt) !== receipt.receiptDigest) {
+  const receiptDigest = version === 2 ? deliveryApplyReceiptDigestV2(receipt) : deliveryApplyReceiptDigestV1(receipt)
+  if (receiptDigest !== receipt.receiptDigest) {
     throw deliveryStoreError('DELIVERY_APPLY_RECEIPT_DIGEST_MISMATCH')
   }
   const actualOutcome = deliveryApplyOutcome(receipt)
@@ -4599,23 +4724,24 @@ function validateDeliveryApplyReceipt(
   }
 }
 
-function persistedDeliveryApplyReceipt(row: DeliveryApplyAttemptRow): DeliveryApplyReceiptV1 | null {
+function persistedDeliveryApplyReceipt(row: DeliveryApplyAttemptRow): DeliveryApplyReceiptAnyV1 | null {
   const hasPersistedFacts =
     row.safe_code !== null || row.changed_relative_paths_json !== null || row.receipt_json !== null
   if (!hasPersistedFacts) return null
   if (!row.receipt_digest || row.changed_relative_paths_json === null || row.receipt_json === null) {
     throw deliveryStoreError('DELIVERY_APPLY_RECEIPT_PERSISTENCE_INCONSISTENT')
   }
-  let receipt: DeliveryApplyReceiptV1
+  let receipt: DeliveryApplyReceiptAnyV1
   let changedRelativePaths: unknown
   try {
-    receipt = JSON.parse(row.receipt_json) as DeliveryApplyReceiptV1
+    receipt = JSON.parse(row.receipt_json) as DeliveryApplyReceiptAnyV1
     changedRelativePaths = JSON.parse(row.changed_relative_paths_json)
   } catch {
     throw deliveryStoreError('DELIVERY_APPLY_RECEIPT_PERSISTENCE_INCONSISTENT')
   }
   const expectedOutcome = deliveryApplyOutcomeFromAttemptState(row.state)
-  validateDeliveryApplyReceipt(receipt, row, expectedOutcome)
+  const version = deliveryApplyReceiptDigestV2(receipt) === receipt.receiptDigest ? 2 : 1
+  validateDeliveryApplyReceipt(receipt, row, expectedOutcome, version)
   const receiptSafeCode = receipt.verdict === 'SUCCEEDED' ? null : receipt.safeCode
   const receiptTargetFingerprint = receipt.verdict === 'SUCCEEDED' ? receipt.targetFingerprint : null
   if (
@@ -4675,18 +4801,21 @@ function validateDeliveryVerificationReceipt(receipt: DeliveryVerificationReceip
 function validateDeliveryChangeSet(
   batch: DeliveryBatchRow,
   receipt: DeliveryVerificationReceiptV1,
-  changeSet: DeliveryChangeSetV1,
+  changeSet: DeliveryChangeSetV1 | DeliveryChangeSetV2,
 ): void {
+  const validDigest = changeSet.version === 2
+    ? deliveryChangeSetDigestV2(changeSet) === changeSet.digest
+    : deliveryChangeSetDigestV1(changeSet) === changeSet.digest
   if (
     changeSet.kind !== 'DELIVERY_CHANGESET' ||
-    changeSet.version !== 1 ||
+    (changeSet.version !== 1 && changeSet.version !== 2) ||
     changeSet.batchId !== batch.batch_id ||
     changeSet.flowId !== batch.flow_id ||
     changeSet.selectionDigest !== batch.selection_digest ||
     changeSet.deliveryChangeSetId !== receipt.deliveryChangeSetId ||
     changeSet.digest !== receipt.deliveryChangeSetDigest ||
-    deliveryChangeSetDigestV1(changeSet) !== changeSet.digest ||
-    !(changeSet.fileChanges ?? []).every((item) => item.operation === 'CREATE' || item.operation === 'MODIFY') ||
+    !validDigest ||
+    !(changeSet.fileChanges ?? []).every((item) => item.operation === 'CREATE' || item.operation === 'MODIFY' || (changeSet.version === 2 && item.operation === 'DELETE')) ||
     (changeSet.fileChanges ?? []).some((item) => item.relativePath.includes('..') || /^[A-Za-z]:[\\/]|^\\\\|^file:\/\//.test(item.relativePath))
   ) {
     throw deliveryStoreError('DELIVERY_CHANGESET_BINDING_MISMATCH')
@@ -4694,11 +4823,13 @@ function validateDeliveryChangeSet(
 }
 
 function deliveryChangeSetDigestWithEvidence(
-  changeSet: DeliveryChangeSetV1,
+  changeSet: DeliveryChangeSetV1 | DeliveryChangeSetV2,
   evidenceArtifactIds: readonly ArtifactId[],
 ): Sha256Digest {
   const { digest: _oldDigest, ...base } = changeSet
-  return deliveryChangeSetDigestV1({ ...base, evidenceArtifactIds })
+  return changeSet.version === 2
+    ? deliveryChangeSetDigestV2({ ...base, evidenceArtifactIds } as Omit<DeliveryChangeSetV2, 'digest'>)
+    : deliveryChangeSetDigestV1({ ...base, evidenceArtifactIds } as Omit<DeliveryChangeSetV1, 'digest'>)
 }
 
 function assertDeliveryRecoveryArtifactsMatch(record: SealRecoveredDeliveryCandidateRecordV1): void {

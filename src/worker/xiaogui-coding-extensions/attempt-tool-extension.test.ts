@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { readFile, rm, mkdtemp } from 'node:fs/promises'
+import { mkdir, readFile, rm, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -11,7 +11,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { requestWorkerHostTool } from '../worker-host-tool-channel'
 import type { WorkerHostToolOutcomeV1 } from '@shared/worker-host-tools'
 
-import { createPiAttemptToolLifecycleV1 } from './attempt-tool-extension'
+import { createPiAttemptDeleteToolDefinitionV1, createPiAttemptRenameToolDefinitionV1,
+  createPiAttemptToolLifecycleV1 } from './attempt-tool-extension'
 
 type HostRequest = Parameters<typeof requestWorkerHostTool>[0]
 type HostOutcome = WorkerHostToolOutcomeV1
@@ -68,6 +69,38 @@ describe('Pi Attempt native tool wrapper', () => {
           isError: false,
         },
       },
+    ])
+  })
+
+  it('executes controlled delete and rename with Main canonical source and target paths', async () => {
+    const root = await tempRoot()
+    await writeFile(join(root, 'delete-me.txt'), 'delete')
+    await writeFile(join(root, 'rename-me.txt'), 'rename')
+    await writeFile(join(root, 'model-source.txt'), 'model source remains')
+    await mkdir(join(root, 'renamed'))
+    const requests: HostRequest[] = []
+    const request = async (hostRequest: HostRequest): Promise<HostOutcome> => {
+      requests.push(hostRequest)
+      if (hostRequest.method === 'xiaogui.taskhub.pi.tool.settle') return settled(hostRequest.payload.toolCallId)
+      if (hostRequest.method !== 'xiaogui.taskhub.pi.tool.begin') throw new Error('unexpected request')
+      return hostRequest.payload.toolName === 'delete'
+        ? allowed(hostRequest.payload.toolCallId, 'delete-me.txt')
+        : allowedRename(hostRequest.payload.toolCallId, 'rename-me.txt', 'renamed/result.txt')
+    }
+    const lifecycle = createPiAttemptToolLifecycleV1({ attemptId: 'attempt-1', sourceSessionId: () => 'session-1', request })
+    const deleted = lifecycle.wrapDefinition(createPiAttemptDeleteToolDefinitionV1(root))
+    const renamed = lifecycle.wrapDefinition(createPiAttemptRenameToolDefinitionV1(root))
+
+    await deleted.execute('delete-call', { path: 'model-delete.txt' }, undefined, undefined, {} as never)
+    await renamed.execute('rename-call', { sourcePath: 'model-source.txt', targetPath: 'model-target.txt' }, undefined, undefined, {} as never)
+
+    expect(existsSync(join(root, 'delete-me.txt'))).toBe(false)
+    expect(existsSync(join(root, 'rename-me.txt'))).toBe(false)
+    await expect(readFile(join(root, 'renamed', 'result.txt'), 'utf8')).resolves.toBe('rename')
+    await expect(readFile(join(root, 'model-source.txt'), 'utf8')).resolves.toBe('model source remains')
+    expect(requests.map(request => request.method)).toEqual([
+      'xiaogui.taskhub.pi.tool.begin', 'xiaogui.taskhub.pi.tool.settle',
+      'xiaogui.taskhub.pi.tool.begin', 'xiaogui.taskhub.pi.tool.settle',
     ])
   })
 
@@ -318,6 +351,10 @@ function allowed(toolCallId: string, authorizedRelativePath: string): HostOutcom
     ok: true,
     value: { kind: 'PI_ATTEMPT_TOOL_ALLOWED', toolCallId, authorizedRelativePath },
   }
+}
+
+function allowedRename(toolCallId: string, authorizedRelativePath: string, authorizedTargetRelativePath: string): HostOutcome {
+  return { ok: true, value: { kind: 'PI_ATTEMPT_TOOL_ALLOWED', toolCallId, authorizedRelativePath, authorizedTargetRelativePath } }
 }
 
 function settled(toolCallId: string): HostOutcome {

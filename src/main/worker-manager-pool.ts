@@ -510,6 +510,7 @@ export async function forkWorkerForCwd(
     projectIdentityDigest: string
     taskHubAttemptId?: string
     taskHubDesignExtensionPath?: string
+    taskHubWorktreeAuthorized?: boolean
   },
 ): Promise<{ slot: WorkerSlot; init: Promise<WorkerInitResult> }> {
   if (readProjectRootIdentityV2(cwd).digest !== opts.projectIdentityDigest) {
@@ -606,6 +607,7 @@ export async function forkWorkerForCwd(
     bundledSkillPaths,
     taskHubAttemptId: opts.taskHubAttemptId,
     taskHubDesignExtensionPath: opts.taskHubDesignExtensionPath,
+    ...(opts.taskHubWorktreeAuthorized === true ? { taskHubWorktreeAuthorized: true } : {}),
   })
   const guardedInit = initPromise.then((result) => {
       if (readProjectRootIdentityV2(cwd).digest !== slot.projectIdentityDigest) {

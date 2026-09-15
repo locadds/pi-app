@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
@@ -23,7 +23,7 @@ import type {
   VerificationAttemptId,
 } from '@shared/xiaogui-task-verification'
 
-import { digestBytes, type AttemptTaskPatchCaptureV1 } from '../task-hub/attempt-workspace'
+import { digestBytes, type AttemptTaskPatchCaptureV1, type AttemptTaskPatchCaptureV2 } from '../task-hub/attempt-workspace'
 import {
   CodingAttemptReviewModuleV1,
   GitAttemptReviewDiffPortV1,
@@ -224,11 +224,13 @@ describe('CodingAttemptReviewModuleV1', () => {
       git(repo, 'config', 'user.name', 'Xiaogui Test')
       mkdirSync(join(repo, 'src'), { recursive: true })
       writeFileSync(join(repo, 'src', 'existing.ts'), 'export const value = "before"\n')
+      writeFileSync(join(repo, 'src', 'removed.ts'), 'export const removed = true\n')
       git(repo, 'add', '.')
       git(repo, 'commit', '-m', 'baseline')
       const baseRevision = git(repo, 'rev-parse', 'HEAD').trim()
       writeFileSync(join(repo, 'src', 'existing.ts'), 'export const value = "after"\n')
       writeFileSync(join(repo, 'src', 'new.ts'), 'export const added = true\n')
+      unlinkSync(join(repo, 'src', 'removed.ts'))
 
       const unifiedDiff = await new GitAttemptReviewDiffPortV1().createUnifiedDiff({
         attemptId: ATTEMPT_ID,
@@ -249,6 +251,12 @@ describe('CodingAttemptReviewModuleV1', () => {
             contentDigest: digestBytes('export const added = true\n'),
             contentBase64: Buffer.from('export const added = true\n').toString('base64'),
           },
+          {
+            operation: 'DELETE',
+            relativePath: 'src/removed.ts',
+            baselineDigest: digestBytes('export const removed = true\n'),
+            contentDigest: null,
+          },
         ],
       })
 
@@ -257,10 +265,46 @@ describe('CodingAttemptReviewModuleV1', () => {
       expect(unifiedDiff).toContain('+export const value = "after"')
       expect(unifiedDiff).toContain('diff --git a/src/new.ts b/src/new.ts')
       expect(unifiedDiff).toContain('+export const added = true')
+      expect(unifiedDiff).toContain('diff --git a/src/removed.ts b/src/removed.ts')
+      expect(unifiedDiff).toContain('-export const removed = true')
       expect(unifiedDiff.replaceAll('\\', '/')).not.toContain(repo.replaceAll('\\', '/'))
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }
+  })
+
+  it('reads an authorized V2 DELETE patch and mode verification without legacy role commands', async () => {
+    const base = capturedPatch()
+    const files = [{ operation: 'DELETE' as const, relativePath: 'src/removed.ts',
+      baselineDigest: digestBytes('removed'), contentDigest: null }]
+    const bytes = Buffer.from(JSON.stringify({ kind: 'TASK_PATCH_V2', version: 2, files }))
+    const capture: AttemptTaskPatchCaptureV2 = { ...base, patchArtifactBytes: bytes,
+      patchArtifactDigest: digestBytes(bytes), changedFiles: files,
+      privateVerificationContext: { attemptWorktreeId: 'wt', worktreeRoot: 'D:\\private\\attempt-worktree',
+        baseRevision: '4'.repeat(40), baselineGitTreeOid: '6'.repeat(40),
+        authorizationDigest: `sha256:${'8'.repeat(64)}`, ledgerDigest: `sha256:${'9'.repeat(64)}` } }
+    const summary = {
+      scope: 'TASK' as const, verificationAttemptId: 'verify-v2' as VerificationAttemptId,
+      candidateId: 'candidate-v2' as TaskChangeSetCandidateId, changeSetDigest: CHANGESET_DIGEST,
+      qaConfigVersion: 'xiaogui.work.report.task.v1', state: 'SUCCEEDED' as const, verdict: 'PASS' as const,
+      checks: [{ checkId: 'work.report-docx', verdict: 'PASS' as const, summary: '报告结构通过', artifactIds: [] }],
+      evidenceBundleId: 'evidence-v2' as EvidenceBundleId, qaResultId: 'qa-v2' as QaResultId,
+      taskChangeSetId: CHANGESET_ID, evidenceArtifacts: [], diagnosticArtifacts: [],
+    }
+    const module = new CodingAttemptReviewModuleV1({
+      app: { observeM2B: vi.fn().mockResolvedValue({ ok: true, value: projectionWithVerification(summary) }) },
+      store: { readTaskChangeSet: vi.fn().mockReturnValue(taskChangeSet()), readArtifact: vi.fn().mockReturnValue({
+        artifactId: PATCH_ID, kind: 'PATCH', mediaType: 'application/vnd.xiaogui.task-patch-v2+json',
+        contentDigest: capture.patchArtifactDigest, content: bytes,
+      }) },
+      workspace: { runtimeAccess: vi.fn().mockResolvedValue({ worktreeAuthorization: {} }),
+        captureTaskPatch: vi.fn(), captureTaskPatchV2: vi.fn().mockResolvedValue(capture) },
+      diffPort: { createUnifiedDiff: vi.fn().mockResolvedValue('diff --git a/src/removed.ts b/src/removed.ts\n-deleted\n') },
+    })
+    const result = await module.read({ address: ADDRESS, attemptId: ATTEMPT_ID })
+    expect(result.unifiedDiff).toContain('src/removed.ts')
+    expect(result.bundle.verifications).toEqual([expect.objectContaining({ label: 'work.report-docx', status: 'PASSED' })])
+    expect(result.bundle.unresolvedIssues).toEqual([])
   })
 
   it('does not promote a success summary when its verification artifact cannot be validated', async () => {

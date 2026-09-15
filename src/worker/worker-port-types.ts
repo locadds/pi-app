@@ -16,6 +16,7 @@ export type WorkerIncomingMessage = {
   /** Private Main-owned Attempt execution subject; never a Renderer input. */
   taskHubAttemptId?: string
   taskHubDesignExtensionPath?: string
+  taskHubWorktreeAuthorized?: boolean
   type?: string
   requestId?: string
   cwd?: string

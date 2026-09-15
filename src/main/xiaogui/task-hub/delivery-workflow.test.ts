@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   deliveryChangeSetDigestV1,
+  deliveryChangeSetDigestV2,
   deliveryTargetFingerprintV1,
   type DeliveryApplyAttemptId,
   type DeliveryApplyReceiptV1,
@@ -16,6 +17,7 @@ import {
   type DeliveryBatchProjectionV1,
   type DeliveryChangeSetId,
   type DeliveryChangeSetV1,
+  type DeliveryChangeSetV2,
   type DeliveryGateId,
   type DeliverySelectionDraftV1,
 } from '@shared/xiaogui-delivery'
@@ -33,7 +35,7 @@ import { XiaoguiDeliveryWorkflowV1 } from './delivery-workflow'
 import { registerXiaoguiDeliveryHandlers } from './delivery-ipc'
 import { createHubTaskExecutionLifecycleCoordinatorV1 } from './hub-execution-lifecycle'
 import type { CollaborationHubSqliteStoreV1 } from './sqlite-store'
-import { ChangeApplyErrorV1, type DeliveryApplyPortV1 } from './change-apply'
+import { ChangeApplyErrorV1, type DeliveryApplyPortV1, type DeliveryApplyPortV2 } from './change-apply'
 import type { TaskVerificationExecutionPortV1, TaskVerificationExecutionResultV1 } from './verification-port'
 import type { DeliveryBaselineRecoveryPortV1 } from './delivery-baseline-recovery'
 
@@ -118,6 +120,74 @@ describe('XiaoguiDeliveryWorkflowV1', () => {
     ])
     expect(applyPort.applies).toHaveLength(0)
     await rm(root, { recursive: true, force: true })
+  })
+
+  it('automatically selects the exact verified Attempt set and stops at review', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-auto-'))
+    try {
+      const repo = join(root, 'repo')
+      await git(root, ['init', 'repo'])
+      await writeFile(join(repo, 'a.txt'), 'old-a')
+      await git(repo, ['add', 'a.txt'])
+      await git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'])
+      const baseRevision = (await git(repo, ['rev-parse', 'HEAD'])).trim()
+      const baselineTreeHash = (await git(repo, ['rev-parse', 'HEAD^{tree}'])).trim()
+      const store = new FakeDeliveryStore(deliveryTargetFingerprintV1({ projectId: ADDRESS.projectId, baseRevision, baselineTreeHash }))
+      const applyPort = recordingApplyPort()
+      const workflow = workflowFor(store, repo, join(root, 'managed'), applyPort, baseRevision, baselineTreeHash)
+      const current = store.taskChangeSets[1]!
+      await expect(workflow.selectVerifiedAttempt(ADDRESS, { flowId: current.flowId, taskRunId: current.taskRunId,
+        attemptId: 'wrong-attempt' as never, candidateDigest: 'sha256:candidate-b' as Sha256Digest,
+        taskChangeSetDigest: current.digest, taskChangeSetId: current.taskChangeSetId })).resolves.toMatchObject({ ok: false, error: { code: 'ILLEGAL_TRANSITION' } })
+      expect(store.trace).toEqual([])
+      const outcome = await workflow.selectVerifiedAttempt(ADDRESS, { flowId: current.flowId, taskRunId: current.taskRunId,
+        attemptId: current.attemptId as never, candidateDigest: 'sha256:candidate-b' as Sha256Digest,
+        taskChangeSetDigest: current.digest, taskChangeSetId: current.taskChangeSetId })
+      expect(outcome).toMatchObject({ ok: true, value: { state: 'READY_FOR_REVIEW' } })
+      expect(store.lastSelection).toMatchObject({ selectedTaskRunIds: ['task-a', 'task-b'], expectedTaskBindings: [
+        { taskRunId: 'task-a', attemptId: expect.any(String), candidateDigest: 'sha256:candidate-a' },
+        { taskRunId: 'task-b', attemptId: current.attemptId, candidateDigest: 'sha256:candidate-b' },
+      ] })
+      expect(applyPort.applies).toHaveLength(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('routes a V2 human gate only to the existing V2 Apply port and preserves rejection', async () => {
+    const store = new FakeDeliveryStore('sha256:target' as Sha256Digest)
+    const changeSet = store.installV2ReviewChangeSet()
+    const v1 = recordingApplyPort()
+    const apply = vi.fn(async () => ({ applyAttemptId: 'apply-v2', deliveryChangeSetId: changeSet.deliveryChangeSetId,
+      verdict: 'FAILED_ROLLED_BACK' as const, changedRelativePaths: [], safeCode: 'TARGET_BASELINE_DRIFT' as const,
+      receiptDigest: `sha256:${'4'.repeat(64)}` as Sha256Digest }))
+    const v2 = { apply, inspect: vi.fn() } as unknown as DeliveryApplyPortV2
+    const workflow = workflowFor(store, process.cwd(), process.cwd(), v1, undefined, undefined, undefined, undefined, v2)
+    const subject = { deliveryChangeSetId: changeSet.deliveryChangeSetId, version: 2 as const, digest: changeSet.digest }
+    await expect(workflow.approveGate(ADDRESS, { requestId: 'approve-wrong-version', gateId: store.gate.gateId,
+      subject: { ...subject, version: 1 } })).resolves.toMatchObject({ ok: false })
+    expect(apply).not.toHaveBeenCalled()
+    const approved = await workflow.approveGate(ADDRESS, { requestId: 'approve-v2', gateId: store.gate.gateId, subject })
+    expect(approved, JSON.stringify({ approved, trace: store.trace, calls: apply.mock.calls.length })).toMatchObject({ ok: true })
+    expect(v1.applies).toHaveLength(0)
+    expect(apply).toHaveBeenCalledWith(expect.objectContaining({ approval: subject,
+      changeSet: expect.objectContaining({ version: 2 }) }))
+
+    const rejectedStore = new FakeDeliveryStore('sha256:target' as Sha256Digest)
+    const rejected = rejectedStore.installV2ReviewChangeSet()
+    const rejectedWorkflow = workflowFor(rejectedStore, process.cwd(), process.cwd(), recordingApplyPort(),
+      undefined, undefined, undefined, undefined, v2)
+    await expect(rejectedWorkflow.returnBatch(ADDRESS, { requestId: 'reject-v2', gateId: rejectedStore.gate.gateId,
+      subject: { deliveryChangeSetId: rejected.deliveryChangeSetId, version: 2, digest: rejected.digest } }))
+      .resolves.toMatchObject({ ok: true, value: { state: 'REJECTED' } })
+    rejectedStore.existingSelectionReplayed = true
+    const beforeSelections = rejectedStore.trace.filter(item => item === 'create-selection').length
+    await expect(rejectedWorkflow.selectVerifiedAttempt(ADDRESS, { flowId: rejected.flowId, taskRunId: rejectedStore.taskChangeSets[1]!.taskRunId,
+      attemptId: rejectedStore.taskChangeSets[1]!.attemptId as never, candidateDigest: 'sha256:candidate-b' as Sha256Digest,
+      taskChangeSetDigest: rejectedStore.taskChangeSets[1]!.digest, taskChangeSetId: rejectedStore.taskChangeSets[1]!.taskChangeSetId }))
+      .resolves.toMatchObject({ ok: true, value: { state: 'REJECTED' } })
+    expect(rejectedStore.trace.filter(item => item === 'create-selection')).toHaveLength(beforeSelections + 1)
+    expect(apply).toHaveBeenCalledTimes(1)
   })
 
   it('binds same-path Delivery evidence to the selected task Attempt, not an older verified task', async () => {
@@ -471,6 +541,8 @@ class FakeDeliveryStore {
     createdAt: '2026-08-18T00:00:00.000Z' as never,
   }
   readonly trace: string[] = []
+  lastSelection: unknown
+  existingSelectionReplayed = false
   readonly completedApplyReceipts: DeliveryApplyReceiptV1[] = []
   readonly taskChangeSets: TaskChangeSetV1[]
   readonly artifacts = new Map<string, { artifactId: ArtifactId; kind: string; mediaType: string; contentDigest: Sha256Digest; content: Uint8Array }>()
@@ -519,9 +591,16 @@ class FakeDeliveryStore {
     }
   }
 
-  createDeliverySelection(): { batchId: DeliveryBatchId; selectionDigest: Sha256Digest; replayed: boolean } {
+  verifiedDeliveryBindings() {
+    return this.taskChangeSets.map((changeSet) => ({ taskRunId: changeSet.taskRunId, attemptId: changeSet.attemptId,
+      candidateDigest: `sha256:candidate-${String(changeSet.taskRunId).slice(-1)}` as Sha256Digest,
+      taskChangeSetDigest: changeSet.digest, taskChangeSetId: changeSet.taskChangeSetId }))
+  }
+
+  createDeliverySelection(_address?: unknown, record?: unknown): { batchId: DeliveryBatchId; selectionDigest: Sha256Digest; replayed: boolean } {
     this.trace.push('create-selection')
-    return { batchId: this.batchId, selectionDigest: this.projection.selectionDigest, replayed: false }
+    this.lastSelection = record
+    return { batchId: this.batchId, selectionDigest: this.projection.selectionDigest, replayed: this.existingSelectionReplayed }
   }
 
   readDeliveryProjection(batchId?: DeliveryBatchId): DeliveryBatchProjectionV1 {
@@ -619,9 +698,11 @@ class FakeDeliveryStore {
     return this.gate
   }
 
-  decideDeliveryGate(_address: HubAddressV1, record: { decision: 'APPROVE' | 'REJECT' }): void {
+  decideDeliveryGate(_address: HubAddressV1, record: { decision: 'APPROVE' | 'REJECT'; version: 1 | 2; digest: string }) {
+    if (record.version !== this.gate.subject.version || record.digest !== this.gate.subject.digest) throw new Error('DELIVERY_GATE_SUBJECT_STALE')
     this.trace.push(`decide:${record.decision}`)
     this.projection = { ...this.projection, state: record.decision === 'APPROVE' ? 'APPROVED' : 'REJECTED' }
+    return { replayed: false }
   }
 
   readDeliveryChangeSet(): DeliveryChangeSetV1 | null {
@@ -717,6 +798,21 @@ class FakeDeliveryStore {
 
   installAppliedChangeSet(): void {
     this.sealedChangeSet = this.deliveryChangeSet()
+  }
+
+  installV2ReviewChangeSet(): DeliveryChangeSetV2 {
+    const v1 = this.deliveryChangeSet()
+    const withoutDigest = { ...v1, version: 2 as const, fileChanges: [{ operation: 'DELETE' as const,
+      relativePath: 'old.txt', baselineDigest: `sha256:${'3'.repeat(64)}` as Sha256Digest,
+      contentDigest: null, sourceTaskChangeSetIds: [this.taskChangeSets[0]!.taskChangeSetId] }] }
+    const changeSet = { ...withoutDigest, digest: deliveryChangeSetDigestV2(withoutDigest) }
+    this.sealedChangeSet = changeSet as unknown as DeliveryChangeSetV1
+    ;(this.gate as unknown as { subject: unknown }).subject = {
+      deliveryChangeSetId: changeSet.deliveryChangeSetId, version: 2, digest: changeSet.digest,
+    }
+    this.projection = { ...this.projection, state: 'READY_FOR_REVIEW', deliveryChangeSetId: changeSet.deliveryChangeSetId,
+      deliveryChangeSetDigest: changeSet.digest, gate: this.gate }
+    return changeSet
   }
 
   installPendingVerificationOutboxes(): void {
@@ -860,6 +956,7 @@ function workflowFor(
   baselineTreeHash = 'b'.repeat(40),
   verificationPort: TaskVerificationExecutionPortV1 = passVerificationPort(),
   baselineRecoveryPort?: DeliveryBaselineRecoveryPortV1,
+  applyPortV2?: DeliveryApplyPortV2,
 ): XiaoguiDeliveryWorkflowV1 {
   return new XiaoguiDeliveryWorkflowV1({
     storeFactory: () => store as unknown as CollaborationHubSqliteStoreV1,
@@ -876,6 +973,7 @@ function workflowFor(
     deliveryManagedRoot: managedRoot,
     verificationPort,
     applyPort,
+    applyPortV2,
     baselineRecoveryPort,
     now: () => '2026-08-18T00:00:00.000Z',
     idFactory: (prefix) => `${prefix}_fixed`,

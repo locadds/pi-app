@@ -45,6 +45,118 @@ import type { IdempotencyInput } from './sqlite-store'
 const VERIFIER_OWNER_ID = 'xiaogui-main-process-task-verifier'
 import { MODE_VERIFICATION_POLICY_V1 } from './mode-verification-policy'
 
+export interface UnsettledTaskVerificationInputV1 {
+  readonly projectId: string
+  readonly sessionMode: 'WORK' | 'DESIGN' | 'CODING'
+  readonly flowId: FlowId
+  readonly taskRunId: TaskRunId
+  readonly attemptId: AttemptId
+  readonly runtimeSessionId: string
+  readonly candidateDigest: Sha256Digest
+  readonly createdAt: string
+}
+
+export type UnsettledTaskVerificationResultV1 =
+  | { readonly verdict: 'PASS'; readonly candidateDigest: Sha256Digest; readonly receiptDigest: Sha256Digest; readonly receiptJson: string }
+  | { readonly verdict: 'FAIL'; readonly candidateDigest: Sha256Digest; readonly receiptDigest: Sha256Digest; readonly receiptJson: string; readonly diagnostic: string }
+  | { readonly verdict: 'OUTCOME_UNKNOWN'; readonly candidateDigest: Sha256Digest; readonly reason: string }
+
+/** Main-only pre-settlement verification. It records no Hub terminal state. */
+export class MainUnsettledTaskVerificationPortV1 {
+  constructor(
+    private readonly candidateAudit: TaskCandidateAuditServiceV1,
+    private readonly verificationPort: TaskVerificationExecutionPortV1,
+    private readonly projectResolver: ProjectWorkspaceResolverV1,
+  ) {}
+
+  async verify(input: UnsettledTaskVerificationInputV1): Promise<UnsettledTaskVerificationResultV1> {
+    try {
+      const audited = await this.candidateAudit.captureTaskCandidate({
+        flowId: input.flowId,
+        taskRunId: input.taskRunId,
+        attemptId: input.attemptId,
+        createdAt: new Date(input.createdAt).toISOString(),
+        runtimeSignal: {
+          runtimeSessionId: input.runtimeSessionId,
+          receiptDigest: `sha256:${digestJson({ kind: 'PI_UNSETTLED_RUNTIME_SIGNAL_V1', runtimeSessionId: input.runtimeSessionId, candidateDigest: input.candidateDigest })}`,
+          candidateDigest: input.candidateDigest,
+        },
+        allowNoApprovedChanges: true,
+      })
+      if (audited.candidate.resultTreeHash !== input.candidateDigest) {
+        return { verdict: 'OUTCOME_UNKNOWN', candidateDigest: audited.candidate.resultTreeHash, reason: 'CANDIDATE_CHANGED' }
+      }
+      const ids = verificationIds(audited.candidate.candidateDigest)
+      const requestWithoutDigest = {
+        scope: 'TASK' as const,
+        verificationAttemptId: ids.verificationAttemptId,
+        verificationRequestId: ids.verificationRequestId,
+        flowId: input.flowId,
+        taskRunId: input.taskRunId,
+        attemptId: input.attemptId,
+        candidateId: audited.candidate.candidateId,
+        changeSetDigest: audited.candidate.proposedChangeSetDigest,
+        preparedTreeHash: audited.candidate.resultTreeHash,
+        qaConfigVersion: MODE_VERIFICATION_POLICY_V1[input.sessionMode].task,
+        acceptanceCriteria: ['approved-file-scope', ...MODE_VERIFICATION_POLICY_V1[input.sessionMode].checks],
+      }
+      const request: TaskVerificationRequestV1 = Object.freeze({ ...requestWithoutDigest, requestDigest: verificationRequestDigestV1(requestWithoutDigest) })
+      if (audited.changedFiles.length === 0) {
+        const receiptWithoutDigest = {
+          scope: 'TASK' as const, verificationAttemptId: request.verificationAttemptId,
+          verificationRequestId: request.verificationRequestId, flowId: request.flowId, taskRunId: request.taskRunId,
+          attemptId: request.attemptId, candidateId: request.candidateId, requestDigest: request.requestDigest,
+          changeSetDigest: request.changeSetDigest, qaConfigVersion: request.qaConfigVersion,
+          diagnosticArtifactIds: [] as ArtifactId[], evidenceArtifactIds: [] as ArtifactId[],
+          verdict: 'FAIL' as const,
+          checks: [{ checkId: 'candidate.non-empty', summary: '候选未产生可交付变更', artifactIds: [] as ArtifactId[], verdict: 'FAIL' as const }] as const,
+          failure: { source: 'VERIFICATION_LOGIC_FAILURE' as const, failureClass: 'LOGIC_FAILURE' as const,
+            disposition: 'REQUIRE_HUMAN_GATE' as const, retryOrdinal: 0 as const, safeCode: 'UNSATISFIED_ACCEPTANCE_CRITERIA' as const },
+          reason: 'TASK_CANDIDATE_EMPTY',
+        }
+        const receipt = { ...receiptWithoutDigest, receiptDigest: verificationReceiptDigestV1(receiptWithoutDigest) }
+        return { verdict: 'FAIL', candidateDigest: audited.candidate.resultTreeHash, receiptDigest: receipt.receiptDigest,
+          receiptJson: JSON.stringify(receipt), diagnostic: '候选未产生可交付变更，请完成任务要求后再次结束运行。' }
+      }
+      const projectRoot = await this.projectResolver.resolveProjectRoot(input.projectId)
+      const result = await this.verificationPort.verify(request, {
+        verificationScope: 'TASK',
+        artifactPaths: audited.changedFiles.map(file => file.relativePath),
+        worktreeRoot: audited.privateVerificationContext.worktreeRoot,
+        trustedToolchainRoot: projectRoot,
+        scopeEvidenceArtifactId: ids.scopeEvidenceArtifactId,
+        inspectionArtifactId: ids.inspectionArtifactId,
+        ...('authorizationDigest' in audited.privateVerificationContext
+          ? { worktreeAuthorizationDigest: audited.privateVerificationContext.authorizationDigest }
+          : {}),
+      })
+      if (result.receipt.candidateId !== request.candidateId || result.receipt.requestDigest !== request.requestDigest) {
+        return { verdict: 'OUTCOME_UNKNOWN', candidateDigest: audited.candidate.resultTreeHash, reason: 'VERIFICATION_RECEIPT_MISMATCH' }
+      }
+      const receiptJson = JSON.stringify(result.receipt)
+      if (result.receipt.verdict === 'PASS') return { verdict: 'PASS', candidateDigest: audited.candidate.resultTreeHash, receiptDigest: result.receipt.receiptDigest, receiptJson }
+      if (result.receipt.verdict === 'FAIL') return {
+        verdict: 'FAIL', candidateDigest: audited.candidate.resultTreeHash, receiptDigest: result.receipt.receiptDigest, receiptJson,
+        diagnostic: verificationDiagnosticText(result),
+      }
+      return { verdict: 'OUTCOME_UNKNOWN', candidateDigest: audited.candidate.resultTreeHash, reason: result.receipt.reason ?? 'TASK_VERIFICATION_UNKNOWN' }
+    } catch {
+      return { verdict: 'OUTCOME_UNKNOWN', candidateDigest: input.candidateDigest, reason: 'UNSETTLED_VERIFICATION_FAILED' }
+    }
+  }
+}
+
+function verificationDiagnosticText(result: Awaited<ReturnType<TaskVerificationExecutionPortV1['verify']>>): string {
+  const artifactText = result.artifacts
+    .filter(artifact => artifact.kind === 'VERIFICATION_DIAGNOSTIC')
+    .map(artifact => Buffer.from(artifact.content).toString('utf8'))
+    .join('\n')
+  const checks = result.receipt.verdict === 'FAIL'
+    ? result.receipt.checks.map(check => `${check.checkId}:${check.summary}`).join('\n')
+    : ''
+  return [result.receipt.reason, checks, artifactText].filter(Boolean).join('\n').slice(0, 8_000)
+}
+
 export interface TaskVerificationSucceededInputV1 {
   readonly address: HubAddressV1
   readonly flowId: FlowId
@@ -90,6 +202,16 @@ export interface TaskVerificationCoordinatorOptionsV1 {
     readAttemptRole(attemptId: AttemptId): 'RESEARCH' | 'IMPLEMENT' | 'REVIEW' | null
   }
   readonly now?: () => string
+  readonly onVerifiedTask?: (input: {
+    address: HubAddressV1
+    flowId: FlowId
+    taskRunId: TaskRunId
+    attemptId: AttemptId
+    candidateDigest: Sha256Digest
+    taskChangeSetDigest: Sha256Digest
+    taskChangeSetId: TaskChangeSetId
+  }) => Promise<void>
+  readonly isAuthorizedV2Attempt?: (attemptId: AttemptId) => Promise<boolean>
 }
 
 export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoordinatorV1 {
@@ -118,6 +240,16 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
     for (const pending of this.storeInstance().pendingTaskVerifications()) {
       if (this.closed) return results
       results.push(await this.completePendingAsUnknown(pending.address, pending.outbox))
+    }
+    if (this.options.onVerifiedTask && this.options.isAuthorizedV2Attempt) {
+      for (const candidate of this.storeInstance().automaticDeliveryCandidates()) {
+        if (this.closed) break
+        try {
+          if (await this.options.isAuthorizedV2Attempt(candidate.attemptId)) {
+            await this.options.onVerifiedTask(candidate)
+          }
+        } catch { /* Keep the sealed verification; the next recovery retries the exact candidate. */ }
+      }
     }
     return results
   }
@@ -168,9 +300,6 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
     } catch {
       return { ok: false, reasonCode: 'TASK_VERIFICATION_BINDING_MISMATCH' }
     }
-    if (this.options.attemptRoleProvider && !attemptRole) {
-      return { ok: false, reasonCode: 'TASK_VERIFICATION_BINDING_MISMATCH' }
-    }
     const allowNoApprovedChanges = attemptRole === 'RESEARCH' || attemptRole === 'REVIEW'
 
     let audited: TaskCandidateAuditResultV1
@@ -186,6 +315,9 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
       })
     } catch {
       return { ok: false, reasonCode: 'TASK_VERIFICATION_CAPTURE_FAILED' }
+    }
+    if (this.options.attemptRoleProvider && !attemptRole && audited.captureVersion !== 2) {
+      return { ok: false, reasonCode: 'TASK_VERIFICATION_BINDING_MISMATCH' }
     }
     if (allowNoApprovedChanges && audited.changedFiles.length !== 0) {
       return { ok: false, reasonCode: 'TASK_VERIFICATION_CAPTURE_FAILED' }
@@ -286,6 +418,9 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
         trustedToolchainRoot: projectRoot,
         scopeEvidenceArtifactId: ids.scopeEvidenceArtifactId,
         inspectionArtifactId: ids.inspectionArtifactId,
+        ...('authorizationDigest' in audited.privateVerificationContext
+          ? { worktreeAuthorizationDigest: audited.privateVerificationContext.authorizationDigest }
+          : {}),
       })
     } catch {
       try {
@@ -369,7 +504,7 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
       return { ok: true, verificationAttemptId: request.verificationAttemptId, verdict: completed.verdict }
     }
 
-    return this.completeOrDegradeToUnknown(input.address, request, ids.inspectionArtifactId, {
+    const completed = await this.completeOrDegradeToUnknown(input.address, request, ids.inspectionArtifactId, {
       receipt: result.receipt,
       evidenceBundle,
       qaResult,
@@ -378,6 +513,14 @@ export class SqliteTaskVerificationCoordinatorV1 implements TaskVerificationCoor
       diagnosticArtifacts,
       now: this.now(),
     })
+    if (completed.ok && completed.verdict === 'PASS' && audited.captureVersion === 2 && this.options.onVerifiedTask) {
+      try {
+        await this.options.onVerifiedTask({ address: input.address, flowId: input.flowId, taskRunId: input.taskRunId,
+          attemptId: input.attemptId, candidateDigest: audited.candidate.candidateDigest,
+          taskChangeSetDigest: changeSet.digest, taskChangeSetId: changeSet.taskChangeSetId })
+      } catch { /* Verification stays authoritative; recovery may retry automatic Delivery. */ }
+    }
+    return completed
   }
 
   private async completeOrDegradeToUnknown(

@@ -4,7 +4,7 @@ import type {
   DeliveryBatchId,
   DeliveryBatchProjectionV1,
   DeliveryGateId,
-  DeliveryGateSubjectV1,
+  DeliveryGateSubjectAnyV1,
 } from './xiaogui-delivery'
 
 export type XiaoguiDeliveryIpcContractVersionV1 = 'm4d.v1'
@@ -36,13 +36,13 @@ export interface XiaoguiDeliverySelectTasksRequestV1 {
 export interface XiaoguiDeliveryApproveGateRequestV1 {
   readonly requestId: string
   readonly gateId: DeliveryGateId
-  readonly subject: DeliveryGateSubjectV1
+  readonly subject: DeliveryGateSubjectAnyV1
 }
 
 export interface XiaoguiDeliveryReturnBatchRequestV1 {
   readonly requestId: string
   readonly gateId: DeliveryGateId
-  readonly subject: DeliveryGateSubjectV1
+  readonly subject: DeliveryGateSubjectAnyV1
   readonly rejectionReason?: string
 }
 

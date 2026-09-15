@@ -15,10 +15,13 @@ import {
   digestJson,
   type AttemptTaskPatchCapturePortV1,
   type AttemptTaskPatchCaptureV1,
+  type AttemptTaskPatchCaptureV2,
+  type TaskPatchFileSnapshotV2,
   type TaskPatchFileSnapshotV1,
 } from './attempt-workspace'
 
 export const TASK_PATCH_MEDIA_TYPE_V1 = 'application/vnd.xiaogui.task-patch-v1+json' as const
+export const TASK_PATCH_MEDIA_TYPE_V2 = 'application/vnd.xiaogui.task-patch-v2+json' as const
 
 export interface RuntimeTaskCandidateSignalV1 {
   readonly runtimeSessionId: string
@@ -49,7 +52,7 @@ export interface CaptureTaskCandidateInputV1 {
 
 export interface PrivateTaskPatchArtifactV1 extends TaskArtifactRefV1 {
   readonly kind: 'PATCH'
-  readonly mediaType: typeof TASK_PATCH_MEDIA_TYPE_V1
+  readonly mediaType: typeof TASK_PATCH_MEDIA_TYPE_V1 | typeof TASK_PATCH_MEDIA_TYPE_V2
   readonly bytes: Uint8Array
 }
 
@@ -60,10 +63,11 @@ export interface PrivateTaskPatchArtifactV1 extends TaskArtifactRefV1 {
 export interface TaskCandidateAuditResultV1 {
   readonly candidate: ChangeSetCandidateV1
   readonly patchArtifact: PrivateTaskPatchArtifactV1
-  readonly changedFiles: readonly TaskPatchFileSnapshotV1[]
+  readonly changedFiles: readonly (TaskPatchFileSnapshotV1 | TaskPatchFileSnapshotV2)[]
   readonly ancestorTaskChangeSetIds: readonly TaskChangeSetId[]
   readonly runtimeCandidateBindingDigest: Sha256Digest
-  readonly privateVerificationContext: AttemptTaskPatchCaptureV1['privateVerificationContext']
+  readonly privateVerificationContext: AttemptTaskPatchCaptureV1['privateVerificationContext'] | AttemptTaskPatchCaptureV2['privateVerificationContext']
+  readonly captureVersion?: 1 | 2
 }
 
 export type TaskCandidateAuditReasonCodeV1 =
@@ -83,14 +87,18 @@ export class TaskCandidateAuditServiceV1 {
   constructor(
     private readonly workspace: AttemptTaskPatchCapturePortV1,
     private readonly runtimeReconcile?: RuntimeTaskCandidateReconcilePortV1,
+    private readonly captureVersion?: (attemptId: AttemptId) => Promise<1 | 2>,
   ) {}
 
   async captureTaskCandidate(input: CaptureTaskCandidateInputV1): Promise<TaskCandidateAuditResultV1> {
     assertIdentity(input)
     const createdAt = canonicalTimestamp(input.createdAt)
-    const capture = input.allowNoApprovedChanges === true
-      ? await this.workspace.captureTaskPatch(input.attemptId, { allowNoApprovedChanges: true })
-      : await this.workspace.captureTaskPatch(input.attemptId)
+    const captureVersion = await this.captureVersion?.(input.attemptId) ?? 1
+    const capture = captureVersion === 2
+      ? await requiredV2Capture(this.workspace, input.attemptId, input.allowNoApprovedChanges === true)
+      : input.allowNoApprovedChanges === true
+        ? await this.workspace.captureTaskPatch(input.attemptId, { allowNoApprovedChanges: true })
+        : await this.workspace.captureTaskPatch(input.attemptId)
     assertVerificationControlsUnchanged(capture.changedFiles)
     const ancestorTaskChangeSetIds = validatedAncestorIds(input.ancestorTaskChangeSetIds ?? [])
     const inputTreeHash = capture.inputTreeHash as Sha256Digest
@@ -160,18 +168,19 @@ export class TaskCandidateAuditServiceV1 {
         artifactId: patchArtifactId,
         digest: capture.patchArtifactDigest as Sha256Digest,
         kind: 'PATCH',
-        mediaType: TASK_PATCH_MEDIA_TYPE_V1,
+        mediaType: captureVersion === 2 ? TASK_PATCH_MEDIA_TYPE_V2 : TASK_PATCH_MEDIA_TYPE_V1,
         bytes: capture.patchArtifactBytes,
       },
       changedFiles: capture.changedFiles,
       ancestorTaskChangeSetIds,
       runtimeCandidateBindingDigest,
       privateVerificationContext: capture.privateVerificationContext,
+      captureVersion,
     }
   }
 }
 
-function assertVerificationControlsUnchanged(changedFiles: readonly TaskPatchFileSnapshotV1[]): void {
+function assertVerificationControlsUnchanged(changedFiles: readonly (TaskPatchFileSnapshotV1 | TaskPatchFileSnapshotV2)[]): void {
   if (changedFiles.some((file) => isRootVerificationControl(file.relativePath))) {
     throw new TaskCandidateAuditErrorV1('CANDIDATE_VERIFICATION_CONTROL_FORBIDDEN')
   }
@@ -220,6 +229,11 @@ function validatedAncestorIds(ids: readonly TaskChangeSetId[]): readonly TaskCha
 
 function candidateIdFrom(bindingDigest: Sha256Digest): TaskChangeSetCandidateId {
   return `xhcand_${bindingDigest.slice('sha256:'.length, 'sha256:'.length + 32)}` as TaskChangeSetCandidateId
+}
+
+async function requiredV2Capture(workspace: AttemptTaskPatchCapturePortV1, attemptId: AttemptId, allowNoApprovedChanges: boolean): Promise<AttemptTaskPatchCaptureV2> {
+  if (!workspace.captureTaskPatchV2) throw new TaskCandidateAuditErrorV1('CANDIDATE_RUNTIME_RESULT_MISMATCH')
+  return workspace.captureTaskPatchV2(attemptId, { allowNoApprovedChanges })
 }
 
 function canonicalTimestamp(value: string): IsoDateTime {

@@ -16,12 +16,16 @@ import type {
 import type { CollaborationHubApplicationV1 } from '../task-hub/application'
 import type {
   AttemptTaskPatchCaptureV1,
+  AttemptTaskPatchCaptureV2,
   AttemptWorkspacePortV1,
   TaskPatchFileSnapshotV1,
+  TaskPatchFileSnapshotV2,
 } from '../task-hub/attempt-workspace'
 import type { CollaborationHubSqliteStoreV1 } from '../task-hub/sqlite-store'
+import { MODE_VERIFICATION_POLICY_V1, modeForVerificationConfigV1 } from '../task-hub/mode-verification-policy'
 
 const PATCH_MEDIA_TYPE = 'application/vnd.xiaogui.task-patch-v1+json'
+const PATCH_MEDIA_TYPE_V2 = 'application/vnd.xiaogui.task-patch-v2+json'
 const DIAGNOSTIC_MEDIA_TYPE = 'application/vnd.xiaogui.qa-diagnostic+json'
 const execFileAsync = promisify(execFile)
 const MAX_DIFF_BYTES = 4 * 1024 * 1024
@@ -41,13 +45,14 @@ type KnownVerificationCheckIdV1 = keyof typeof VERIFICATION_COMMANDS
 
 type AttemptReviewApplicationPortV1 = Pick<CollaborationHubApplicationV1, 'observeM2B'>
 type AttemptReviewStorePortV1 = Pick<CollaborationHubSqliteStoreV1, 'readArtifact' | 'readTaskChangeSet'>
-type AttemptReviewWorkspacePortV1 = Pick<AttemptWorkspacePortV1, 'captureTaskPatch'>
+type AttemptReviewWorkspacePortV1 = Pick<AttemptWorkspacePortV1, 'captureTaskPatch'> &
+  Partial<Pick<AttemptWorkspacePortV1, 'captureTaskPatchV2' | 'runtimeAccess'>>
 
 export interface AttemptReviewDiffInputV1 {
   readonly attemptId: AttemptId
   readonly baseRevision: string
   readonly worktreeRoot: string
-  readonly changedFiles: readonly TaskPatchFileSnapshotV1[]
+  readonly changedFiles: readonly (TaskPatchFileSnapshotV1 | TaskPatchFileSnapshotV2)[]
 }
 
 export interface AttemptReviewDiffPortV1 {
@@ -96,7 +101,10 @@ export class CodingAttemptReviewModuleV1 {
     const attempt = observed.value.attempts.find((candidate) => candidate.attemptId === input.attemptId)
     if (!attempt) throw new CodingAttemptReviewErrorV1('ATTEMPT_NOT_FOUND')
 
-    const capture = await this.options.workspace.captureTaskPatch(input.attemptId)
+    const access = await this.options.workspace.runtimeAccess?.(input.attemptId)
+    const capture = access?.worktreeAuthorization && this.options.workspace.captureTaskPatchV2
+      ? await this.options.workspace.captureTaskPatchV2(input.attemptId)
+      : await this.options.workspace.captureTaskPatch(input.attemptId)
     const changedRelativePaths = capture.changedFiles.map((file) => safeRelativePath(file.relativePath)).sort()
     await this.assertPersistedPatchBinding(attempt, capture)
 
@@ -107,6 +115,12 @@ export class CodingAttemptReviewModuleV1 {
       worktreeRoot: capture.privateVerificationContext.worktreeRoot,
       changedFiles: capture.changedFiles,
     })
+    const after = access?.worktreeAuthorization && this.options.workspace.captureTaskPatchV2
+      ? await this.options.workspace.captureTaskPatchV2(input.attemptId)
+      : await this.options.workspace.captureTaskPatch(input.attemptId)
+    if (after.patchArtifactDigest !== capture.patchArtifactDigest || !sameBytes(after.patchArtifactBytes, capture.patchArtifactBytes)) {
+      throw new CodingAttemptReviewErrorV1('PATCH_ARTIFACT_MISMATCH')
+    }
     if (containsPrivatePath(unifiedDiff, capture.privateVerificationContext.worktreeRoot)) {
       throw new CodingAttemptReviewErrorV1('PRIVATE_PATH_DISCLOSURE')
     }
@@ -127,7 +141,7 @@ export class CodingAttemptReviewModuleV1 {
 
   private async assertPersistedPatchBinding(
     attempt: AttemptProjectionM2BV1,
-    capture: AttemptTaskPatchCaptureV1,
+    capture: AttemptTaskPatchCaptureV1 | AttemptTaskPatchCaptureV2,
   ): Promise<void> {
     const summary = attempt.verificationSummary
     if (summary?.state !== 'SUCCEEDED') return
@@ -144,7 +158,7 @@ export class CodingAttemptReviewModuleV1 {
     if (
       !artifact ||
       artifact.kind !== 'PATCH' ||
-      artifact.mediaType !== PATCH_MEDIA_TYPE ||
+      artifact.mediaType !== ('authorizationDigest' in capture.privateVerificationContext ? PATCH_MEDIA_TYPE_V2 : PATCH_MEDIA_TYPE) ||
       artifact.contentDigest !== capture.patchArtifactDigest ||
       digestBytes(artifact.content) !== artifact.contentDigest ||
       !sameBytes(artifact.content, capture.patchArtifactBytes)
@@ -164,15 +178,20 @@ export class CodingAttemptReviewModuleV1 {
       return { verifications: [], unresolvedIssues: ['验证尚未完成，禁止据此提交交付。'] }
     }
 
-    const inspection = this.readInspection(summary)
+    const mode = modeForVerificationConfigV1(summary.qaConfigVersion)
+    const inspection = mode === 'CODING' ? this.readInspection(summary) : null
     const unresolvedIssues: string[] = []
-    if (!inspection) unresolvedIssues.push('验证制品缺失或无法校验，检查结果按未知处理。')
+    if (mode === 'CODING' && !inspection) unresolvedIssues.push('验证制品缺失或无法校验，检查结果按未知处理。')
     if (summary.state === 'FAILED') unresolvedIssues.push('验证未通过，必须修复或人工决定后再继续。')
     if (summary.state === 'OUTCOME_UNKNOWN') unresolvedIssues.push('验证结果未知，禁止重复声称成功或形成待应用交付。')
 
-    const checks = inspection?.checks ?? summaryChecksAsUnknown(summary)
+    const checks = inspection?.checks ?? (mode && mode !== 'CODING'
+      ? summaryChecks(summary)
+      : summaryChecksAsUnknown(summary))
     if (summary.state === 'SUCCEEDED') {
-      const expected = Object.keys(VERIFICATION_COMMANDS) as KnownVerificationCheckIdV1[]
+      const expected = mode && mode !== 'CODING'
+        ? [...MODE_VERIFICATION_POLICY_V1[mode].checks]
+        : Object.keys(VERIFICATION_COMMANDS)
       if (expected.some((checkId) => !checks.some((check) => check.checkId === checkId && check.status === 'PASS'))) {
         unresolvedIssues.push('成功状态缺少完整、可校验的固定验证命令证据。')
       }
@@ -180,8 +199,8 @@ export class CodingAttemptReviewModuleV1 {
 
     return {
       verifications: checks.map((check) => ({
-        label: VERIFICATION_COMMANDS[check.checkId].label,
-        commandDigest: commandDigest(check.checkId),
+        label: isKnownCheckId(check.checkId) ? VERIFICATION_COMMANDS[check.checkId].label : check.checkId,
+        commandDigest: verificationCheckDigest(check.checkId, summary.qaConfigVersion),
         exitCode: check.exitCode,
         status: check.status === 'PASS' ? 'PASSED' : check.status === 'FAIL' ? 'FAILED' : 'UNKNOWN',
       })),
@@ -221,7 +240,7 @@ export class GitAttemptReviewDiffPortV1 implements AttemptReviewDiffPortV1 {
       relativePath: safeRelativePath(file.relativePath),
     }))
     const modified = files
-      .filter((file) => file.operation === 'MODIFY')
+      .filter((file) => file.operation === 'MODIFY' || file.operation === 'DELETE')
       .map((file) => file.relativePath)
       .sort()
     const created = files
@@ -270,7 +289,7 @@ export class GitAttemptReviewDiffPortV1 implements AttemptReviewDiffPortV1 {
 interface InspectionProjectionV1 {
   readonly outcome: 'PASS' | 'FAIL' | 'OUTCOME_UNKNOWN'
   readonly checks: readonly {
-    readonly checkId: KnownVerificationCheckIdV1
+    readonly checkId: string
     readonly status: 'PASS' | 'FAIL' | 'UNKNOWN'
     readonly exitCode: number | null
   }[]
@@ -326,12 +345,26 @@ function summaryChecksAsUnknown(
     .map((check) => ({ checkId: check.checkId, status: 'UNKNOWN', exitCode: null }))
 }
 
+function summaryChecks(
+  summary: Exclude<TaskVerificationSummaryV1, { state: 'STARTED' }>,
+): readonly InspectionProjectionV1['checks'][number][] {
+  if (summary.state === 'OUTCOME_UNKNOWN') return []
+  return summary.checks.map(check => ({ checkId: check.checkId,
+    status: check.verdict === 'PASS' ? 'PASS' as const : 'FAIL' as const, exitCode: null }))
+}
+
 function commandDigest(checkId: KnownVerificationCheckIdV1): Sha256Digest {
   const command = VERIFICATION_COMMANDS[checkId]
   return digestBytes(JSON.stringify({
     kind: 'XIAOGUI_FIXED_VERIFICATION_COMMAND_V1',
     executable: 'typescript/tsc',
     args: ['--project', command.configPath, '--noEmit'],
+  }))
+}
+
+function verificationCheckDigest(checkId: string, qaConfigVersion: string): Sha256Digest {
+  return isKnownCheckId(checkId) ? commandDigest(checkId) : digestBytes(JSON.stringify({
+    kind: 'XIAOGUI_MODE_VERIFICATION_CHECK_V1', qaConfigVersion, checkId,
   }))
 }
 

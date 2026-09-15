@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { ExecutionBaselineProviderV1 } from './application'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
 import {
   DeliveryComposerV1,
+  DeliveryComposerV2,
   type DeliveryComposerTaskInputV1,
   type DeliveryComposedFileArtifactV1,
 } from './delivery-composer'
@@ -15,25 +16,34 @@ import {
   isPreStartChangeApplyErrorV1,
   type DeliveryApplyFileContentV1,
   type DeliveryApplyPortV1,
+  type DeliveryApplyPortV2,
 } from './change-apply'
 import type { TaskVerificationExecutionPortV1 } from './verification-port'
 import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 import {
   deliveryApplyReceiptDigestV1,
+  deliveryApplyReceiptDigestV2,
   deliveryApplyRequestDigestV1,
+  deliveryApplyRequestDigestV2,
   deliveryChangeSetDigestV1,
+  deliveryChangeSetDigestV2,
   deliveryGateDecisionDigestV1,
+  deliveryGateDecisionDigestV2,
   deliverySelectionDigestV1,
   deliveryTargetFingerprintV1,
   deliveryVerificationReceiptDigestV1,
   deliveryVerificationRequestDigestV1,
   type DeliveryApplyAttemptId,
   type DeliveryApplyReceiptV1,
+  type DeliveryApplyReceiptAnyV1,
   type DeliveryApprovalSubjectV1,
   type DeliveryBatchId,
   type DeliveryBatchProjectionV1,
   type DeliveryChangeSetId,
   type DeliveryChangeSetV1,
+  type DeliveryChangeSetV2,
+  type DeliveryChangeSetAnyV1,
+  type DeliveryGateSubjectAnyV1,
   type DeliveryGateId,
   type DeliveryRecoveryLineageV1,
   type DeliverySelectionDraftId,
@@ -51,7 +61,7 @@ import type {
   XiaoguiDeliveryRetryApplyRequestV1,
   XiaoguiDeliverySelectTasksRequestV1,
 } from '@shared/xiaogui-delivery-ipc'
-import type { AttemptId, FlowId, HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
+import type { AttemptId, FlowId, HubAddressV1, TaskRunId } from '@shared/xiaogui-collaboration-hub'
 import {
   taskChangeSetDigestV1,
   type ArtifactId,
@@ -68,7 +78,7 @@ const DELIVERY_OUTBOX_OWNER_V1 = 'xiaogui-main-process-delivery'
 
 interface PrivateDeliveryVerificationRecoveryV1 {
   readonly verificationRequestDigest?: Sha256Digest
-  readonly deliveryChangeSet: DeliveryChangeSetV1
+  readonly deliveryChangeSet: DeliveryChangeSetAnyV1
   readonly privateIntegrationContext: {
     readonly worktreeRoot: string
     readonly trustedToolchainRoot: string
@@ -83,6 +93,7 @@ export interface XiaoguiDeliveryWorkflowOptionsV1 {
   readonly deliveryManagedRoot: string
   readonly verificationPort: TaskVerificationExecutionPortV1
   readonly applyPort: DeliveryApplyPortV1
+  readonly applyPortV2?: DeliveryApplyPortV2
   readonly baselineRecoveryPort?: DeliveryBaselineRecoveryPortV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
@@ -113,6 +124,42 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
     address: HubAddressV1,
     request: XiaoguiDeliverySelectTasksRequestV1,
   ): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+    return this.selectTasksWithBindings(address, request)
+  }
+
+  /** Main-only automatic handoff. It verifies the exact Attempt/candidate set and stops at review. */
+  selectVerifiedAttempt(address: HubAddressV1, input: {
+    flowId: FlowId
+    taskRunId: TaskRunId
+    attemptId: AttemptId
+    candidateDigest: Sha256Digest
+    taskChangeSetDigest: Sha256Digest
+    taskChangeSetId: TaskChangeSetId
+  }): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
+    let bindings
+    try {
+      bindings = this.store.verifiedDeliveryBindings(address, input.flowId, input.taskRunId)
+    } catch (error) {
+      return Promise.resolve(mapDeliveryError(error))
+    }
+    const exact = bindings.find(binding => binding.taskRunId === input.taskRunId)
+    if (!exact || exact.attemptId !== input.attemptId || exact.candidateDigest !== input.candidateDigest ||
+      exact.taskChangeSetId !== input.taskChangeSetId ||
+      exact.taskChangeSetDigest !== input.taskChangeSetDigest) return Promise.resolve(fail('ILLEGAL_TRANSITION'))
+    const bindingDigest = createHash('sha256').update(JSON.stringify({ flowId: input.flowId,
+      bindings: bindings.map(binding => [binding.taskRunId, binding.attemptId, binding.candidateDigest, binding.taskChangeSetId, binding.taskChangeSetDigest]) })).digest('hex')
+    return this.selectTasksWithBindings(address, {
+      requestId: `xhbd_auto_${bindingDigest.slice(0, 40)}`,
+      flowId: input.flowId,
+      taskRunIds: bindings.map(binding => binding.taskRunId),
+    }, bindings)
+  }
+
+  private selectTasksWithBindings(
+    address: HubAddressV1,
+    request: XiaoguiDeliverySelectTasksRequestV1,
+    expectedTaskBindings?: Parameters<CollaborationHubSqliteStoreV1['createDeliverySelection']>[1]['expectedTaskBindings'],
+  ): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
     return this.singleFlight(`select:${address.projectId}:${address.sessionKey}:${request.requestId}`, async () => {
       try {
         const target = await this.captureDeliveryTarget(address, request.flowId)
@@ -124,6 +171,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           draftId,
           flowId: request.flowId,
           selectedTaskRunIds: request.taskRunIds,
+          expectedTaskBindings,
           targetFingerprint: target.initialTargetFingerprint,
           now,
         })
@@ -132,13 +180,17 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         const draft = this.store.readDeliverySelectionDraft(selection.batchId)
         if (!draft) return fail('DELIVERY_NOT_FOUND')
 
-        const composer = new DeliveryComposerV1(new MainProcessDeliveryIntegrationWorktreePortV1({
+        const integrationWorktree = new MainProcessDeliveryIntegrationWorktreePortV1({
           projectResolver: this.options.projectResolver,
           managedRoot: this.options.deliveryManagedRoot,
           target,
           batchId: selection.batchId,
-        }))
-        const taskInputs = this.deliveryTaskInputs(draft.resolvedTaskChangeSets.map((item) => item.taskChangeSetId))
+        })
+        const taskInputSelection = this.deliveryTaskInputs(draft.resolvedTaskChangeSets.map((item) => item.taskChangeSetId))
+        const composer = taskInputSelection.version === 2
+          ? new DeliveryComposerV2({ integrationWorktree })
+          : new DeliveryComposerV1(integrationWorktree)
+        const taskInputs = taskInputSelection.inputs
         const deliveryChangeSetId = this.id('xhbdcs') as DeliveryChangeSetId
         const composed = await composer.compose({
           flowId: request.flowId,
@@ -157,16 +209,17 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           return fail('ILLEGAL_TRANSITION')
         }
         this.integrationRoots.set(composed.privateIntegrationContext.worktreeRoot, composed.privateIntegrationContext.trustedToolchainRoot)
+        const composedChangeSet = composed.changeSet
 
         const verificationAttemptId = this.id('xhbdva') as DeliveryVerificationAttemptId
-        const verificationRequest = deliveryVerificationRequest(verificationAttemptId, composed.changeSet)
+        const verificationRequest = deliveryVerificationRequest(verificationAttemptId, composedChangeSet)
         this.store.beginDeliveryVerification(address, {
           verificationAttemptId,
           verificationRequestJson: JSON.stringify({
             ...verificationRequest,
             privateRecovery: serializeVerificationRecovery({
               verificationRequestDigest: verificationRequest.requestDigest,
-              deliveryChangeSet: composed.changeSet,
+              deliveryChangeSet: composedChangeSet,
               privateIntegrationContext: composed.privateIntegrationContext,
               fileArtifacts: composed.artifacts,
             }),
@@ -181,7 +234,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         })
         if (!claim) return fail('ILLEGAL_TRANSITION')
         await this.completeRecoveredVerification(address, verificationAttemptId, verificationRequest.requestDigest, {
-          deliveryChangeSet: composed.changeSet,
+          deliveryChangeSet: composedChangeSet,
           privateIntegrationContext: composed.privateIntegrationContext,
           fileArtifacts: composed.artifacts,
         })
@@ -204,7 +257,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           version: request.subject.version,
           digest: request.subject.digest,
           decision: 'APPROVE',
-          decisionDigest: deliveryGateDecisionDigestV1({
+          decisionDigest: gateDecisionDigest({
             gateId: request.gateId,
             batchId: gate.batchId,
             deliveryChangeSetId: request.subject.deliveryChangeSetId,
@@ -237,7 +290,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
           version: request.subject.version,
           digest: request.subject.digest,
           decision: 'REJECT',
-          decisionDigest: deliveryGateDecisionDigestV1({
+          decisionDigest: gateDecisionDigest({
             gateId: request.gateId,
             batchId: gate.batchId,
             deliveryChangeSetId: request.subject.deliveryChangeSetId,
@@ -331,6 +384,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         if (existing) return { ok: true, value: existing }
         const sourceDraft = this.store.readDeliverySelectionDraft(request.batchId)
         if (!sourceDraft) return fail('DELIVERY_NOT_FOUND')
+        if (packageRecord.changeSet.version !== 1) return fail('ILLEGAL_TRANSITION')
         const currentTarget = await this.captureDeliveryTarget(address, packageRecord.changeSet.flowId)
         const recoveryPort = this.baselineRecoveryPort()
         const recovered = await recoveryPort.recover({
@@ -585,18 +639,22 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
   private async applyApproved(
     address: HubAddressV1,
     batchId: DeliveryBatchId,
-    approval: DeliveryApprovalSubjectV1,
+    approval: DeliveryGateSubjectAnyV1,
     applyAttemptId: DeliveryApplyAttemptId,
-  ): Promise<DeliveryApplyReceiptV1> {
+  ): Promise<DeliveryApplyReceiptAnyV1> {
     const changeSet = this.store.readDeliveryChangeSet(approval.deliveryChangeSetId)
     if (!changeSet) throw new Error('DELIVERY_CHANGESET_NOT_FOUND')
-    const requestDigest = deliveryApplyRequestDigestV1({
+    if (changeSet.version !== approval.version) throw new Error('DELIVERY_APPROVAL_VERSION_MISMATCH')
+    const requestInput = {
       applyAttemptId,
       deliveryChangeSetId: changeSet.deliveryChangeSetId,
       deliveryChangeSetDigest: changeSet.digest,
       approval,
       targetFingerprint: changeSet.target.initialTargetFingerprint,
-    })
+    }
+    const requestDigest = changeSet.version === 2
+      ? deliveryApplyRequestDigestV2(requestInput as Parameters<typeof deliveryApplyRequestDigestV2>[0])
+      : deliveryApplyRequestDigestV1(requestInput as Parameters<typeof deliveryApplyRequestDigestV1>[0])
     this.store.beginDeliveryApply(address, {
       applyAttemptId,
       batchId,
@@ -624,10 +682,10 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
   }
 
   private async runClaimedApply(
-    changeSet: DeliveryChangeSetV1,
-    approval: DeliveryApprovalSubjectV1,
+    changeSet: DeliveryChangeSetAnyV1,
+    approval: DeliveryGateSubjectAnyV1,
     applyAttemptId: DeliveryApplyAttemptId,
-  ): Promise<DeliveryApplyReceiptV1> {
+  ): Promise<DeliveryApplyReceiptAnyV1> {
     const packageRecord = this.store.readDeliveryApplyPackage(applyAttemptId)
     const fileContents = packageRecord
       ? packageRecord.fileArtifacts.map((artifact): DeliveryApplyFileContentV1 => ({
@@ -638,36 +696,53 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         }))
       : []
     try {
+      if (changeSet.version === 2) {
+        if (approval.version !== 2 || !this.options.applyPortV2) throw new Error('DELIVERY_APPLY_V2_UNAVAILABLE')
+        return await this.options.applyPortV2.apply({ applyAttemptId, approval, changeSet, fileContents })
+      }
+      if (approval.version !== 1) throw new Error('DELIVERY_APPROVAL_VERSION_MISMATCH')
       return await this.options.applyPort.apply({ applyAttemptId, approval, changeSet, fileContents })
     } catch (error) {
       if (isPreStartChangeApplyErrorV1(error)) {
-        return failedRolledBackApplyReceipt(applyAttemptId, changeSet.deliveryChangeSetId, error.reasonCode)
+        return failedRolledBackApplyReceipt(applyAttemptId, changeSet.deliveryChangeSetId, error.reasonCode, changeSet.version)
       }
-      return unknownApplyReceipt(applyAttemptId, changeSet.deliveryChangeSetId, 'TARGET_WRITE_FAILED')
+      return unknownApplyReceipt(applyAttemptId, changeSet.deliveryChangeSetId, 'TARGET_WRITE_FAILED', changeSet.version)
     }
   }
 
   private async inspectOrResumeClaimedApply(
     applyAttemptId: DeliveryApplyAttemptId,
-    changeSet: DeliveryChangeSetV1,
-    approval: DeliveryApprovalSubjectV1,
-  ): Promise<DeliveryApplyReceiptV1> {
+    changeSet: DeliveryChangeSetAnyV1,
+    approval: DeliveryGateSubjectAnyV1,
+  ): Promise<DeliveryApplyReceiptAnyV1> {
     try {
+      if (changeSet.version === 2) {
+        if (!this.options.applyPortV2) throw new Error('DELIVERY_APPLY_V2_UNAVAILABLE')
+        return await this.options.applyPortV2.inspect(applyAttemptId)
+      }
       return await this.options.applyPort.inspect(applyAttemptId)
     } catch (error) {
       if (isApplyAttemptNotFound(error)) {
         return this.runClaimedApply(changeSet, approval, applyAttemptId)
       }
-      return unknownApplyReceipt(applyAttemptId, changeSet.deliveryChangeSetId, 'APPLY_ATTEMPT_NOT_FOUND')
+      return unknownApplyReceipt(applyAttemptId, changeSet.deliveryChangeSetId, 'APPLY_ATTEMPT_NOT_FOUND', changeSet.version)
     }
   }
 
-  private deliveryTaskInputs(taskChangeSetIds: readonly TaskChangeSetId[]): readonly DeliveryComposerTaskInputV1[] {
-    return taskChangeSetIds.map((taskChangeSetId) => {
+  private deliveryTaskInputs(taskChangeSetIds: readonly TaskChangeSetId[]): {
+    version: 1 | 2
+    inputs: readonly DeliveryComposerTaskInputV1[]
+  } {
+    const versions = new Set<1 | 2>()
+    const inputs = taskChangeSetIds.map((taskChangeSetId) => {
       const changeSet = this.store.readTaskChangeSet(taskChangeSetId)
       if (!changeSet) throw new Error('TASK_CHANGESET_NOT_FOUND')
       const artifact = this.store.readArtifact(changeSet.patchArtifactId)
       if (!artifact || artifact.kind !== 'PATCH') throw new Error('PATCH_ARTIFACT_NOT_FOUND')
+      if (artifact.mediaType === 'application/vnd.xiaogui.task-patch-v1+json' ||
+        artifact.mediaType === 'application/vnd.xiaogui.task-patch+json') versions.add(1)
+      else if (artifact.mediaType === 'application/vnd.xiaogui.task-patch-v2+json') versions.add(2)
+      else throw new Error('PATCH_ARTIFACT_VERSION_UNSUPPORTED')
       return {
         changeSet,
         patchArtifact: {
@@ -677,6 +752,8 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
         },
       }
     })
+    if (versions.size !== 1) throw new Error('PATCH_ARTIFACT_VERSION_CONFLICT')
+    return { version: [...versions][0]!, inputs }
   }
 
   /**
@@ -684,7 +761,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
    * task change sets. A flow may contain several attempts that produced the
    * same path; selecting by flow alone would make those artifacts ambiguous.
    */
-  private deliveryArtifactSourceAttemptIds(changeSet: DeliveryChangeSetV1): readonly AttemptId[] {
+  private deliveryArtifactSourceAttemptIds(changeSet: DeliveryChangeSetAnyV1): readonly AttemptId[] {
     try {
       const taskChangeSetIds = changeSet.taskChangeSetIds
       const refs = changeSet.taskChangeSets
@@ -785,7 +862,7 @@ export class XiaoguiDeliveryWorkflowV1 implements XiaoguiDeliveryCoordinatorPort
 
 function deliveryVerificationRequest(
   verificationAttemptId: DeliveryVerificationAttemptId,
-  changeSet: DeliveryChangeSetV1,
+  changeSet: DeliveryChangeSetAnyV1,
 ): DeliveryVerificationRequestV1 {
   const withoutDigest = {
     scope: 'DELIVERY' as const,
@@ -802,17 +879,19 @@ function deliveryVerificationRequest(
 }
 
 function deliveryChangeSetDigestWithEvidence(
-  changeSet: DeliveryChangeSetV1,
+  changeSet: DeliveryChangeSetV1 | DeliveryChangeSetV2,
   evidenceArtifactIds: readonly ArtifactId[],
 ): Sha256Digest {
   const { digest: _oldDigest, ...base } = changeSet
   const withoutDigest = { ...base, evidenceArtifactIds }
-  return deliveryChangeSetDigestV1(withoutDigest)
+  return changeSet.version === 2
+    ? deliveryChangeSetDigestV2(withoutDigest as Omit<DeliveryChangeSetV2, 'digest'>)
+    : deliveryChangeSetDigestV1(withoutDigest as Omit<DeliveryChangeSetV1, 'digest'>)
 }
 
 function retargetDeliveryReceipt(
   receipt: import('@shared/xiaogui-delivery').DeliveryVerificationReceiptV1,
-  changeSet: DeliveryChangeSetV1,
+  changeSet: DeliveryChangeSetAnyV1,
 ): import('@shared/xiaogui-delivery').DeliveryVerificationReceiptV1 {
   const withoutDigest = {
     ...receipt,
@@ -893,7 +972,7 @@ function applyOutcome(receipt: DeliveryApplyReceiptV1): 'SUCCEEDED' | 'FAILED' |
   return 'OUTCOME_UNKNOWN'
 }
 
-function approvalSubject(changeSet: DeliveryChangeSetV1): DeliveryApprovalSubjectV1 {
+function approvalSubject(changeSet: DeliveryChangeSetAnyV1): DeliveryGateSubjectAnyV1 {
   return {
     deliveryChangeSetId: changeSet.deliveryChangeSetId,
     version: changeSet.version,
@@ -915,7 +994,8 @@ function unknownApplyReceipt(
   applyAttemptId: DeliveryApplyAttemptId,
   deliveryChangeSetId: DeliveryChangeSetId,
   safeCode: 'TARGET_WRITE_FAILED' | 'APPLY_ATTEMPT_NOT_FOUND',
-): DeliveryApplyReceiptV1 {
+  version: 1 | 2 = 1,
+): DeliveryApplyReceiptAnyV1 {
   const withoutDigest = {
     applyAttemptId,
     deliveryChangeSetId,
@@ -923,14 +1003,15 @@ function unknownApplyReceipt(
     changedRelativePaths: [] as readonly string[],
     safeCode,
   }
-  return { ...withoutDigest, receiptDigest: deliveryApplyReceiptDigestV1(withoutDigest) }
+  return { ...withoutDigest, receiptDigest: version === 2 ? deliveryApplyReceiptDigestV2(withoutDigest) : deliveryApplyReceiptDigestV1(withoutDigest) }
 }
 
 function failedRolledBackApplyReceipt(
   applyAttemptId: DeliveryApplyAttemptId,
   deliveryChangeSetId: DeliveryChangeSetId,
   safeCode: Extract<DeliveryApplyReceiptV1, { verdict: 'FAILED_ROLLED_BACK' }>['safeCode'],
-): DeliveryApplyReceiptV1 {
+  version: 1 | 2 = 1,
+): DeliveryApplyReceiptAnyV1 {
   const withoutDigest = {
     applyAttemptId,
     deliveryChangeSetId,
@@ -938,11 +1019,17 @@ function failedRolledBackApplyReceipt(
     changedRelativePaths: [] as readonly string[],
     safeCode,
   }
-  return { ...withoutDigest, receiptDigest: deliveryApplyReceiptDigestV1(withoutDigest) }
+  return { ...withoutDigest, receiptDigest: version === 2 ? deliveryApplyReceiptDigestV2(withoutDigest) : deliveryApplyReceiptDigestV1(withoutDigest) }
 }
 
 function digestForClaim(scope: string, id: string, digest: string): string {
   return `${scope}:${id}:${digest}`
+}
+
+function gateDecisionDigest(input: Parameters<typeof deliveryGateDecisionDigestV1>[0] | Parameters<typeof deliveryGateDecisionDigestV2>[0]) {
+  return input.version === 2
+    ? deliveryGateDecisionDigestV2(input)
+    : deliveryGateDecisionDigestV1(input)
 }
 
 function fail(code: 'DELIVERY_INPUT_INVALID' | 'STALE_DELIVERY_SUBJECT' | 'DELIVERY_NOT_FOUND' | 'ILLEGAL_TRANSITION' | 'INTERNAL'): XiaoguiDeliveryOutcomeV1<never> {

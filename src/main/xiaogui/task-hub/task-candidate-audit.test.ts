@@ -21,6 +21,30 @@ const ATTEMPT_ID = 'xhba_attempt' as AttemptId
 const FIXED_TIME = '2026-08-17T12:00:00.000Z'
 
 describe('TaskCandidateAuditServiceV1', () => {
+  it('uses V2 capture only when Main resolves an authorized V2 Attempt', async () => {
+    const v1 = vi.fn().mockResolvedValue(capturedPatch())
+    const base = capturedPatch()
+    const v2 = vi.fn().mockResolvedValue({
+      ...base,
+      changedFiles: [{ operation: 'DELETE', relativePath: 'old.txt', baselineDigest: base.inputTreeHash, contentDigest: null }],
+      privateVerificationContext: { attemptWorktreeId: 'wt', worktreeRoot: 'C:/worktree', baseRevision: 'abc',
+        baselineGitTreeOid: 'tree', authorizationDigest: base.inputTreeHash, ledgerDigest: base.resultTreeHash },
+    })
+    const service = new TaskCandidateAuditServiceV1(
+      { captureTaskPatch: v1, captureTaskPatchV2: v2 },
+      undefined,
+      async () => 2,
+    )
+    const result = await service.captureTaskCandidate({
+      flowId: FLOW_ID, taskRunId: TASK_RUN_ID, attemptId: ATTEMPT_ID, createdAt: FIXED_TIME,
+      runtimeSignal: { runtimeSessionId: 'xhr_session', receiptDigest: 'sha256:runtime-receipt', candidateDigest: 'sha256:runtime-candidate' },
+    })
+    expect(v1).not.toHaveBeenCalled()
+    expect(v2).toHaveBeenCalledWith(ATTEMPT_ID, { allowNoApprovedChanges: false })
+    expect(result).toMatchObject({ captureVersion: 2, patchArtifact: { mediaType: 'application/vnd.xiaogui.task-patch-v2+json' },
+      changedFiles: [{ operation: 'DELETE', relativePath: 'old.txt' }] })
+  })
+
   it('turns an authoritative MODIFY/CREATE capture into a canonical shared candidate and private patch artifact', async () => {
     const capture = capturedPatch()
     const captureTaskPatch = vi.fn<AttemptTaskPatchCapturePortV1['captureTaskPatch']>().mockResolvedValue(capture)

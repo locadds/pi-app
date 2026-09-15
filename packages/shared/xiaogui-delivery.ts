@@ -243,11 +243,15 @@ export interface DeliveryGateSubjectV1 {
 }
 
 export type DeliveryApprovalSubjectV1 = DeliveryGateSubjectV1
+export type DeliveryApprovalSubjectV2 = DeliveryGateSubjectV2
+export type DeliveryGateSubjectAnyV1 = DeliveryGateSubjectV1 | DeliveryGateSubjectV2
+export type DeliveryChangeSetAnyV1 = DeliveryChangeSetV1 | DeliveryChangeSetV2
+export type DeliveryApplyReceiptAnyV1 = DeliveryApplyReceiptV1 | DeliveryApplyReceiptV2
 
 export interface DeliveryHumanGateV1 {
   readonly gateId: DeliveryGateId
   readonly batchId: DeliveryBatchId
-  readonly subject: DeliveryGateSubjectV1
+  readonly subject: DeliveryGateSubjectAnyV1
   readonly state: 'OPEN' | 'APPROVED' | 'REJECTED'
   readonly decisionDigest?: Sha256Digest
   readonly decidedAt?: IsoDateTime
@@ -281,7 +285,7 @@ export interface DeliveryBatchProjectionV1 {
   readonly deliveryChangeSetDigest?: Sha256Digest
   readonly recoverySourceBatchId?: DeliveryBatchId
   readonly recoveryLineage?: DeliveryRecoveryLineageV1
-  readonly fileChangeSummaries?: readonly DeliveryFileChangeSummaryV1[]
+  readonly fileChangeSummaries?: readonly (DeliveryFileChangeSummaryV1 | DeliveryFileChangeSummaryV2)[]
   readonly evidenceArtifactIds?: readonly ArtifactId[]
   readonly qaConfigVersion?: string
   readonly gate?: DeliveryHumanGateV1
@@ -496,6 +500,27 @@ export function deliveryApplyReceiptDigestV1(
     targetFingerprint: 'targetFingerprint' in value ? value.targetFingerprint : null,
     safeCode: 'safeCode' in value ? value.safeCode : null,
   })
+}
+
+export function deliveryApplyRequestDigestV2(input: {
+  readonly applyAttemptId: DeliveryApplyAttemptId
+  readonly deliveryChangeSetId: DeliveryChangeSetId
+  readonly deliveryChangeSetDigest: Sha256Digest
+  readonly approval: DeliveryGateSubjectV2
+  readonly targetFingerprint: Sha256Digest
+}): Sha256Digest {
+  return digest({ domain: 'XIAOGUI_DELIVERY_APPLY_REQUEST_V2', ...input })
+}
+
+export function deliveryGateDecisionDigestV2(input: {
+  readonly gateId: DeliveryGateId
+  readonly batchId: DeliveryBatchId
+  readonly deliveryChangeSetId: DeliveryChangeSetId
+  readonly version: 2
+  readonly digest: Sha256Digest
+  readonly decision: 'APPROVE' | 'REJECT'
+}): Sha256Digest {
+  return digest({ domain: 'XIAOGUI_DELIVERY_GATE_DECISION_V2', ...input })
 }
 
 export function deliveryApplyReceiptDigestV2(

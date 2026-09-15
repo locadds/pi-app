@@ -33,7 +33,8 @@ import type {
   DeliveryBatchProjectionV1,
   DeliveryBatchStateV1,
   DeliveryFileChangeSummaryV1,
-  DeliveryGateSubjectV1,
+  DeliveryFileChangeSummaryV2,
+  DeliveryGateSubjectAnyV1,
   DeliveryHumanGateV1,
   DeliveryRecoveryLineageV1,
 } from '@shared/xiaogui-delivery'
@@ -61,6 +62,14 @@ import { XIAOGUI_TASK_EXECUTION_BATCH_CONTRACT_VERSION_V1 } from '@shared/xiaogu
 import type { TaskArtifactRefV1, TaskVerificationSummaryV1 } from '@shared/xiaogui-task-verification'
 
 import { ipcClient } from '@renderer/lib/ipc-client'
+
+type DeliveryApproveGateRequestRendererV1 = Omit<XiaoguiDeliveryApproveGateRequestV1, 'subject'> & {
+  readonly subject: DeliveryGateSubjectAnyV1
+}
+
+type DeliveryReturnBatchRequestRendererV1 = Omit<XiaoguiDeliveryReturnBatchRequestV1, 'subject'> & {
+  readonly subject: DeliveryGateSubjectAnyV1
+}
 
 /** perform（用户意图）契约版本：主进程 perform 仅接受 m2a.v1。 */
 export const HUB_CONTRACT_VERSION = 'm2a.v1'
@@ -536,7 +545,11 @@ function isSafeRelativePath(value: string): boolean {
   )
 }
 
-function isDeliveryFileChangeSummary(value: unknown): value is DeliveryFileChangeSummaryV1 {
+function isDeliveryFileChangeSummary(value: unknown): value is DeliveryFileChangeSummaryV1 | DeliveryFileChangeSummaryV2 {
+  return isDeliveryFileChangeSummaryV1(value) || isDeliveryFileChangeSummaryV2(value)
+}
+
+function isDeliveryFileChangeSummaryV1(value: unknown): value is DeliveryFileChangeSummaryV1 {
   return (
     isRecord(value) &&
     Object.keys(value).every((key) =>
@@ -553,12 +566,55 @@ function isDeliveryFileChangeSummary(value: unknown): value is DeliveryFileChang
   )
 }
 
-function isDeliveryGateSubject(value: unknown): value is DeliveryGateSubjectV1 {
+function isDeliveryFileChangeSummaryV2(value: unknown): value is DeliveryFileChangeSummaryV2 {
+  if (
+    !isRecord(value) ||
+    !Object.keys(value).every((key) =>
+      ['operation', 'relativePath', 'baselineDigest', 'contentDigest', 'contentArtifactId', 'sourceTaskChangeSetIds', 'rename'].includes(key),
+    ) ||
+    !['MODIFY', 'CREATE', 'DELETE'].includes(String(value.operation)) ||
+    typeof value.relativePath !== 'string' ||
+    !isSafeRelativePath(value.relativePath) ||
+    !isStringArray(value.sourceTaskChangeSetIds) ||
+    (value.rename !== undefined && !isDeliveryRenameLink(value.rename))
+  ) return false
+
+  if (value.operation === 'DELETE') {
+    return (
+      typeof value.baselineDigest === 'string' &&
+      SHA256_DIGEST.test(value.baselineDigest) &&
+      value.contentDigest === null &&
+      value.contentArtifactId === undefined
+    )
+  }
+
+  return (
+    (value.operation === 'CREATE'
+      ? value.baselineDigest === null
+      : typeof value.baselineDigest === 'string' && SHA256_DIGEST.test(value.baselineDigest)) &&
+    typeof value.contentDigest === 'string' &&
+    SHA256_DIGEST.test(value.contentDigest) &&
+    isNonEmptyString(value.contentArtifactId)
+  )
+}
+
+function isDeliveryRenameLink(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    Object.keys(value).every((key) => ['groupId', 'counterpartPath', 'role'].includes(key)) &&
+    isNonEmptyString(value.groupId) &&
+    typeof value.counterpartPath === 'string' &&
+    isSafeRelativePath(value.counterpartPath) &&
+    (value.role === 'SOURCE' || value.role === 'TARGET')
+  )
+}
+
+function isDeliveryGateSubject(value: unknown): value is DeliveryGateSubjectAnyV1 {
   return (
     isRecord(value) &&
     hasExactKeys(value, ['deliveryChangeSetId', 'version', 'digest']) &&
     isNonEmptyString(value.deliveryChangeSetId) &&
-    value.version === 1 &&
+    (value.version === 1 || value.version === 2) &&
     typeof value.digest === 'string' &&
     SHA256_DIGEST.test(value.digest)
   )
@@ -961,14 +1017,14 @@ export function submitDeliverySelection(
 
 export function approveDeliveryGate(
   address: HubAddressV1,
-  request: XiaoguiDeliveryApproveGateRequestV1,
+  request: DeliveryApproveGateRequestRendererV1,
 ): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
   return invokeDelivery('xiaogui.delivery.gate.approve', address, request)
 }
 
 export function returnDeliveryBatch(
   address: HubAddressV1,
-  request: XiaoguiDeliveryReturnBatchRequestV1,
+  request: DeliveryReturnBatchRequestRendererV1,
 ): Promise<XiaoguiDeliveryOutcomeV1<DeliveryBatchProjectionV1>> {
   return invokeDelivery('xiaogui.delivery.batch.return', address, request)
 }

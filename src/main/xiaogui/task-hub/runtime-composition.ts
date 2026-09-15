@@ -61,8 +61,8 @@ import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
 import { TaskCandidateAuditServiceV1 } from './task-candidate-audit'
 import { FixedTypecheckVerificationPortV1, ModeTaskVerificationPortV1 } from './verification-port'
 import { createRuntimeOutcomeMonitorV1, type RuntimeOutcomeMonitorV1 } from './runtime-outcome-monitor'
-import { createTaskVerificationCoordinatorV1, type TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
-import { MainProcessChangeApplyPortV1, SqliteDeliveryApplyAttemptRegistryV1 } from './change-apply'
+import { createTaskVerificationCoordinatorV1, MainUnsettledTaskVerificationPortV1, type TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
+import { MainProcessChangeApplyPortV1, MainProcessChangeApplyPortV2, SqliteDeliveryApplyAttemptRegistryV1 } from './change-apply'
 import { createXiaoguiDeliveryWorkflowV1, type XiaoguiDeliveryWorkflowV1 } from './delivery-workflow'
 import {
   deactivatePiE2eScriptedRuntimeLaunchV1,
@@ -112,6 +112,7 @@ export interface XiaoguiRuntimeCompositionV1 {
   readonly codingRoles: CodingRoleProfileModuleV1
   /** Shared authorization authority; Direct and TaskHub enter through separate subject Adapters. */
   readonly codingAuthorization: CodingAuthorizationModuleV2
+  readonly acceptAndExecuteTrustedPortV2: HubTaskAcceptAndExecuteTrustedPortV2
   stageAttemptInput(input: StageAttemptExecutionInputV1): ResolvedAttemptExecutionInputV1
   close(): Promise<void>
 }
@@ -171,6 +172,7 @@ export function createXiaoguiRuntimeCompositionV1(
   let codingAttemptPlanModule: CodingAttemptPlanModuleV1 | undefined
   let codingReviewStore: CollaborationHubSqliteStoreV1 | undefined
   let codingRoleProfiles: CodingRoleProfileModuleV1 | undefined
+  let unsettledVerification: MainUnsettledTaskVerificationPortV1 | undefined
 
   try {
     const projectResolver = options.projectResolver ?? new MainProjectWorkspaceResolverV1()
@@ -229,6 +231,11 @@ export function createXiaoguiRuntimeCompositionV1(
       workspace: attemptWorkspaces,
       payloads: payloadVault,
       workerFactory: options.piWorkerFactory,
+      unsettledVerification: {
+        verify: input => unsettledVerification
+          ? unsettledVerification.verify(input as Parameters<MainUnsettledTaskVerificationPortV1['verify']>[0])
+          : Promise.resolve({ verdict: 'OUTCOME_UNKNOWN' as const, candidateDigest: input.candidateDigest, reason: 'UNSETTLED_VERIFIER_UNAVAILABLE' }),
+      },
     })
     void runtimeRegistry.register(piAdapter)
     const piE2eAdapter = options.piE2eScriptedRuntimeLaunch
@@ -256,13 +263,15 @@ export function createXiaoguiRuntimeCompositionV1(
       new FixedTypecheckVerificationPortV1(),
       (request, context) => piAdapter.verificationContext(request, context),
     )
+    const candidateAudit = new TaskCandidateAuditServiceV1(attemptWorkspaces, {
+      verify: async (input) => input.runtimeSessionId.startsWith('xhbrs_pi_')
+        ? input.runtimeCandidateDigest === input.hostResultTreeHash
+        : true,
+    }, async (attemptId) => (await attemptWorkspaces.runtimeAccess(attemptId))?.worktreeAuthorization ? 2 : 1)
+    unsettledVerification = new MainUnsettledTaskVerificationPortV1(candidateAudit, fixedVerificationPort, projectResolver)
     taskVerificationCoordinator = createTaskVerificationCoordinatorV1({
       storeFactory: () => new CollaborationHubSqliteStoreV1(hubDbPath),
-      candidateAudit: new TaskCandidateAuditServiceV1(attemptWorkspaces, {
-        verify: async (input) => input.runtimeSessionId.startsWith('xhbrs_pi_')
-          ? input.runtimeCandidateDigest === input.hostResultTreeHash
-          : true,
-      }),
+      candidateAudit,
       verificationPort: fixedVerificationPort,
       projectResolver,
       attemptRoleProvider: {
@@ -270,6 +279,12 @@ export function createXiaoguiRuntimeCompositionV1(
           return codingRoleProfiles!.readAttemptBinding(attemptId)?.snapshot.role ?? null
         },
       },
+      onVerifiedTask: async (input) => {
+        if (!deliveryWorkflow) throw new Error('DELIVERY_WORKFLOW_UNAVAILABLE')
+        const selected = await deliveryWorkflow.selectVerifiedAttempt(input.address, input)
+        if (!selected.ok) throw new Error(selected.error.code)
+      },
+      isAuthorizedV2Attempt: async (attemptId) => Boolean((await attemptWorkspaces.runtimeAccess(attemptId))?.worktreeAuthorization),
       now: options.now,
     })
     runtimeMonitor = createRuntimeOutcomeMonitorV1({ runtime: runtimeHost })
@@ -403,6 +418,7 @@ export function createXiaoguiRuntimeCompositionV1(
       deliveryManagedRoot: join(xiaoguiDir, 'delivery-worktrees'),
       verificationPort: fixedVerificationPort,
       applyPort: new MainProcessChangeApplyPortV1({ projectResolver, registry: deliveryApplyRegistry }),
+      applyPortV2: new MainProcessChangeApplyPortV2({ projectResolver, registry: deliveryApplyRegistry }),
       now: options.now,
     })
     return createCompositionInterface(
@@ -422,6 +438,8 @@ export function createXiaoguiRuntimeCompositionV1(
       codingRoleProfiles,
       codingReviewStore,
       options.piE2eScriptedRuntimeLaunch,
+      projectResolver,
+      hubDbPath,
     )
   } catch (error) {
     closeQuietly(taskExecution)
@@ -463,9 +481,15 @@ function createCompositionInterface(
   codingRoleProfiles: CodingRoleProfileModuleV1,
   codingReviewStore: CollaborationHubSqliteStoreV1,
   piE2eLaunch: PiE2eScriptedRuntimeLaunchV1 | undefined,
+  projectResolver: ProjectWorkspaceResolverV1,
+  hubDbPath: string,
 ): XiaoguiRuntimeCompositionV1 {
   let closed = false
   let closePromise: Promise<void> | undefined
+  const acceptAndExecuteTrustedPortV2 = createHubTaskAcceptAndExecuteTrustedPortV2({
+    application, taskExecution, projectResolver,
+    authorityDatabaseIdentity: () => databaseIdentity(hubDbPath),
+  })
 
   return {
     application,
@@ -475,6 +499,7 @@ function createCompositionInterface(
     codingReview: codingAttemptReviewModule,
     codingRoles: codingRoleProfiles,
     codingAuthorization: codingAuthorizationModule,
+    acceptAndExecuteTrustedPortV2,
     stageAttemptInput(input) {
       if (closed) throw new Error('XIAOGUI_RUNTIME_COMPOSITION_CLOSED')
       return inputStore.stage(input)

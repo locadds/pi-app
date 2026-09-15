@@ -97,6 +97,7 @@ export class WorkerManager {
     private readonly attemptExecution?: {
       readonly attemptId: string
       readonly designExtensionPath?: string
+      readonly worktreeAuthorized?: boolean
       readonly onEvent: (event: AppEvent) => void
       readonly onExit: () => void
     },
@@ -335,6 +336,7 @@ export class WorkerManager {
       promptContext,
       taskHubAttemptId: this.attemptExecution?.attemptId,
       taskHubDesignExtensionPath: this.attemptExecution?.designExtensionPath,
+      ...(this.attemptExecution?.worktreeAuthorized === true ? { taskHubWorktreeAuthorized: true } : {}),
     })
     this.pool.set(key, slot)
     this.setForeground(slot)

@@ -67,6 +67,8 @@ export interface TaskVerificationExecutionContextV1 extends NoVerificationExecut
   readonly artifactPaths?: readonly string[]
   /** Main-only Delivery binding; never serialized into a public request/receipt. */
   readonly artifactSourceAttemptIds?: readonly AttemptId[]
+  /** Main-only proof that this Task candidate came from an authorized V2 worktree. */
+  readonly worktreeAuthorizationDigest?: string
 }
 
 /** Main-process-only artifact write. Content never enters a public receipt. */
@@ -455,7 +457,8 @@ export interface ModeTaskVerificationResolutionV1 {
 /**
  * Selects the authoritative verifier for a Task without allowing mode-specific
  * summaries to manufacture a PASS. The resolver is Main-owned and may only
- * expose the private, already-settled Attempt artifact projection.
+ * expose the private Attempt artifact projection bound to the frozen candidate.
+ * The same resolver is used before settlement while Pi has writes frozen.
  */
 export class ModeTaskVerificationPortV1 implements TaskVerificationExecutionPortV1 {
   constructor(

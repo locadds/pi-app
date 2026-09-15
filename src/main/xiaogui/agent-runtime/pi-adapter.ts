@@ -44,7 +44,11 @@ interface RecordV1 {
   cancelled: boolean
   outcome: RuntimeOutcomeV1 | null
   events: RuntimeEventV1[]
-  calls: Record<string, { state: 'PENDING' | 'EXECUTING' | 'SETTLED'; path: string }>
+  calls: Record<string, { state: 'PENDING' | 'EXECUTING' | 'SETTLED' | 'UNKNOWN'; path: string; toolName?: string; targetPath?: string; before?: string }>
+  worktreeAuthorization?: { authorizationDigest: string; bindingDigest: string; ledgerDigest: string }
+  correctionBudgetUsed?: number
+  settledRunIds?: string[]
+  unsettledVerification?: { candidateDigest: string; receiptDigest?: string; receiptJson?: string; diagnostic?: string; verdict: 'PASS' | 'FAIL' | 'OUTCOME_UNKNOWN' }
   artifacts?: Array<{ path: string; sha256: string; kind: 'WORK_REPORT_DOCX' | 'DESIGN_PROJECT_RESULT' }>
 }
 interface LiveV1 {
@@ -53,6 +57,8 @@ interface LiveV1 {
   worker: PiAttemptWorkerPortV1
   permissions: Map<string, { event: Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }>; resolve: (allowed: boolean) => void }>
   finishing?: Promise<void>
+  verifying?: boolean
+  verificationCandidateDigest?: string
   outcomePersisted?: boolean
   closing?: Promise<void>
 }
@@ -63,6 +69,22 @@ export interface PiRuntimeOptionsV1 {
   payloads: TrustedRuntimePayloadResolverV1
   workerFactory?: typeof createPiAttemptWorkerPortV1
   designRuntime?: typeof resolveTaskHubDesignRuntimeV1
+  unsettledVerification?: {
+    verify(input: {
+      projectId: string
+      sessionMode: 'WORK' | 'DESIGN' | 'CODING'
+      flowId: string
+      taskRunId: string
+      attemptId: string
+      runtimeSessionId: string
+      candidateDigest: string
+      createdAt: string
+    }): Promise<
+      | { verdict: 'PASS'; candidateDigest: string; receiptDigest: string; receiptJson: string }
+      | { verdict: 'FAIL'; candidateDigest: string; receiptDigest: string; receiptJson: string; diagnostic: string }
+      | { verdict: 'OUTCOME_UNKNOWN'; candidateDigest: string; reason: string }
+    >
+  }
 }
 
 /** The TaskHub Adapter owns lifecycle translation; Pi still owns prompt/tool execution. */
@@ -109,9 +131,15 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
       if (bytesDigest(payload.payloadBytes) !== request.promptEnvelopeRef.digest) throw new Error('PI_PROMPT_DIGEST_MISMATCH')
       const row: RecordV1 = { version: 1, id, request, requestDigest,
         rootIdentityDigest: readProjectRootIdentityV2(access.rootPath).digest,
-        sessionId: '', sessionFile: '', model: '', started: false, cancelled: false, outcome: null, events: [], calls: {} }
+        sessionId: '', sessionFile: '', model: '', started: false, cancelled: false, outcome: null, events: [], calls: {},
+        ...(access.worktreeAuthorization ? { worktreeAuthorization: {
+          authorizationDigest: access.worktreeAuthorization.authorizationDigest,
+          bindingDigest: access.worktreeAuthorization.bindingDigest,
+          ledgerDigest: access.worktreeAuthorization.ledgerDigest,
+        } } : {}) }
       const worker = (this.options.workerFactory ?? createPiAttemptWorkerPortV1)({
         rootPath: access.rootPath, scope: request.scope,
+        ...(access.worktreeAuthorization ? { worktreeAuthorized: true } : {}),
         ...(request.scope.sessionMode === 'DESIGN'
           ? { designExtensionPath: (this.options.designRuntime ?? resolveTaskHubDesignRuntimeV1)().extensionPath }
           : {}),
@@ -169,7 +197,14 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     this.save(live.row)
     for (const pending of live.permissions.values()) pending.resolve(false)
     live.permissions.clear()
-    await live.worker.abort()
+    try {
+      await live.worker.abort()
+      if (live.verifying && !live.row.outcome) {
+        await this.settle(live, { ...failed(live.row.id, 'PI_CANCELLED'), state: 'INTERRUPTED' })
+      }
+    } catch {
+      if (!live.row.outcome) await this.settle(live, unknown(live.row.id, 'PI_CANCEL_OUTCOME_UNKNOWN'))
+    }
     return { requested: true as const }
   }
   async inspect(id: string): Promise<RuntimeOutcomeV1> {
@@ -179,7 +214,9 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
       try {
         const access = await this.options.workspace.runtimeAccess(row.request.scope.attemptId)
         if (!access || readProjectRootIdentityV2(access.rootPath).digest !== row.rootIdentityDigest) return unknown(id, 'PI_WORKSPACE_CHANGED')
-        const patch = await this.options.workspace.captureTaskPatch(row.request.scope.attemptId, { allowNoApprovedChanges: true })
+        const patch = row.worktreeAuthorization && this.options.workspace.captureTaskPatchV2
+          ? await this.options.workspace.captureTaskPatchV2(row.request.scope.attemptId, { allowNoApprovedChanges: true })
+          : await this.options.workspace.captureTaskPatch(row.request.scope.attemptId, { allowNoApprovedChanges: true })
         if (patch.resultTreeHash !== row.outcome.candidateDigest) return unknown(id, 'PI_CANDIDATE_CHANGED')
       } catch { return unknown(id, 'PI_RECONCILE_FAILED') }
     }
@@ -201,14 +238,30 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     if (rows.some(row => row.request.scope.sessionMode !== mode)) return null
     // Legacy CODING receipts retain their existing verifier. New non-CODING
     // tasks can never use that fallback when their Pi evidence is missing.
-    if (mode === 'CODING') return { mode, artifacts: [], requireAll: true }
+    if (mode === 'CODING' && !context.worktreeAuthorizationDigest) return { mode, artifacts: [], requireAll: true }
     const selected = context.verificationScope === 'DELIVERY'
       ? selectDeliveryRuntimeRows(rows, context.artifactSourceAttemptIds)
       : rows.filter(row => row.request.scope.attemptId === request.attemptId)
-    if (!selected) return null
-    if (!selected.length || !context.artifactPaths?.length) return null
-    const artifacts = selected.filter(row => row.outcome?.state === 'SUCCEEDED').flatMap(row => row.artifacts ?? [])
-    const approved = context.artifactPaths.map(path => artifacts.filter(artifact => artifact.path === path))
+    if (!selected || !selected.length) return null
+    if (context.verificationScope === 'DELIVERY' && !context.artifactPaths?.length) return null
+    const eligibility = await Promise.all(selected.map(async row => {
+      if (row.outcome?.state === 'SUCCEEDED') {
+        if (context.verificationScope === 'DELIVERY') return true
+        const access = await this.options.workspace.runtimeAccess(row.request.scope.attemptId)
+        return row.request.scope.attemptId === request.attemptId && row.outcome.candidateDigest === request.preparedTreeHash &&
+          Boolean(access && access.worktreeAuthorization?.authorizationDigest === context.worktreeAuthorizationDigest &&
+            resolve(context.worktreeRoot) === resolve(access.rootPath))
+      }
+      const live = this.live.get(row.id)
+      return context.verificationScope === 'TASK' && live?.verifying === true && !row.cancelled && !row.outcome &&
+        row.request.scope.attemptId === request.attemptId && live.verificationCandidateDigest === request.preparedTreeHash &&
+        row.worktreeAuthorization?.authorizationDigest === context.worktreeAuthorizationDigest && resolve(context.worktreeRoot) === resolve(live.root)
+    }))
+    if (eligibility.some(value => !value)) return null
+    const eligible = selected
+    if (mode === 'CODING') return { mode, artifacts: [], requireAll: true }
+    const artifacts = eligible.flatMap(row => row.artifacts ?? [])
+    const approved = (context.artifactPaths ?? []).map(path => artifacts.filter(artifact => artifact.path === path))
     if (approved.some(matches => matches.length !== 1)) return null
     return { mode, artifacts: approved.map(matches => matches[0]), requireAll: true }
   }
@@ -272,59 +325,170 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
   }
   private workerEvent(live: LiveV1, event: AppEvent) {
     if (event.type !== 'run' || !event.settled || live.row.outcome || live.finishing) return
-    live.finishing = (async () => {
+    const runId = typeof event.runId === 'string' && event.runId.length > 0 ? event.runId : undefined
+    if (runId && live.row.settledRunIds?.includes(runId)) return
+    if (runId) {
+      live.row.settledRunIds = [...(live.row.settledRunIds ?? []), runId].slice(-8)
+      try { this.save(live.row) } catch { void this.settle(live, unknown(live.row.id, 'PI_RUN_EVENT_PERSIST_FAILED')); return }
+    }
+    let correctionPrompt: string | undefined
+    const finishing = (async () => {
       if (live.row.cancelled || event.phase === 'cancelled') {
         await this.settle(live, { ...failed(live.row.id, 'PI_CANCELLED'), state: 'INTERRUPTED' }); return
+      }
+      if (Object.values(live.row.calls).some(call => call.state === 'UNKNOWN')) {
+        await this.settle(live, unknown(live.row.id, 'PI_TOOL_OUTCOME_UNKNOWN')); return
       }
       if (event.phase !== 'idle' || Object.values(live.row.calls).some(call => call.state !== 'SETTLED')) {
         await this.settle(live, failed(live.row.id, 'PI_RUN_FAILED')); return
       }
-      if (live.row.request.scope.sessionMode !== 'CODING' && !live.row.artifacts?.length) {
+      if (!live.row.worktreeAuthorization && live.row.request.scope.sessionMode !== 'CODING' && !live.row.artifacts?.length) {
         await this.settle(live, failed(live.row.id, 'PI_MODE_ARTIFACT_MISSING')); return
       }
       try {
-        const patch = await this.options.workspace.captureTaskPatch(live.row.request.scope.attemptId, { allowNoApprovedChanges: true })
+        live.verifying = true
+        const patch = live.row.worktreeAuthorization && this.options.workspace.captureTaskPatchV2
+          ? await this.options.workspace.captureTaskPatchV2(live.row.request.scope.attemptId, { allowNoApprovedChanges: true })
+          : await this.options.workspace.captureTaskPatch(live.row.request.scope.attemptId, { allowNoApprovedChanges: true })
+        live.verificationCandidateDigest = patch.resultTreeHash
+        if (live.row.worktreeAuthorization) {
+          if (!this.options.unsettledVerification) {
+            live.row.unsettledVerification = { verdict: 'OUTCOME_UNKNOWN', candidateDigest: patch.resultTreeHash }
+            this.save(live.row)
+            await this.settle(live, unknown(live.row.id, 'PI_UNSETTLED_VERIFIER_UNAVAILABLE')); return
+          }
+          const verified = await this.options.unsettledVerification.verify({
+            projectId: live.row.request.scope.projectId,
+            sessionMode: live.row.request.scope.sessionMode,
+            flowId: live.row.request.scope.flowId,
+            taskRunId: live.row.request.scope.taskRunId,
+            attemptId: live.row.request.scope.attemptId,
+            runtimeSessionId: live.row.id,
+            candidateDigest: patch.resultTreeHash,
+            createdAt: new Date().toISOString(),
+          })
+          if (live.row.cancelled || live.row.outcome) return
+          const current = this.options.workspace.captureTaskPatchV2
+            ? await this.options.workspace.captureTaskPatchV2(live.row.request.scope.attemptId, { allowNoApprovedChanges: true })
+            : await this.options.workspace.captureTaskPatch(live.row.request.scope.attemptId, { allowNoApprovedChanges: true })
+          if (live.row.cancelled || live.row.outcome) return
+          if (current.resultTreeHash !== verified.candidateDigest || current.resultTreeHash !== patch.resultTreeHash) {
+            live.row.unsettledVerification = { verdict: 'OUTCOME_UNKNOWN', candidateDigest: current.resultTreeHash }
+            this.save(live.row)
+            await this.settle(live, unknown(live.row.id, 'PI_CANDIDATE_CHANGED_DURING_VERIFICATION')); return
+          }
+          live.row.unsettledVerification = { verdict: verified.verdict, candidateDigest: verified.candidateDigest,
+            ...('receiptDigest' in verified ? { receiptDigest: verified.receiptDigest, receiptJson: verified.receiptJson } : {}),
+            ...(verified.verdict === 'FAIL' ? { diagnostic: verified.diagnostic } : {}) }
+          if (verified.verdict === 'OUTCOME_UNKNOWN') {
+            this.save(live.row)
+            await this.settle(live, unknown(live.row.id, verified.reason)); return
+          }
+          if (verified.verdict === 'FAIL') {
+            const used = live.row.correctionBudgetUsed ?? 0
+            if (used >= 2) {
+              this.save(live.row)
+              await this.settle(live, failed(live.row.id, 'PI_VERIFICATION_CORRECTION_EXHAUSTED')); return
+            }
+            live.row.correctionBudgetUsed = used + 1
+            this.save(live.row) // Budget is durable before another model side effect.
+            correctionPrompt = correctionPromptV1(verified.diagnostic, used + 1)
+            return
+          }
+          this.save(live.row)
+        }
         await this.settle(live, { state: 'SUCCEEDED', runtimeSessionId: live.row.id,
           candidateDigest: patch.resultTreeHash, receiptDigest: digest({ attempt: live.row.request.scope.attemptId, result: patch.resultTreeHash, model: live.row.model }) })
       } catch { await this.settle(live, failed(live.row.id, 'PI_RESULT_AUDIT_FAILED')) }
+      finally { live.verifying = false; live.verificationCandidateDigest = undefined }
     })()
+    live.finishing = finishing
+    void finishing.finally(() => {
+      if (live.finishing === finishing) live.finishing = undefined
+      if (correctionPrompt && !live.row.outcome && !live.row.cancelled) {
+        void live.worker.prompt(correctionPrompt).catch(() => {
+          if (!live.row.outcome) void this.settle(live, failed(live.row.id, 'PI_CORRECTION_PROMPT_FAILED'))
+        })
+      }
+    })
   }
   private async tool(live: LiveV1, input: WorkerHostToolRequestForward, artifactWrite = false): Promise<WorkerHostToolOutcomeV1> {
+    if (input.request.method === 'xiaogui.work.report-docx.v1') return this.workReport(live, input)
+    if (input.request.method === 'xiaogui.taskhub.design-project') return this.designProject(live, input)
     try {
       const request = input.request
-      if (request.method === 'xiaogui.work.report-docx.v1') return this.workReport(live, input)
-      if (request.method === 'xiaogui.taskhub.design-project') return this.designProject(live, input)
       if (!['xiaogui.taskhub.pi.tool.begin', 'xiaogui.taskhub.pi.tool.settle'].includes(request.method)) return denied()
       if (request.method !== 'xiaogui.taskhub.pi.tool.begin' && request.method !== 'xiaogui.taskhub.pi.tool.settle') return denied()
       const payload = request.payload
-      if (live.row.outcome || live.row.cancelled || input.signal?.aborted
+      if (live.row.outcome || live.row.cancelled || live.verifying || input.signal?.aborted
         || payload.attemptId !== live.row.request.scope.attemptId || payload.sourceSessionId !== live.row.sessionId
         || input.fromSessionId !== live.row.sessionId || resolve(input.fromCwd) !== resolve(live.root)
         || !/^[a-zA-Z0-9_.:-]{1,200}$/.test(payload.toolCallId)) return denied()
       if (request.method === 'xiaogui.taskhub.pi.tool.settle') {
         const call = live.row.calls[payload.toolCallId]
         if (!call || call.state !== 'EXECUTING') return denied()
+        if (call.toolName === 'delete' || call.toolName === 'rename') {
+          await this.validatedRuntimeAccess(live)
+          const sourceAfter = await this.targetSnapshot(live, call.path, false)
+          const targetAfter = call.targetPath ? await this.targetSnapshot(live, call.targetPath, false) : undefined
+          const valid = call.toolName === 'delete'
+            ? sourceAfter === 'MISSING'
+            : sourceAfter === 'MISSING' && targetAfter === call.before
+          if (!valid) {
+            call.state = 'UNKNOWN'
+            this.save(live.row)
+            return denied()
+          }
+        }
         call.state = 'SETTLED'
         this.save(live.row)
         return { ok: true, value: { kind: 'PI_ATTEMPT_TOOL_SETTLED', toolCallId: payload.toolCallId } }
       }
       if (live.row.calls[payload.toolCallId]) return denied()
       const { toolName, input: parameters } = request.payload
+      const worktreeAuthorized = Boolean(live.row.worktreeAuthorization)
       if (live.row.request.scope.sessionMode !== 'CODING' && toolName !== 'read' && !artifactWrite) return denied()
       const role = live.row.request.codingRole
-      if (!['read', 'edit', 'write'].includes(toolName)
+      if (!['read', 'edit', 'write', 'delete', 'rename'].includes(toolName)
+        || (!worktreeAuthorized && (toolName === 'delete' || toolName === 'rename'))
+        || ((toolName === 'delete' || toolName === 'rename') && live.row.request.scope.sessionMode !== 'CODING')
         || (role && (!role.effectiveToolAllowlist.includes(toolName) || (role.role !== 'IMPLEMENT' && toolName !== 'read')))) return denied()
-      const rawPath = (parameters as { path?: unknown } | null)?.path
+      const rawPath = toolName === 'rename'
+        ? (parameters as { sourcePath?: unknown } | null)?.sourcePath
+        : (parameters as { path?: unknown } | null)?.path
       if (typeof rawPath !== 'string') return denied()
-      const path = relative(live.root, resolve(live.root, rawPath)).split(sep).join('/')
-      if (!path || isAbsolute(path) || path.split('/').some(part => !part || part === '..' || part.toLowerCase() === '.git')) return denied()
-      const grant = this.options.workspace.manifest(live.row.request.scope.attemptId)?.grants.find(item => item.relativePath === path)
-      if (!grant || grant.operation === 'DELETE') return denied()
+      const path = canonicalRelativePath(live.root, rawPath)
+      if (!path) return denied()
+      const targetPath = toolName === 'rename'
+        ? canonicalRelativePath(live.root, (parameters as { targetPath?: unknown } | null)?.targetPath)
+        : null
+      if (toolName === 'rename' && (!targetPath || path.toLowerCase() === targetPath.toLowerCase())) return denied()
+      if (!worktreeAuthorized) {
+        const grant = this.options.workspace.manifest(live.row.request.scope.attemptId)?.grants.find(item => item.relativePath === path)
+        if (!grant || grant.operation === 'DELETE') return denied()
+      }
+      const mutating = toolName !== 'read'
+      if (mutating && Object.values(live.row.calls).some(call =>
+        call.state === 'PENDING' || call.state === 'EXECUTING' || call.state === 'UNKNOWN')) return denied()
       // Reserve the call before the first await. A concurrent/replayed begin
       // cannot create another permission request or execute the tool twice.
-      live.row.calls[payload.toolCallId] = { state: 'PENDING', path }
+      live.row.calls[payload.toolCallId] = { state: 'PENDING', path, toolName, ...(targetPath ? { targetPath } : {}) }
       this.save(live.row)
+      await this.validatedRuntimeAccess(live)
       const before = await this.targetSnapshot(live, path, toolName === 'read')
+      if (before === 'MISSING' && ['read', 'edit', 'delete', 'rename'].includes(toolName)) {
+        live.row.calls[payload.toolCallId].state = 'SETTLED'; this.save(live.row); return denied()
+      }
+      if (targetPath && await this.targetSnapshot(live, targetPath, false) !== 'MISSING') {
+        live.row.calls[payload.toolCallId].state = 'SETTLED'; this.save(live.row); return denied()
+      }
+      live.row.calls[payload.toolCallId].before = before
+      if (worktreeAuthorized) {
+        live.row.calls[payload.toolCallId].state = 'EXECUTING'
+        this.save(live.row)
+        return { ok: true, value: { kind: 'PI_ATTEMPT_TOOL_ALLOWED', toolCallId: payload.toolCallId,
+          authorizedRelativePath: path, ...(targetPath ? { authorizedTargetRelativePath: targetPath } : {}) } }
+      }
       const permissionRequestId = `xhbrperm_${randomUUID().replaceAll('-', '')}`
       const event: Extract<RuntimeEventV1, { type: 'PERMISSION_REQUESTED' }> = {
         type: 'PERMISSION_REQUESTED', runtimeSessionId: live.row.id, sequence: live.row.events.length + 1,
@@ -343,11 +507,23 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
         this.save(live.row)
         return denied()
       }
-      if (before !== await this.targetSnapshot(live, path, toolName === 'read')) return denied()
-      live.row.calls[payload.toolCallId] = { state: 'EXECUTING', path }
+      if (before !== await this.targetSnapshot(live, path, toolName === 'read')) {
+        live.row.calls[payload.toolCallId].state = 'UNKNOWN'; this.save(live.row); return denied()
+      }
+      live.row.calls[payload.toolCallId].state = 'EXECUTING'
       this.save(live.row)
       return { ok: true, value: { kind: 'PI_ATTEMPT_TOOL_ALLOWED', toolCallId: payload.toolCallId, authorizedRelativePath: path } }
-    } catch { return denied() }
+    } catch {
+      const request = input.request
+      if (request.method === 'xiaogui.taskhub.pi.tool.begin') {
+        const call = live.row.calls[request.payload.toolCallId]
+        if (call?.state === 'PENDING') {
+          call.state = 'UNKNOWN'
+          try { this.save(live.row) } catch { /* Preserve denial. */ }
+        }
+      }
+      return denied()
+    }
   }
   private async workReport(live: LiveV1, input: WorkerHostToolRequestForward): Promise<WorkerHostToolOutcomeV1> {
     const request = input.request
@@ -355,8 +531,14 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     const payload = request.payload
     if (payload.action !== 'PREPARE' || !payload.draft || payload.sourceSessionId !== live.row.sessionId
       || input.fromSessionId !== live.row.sessionId || resolve(input.fromCwd) !== resolve(live.root)) return denied()
-    const targets = this.options.workspace.manifest(live.row.request.scope.attemptId)?.grants
-      .filter(grant => grant.operation === 'CREATE' && grant.relativePath.toLowerCase().endsWith('.docx')) ?? []
+    const access = await this.validatedRuntimeAccess(live)
+    const worktreeTarget = access.worktreeAuthorization
+      ? canonicalRelativePath(live.root, (payload as { targetPath?: unknown }).targetPath)
+      : null
+    const targets = access.worktreeAuthorization
+      ? (worktreeTarget?.toLowerCase().endsWith('.docx') ? [{ relativePath: worktreeTarget }] : [])
+      : this.options.workspace.manifest(live.row.request.scope.attemptId)?.grants
+        .filter(grant => grant.operation === 'CREATE' && grant.relativePath.toLowerCase().endsWith('.docx')) ?? []
     if (targets.length !== 1 || live.row.calls[payload.toolCallId]) return denied()
     const artifact = await renderWorkReportArtifactV1(payload.draft)
     const path = targets[0].relativePath
@@ -373,17 +555,21 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
       },
     } }, true)
     if (!allowed.ok || allowed.value.kind !== 'PI_ATTEMPT_TOOL_ALLOWED') return false
+    const authorizedPath = allowed.value.authorizedRelativePath
     try {
       if (live.row.cancelled || input.signal?.aborted) return false
-      const before = await this.targetSnapshot(live, path, false)
-      if (before !== 'MISSING' && before !== bytesDigest(Buffer.alloc(0))) return false
-      await mkdir(dirname(resolve(live.root, path)), { recursive: true })
-      if (before !== await this.targetSnapshot(live, path, false)) return false
+      const before = await this.targetSnapshot(live, authorizedPath, false)
+      const priorArtifacts = live.row.artifacts?.filter(artifact => artifact.path === authorizedPath) ?? []
+      const v2Correction = Boolean(live.row.worktreeAuthorization)
+        && priorArtifacts.length === 1 && priorArtifacts[0].kind === kind && priorArtifacts[0].sha256 === before
+      if (before !== 'MISSING' && before !== bytesDigest(Buffer.alloc(0)) && !v2Correction) return false
+      await mkdir(dirname(resolve(live.root, authorizedPath)), { recursive: true })
+      if (before !== await this.targetSnapshot(live, authorizedPath, false)) return false
       // CREATE grants are materialized by Main as an owned empty placeholder;
       // replace that placeholder only after its identity/content re-check.
-      await writeFile(resolve(live.root, path), content, { flag: before === 'MISSING' ? 'wx' : 'w' })
-      live.row.artifacts ??= []
-      live.row.artifacts.push({ path, sha256: bytesDigest(content), kind })
+      await writeFile(resolve(live.root, authorizedPath), content, { flag: before === 'MISSING' ? 'wx' : 'w' })
+      live.row.artifacts = [...(live.row.artifacts ?? []).filter(artifact => artifact.path !== authorizedPath),
+        { path: authorizedPath, sha256: bytesDigest(content), kind }]
       live.row.calls[toolCallId].state = 'SETTLED'
       this.save(live.row)
       return true
@@ -396,9 +582,23 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     if (!['inspect', 'open'].includes(payload.action) || payload.attemptId !== live.row.request.scope.attemptId
       || payload.sourceSessionId !== live.row.sessionId || input.fromSessionId !== live.row.sessionId
       || resolve(input.fromCwd) !== resolve(live.root) || live.row.cancelled || live.row.outcome) return denied()
+    const access = await this.validatedRuntimeAccess(live)
     const grants = this.options.workspace.manifest(payload.attemptId)?.grants ?? []
-    const targets = grants.filter(grant => grant.operation === 'CREATE' && grant.relativePath.endsWith('.json'))
-    const sources = grants.filter(grant => grant.operation === 'MODIFY')
+    const requestedSources = access.worktreeAuthorization && Array.isArray(payload.sourcePaths)
+      ? payload.sourcePaths.map(path => canonicalRelativePath(live.root, path))
+      : []
+    const requestedTarget = access.worktreeAuthorization
+      ? canonicalRelativePath(live.root, payload.targetPath)
+      : null
+    const baselinePaths = new Set(access.baselineLedger?.entries.map(entry => entry.relativePath) ?? [])
+    const sources = access.worktreeAuthorization
+      ? (requestedSources.length > 0 && requestedSources.every((path): path is string => Boolean(path && baselinePaths.has(path)))
+          && new Set(requestedSources).size === requestedSources.length
+        ? requestedSources.map(relativePath => ({ relativePath })) : [])
+      : grants.filter(grant => grant.operation === 'MODIFY')
+    const targets = access.worktreeAuthorization
+      ? (requestedTarget?.endsWith('.json') ? [{ relativePath: requestedTarget }] : [])
+      : grants.filter(grant => grant.operation === 'CREATE' && grant.relativePath.endsWith('.json'))
     if (targets.length !== 1 || !sources.length || live.row.calls[payload.toolCallId]) return denied()
     // A private read projection prevents the existing project scanner from
     // reading files outside the approved manifest. It is not another worktree.
@@ -419,13 +619,14 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
             sourceSessionId: payload.sourceSessionId, toolCallId: callId, toolName: 'read', input: { path: source.relativePath } },
         } })
         if (!allowed.ok || allowed.value.kind !== 'PI_ATTEMPT_TOOL_ALLOWED') return denied()
-        const sourcePath = resolve(live.root, source.relativePath)
+        const authorizedSourcePath = allowed.value.authorizedRelativePath
+        const sourcePath = resolve(live.root, authorizedSourcePath)
         if ((await lstat(sourcePath)).size > 16 * 1024 * 1024) return denied()
         const bytes = await readFile(sourcePath)
-        const copyPath = resolve(snapshot, source.relativePath)
+        const copyPath = resolve(snapshot, authorizedSourcePath)
         await mkdir(dirname(copyPath), { recursive: true })
         await writeFile(copyPath, bytes, { flag: 'wx' })
-        sourceFacts.push({ path: source.relativePath, sha256: bytesDigest(bytes) })
+        sourceFacts.push({ path: authorizedSourcePath, sha256: bytesDigest(bytes) })
         live.row.calls[callId].state = 'SETTLED'
         this.save(live.row)
       }
@@ -456,8 +657,7 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
   }
   private async targetSnapshot(live: LiveV1, path: string, readOnly: boolean): Promise<string> {
     if (readProjectRootIdentityV2(live.root).digest !== live.row.rootIdentityDigest) throw new Error('PI_ROOT_CHANGED')
-    const access = await this.options.workspace.runtimeAccess(live.row.request.scope.attemptId)
-    if (!access || digest(access.workspace) !== digest(live.row.request.workspace)) throw new Error('PI_WORKSPACE_CHANGED')
+    await this.validatedRuntimeAccess(live)
     let target = live.root
     const parts = path.split('/')
     for (const [index, part] of parts.entries()) {
@@ -478,6 +678,37 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
     }
     throw new Error('PI_TARGET_INVALID')
   }
+
+  private async validatedRuntimeAccess(live: LiveV1) {
+    const access = await this.options.workspace.runtimeAccess(live.row.request.scope.attemptId)
+    if (!access || digest(access.workspace) !== digest(live.row.request.workspace)) throw new Error('PI_WORKSPACE_CHANGED')
+    const current = access.worktreeAuthorization
+    const frozen = live.row.worktreeAuthorization
+    if (Boolean(current) !== Boolean(frozen) || (current && frozen && (
+      current.authorizationDigest !== frozen.authorizationDigest
+      || current.bindingDigest !== frozen.bindingDigest
+      || current.ledgerDigest !== frozen.ledgerDigest
+    ))) throw new Error('PI_WORKTREE_AUTHORIZATION_CHANGED')
+    return access
+  }
+}
+
+function canonicalRelativePath(root: string, value: unknown): string | null {
+  if (typeof value !== 'string' || !value || value.includes('\0') || value.includes(':') || isAbsolute(value)) return null
+  const rawParts = value.replaceAll('\\', '/').split('/')
+  if (rawParts.some(part => !isSafeWindowsPathSegment(part))) return null
+  const target = resolve(root, ...rawParts)
+  const path = relative(root, target).split(sep).join('/')
+  return path && !isAbsolute(path) && !path.split('/').some(part => !part || part === '..' || part.toLowerCase() === '.git')
+    ? path
+    : null
+}
+
+function isSafeWindowsPathSegment(part: string): boolean {
+  if (!part || part === '.' || part === '..' || part.toLowerCase() === '.git'
+    || /[\u0000-\u001f<>"|?*]/.test(part) || /[. ]$/.test(part)) return false
+  const base = part.split('.')[0].toUpperCase()
+  return !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(base)
 }
 
 function selectDeliveryRuntimeRows(
@@ -495,5 +726,9 @@ function selectDeliveryRuntimeRows(
 }
 
 function denied(): WorkerHostToolOutcomeV1 { return { ok: false, error: { code: 'HOST_TOOL_FAILED', message: 'TaskHub 文件操作未获授权或来源已失效' } } }
+function correctionPromptV1(diagnostic: string, ordinal: number): string {
+  const safe = diagnostic.replace(/[\u0000-\u001f]/g, ' ').slice(0, 2_000)
+  return `TaskHub 验证未通过（修正 ${ordinal}/2）。请仅在当前已授权工作树内修正，并再次结束运行。诊断：${safe}`
+}
 function unknown(id: string, reasonCode: string): RuntimeOutcomeV1 { return { state: 'OUTCOME_UNKNOWN', runtimeSessionId: id, inspectHandleDigest: digest({ id, reasonCode }), reasonCode } }
 function failed(id: string, reasonCode: string): Extract<RuntimeOutcomeV1, { state: 'FAILED' }> { return { state: 'FAILED', runtimeSessionId: id, receiptDigest: digest({ id, reasonCode }), reasonCode } }

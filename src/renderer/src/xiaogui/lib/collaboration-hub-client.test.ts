@@ -401,6 +401,136 @@ describe('collaboration-hub-client', () => {
     })
   })
 
+  it('observe accepts V2 DELETE/rename summaries and rejects malformed V2 effects', async () => {
+    const delivery = deliveryFixture()
+    const valid = {
+      ...projectionFixture(),
+      activeDelivery: {
+        ...delivery,
+        fileChangeSummaries: [
+          {
+            operation: 'DELETE',
+            relativePath: 'src/old.ts',
+            baselineDigest: `sha256:${'7'.repeat(64)}`,
+            contentDigest: null,
+            sourceTaskChangeSetIds: ['xhbtcs_delivery'],
+            rename: { groupId: 'rename-1', counterpartPath: 'src/new.ts', role: 'SOURCE' },
+          },
+          {
+            operation: 'CREATE',
+            relativePath: 'src/new.ts',
+            baselineDigest: null,
+            contentDigest: `sha256:${'8'.repeat(64)}`,
+            contentArtifactId: 'xhbartifact_new',
+            sourceTaskChangeSetIds: ['xhbtcs_delivery'],
+            rename: { groupId: 'rename-1', counterpartPath: 'src/old.ts', role: 'TARGET' },
+          },
+        ],
+      },
+      availableActions: ['flow.cancel'],
+    }
+    invokeMock.mockResolvedValueOnce({ ok: true, value: valid })
+    await expect(observeCollaborationHub(address)).resolves.toEqual({ ok: true, value: valid })
+
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...valid,
+        activeDelivery: {
+          ...valid.activeDelivery,
+          fileChangeSummaries: [{
+            operation: 'DELETE',
+            relativePath: 'src/old.ts',
+            baselineDigest: `sha256:${'7'.repeat(64)}`,
+            contentDigest: `sha256:${'8'.repeat(64)}`,
+            sourceTaskChangeSetIds: ['xhbtcs_delivery'],
+          }],
+        },
+      },
+    })
+    await expect(observeCollaborationHub(address)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+    })
+
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...valid,
+        activeDelivery: {
+          ...valid.activeDelivery,
+          fileChangeSummaries: [{
+            operation: 'CREATE',
+            relativePath: 'src/new.ts',
+            baselineDigest: null,
+            contentDigest: `sha256:${'8'.repeat(64)}`,
+            contentArtifactId: 'xhbartifact_new',
+            sourceTaskChangeSetIds: ['xhbtcs_delivery'],
+            rename: { groupId: 'rename-1', counterpartPath: '../outside.ts', role: 'TARGET' },
+          }],
+        },
+      },
+    })
+    await expect(observeCollaborationHub(address)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+    })
+  })
+
+  it('accepts V2 delivery gate subjects and preserves the version on approval', async () => {
+    const delivery = deliveryFixture()
+    const version2Delivery = {
+      ...delivery,
+      gate: {
+        ...delivery.gate!,
+        subject: { ...delivery.gate!.subject, version: 2 as const },
+      },
+    }
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: { ...projectionFixture(), activeDelivery: version2Delivery, availableActions: ['delivery.gate.approve'] },
+    })
+    await expect(observeCollaborationHub(address)).resolves.toEqual({
+      ok: true,
+      value: { ...projectionFixture(), activeDelivery: version2Delivery, availableActions: ['delivery.gate.approve'] },
+    })
+
+    invokeMock.mockResolvedValueOnce({ ok: true, value: version2Delivery })
+    await expect(approveDeliveryGate(address, {
+      requestId: 'req-v2-approve',
+      gateId: version2Delivery.gate!.gateId,
+      subject: version2Delivery.gate!.subject,
+    })).resolves.toEqual({ ok: true, value: version2Delivery })
+    expect(invokeMock).toHaveBeenLastCalledWith('xiaogui.delivery.gate.approve', {
+      contractVersion: DELIVERY_CONTRACT_VERSION,
+      address,
+      request: {
+        requestId: 'req-v2-approve',
+        gateId: version2Delivery.gate!.gateId,
+        subject: version2Delivery.gate!.subject,
+      },
+    })
+  })
+
+  it.each([
+    ['missing version', (subject: Record<string, unknown>) => { delete subject.version; return subject }],
+    ['unsupported version', (subject: Record<string, unknown>) => ({ ...subject, version: 3 })],
+  ])('rejects delivery gate subject with %s', async (_label, mutate) => {
+    const delivery = deliveryFixture()
+    const subject = mutate({ ...delivery.gate!.subject })
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...projectionFixture(),
+        activeDelivery: { ...delivery, gate: { ...delivery.gate!, subject } },
+      },
+    })
+    await expect(observeCollaborationHub(address)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL', messageKey: 'xiaogui.hub.error.ipc', traceId: '' },
+    })
+  })
+
   it('observe 接受恢复交付投影与 SUPERSEDED，但拒绝未知 apply safeCode', async () => {
     const recoveredDelivery: DeliveryBatchProjectionV1 = {
       ...deliveryFixture(),

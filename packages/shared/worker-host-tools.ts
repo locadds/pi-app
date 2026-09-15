@@ -124,6 +124,8 @@ export type XiaoguiWorkReportDocxPayloadV1 =
   | (XiaoguiWorkReportDocxCommonPayloadV1 & {
       action: 'PREPARE'
       draft: WorkReportDraftV1
+      /** TaskHub V2 only; Main validates and returns the canonical Attempt-worktree target. */
+      targetPath?: string
     })
   | (XiaoguiWorkReportDocxCommonPayloadV1 & {
       action: 'CONFIRM' | 'CANCEL' | 'OPEN' | 'REVEAL'
@@ -383,7 +385,7 @@ export type WorkerHostToolRequestV1 =
       type: 'host-tool-request'
       requestId: string
       method: 'xiaogui.taskhub.design-project'
-      payload: { attemptId: string; sourceSessionId: string; toolCallId: string; action: string }
+      payload: { attemptId: string; sourceSessionId: string; toolCallId: string; action: string; sourcePaths?: string[]; targetPath?: string }
     }
 
 /**
@@ -660,7 +662,7 @@ export type WorkerHostToolOutcomeV1 =
         | DirectCodingPreflightResultV4
         | DirectCodingBeginResultV4
         | DirectCodingSettleResultV2
-        | { kind: 'PI_ATTEMPT_TOOL_ALLOWED'; toolCallId: string; authorizedRelativePath: string }
+        | { kind: 'PI_ATTEMPT_TOOL_ALLOWED'; toolCallId: string; authorizedRelativePath: string; authorizedTargetRelativePath?: string }
         | { kind: 'PI_ATTEMPT_TOOL_SETTLED'; toolCallId: string }
         | { kind: 'PI_DESIGN_PROJECT_ARTIFACT'; relativePath: string; sha256: string; summary: string }
     }

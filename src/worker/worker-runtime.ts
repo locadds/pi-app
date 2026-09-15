@@ -50,7 +50,8 @@ import { createXiaoguiCodingContextExtensionV1 } from './xiaogui-coding-extensio
 import { createXiaoguiCodingRoleGuardExtensionV1 } from './xiaogui-coding-extensions/role-guard-extension.js'
 import { CodingRoleRuntimeBindingV1 } from './xiaogui-coding-extensions/role-runtime-binding.js'
 import { createXiaoguiDirectCodingToolLifecycleV2 } from './xiaogui-coding-extensions/direct-coding-tool-extension.js'
-import { createPiAttemptToolLifecycleV1 } from './xiaogui-coding-extensions/attempt-tool-extension.js'
+import { createPiAttemptDeleteToolDefinitionV1, createPiAttemptRenameToolDefinitionV1,
+  createPiAttemptToolLifecycleV1 } from './xiaogui-coding-extensions/attempt-tool-extension.js'
 import { requestWorkerHostTool } from './worker-host-tool-channel.js'
 import type { WorkerSessionExecutionLeaseV1 } from './worker-port-types.js'
 
@@ -68,6 +69,7 @@ export type WorkerExecutionIdentityV1 = Readonly<{
 export type WorkerMutableState = {
   taskHubAttemptId?: string
   taskHubDesignExtensionPath?: string
+  taskHubWorktreeAuthorized?: boolean
   sdk: typeof import('@earendil-works/pi-coding-agent') | null
   activeSdkPath: string | null
   sharedEventBus: EventBus | null
@@ -433,9 +435,12 @@ export function prepareXiaoguiPromptTurnV1(userInput: string): XiaoguiPromptCont
   st.promptTurnStickyToolCalls.clear()
   const selected = selectedTurn.context
   const registered = session.getAllTools().map((tool) => tool.name)
-  const active = codingRoleRuntimeBindingV1.activeToolNames(
+  const roleActive = codingRoleRuntimeBindingV1.activeToolNames(
     activeToolNamesForPromptContextV1(selected, registered),
   )
+  const active = st.taskHubAttemptId && st.taskHubWorktreeAuthorized && selected.mode === 'CODING' && selected.phase === 'EXECUTE'
+    ? [...new Set([...roleActive, 'delete', 'rename'])]
+    : roleActive
   session.setActiveToolsByName([...active])
   const actual = session.getActiveToolNames()
   const turnContext = freezeXiaoguiPromptContextV1({
@@ -642,8 +647,16 @@ const TASK_HUB_DESIGN_PARAMETERS = Type.Object(
     description: 'TaskHub DESIGN 仅操作当前 Attempt 的 Main 固定项目；模型无需提供路径。',
   },
 )
+const TASK_HUB_DESIGN_WORKTREE_PARAMETERS = Type.Object({
+  action: Type.Optional(Type.Union([Type.Literal('inspect'), Type.Literal('open')])),
+  sourcePaths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 100 }),
+  targetPath: Type.String({ minLength: 1, maxLength: 4096 }),
+}, { additionalProperties: false,
+  description: 'TaskHub V2 DESIGN：选择当前Attempt工作树内的输入和JSON结果相对路径，Main核验并返回规范目标。' })
 type TaskHubDesignParametersV1 = Static<typeof TASK_HUB_DESIGN_PARAMETERS>
-type TaskHubDesignExecutionParametersV1 = TaskHubDesignParametersV1 & { path?: unknown }
+type TaskHubDesignExecutionParametersV1 = TaskHubDesignParametersV1 & {
+  path?: unknown; sourcePaths?: unknown; targetPath?: unknown
+}
 
 async function loadTaskHubDesignTool(sdk: NonNullable<typeof st.sdk>, cwd: string) {
   if (!st.taskHubDesignExtensionPath) throw new Error('DESIGN_RUNTIME_SOURCE_UNAVAILABLE')
@@ -661,14 +674,16 @@ async function loadTaskHubDesignTool(sdk: NonNullable<typeof st.sdk>, cwd: strin
   return {
     name: definition.name,
     label: definition.label,
-    description: '受控规划设计项目概览。TaskHub Attempt 仅支持 action=inspect 或 action=open；项目由 Main 根据当前 Attempt 固定，模型无需提供项目路径；仅读取已批准文件并返回受控概览。',
+    description: st.taskHubWorktreeAuthorized
+      ? '受控规划设计项目概览。仅支持inspect/open；选择当前Attempt工作树内的输入和JSON结果相对路径，由Main核验规范目标。'
+      : '受控规划设计项目概览。TaskHub Attempt 仅支持 action=inspect 或 action=open；项目由 Main 根据当前 Attempt 固定，模型无需提供项目路径；仅读取已批准文件并返回受控概览。',
     promptSnippet: '受控项目概览：仅 inspect/open，项目由 Main 固定到当前 Attempt。',
     promptGuidelines: [
       '仅使用 action=open 建立项目概览，或 action=inspect 查看已批准文件明细。',
       '不要提供 path；当前 Attempt 的项目与批准文件由 Main 固定。',
       '只根据工具返回的受控结果回答，不把项目路径或私有运行时细节传播给用户。',
     ],
-    parameters: TASK_HUB_DESIGN_PARAMETERS,
+    parameters: st.taskHubWorktreeAuthorized ? TASK_HUB_DESIGN_WORKTREE_PARAMETERS : TASK_HUB_DESIGN_PARAMETERS,
     async execute(toolCallId: string, params: TaskHubDesignExecutionParametersV1, signal?: AbortSignal) {
       const action: unknown = params.action ?? 'inspect'
       if (action !== 'inspect' && action !== 'open') throw new Error('DESIGN_ACTION_NOT_SUPPORTED_IN_ATTEMPT')
@@ -676,8 +691,13 @@ async function loadTaskHubDesignTool(sdk: NonNullable<typeof st.sdk>, cwd: strin
       if (requestedPath !== undefined && (typeof requestedPath !== 'string' || resolve(cwd, requestedPath) !== resolve(cwd))) {
         throw new Error('DESIGN_PROJECT_SCOPE_MISMATCH')
       }
+      const sourcePaths = Array.isArray(params.sourcePaths) && params.sourcePaths.every(path => typeof path === 'string')
+        ? params.sourcePaths as string[] : undefined
+      const targetPath = typeof params.targetPath === 'string' ? params.targetPath : undefined
+      if (st.taskHubWorktreeAuthorized && (!sourcePaths?.length || !targetPath)) throw new Error('DESIGN_PROJECT_SCOPE_MISMATCH')
       const outcome = await requestWorkerHostTool({ method: 'xiaogui.taskhub.design-project', payload: {
         attemptId: st.taskHubAttemptId!, sourceSessionId: st.currentSessionId, toolCallId, action,
+        ...(st.taskHubWorktreeAuthorized ? { sourcePaths: sourcePaths!, targetPath: targetPath! } : {}),
       } }, signal)
       if (!outcome.ok || outcome.value.kind !== 'PI_DESIGN_PROJECT_ARTIFACT') throw new Error('DESIGN_PROJECT_ATTEMPT_FAILED')
       return { content: [{ type: 'text' as const, text: outcome.value.summary }], details: outcome.value }
@@ -696,13 +716,17 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
     // 注册表，setActiveToolsByName 对未注册名字静默忽略。注册表必须覆盖本模式
     // 全部候选工具；初始激活集在会话创建后再按首轮策略收窄。
     const sessionToolUniverse = st.taskHubAttemptId
-      ? (promptContext.mode === 'CODING' ? ['read', 'edit', 'write']
+      ? (promptContext.mode === 'CODING' ? ['read', 'edit', 'write', ...(st.taskHubWorktreeAuthorized ? ['delete', 'rename'] : [])]
         : promptContext.mode === 'WORK' ? ['read', 'xiaogui_work_report_docx']
           : ['read', 'design_project'])
       : workerPromptContextToolNamesForModeV1(promptContext.mode)
-    const initialToolNames = codingRoleRuntimeBindingV1.activeToolNames(
+    const roleInitialToolNames = codingRoleRuntimeBindingV1.activeToolNames(
       activeToolNamesForPromptContextV1(initialContext, sessionToolUniverse),
     )
+    const initialToolNames = st.taskHubAttemptId && st.taskHubWorktreeAuthorized
+      && initialContext.mode === 'CODING' && initialContext.phase === 'EXECUTE'
+      ? [...new Set([...roleInitialToolNames, 'delete', 'rename'])]
+      : roleInitialToolNames
     const directCodingLifecycle = promptContext.mode === 'CODING' && !st.taskHubAttemptId
       ? createXiaoguiDirectCodingToolLifecycleV2({
           context: () => st.promptTurnContext ?? st.promptContext ?? initialContext,
@@ -788,6 +812,10 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
           ...(promptContext.mode === 'CODING' ? [
             sdk.defineTool(attemptLifecycle.wrapDefinition(sdk.createEditToolDefinition(cwd))),
             sdk.defineTool(attemptLifecycle.wrapDefinition(sdk.createWriteToolDefinition(cwd))),
+            ...(st.taskHubWorktreeAuthorized ? [
+              sdk.defineTool(attemptLifecycle.wrapDefinition(createPiAttemptDeleteToolDefinitionV1(cwd))),
+              sdk.defineTool(attemptLifecycle.wrapDefinition(createPiAttemptRenameToolDefinitionV1(cwd))),
+            ] : []),
           ] : []),
         ],
       } : {}),

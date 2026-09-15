@@ -26,7 +26,7 @@ const AddressSchema = z
 const DeliverySubjectSchema = z
   .object({
     deliveryChangeSetId: z.string().min(1).max(256),
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })
   .strict()
