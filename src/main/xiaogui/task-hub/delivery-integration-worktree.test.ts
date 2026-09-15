@@ -18,6 +18,39 @@ import {
 } from './delivery-integration-worktree'
 
 describe('MainProcessDeliveryIntegrationWorktreePortV1', () => {
+  it('rejects duplicate V2 net effects for the same normalized path', async () => {
+    const projectId = `xgp1_${'4'.repeat(64)}`
+    const target = {
+      projectId,
+      baseRevision: 'a'.repeat(40),
+      baselineTreeHash: 'b'.repeat(40),
+      initialTargetFingerprint: deliveryTargetFingerprintV1({
+        projectId,
+        baseRevision: 'a'.repeat(40),
+        baselineTreeHash: 'b'.repeat(40),
+      }),
+    } satisfies DeliveryTargetV1
+    const port = new MainProcessDeliveryIntegrationWorktreePortV1({
+      projectResolver: { resolveProjectRoot: () => 'unused' },
+      managedRoot: 'unused',
+      target,
+      batchId: 'xhbd_duplicate_v2',
+    })
+    const duplicateEffect = {
+      operation: 'CREATE' as const,
+      relativePath: 'nested/result.txt',
+      baselineDigest: null,
+      contentDigest: digest('created'),
+      contentArtifactId: 'artifact-duplicate' as never,
+      content: Buffer.from('created'),
+      sourceTaskChangeSetId: 'xhbcs_duplicate' as never,
+    }
+
+    await expect(port.integrateV2([duplicateEffect, duplicateEffect])).rejects.toMatchObject({
+      reasonCode: 'DELIVERY_WORKTREE_FILE_INVALID',
+    })
+  })
+
   it('creates a managed integration worktree and writes only approved files', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-integration-'))
     const repo = join(root, 'repo')

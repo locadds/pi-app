@@ -1,5 +1,24 @@
 # 小规开发阶段状态
 
+## 2026-09-15｜首切片P2回归返修：V1有序操作（已修，待主管复验）
+
+- 主管暂不通过 `6e08e7e76db86491389b8afa8369c913a7a06bbd`：共享integration去重错误地将V2净效果规则用于V1，既有MODIFY→MODIFY与CREATE→MODIFY两case失败。此项是本切片引入的回归，不归咎旧测试；此前21项和增量2项没有覆盖这两个直接消费者。
+- 已先更新既有CLOSEOUT计划，再交Sol只修 `delivery-integration-worktree.ts` 的版本化重复路径条件，并补V2重复净效果拒绝用例。保留V1有序逐步摘要/存在状态检查，路径/链接门及其他冲突限制不放宽；不扩修LOW或新主链。
+- 只复跑主管指定两个case及必要V2负例，必要类型/定向lint/diff-check。原现场/profile/任务/DB/节点/stash不动，不模型/Electron、不业务Apply、不合主线；完成后交新SHA待定向复验。
+- Sol实际仅改 `src/main/xiaogui/task-hub/delivery-integration-worktree.ts` 与其 `.test.ts`：入口去重限定version===2；V1逐项路径规范化、父链、前摘要和存在状态检查原样保留。新增V2重复净效果拒绝用例在进入Git/目录操作前失败。另两份阶段文档更新，合计4文件，无其他生产变化。
+- 根owner复核差异及日志：V1两个既有用例2 passed/5 skipped；V2新增1 passed/2 skipped；Node类型、两文件lint、diff-check exit0。没有重跑此前21+2或无关套件。证据在 `D:/CodexTemp/hub-runtime-01-single-accept-spike-20260915/v1-sequence-fix/`；测试日志 `v1-sequence-cases.log`、`v2-duplicate-net-effect.log`，类型/lint成功为空输出，以Sol工具退出码为准。
+- Standards：本次最小增量无独立阻断，既有LOW不扩修。Spec：已知V1回归定向关闭，仍待主管确认；整个一次接纳方案未完成，其他首批缺口不因此放行。相对6e08e7e追加提交推送后停止，不改写旧证据或历史。
+
+本次精确命令：
+
+```powershell
+npx vitest run src/main/xiaogui/task-hub/git-derived-execution-baseline.test.ts --maxWorkers=1 --fileParallelism=false -t 'applies same-file ancestors in dependency order when each precondition matches the previous result|applies a verified CREATE then MODIFY chain for a path absent from the source checkout'
+npx vitest run src/main/xiaogui/task-hub/delivery-integration-worktree.test.ts --maxWorkers=1 --fileParallelism=false -t 'rejects duplicate V2 net effects for the same normalized path'
+npx tsc -p tsconfig.node.json --noEmit
+npx eslint src/main/xiaogui/task-hub/delivery-integration-worktree.ts src/main/xiaogui/task-hub/delivery-integration-worktree.test.ts
+git diff --check 6e08e7e76db86491389b8afa8369c913a7a06bbd
+```
+
 ## 2026-09-15｜首个合成切片可送审：DELETE＋CREATE → Delivery／Apply
 
 - 固定起点 `133d1a5cd0f8dce736b280f87b08f9e2f5a40d23`，同一隔离分支。Luna完成初版，Sol按新分工完成共享实现及版本隔离收口；根owner更新方案、审查并交付，不代写源码/脚本。下文“验证中/未放行”是过程记录，以本条作为当前切片状态。

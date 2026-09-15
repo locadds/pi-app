@@ -43,12 +43,14 @@ export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryInt
     version: 1 | 2,
   ): Promise<DeliveryIntegrationResultV1> {
     if (files.length === 0) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
-    const seen = new Set<string>()
-    for (const file of files) {
-      const relativePath = normalizeRelativePath(file.relativePath)
-      const key = pathKey(relativePath)
-      if (seen.has(key)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
-      seen.add(key)
+    if (version === 2) {
+      const seen = new Set<string>()
+      for (const file of files) {
+        const relativePath = normalizeRelativePath(file.relativePath)
+        const key = pathKey(relativePath)
+        if (seen.has(key)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+        seen.add(key)
+      }
     }
     const managedRoot = await ensureManagedRoot(this.options.managedRoot)
     const repositoryRoot = await realpath(resolve(await this.options.projectResolver.resolveProjectRoot(this.options.target.projectId)))
