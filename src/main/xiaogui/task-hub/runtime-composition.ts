@@ -32,9 +32,12 @@ import {
 } from './application'
 import {
   AttemptExecutionInputStoreV1,
+  attemptWorktreeAuthorizationDigestV2,
+  type ResolvedAttemptExecutionInput,
   type ResolvedAttemptExecutionInputV1,
   type StageAttemptExecutionInputV1,
 } from './attempt-execution-input'
+import type { HubTaskAcceptAndExecuteTrustedPortV2 } from '../hub-task/worker-service'
 import {
   GitAttemptWorkspaceServiceV1,
   SqliteAttemptWorkspaceRegistryV1,
@@ -43,7 +46,9 @@ import {
   type AttemptFileGrantV1,
   type AttemptWorkspaceBaselineSourceBindingV1,
   type AttemptWorkspaceBaselineSourceResolverV1,
+  type AttemptWorkspacePrepareRequestV2,
   type ProjectWorkspaceResolverV1,
+  projectWorktreeIdentityV2,
 } from './attempt-workspace'
 import { payloadDigest } from './digest'
 import { GitExecutionBaselineProviderV1 } from './git-execution-baseline'
@@ -329,7 +334,10 @@ export function createXiaoguiRuntimeCompositionV1(
     taskExecution = new XiaoguiTaskExecutionOrchestratorV1({
       dbPath: hubDbPath,
       application,
-      inputStage: { stageAttemptInput: (input) => inputStore!.stage(input) },
+      inputStage: {
+        stageAttemptInput: (input) => inputStore!.stage(input),
+        stageAttemptWorktreeInput: (input) => inputStore!.stageWorktree(input),
+      },
       fileScopeResolver: attemptWorkspaces,
       runtimeMonitor,
       runtimeBindingRestorer: async ({ attemptId, runtimeSessionId }) => {
@@ -495,6 +503,125 @@ function createCompositionInterface(
   }
 }
 
+/** Main-only adapter used by the Hub worker; callers opt in explicitly. */
+export function createHubTaskAcceptAndExecuteTrustedPortV2(input: {
+  readonly application: CollaborationHubApplicationV1
+  readonly taskExecution: XiaoguiTaskExecutionOrchestratorV1
+  readonly projectResolver: ProjectWorkspaceResolverV1
+}): HubTaskAcceptAndExecuteTrustedPortV2 {
+  const baselineProvider = new GitExecutionBaselineProviderV1(input.projectResolver)
+  const resolveTarget = async (request: Parameters<HubTaskAcceptAndExecuteTrustedPortV2['resolveTarget']>[0]) => {
+    const observed = await input.application.observeM2B(request.address)
+    if (!observed.ok) return { ok: false as const, code: 'TARGET_PROJECT_INVALID' as const }
+    let projectRoot: string
+    try {
+      projectRoot = await input.projectResolver.resolveProjectRoot(request.address.projectId)
+    } catch {
+      return { ok: false as const, code: 'TARGET_PROJECT_INVALID' as const }
+    }
+    let targetProjectIdentity: string
+    try {
+      targetProjectIdentity = projectWorktreeIdentityV2(request.address.projectId, projectRoot)
+    } catch {
+      return { ok: false as const, code: 'TARGET_PROJECT_INVALID' as const }
+    }
+    try {
+      const baseline = await baselineProvider.capture({
+        address: request.address,
+        flowId: 'xhbf_accept_target_probe' as FlowId,
+        planRevisionId: null,
+      })
+      return {
+        ok: true as const,
+        targetProjectIdentity,
+        baselineSourceDigest: `sha256:${baseline.baselineDigest}`,
+      }
+    } catch {
+      return { ok: false as const, code: 'BASELINE_SOURCE_INVALID' as const }
+    }
+  }
+  return {
+    resolveTarget,
+    async execute(request) {
+      if (`sha256:${payloadDigest(request.draft)}` !== request.draftDigest) {
+        return { ok: false, code: 'EXECUTION_NOT_STARTED' }
+      }
+      const target = await resolveTarget(request)
+      if (!target.ok || target.targetProjectIdentity !== request.targetProjectIdentity) {
+        return { ok: false, code: 'EXECUTION_NOT_STARTED' }
+      }
+      if (target.baselineSourceDigest !== request.baselineSourceDigest) {
+        return { ok: false, code: 'EXECUTION_NOT_STARTED' }
+      }
+      const acceptanceKey = payloadDigest({
+        version: 2,
+        address: request.address,
+        assignmentId: request.assignmentId,
+        taskId: request.taskId,
+        packageSha256: request.packageSha256,
+        requestId: request.requestId,
+      })
+      const started = await input.application.perform(request.address, {
+        requestId: `hub-accept-v2:${acceptanceKey}:draft`,
+        intent: { type: 'flow.start.with_draft', draft: request.draft },
+      })
+      if (!started.ok || !started.value.flowId || !started.value.revisionId) {
+        return { ok: false, code: 'EXECUTION_NOT_STARTED' }
+      }
+      const activated = await input.application.perform(request.address, {
+        requestId: `hub-accept-v2:${acceptanceKey}:activate`,
+        intent: {
+          type: 'plan.revision.submit',
+          flowId: started.value.flowId,
+          baseRevisionId: started.value.revisionId,
+          draft: request.draft,
+        },
+      })
+      if (!activated.ok) return { ok: false, code: 'EXECUTION_NOT_STARTED' }
+      const baseAuthorization = {
+        version: 2 as const,
+        mode: 'ATTEMPT_WORKTREE' as const,
+        projectId: request.address.projectId,
+        sessionKey: request.address.sessionKey,
+        acceptance: {
+          requestId: request.requestId,
+          assignmentId: request.assignmentId,
+          taskId: request.taskId,
+          taskContentDigest: request.packageSha256,
+          targetProjectIdentity: request.targetProjectIdentity,
+          baselineSourceDigest: request.baselineSourceDigest,
+        },
+      }
+      const execution = await input.taskExecution.startAcceptedWorktreeV2({
+        address: request.address,
+        flowId: started.value.flowId,
+        prompt: '执行已由 Main 核验并冻结的当前任务正文与验收要求。',
+        authorization: {
+          ...baseAuthorization,
+          authorizationDigest: attemptWorktreeAuthorizationDigestV2(baseAuthorization),
+        },
+      })
+      if (!execution.ok) {
+        return { ok: false, code: execution.error.code === 'OUTCOME_UNKNOWN'
+          ? 'EXECUTION_OUTCOME_UNKNOWN'
+          : 'EXECUTION_NOT_STARTED' }
+      }
+      const status = execution.value.attempt.status
+      if (['SUCCEEDED', 'FAILED', 'INTERRUPTED', 'CANCELLED', 'OUTCOME_UNKNOWN'].includes(status)) {
+        return { ok: false, code: status === 'OUTCOME_UNKNOWN'
+          ? 'EXECUTION_OUTCOME_UNKNOWN'
+          : 'EXECUTION_ALREADY_SETTLED' }
+      }
+      return {
+        ok: true,
+        flowId: started.value.flowId,
+        revisionId: started.value.revisionId,
+        executionState: ['STARTING', 'RUNNING', 'VERIFYING'].includes(status) ? 'STARTED' : 'PREPARED',
+      }
+    },
+  }
+}
+
 export function createMainAttemptWorkspaceBaselineSourceResolverV1(
   hubDbPath: string,
   inputStoreProvider: () => AttemptExecutionInputStoreV1 | undefined,
@@ -503,7 +630,7 @@ export function createMainAttemptWorkspaceBaselineSourceResolverV1(
     resolve({ request, grants }) {
       const inputStore = inputStoreProvider()
       if (!inputStore) return null
-      let staged: ResolvedAttemptExecutionInputV1
+      let staged: ResolvedAttemptExecutionInput
       try {
         staged = inputStore.resolve(request.attemptId)
       } catch {
@@ -523,21 +650,28 @@ function resolveMainAttemptWorkspaceBaselineSourceV1(
   store: CollaborationHubSqliteStoreV1,
   request: Parameters<AttemptWorkspaceBaselineSourceResolverV1['resolve']>[0]['request'],
   grants: readonly AttemptFileGrantV1[],
-  staged: ResolvedAttemptExecutionInputV1,
+  staged: ResolvedAttemptExecutionInput,
 ): AttemptWorkspaceBaselineSourceBindingV1 | null {
   const attemptId = String(request.attemptId)
   const attempt = store.attemptExecutionScope(attemptId as AttemptId)
   const composition = store.compositionAttempt(attemptId as AttemptId)
   const task = store.taskExecutionBaseline(attemptId as AttemptId)
   if (!attempt || !composition || !task) return null
+  const worktreeRequest = isAttemptWorkspacePrepareRequestV2(request) ? request : null
+  const worktreeStaged = staged.inputVersion === 2 ? staged : null
+  if ((worktreeRequest === null) !== (worktreeStaged === null)) return null
+  if (worktreeRequest && worktreeStaged && (
+    worktreeRequest.authorization.authorizationDigest !== worktreeStaged.authorization.authorizationDigest ||
+    JSON.stringify(worktreeRequest.authorization) !== JSON.stringify(worktreeStaged.authorization)
+  )) return null
   if (
     attempt.attempt_id !== attemptId ||
     attempt.project_id !== staged.projectId ||
     attempt.session_key !== staged.sessionKey ||
     staged.attemptId !== attemptId ||
     staged.projectId !== request.projectId ||
-    staged.grants.length !== grants.length ||
-    JSON.stringify(staged.grants) !== JSON.stringify(grants) ||
+    (!worktreeStaged && staged.grants.length !== grants.length) ||
+    (!worktreeStaged && JSON.stringify(staged.grants) !== JSON.stringify(grants)) ||
     composition.attemptId !== attemptId ||
     composition.compositionAttemptId !== request.compositionAttemptId ||
     composition.requestDigest !== request.requestDigest ||
@@ -549,7 +683,7 @@ function resolveMainAttemptWorkspaceBaselineSourceV1(
     task.baseline_binding_digest !== request.baselineBindingDigest ||
     task.base_revision !== request.baseRevision ||
     task.baseline_tree_hash !== request.baselineTreeHash ||
-    workspaceDigestJson(grants) !== workspaceDigestJson(staged.grants)
+    (!worktreeStaged && workspaceDigestJson(grants) !== workspaceDigestJson(staged.grants))
   ) {
     return null
   }
@@ -558,6 +692,10 @@ function resolveMainAttemptWorkspaceBaselineSourceV1(
   if (!flow || flow.flow_id !== attempt.flow_id) return null
   const sourceBaseline = sourceBaselineFromRecord(flow)
   if (!sourceBaseline || sourceBaseline.baselineBindingDigest !== flow.baseline_binding_digest) return null
+  if (
+    worktreeStaged &&
+    worktreeStaged.authorization.acceptance.baselineSourceDigest !== `sha256:${sourceBaseline.baselineDigest}`
+  ) return null
   if (
     flow.baseline_digest !== payloadDigest({
       baselineId: sourceBaseline.baselineId,
@@ -667,6 +805,13 @@ function resolveMainAttemptWorkspaceBaselineSourceV1(
   })
 }
 
+function isAttemptWorkspacePrepareRequestV2(
+  request: Parameters<AttemptWorkspaceBaselineSourceResolverV1['resolve']>[0]['request'],
+): request is AttemptWorkspacePrepareRequestV2 {
+  return 'authorization' in request && request.authorization?.version === 2 &&
+    request.authorization.mode === 'ATTEMPT_WORKTREE'
+}
+
 function sourceBaselineFromRecord(
   record: NonNullable<ReturnType<CollaborationHubSqliteStoreV1['flowExecutionBaseline']>>,
 ): AttemptWorkspaceBaselineSourceBindingV1['source'] | null {
@@ -757,7 +902,7 @@ function parseStringArray(value: string): readonly string[] | null {
 
 function derivedInputDigest(
   store: CollaborationHubSqliteStoreV1,
-  staged: ResolvedAttemptExecutionInputV1,
+  staged: ResolvedAttemptExecutionInput,
   flowId: string,
   taskRunId: string,
   flowBaseline: AttemptWorkspaceBaselineSourceBindingV1['source'],

@@ -1,5 +1,28 @@
 # HUB-RUNTIME-01 剩余工作方案
 
+## 2026-09-15｜接续批：Main 接纳与真实 capture 候选（待桌面主管验收）
+
+- 接续基线：本地、上游与 live 远端均为 `aaa62c69eebddf653f3c1bdc25423b0cf2515459`；隔离工作树 clean，保护 stash `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61` 保留。交接 HANDOFF 顶部主管 P2 复验已 APPROVE；原实施记录明确停在交接门，本任务接替所有权。旧待复验措辞为历史记录。
+- 本批继续第 8 节第 1 门剩余关键接缝，先完成 Main 一次接纳/Saga、明确版本的 Attempt 工作树授权、真实磁盘捕获 V2 到已有 Composer 的组合证据。完成交主管核对后，再进入第 2 门 UI/Main 同步替换、有限验证修正与自动 Delivery 生产默认接线；不以类型或测试夹具输入代替生产捕获。沿用已批准复用调查，不重新安装、研究或运行模型。
+- 实查依赖：`hub-task/worker-service.ts` 当前接纳与草稿分离；`execution-orchestrator.ts` 的 WORKSPACE_READY 卡在计划/角色门；`attempt-execution-input.ts` 与 `attempt-workspace.ts` 全部按 grants 冻结；`runtime-composition.ts` 来源 resolver 核验 staged grants；`pi-adapter.ts` 的 settled 回调在 capture 后立即结算；`delivery-workflow.ts` 仍使用 V1 Composer。新分支必须显式隔离旧 FILE_LIST_V1，缺授权不得放行。
+- 文件分工：Sol A 负责 `hub-task/worker-service.ts`、`worker-state.ts` 及相关聚焦测试的一次接纳持久步骤；Sol B 负责 `task-hub/attempt-workspace.ts`、`attempt-execution-input.ts` 及相关聚焦测试的工作树授权/真实 capture；后续集成 Sol 负责 `execution-orchestrator.ts`、`runtime-composition.ts` 的 Main 窄端口与 Saga 接线及组合验证。根任务负责接口决定、审查、两份状态文档、提交推送；不得跨所有权覆盖编辑。
+- 完成判据：可信任务版本/身份/目标绑定；重复接纳不重复 ACCEPT/flow/Attempt/派发；UNKNOWN/已结算不重派；PROJECT 原字节及 DERIVED 登记来源不降级；无预填路径的真实新增/修改/删除/rename 产生 V2 净效果并进入已有 Delivery；根外/.git/链接/碰撞拒绝；旧 V1 不扩大权限。只跑变化对应的合成 Git/私有临时 SQLite 聚焦用例、类型、定向 lint 与 diff-check，旧 P2 和未受影响已过用例不重跑。
+- 下一门依赖单列：Pi 未结算验证最多两轮需接在 settle 之前；自动 Delivery 需精确 Attempt/候选摘要稳定键及 V2 消费链；新 UI 不能先显示可执行却仍走旧门。检查点可信会话登记缺口仍未修，新接纳使用专属 Attempt Worker，不通过旧角色冷装载聊天 Worker。
+- 接线纠偏：禁止本轮真实模型验证，不等于产品V2应永久停PREPARED。新Main接口不挂默认UI/IPC，但其显式授权分支继续复用原Saga dispatch；组合测试用现有Scripted Adapter显式装配，禁止新增模型配置或为后续另造resume审批门。无受控rename工具回执时capture只输出真实DELETE+CREATE，不按同字节猜rename关联。
+- 当前工具未提供 Codex task 协调/automation 接口，无法实时查询原任务或设置 heartbeat；使用明确落盘交接门，不搭后台轮询。禁止业务现场、profile、数据库、节点、stash 操作；不安装/模型/业务 Apply/合主线/发布。
+- 用户人工转交新规范已接收：有活动子任务时仅维护一个15分钟增量heartbeat，无变化安静、完成回执及时回收、阶段交付或明确暂停后停用。此次再查仍无automation接口，实际未启用且无ID；不旁路替代。子任务实际均指定gpt-5.6-sol，沿原所有权接续。主会话系统仅标识GPT-6，未暴露精确模型ID/切换接口，不能声称已核验Astra或已切换。
+
+### 本批回收结果与下一门
+
+- 实际修改7个生产文件：`hub-task/worker-service.ts`、`worker-state.ts`；`task-hub/application.ts`、`attempt-execution-input.ts`、`attempt-workspace.ts`、`execution-orchestrator.ts`、`runtime-composition.ts`。测试为新增 `worker-accept-execute-v2.test.ts`、`single-accept-main-seam.test.ts` 及已有 input/workspace 两测试文件的定向增量；另更新本方案与 DEVELOPMENT_STATUS，共13文件，无依赖/Hub/网页契约变更。
+- Main 新 `acceptAndExecuteV2` 只接受assignment/address/已见版本/requestId，重下载比对实际正文摘要、身份和目标；接纳阶段持久化，成功结果与旧生命周期所需localPlanDraft同次写入。并发与恢复不重复ACCEPT，旧计划冲突拒绝。Saga单独保存V2授权，精确UNKNOWN/终态提前回执；显式V2沿已有dispatch，跳过旧计划/角色门，不伪造角色或人工批准。
+- Attempt 使用Main登记实体授权及自动基线清单；PROJECT保原字节、DERIVED读不可变blob，来源失败不回退。独立 `captureTaskPatchV2` 扫描真实净变化（含ignored新文件），三种效果及rename净DELETE+CREATE进入已有ComposerV2。旧V1入口不变；同项目调度token只是并发互斥投影，不作为文件授权。
+- 组合证据是**显式装配现有Scripted Adapter的合成链**：真实worker服务→可信Main port→真实Saga/Application/来源resolver/工作树→Scripted Adapter磁盘操作→真实capture→ComposerV2。TaskChangeSet的QA/evidence外壳由测试构造，未经过完整生产verification；未生成手工TASK_PATCH_V2。UNKNOWN在合成私有Saga内注入，验证精确重放不新增Saga，不冒称在途进程崩溃恢复。
+- 已回收：接纳层分次聚焦通过；input 5项；workspace V2 2项；旧V1计划/角色直接回归2项；最终组合1项。Node/Web类型与全部变化TS定向lint通过。原日志/精确命令及缺日志说明见DEVELOPMENT_STATUS；不重复旧P2、旧Apply或成熟本体。
+- **未完成／下一门**：默认worker composition/IPC/UI尚未挂新入口；Pi实际工具仍需消费工作树级授权，V2 candidate audit/verification/Delivery workflow消费链、最多两轮未结算修正及自动Delivery尚未接。WORK/DESIGN/CODING真实模型旅程、安装包、Hub联合旅程及真实业务Apply均未验证。检查点可信会话地址缺口仍未修；case-only rename本候选明确拒绝，未实现其Apply语义。
+- 过程纠偏：曾把禁止真实模型验证误做成V2永久PREPARED返回，已删除，产品不新增resume审批门；曾误加按相同字节推断rename metadata断言，已撤回，不修改捕获语义。两次超范围旧套件中止，以及早期组合失败/中止不算通过，细节见状态记录。
+- Standards自查：本批限定Main接缝未发现剩余独立阻断；Spec自查：此候选有合成证据，**不等于完整一次接受并执行或整个生产流程通过**。本批追加提交推送后停在桌面主管验收门，由主管决定下一门；不自动开启默认入口、模型或业务。
+
 ## 2026-09-15｜首切片P2定向返修：V1有序同路径链
 
 - 主管拒收6e08e7e：共享integration路径去重误伤V1的MODIFY→MODIFY、CREATE→MODIFY，两个直接相关既有case失败。本次仅修此回归，既有LOW不扩修，其他新流程接线不开始。

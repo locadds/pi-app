@@ -50,12 +50,36 @@ export interface HubTaskWorkerPlanDraftBindingV1 extends HubAddressV1 {
   createdAt: string
 }
 
+export type HubTaskAcceptAndExecutePhaseV2 = 'BOUND' | 'HUB_ACCEPTED' | 'EXECUTION_REQUESTED'
+
+export interface HubTaskAcceptAndExecuteBindingV2 extends HubAddressV1 {
+  contractVersion: 'hub.accept-execute.v2'
+  assignmentId: string
+  taskId: string
+  packageSha256: string
+  requestId: string
+  subjectId: string
+  nodeId: string
+  keyId: string
+  targetProjectIdentity: string
+  baselineSourceDigest: string
+  draftDigest: string
+  phase: HubTaskAcceptAndExecutePhaseV2
+  flowId?: string
+  revisionId?: string
+  executionState?: 'PREPARED' | 'STARTED' | 'ALREADY_STARTED'
+  createdAt: string
+  updatedAt: string
+}
+
 export interface HubTaskWorkerInboxEntryV1 extends HubTaskWorkerAssignmentDetailV1 {
   /** Private receipt attribution, never included in the renderer projection. */
   deliveryIdentity?: EvidenceIdentityV1
   openedAt: string | null
   localDeliveryState: HubTaskWorkerLocalDeliveryStateV1
   localPlanDraft: HubTaskWorkerPlanDraftBindingV1 | null
+  /** Optional V2 binding. Missing historical records remain FILE_LIST_V1 and are never upgraded implicitly. */
+  acceptAndExecuteV2?: HubTaskAcceptAndExecuteBindingV2
 }
 
 export interface HubTaskWorkerPendingReceiptV1 {
@@ -126,6 +150,7 @@ export interface HubTaskWorkerStateStoreV1 {
   hasTerminalEvidenceForAssignment(assignmentId: string): boolean
   nextReceiptSequence(): number
   bindPlanDraft(assignmentId: string, binding: HubTaskWorkerPlanDraftBindingV1): void
+  bindAcceptAndExecuteV2(assignmentId: string, binding: HubTaskAcceptAndExecuteBindingV2): HubTaskAcceptAndExecuteBindingV2
 }
 
 const EMPTY_STATE: HubTaskWorkerStateV1 = {
@@ -215,6 +240,9 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
       openedAt: packageChanged || replacedDelivery ? null : previous?.openedAt ?? null,
       localDeliveryState: packageChanged || replacedDelivery ? 'NOT_OPENED' : previous?.localDeliveryState ?? 'NOT_OPENED',
       localPlanDraft: packageChanged ? null : previous?.localPlanDraft ?? null,
+      // Retain prior V2 authority so a refreshed/replaced package conflicts
+      // instead of being silently accepted as a new execution.
+      acceptAndExecuteV2: previous?.acceptAndExecuteV2,
       deliveryIdentity: projectDeliveryIdentity(identity ?? previous?.deliveryIdentity),
     }
     this.state = {
@@ -446,6 +474,51 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
     this.persist()
   }
 
+  bindAcceptAndExecuteV2(
+    assignmentId: string,
+    binding: HubTaskAcceptAndExecuteBindingV2,
+  ): HubTaskAcceptAndExecuteBindingV2 {
+    const existing = this.state.assignments[assignmentId]
+    if (!existing) throw new Error('HUB_ASSIGNMENT_NOT_IN_LOCAL_INBOX')
+    if (!isStoredAcceptAndExecuteV2(binding, assignmentId)) throw new Error('HUB_ACCEPT_AND_EXECUTE_BINDING_INVALID')
+    const current = existing.acceptAndExecuteV2
+    if (current && !sameAcceptAndExecuteIdentity(current, binding)) {
+      throw new Error('HUB_ACCEPT_AND_EXECUTE_BINDING_CONFLICT')
+    }
+    if (current && acceptPhaseOrdinal(binding.phase) < acceptPhaseOrdinal(current.phase)) return { ...current }
+    if (current?.flowId && (
+      current.flowId !== binding.flowId
+      || current.revisionId !== binding.revisionId
+      || current.executionState !== binding.executionState
+    )) throw new Error('HUB_ACCEPT_AND_EXECUTE_RESULT_CONFLICT')
+    const nextBinding = current
+      ? { ...current, ...binding, createdAt: current.createdAt }
+      : { ...binding }
+    const executionPlan = binding.phase === 'EXECUTION_REQUESTED'
+      ? {
+          projectId: binding.projectId,
+          sessionKey: binding.sessionKey,
+          flowId: binding.flowId!,
+          revisionId: binding.revisionId!,
+          createdAt: existing.localPlanDraft?.createdAt ?? binding.updatedAt,
+        }
+      : existing.localPlanDraft
+    if (existing.localPlanDraft && executionPlan && (
+      existing.localPlanDraft.projectId !== executionPlan.projectId
+      || existing.localPlanDraft.sessionKey !== executionPlan.sessionKey
+      || existing.localPlanDraft.flowId !== executionPlan.flowId
+      || existing.localPlanDraft.revisionId !== executionPlan.revisionId
+    )) throw new Error('HUB_ACCEPT_AND_EXECUTE_RESULT_CONFLICT')
+    const next: HubTaskWorkerInboxEntryV1 = {
+      ...existing,
+      acceptAndExecuteV2: nextBinding,
+      localPlanDraft: executionPlan ? { ...executionPlan } : null,
+    }
+    this.state = { ...this.state, assignments: { ...this.state.assignments, [assignmentId]: next } }
+    this.persist()
+    return { ...nextBinding }
+  }
+
   private persist(): void {
     this.persistence.write(cloneState(this.state))
   }
@@ -497,6 +570,7 @@ function cloneEntry(entry: HubTaskWorkerInboxEntryV1): HubTaskWorkerInboxEntryV1
     openedAt: entry.openedAt,
     localDeliveryState: entry.localDeliveryState,
     localPlanDraft: entry.localPlanDraft ? { ...entry.localPlanDraft } : null,
+    ...(entry.acceptAndExecuteV2 ? { acceptAndExecuteV2: { ...entry.acceptAndExecuteV2 } } : {}),
   }
 }
 
@@ -607,7 +681,58 @@ function isStoredEntry(value: unknown, assignmentId: string): value is HubTaskWo
     && value.localDeliveryState !== 'PENDING_H1_4_RECEIPT'
     && value.localDeliveryState !== 'HUB_CONFIRMED'
   ) return false
-  return value.localPlanDraft === null || isStoredPlanDraft(value.localPlanDraft)
+  return (value.localPlanDraft === null || isStoredPlanDraft(value.localPlanDraft))
+    && (value.acceptAndExecuteV2 === undefined || isStoredAcceptAndExecuteV2(value.acceptAndExecuteV2, assignmentId))
+}
+
+function sameAcceptAndExecuteIdentity(
+  left: HubTaskAcceptAndExecuteBindingV2,
+  right: HubTaskAcceptAndExecuteBindingV2,
+): boolean {
+  return left.contractVersion === right.contractVersion
+    && left.assignmentId === right.assignmentId
+    && left.taskId === right.taskId
+    && left.packageSha256 === right.packageSha256
+    && left.requestId === right.requestId
+    && left.subjectId === right.subjectId
+    && left.nodeId === right.nodeId
+    && left.keyId === right.keyId
+    && left.projectId === right.projectId
+    && left.sessionKey === right.sessionKey
+    && left.targetProjectIdentity === right.targetProjectIdentity
+    && left.baselineSourceDigest === right.baselineSourceDigest
+    && left.draftDigest === right.draftDigest
+}
+
+function acceptPhaseOrdinal(value: HubTaskAcceptAndExecutePhaseV2): number {
+  return ['BOUND', 'HUB_ACCEPTED', 'EXECUTION_REQUESTED'].indexOf(value)
+}
+
+function isStoredAcceptAndExecuteV2(value: unknown, assignmentId: string): value is HubTaskAcceptAndExecuteBindingV2 {
+  if (!isRecord(value)) return false
+  return value.contractVersion === 'hub.accept-execute.v2'
+    && value.assignmentId === assignmentId
+    && isOpaqueId(value.taskId)
+    && isSha256(value.packageSha256)
+    && isOpaqueId(value.requestId)
+    && isOpaqueId(value.subjectId)
+    && isOpaqueId(value.nodeId)
+    && isOpaqueId(value.keyId)
+    && typeof value.projectId === 'string' && /^xgp1_[0-9a-f]{64}$/.test(value.projectId)
+    && typeof value.sessionKey === 'string' && /^xgs1_[0-9a-f]{64}$/.test(value.sessionKey)
+    && isOpaqueId(value.targetProjectIdentity)
+    && isSha256(value.baselineSourceDigest)
+    && isSha256(value.draftDigest)
+    && isOneOf(value.phase, ['BOUND', 'HUB_ACCEPTED', 'EXECUTION_REQUESTED'])
+    && (value.flowId === undefined || isOpaqueId(value.flowId))
+    && (value.revisionId === undefined || isOpaqueId(value.revisionId))
+    && (value.executionState === undefined || isOneOf(value.executionState, ['PREPARED', 'STARTED', 'ALREADY_STARTED']))
+    && (value.phase !== 'EXECUTION_REQUESTED' || (
+      isOpaqueId(value.flowId)
+      && isOpaqueId(value.revisionId)
+      && isOneOf(value.executionState, ['PREPARED', 'STARTED', 'ALREADY_STARTED'])
+    ))
+    && isTimestamp(value.createdAt) && isTimestamp(value.updatedAt)
 }
 
 function isStoredAssignment(value: unknown, assignmentId: string): value is HubTaskWorkerAssignmentV1 {

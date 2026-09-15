@@ -33,7 +33,11 @@ import type {
 } from '@shared/xiaogui-task-execution'
 
 import type { CollaborationHubApplicationV1 } from './application'
-import type { StageAttemptExecutionInputV1 } from './attempt-execution-input'
+import type {
+  AttemptWorktreeAuthorizationV2,
+  StageAttemptExecutionInputV1,
+  StageAttemptWorktreeExecutionInputV2,
+} from './attempt-execution-input'
 import type {
   AttemptFileGrantV1,
   AttemptFileManifestV1,
@@ -69,6 +73,7 @@ interface ExecutionSagaRowV1 {
   input_digest: string
   prompt_blob: Uint8Array | null
   grants_json: string | null
+  authorization_json: string | null
   phase: ExecutionSagaPhaseV1
   task_run_id: TaskRunId | null
   attempt_id: AttemptId | null
@@ -86,6 +91,16 @@ interface CanonicalExecutionInputV1 {
   readonly inputDigest: string
 }
 
+interface CanonicalAcceptedWorktreeInputV2 {
+  readonly version: 2
+  readonly address: HubAddressV1
+  readonly flowId: FlowId
+  readonly targetTaskRunId?: TaskRunId
+  readonly prompt: string
+  readonly authorization: AttemptWorktreeAuthorizationV2
+  readonly inputDigest: string
+}
+
 interface CanonicalBatchExecutionInputV1 {
   readonly address: HubAddressV1
   readonly flowId: FlowId
@@ -94,6 +109,7 @@ interface CanonicalBatchExecutionInputV1 {
 
 export interface TaskExecutionInputStageV1 {
   stageAttemptInput(input: StageAttemptExecutionInputV1): unknown
+  stageAttemptWorktreeInput?(input: StageAttemptWorktreeExecutionInputV2): unknown
 }
 
 export interface TaskExecutionPermissionPortV1 {
@@ -210,6 +226,40 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     }
     const outcome = this.startOnce(canonical.value)
     this.inFlight.set(key, { inputDigest: canonical.value.inputDigest, outcome })
+    try {
+      return await outcome
+    } finally {
+      if (this.inFlight.get(key)?.outcome === outcome) this.inFlight.delete(key)
+    }
+  }
+
+  /** Trusted Main seam for one persisted ATTEMPT_WORKTREE acceptance. */
+  async startAcceptedWorktreeV2(input: {
+    readonly address: HubAddressV1
+    readonly flowId: FlowId
+    readonly targetTaskRunId?: TaskRunId
+    readonly prompt: string
+    readonly authorization: AttemptWorktreeAuthorizationV2
+  }): Promise<XiaoguiTaskExecutionStartOutcomeV1> {
+    if (this.closed) return executionError('INTERNAL')
+    const canonical = canonicalAcceptedWorktreeInputV2(input)
+    if (!canonical) return executionError('EXECUTION_INPUT_INVALID')
+    const exact = this.saga.exactByInput(canonical.address, canonical.flowId, canonical.inputDigest)
+    if (exact?.phase === 'OUTCOME_UNKNOWN') return executionError('OUTCOME_UNKNOWN')
+    if (exact?.phase === 'FAILED') return executionError('WORKSPACE_PREPARATION_FAILED')
+    if (exact?.phase === 'SETTLED') {
+      if (!exact.attempt_id) return executionError('FLOW_NOT_READY')
+      const authority = await this.authority(exact)
+      return authority.ok ? { ok: true, value: authority.result } : authority.outcome
+    }
+    await this.recover()
+    const key = operationKey(canonical)
+    const running = this.inFlight.get(key)
+    if (running) return running.inputDigest === canonical.inputDigest
+      ? running.outcome
+      : executionError('EXECUTION_IN_PROGRESS')
+    const outcome = this.startAcceptedWorktreeOnceV2(canonical)
+    this.inFlight.set(key, { inputDigest: canonical.inputDigest, outcome })
     try {
       return await outcome
     } finally {
@@ -353,6 +403,40 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     return this.run(operation, false)
   }
 
+  private async startAcceptedWorktreeOnceV2(
+    input: CanonicalAcceptedWorktreeInputV2,
+  ): Promise<XiaoguiTaskExecutionStartOutcomeV1> {
+    const projection = await this.options.application.observeM2B(input.address)
+    if (!projection.ok) return executionError('SESSION_SCOPE_MISMATCH')
+    if (projection.value.activeFlow?.flowId !== input.flowId || projection.value.activeFlow.status !== 'PLAN_ACTIVE') {
+      return executionError('FLOW_NOT_READY')
+    }
+    const exact = this.saga.exactByInput(input.address, input.flowId, input.inputDigest)
+    if (exact) {
+      if (exact.phase === 'OUTCOME_UNKNOWN') return executionError('OUTCOME_UNKNOWN')
+      if (exact.phase === 'SETTLED' || exact.phase === 'FAILED') {
+        const authority = exact.attempt_id ? await this.authority(exact) : null
+        return authority?.ok ? { ok: true, value: authority.result }
+          : executionError(exact.phase === 'SETTLED' ? 'FLOW_NOT_READY' : 'WORKSPACE_PREPARATION_FAILED')
+      }
+      return this.run(exact, false)
+    }
+    if (this.saga.hasActiveFlow(input.address, input.flowId)) return executionError('EXECUTION_IN_PROGRESS')
+    let permissionModeSelection: CodingPermissionModeSelectionV1 | undefined
+    try {
+      permissionModeSelection = this.options.attemptPermissionModeGate?.captureSelection()
+    } catch {
+      return executionError('INTERNAL')
+    }
+    try {
+      return this.run(this.saga.acquireWorktreeV2(input, this.id('xhbe'), permissionModeSelection), false)
+    } catch (error) {
+      return error instanceof ActiveExecutionConflict
+        ? executionError('EXECUTION_IN_PROGRESS')
+        : executionError('INTERNAL')
+    }
+  }
+
   private settleFromAuthoritativeTerminal(
     operation: ExecutionSagaRowV1,
     projection: SessionCollaborationProjectionM2BV1,
@@ -433,6 +517,7 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
     }
 
     if (operation.phase === 'ACCEPTED') {
+      const worktreeAuthorization = privateWorktreeAuthorization(operation)
       const scheduled = await this.options.application.executeSystem({
         contractVersion: 'm2b.v1',
         address: addressOf(operation),
@@ -444,7 +529,9 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
           ...(operation.target_task_run_id
             ? { targetTaskRunId: operation.target_task_run_id }
             : {}),
-          authorizationScope: authorizationScope(privateGrants(operation)),
+          authorizationScope: worktreeAuthorization
+            ? worktreeSchedulingScope(operation.project_id)
+            : authorizationScope(privateGrants(operation)),
           executionInputDigest: operation.input_digest as TaskFileAuthorizationScopeV1['scopeDigest'],
         },
       })
@@ -472,13 +559,25 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       try {
         const stagedProjection = await this.options.application.observeM2B(addressOf(operation))
         if (!stagedProjection.ok) throw new Error('TASK_EXECUTION_PLAN_CONTEXT_MISSING')
-        this.options.inputStage.stageAttemptInput({
-          attemptId: operation.attempt_id,
-          projectId: operation.project_id,
-          sessionKey: operation.session_key,
-          promptBytes: composePrivateExecutionPrompt(operation, stagedProjection.value),
-          grants: privateGrants(operation),
-        })
+        const authorization = privateWorktreeAuthorization(operation)
+        if (authorization) {
+          if (!this.options.inputStage.stageAttemptWorktreeInput) throw new Error('ATTEMPT_WORKTREE_INPUT_STAGE_MISSING')
+          this.options.inputStage.stageAttemptWorktreeInput({
+            attemptId: operation.attempt_id,
+            projectId: operation.project_id,
+            sessionKey: operation.session_key,
+            promptBytes: composePrivateExecutionPrompt(operation, stagedProjection.value),
+            authorization,
+          })
+        } else {
+          this.options.inputStage.stageAttemptInput({
+            attemptId: operation.attempt_id,
+            projectId: operation.project_id,
+            sessionKey: operation.session_key,
+            promptBytes: composePrivateExecutionPrompt(operation, stagedProjection.value),
+            grants: privateGrants(operation),
+          })
+        }
       } catch {
         await this.closeWorkspaceFailure(operation)
         this.saga.advance(operation.operation_id, 'FAILED', { lastSafeCode: 'ATTEMPT_INPUT_STAGE_FAILED' })
@@ -514,7 +613,8 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       if (!operation.task_run_id || !operation.attempt_id) return executionError('INTERNAL')
       const taskRunId = operation.task_run_id
       const attemptId = operation.attempt_id
-      if (this.options.attemptPlanGate) {
+      const internallyAccepted = privateWorktreeAuthorization(operation) !== null
+      if (this.options.attemptPlanGate && !internallyAccepted) {
         const authority = await this.authority(operation)
         if (!authority.ok) return authority.outcome
         const projection = await this.options.application.observeM2B(addressOf(operation))
@@ -582,7 +682,7 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
           })
           return executionError('OUTCOME_UNKNOWN')
         }
-        if (this.options.attemptPlanGate) {
+        if (this.options.attemptPlanGate && !privateWorktreeAuthorization(operation)) {
           try {
             await this.options.attemptPlanGate.markAttemptExecutionDispatchFailed(attemptId)
           } catch {
@@ -1072,7 +1172,7 @@ class SqliteTaskExecutionSagaStoreV1 {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
-               prompt_blob, grants_json, phase, task_run_id, attempt_id,
+               prompt_blob, grants_json, authorization_json, phase, task_run_id, attempt_id,
                permission_mode, permission_policy_digest, last_safe_code
           from task_execution_sagas
          where project_id = ? and session_key = ? and flow_id = ? and input_digest = ?
@@ -1082,11 +1182,22 @@ class SqliteTaskExecutionSagaStoreV1 {
       .get(address.projectId, address.sessionKey, flowId, inputDigest) as ExecutionSagaRowV1 | undefined
   }
 
+  exactByInput(address: HubAddressV1, flowId: FlowId, inputDigest: string): ExecutionSagaRowV1 | undefined {
+    return this.db.prepare(`
+      select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
+             prompt_blob, grants_json, authorization_json, phase, task_run_id, attempt_id,
+             permission_mode, permission_policy_digest, last_safe_code
+        from task_execution_sagas
+       where project_id = ? and session_key = ? and flow_id = ? and input_digest = ?
+       order by rowid desc limit 1
+    `).get(address.projectId, address.sessionKey, flowId, inputDigest) as ExecutionSagaRowV1 | undefined
+  }
+
   activeOperations(): ExecutionSagaRowV1[] {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
-               prompt_blob, grants_json, phase, task_run_id, attempt_id,
+               prompt_blob, grants_json, authorization_json, phase, task_run_id, attempt_id,
                permission_mode, permission_policy_digest, last_safe_code
           from task_execution_sagas
          where phase not in ('FAILED', 'SETTLED')
@@ -1110,7 +1221,7 @@ class SqliteTaskExecutionSagaStoreV1 {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
-               prompt_blob, grants_json, phase, task_run_id, attempt_id,
+               prompt_blob, grants_json, authorization_json, phase, task_run_id, attempt_id,
                permission_mode, permission_policy_digest, last_safe_code
           from task_execution_sagas where operation_id = ?
       `)
@@ -1121,7 +1232,7 @@ class SqliteTaskExecutionSagaStoreV1 {
     return this.db
       .prepare(`
         select operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
-               prompt_blob, grants_json, phase, task_run_id, attempt_id,
+               prompt_blob, grants_json, authorization_json, phase, task_run_id, attempt_id,
                permission_mode, permission_policy_digest, last_safe_code
           from task_execution_sagas
          where project_id = ? and session_key = ? and attempt_id = ?
@@ -1165,6 +1276,40 @@ class SqliteTaskExecutionSagaStoreV1 {
         permissionModeSelection?.policyDigest ?? null,
         now,
         now,
+      )
+      this.db.exec('commit')
+      return this.byId(operationId)!
+    } catch (error) {
+      rollbackQuietly(this.db)
+      throw error
+    }
+  }
+
+  acquireWorktreeV2(
+    input: CanonicalAcceptedWorktreeInputV2,
+    operationId: string,
+    permissionModeSelection?: CodingPermissionModeSelectionV1,
+  ): ExecutionSagaRowV1 {
+    this.db.exec('begin immediate')
+    try {
+      const existing = this.exactByInput(input.address, input.flowId, input.inputDigest)
+      if (existing) {
+        this.db.exec('commit')
+        return existing
+      }
+      if (this.hasActiveFlow(input.address, input.flowId)) throw new ActiveExecutionConflict()
+      const now = this.now()
+      this.db.prepare(`
+        insert into task_execution_sagas (
+          operation_id, project_id, session_key, flow_id, target_task_run_id, input_digest,
+          prompt_blob, grants_json, authorization_json, phase, task_run_id, attempt_id,
+          permission_mode, permission_policy_digest, last_safe_code, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, null, ?, 'ACCEPTED', null, null, ?, ?, null, ?, ?)
+      `).run(
+        operationId, input.address.projectId, input.address.sessionKey, input.flowId,
+        input.targetTaskRunId ?? null, input.inputDigest, Buffer.from(input.prompt, 'utf8'),
+        JSON.stringify(input.authorization), permissionModeSelection?.mode ?? null,
+        permissionModeSelection?.policyDigest ?? null, now, now,
       )
       this.db.exec('commit')
       return this.byId(operationId)!
@@ -1223,6 +1368,7 @@ class SqliteTaskExecutionSagaStoreV1 {
         input_digest text not null,
         prompt_blob blob,
         grants_json text,
+        authorization_json text,
         phase text not null,
         task_run_id text,
         attempt_id text,
@@ -1248,6 +1394,9 @@ class SqliteTaskExecutionSagaStoreV1 {
     }
     if (!columns.some((column) => column.name === 'permission_policy_digest')) {
       this.db.exec('alter table task_execution_sagas add column permission_policy_digest text')
+    }
+    if (!columns.some((column) => column.name === 'authorization_json')) {
+      this.db.exec('alter table task_execution_sagas add column authorization_json text')
     }
   }
 }
@@ -1475,7 +1624,8 @@ function composePrivateExecutionPrompt(
   if (!taskRun || !taskSpec) throw new Error('TASK_EXECUTION_PLAN_CONTEXT_MISSING')
 
   const userPrompt = privatePrompt(operation).toString('utf8')
-  const grants = privateGrants(operation)
+  const worktreeAuthorization = privateWorktreeAuthorization(operation)
+  const grants = worktreeAuthorization ? [] : privateGrants(operation)
   const approvedFiles = grants.map((grant) => (
     `- ${grant.operation === 'MODIFY' ? '修改' : '新建'}：${JSON.stringify(grant.relativePath)}`
   ))
@@ -1487,13 +1637,16 @@ function composePrivateExecutionPrompt(
     ...(taskSpec.summary ? [`任务说明：${taskSpec.summary}`] : []),
     `用户补充指令：${userPrompt}`,
     '',
-    '已批准的文件范围（相对路径以当前任务工作树根目录为基准）：',
-    ...approvedFiles,
+    ...(worktreeAuthorization
+      ? ['已批准在当前任务的隔离工作树内执行正常文件读写；所有实际改动由 Main 捕获和审计。']
+      : ['已批准的文件范围（相对路径以当前任务工作树根目录为基准）：', ...approvedFiles]),
     '',
     '执行要求：',
     '1. 请实际完成文件修改，不要只回复说明、建议或计划。',
     '2. 使用当前模式已提供的工具完成任务；工具产物仍须经过当前任务的授权和验证。',
-    '3. 只能修改或新建上面列出的文件，不得删除文件，也不得操作清单外文件。',
+    worktreeAuthorization
+      ? '3. 只能操作当前任务工作树内的项目文件；不得越过工作树根目录或操作 .git。'
+      : '3. 只能修改或新建上面列出的文件，不得删除文件，也不得操作清单外文件。',
     '4. 不得调用终端命令，不得启动子智能体。',
     '5. 保持现有项目结构和未要求改变的行为；完成写入后结束本次任务。',
   ].join('\n')
@@ -1507,6 +1660,23 @@ function composePrivateExecutionPrompt(
 function privateGrants(operation: ExecutionSagaRowV1): readonly AttemptFileGrantV1[] {
   if (!operation.grants_json) throw new Error('TASK_EXECUTION_PRIVATE_INPUT_MISSING')
   return JSON.parse(operation.grants_json) as readonly AttemptFileGrantV1[]
+}
+
+function privateWorktreeAuthorization(operation: ExecutionSagaRowV1): AttemptWorktreeAuthorizationV2 | null {
+  if (!operation.authorization_json) return null
+  const value = JSON.parse(operation.authorization_json) as AttemptWorktreeAuthorizationV2
+  if (
+    value.version !== 2 || value.mode !== 'ATTEMPT_WORKTREE' ||
+    value.projectId !== operation.project_id || value.sessionKey !== operation.session_key ||
+    digestJson({
+      version: 2,
+      mode: 'ATTEMPT_WORKTREE',
+      projectId: value.projectId,
+      sessionKey: value.sessionKey,
+      acceptance: value.acceptance,
+    }) !== value.authorizationDigest
+  ) throw new Error('TASK_EXECUTION_WORKTREE_AUTHORIZATION_CORRUPT')
+  return value
 }
 
 function assertPermissionEventScope(
@@ -1619,14 +1789,62 @@ function flowKey(address: HubAddressV1, flowId: FlowId): string {
   return `${address.projectId}:${address.sessionKey}:${flowId}`
 }
 
-function operationKey(input: CanonicalExecutionInputV1): string {
+function operationKey(input: CanonicalExecutionInputV1 | CanonicalAcceptedWorktreeInputV2): string {
   return `${flowKey(input.address, input.flowId)}:${input.inputDigest}`
+}
+
+function canonicalAcceptedWorktreeInputV2(input: {
+  readonly address: HubAddressV1
+  readonly flowId: FlowId
+  readonly targetTaskRunId?: TaskRunId
+  readonly prompt: string
+  readonly authorization: AttemptWorktreeAuthorizationV2
+}): CanonicalAcceptedWorktreeInputV2 | null {
+  const authorization = input.authorization
+  if (
+    !input.prompt || Buffer.byteLength(input.prompt, 'utf8') > PRIVATE_RUNTIME_PAYLOAD_MAX_BYTES ||
+    authorization.version !== 2 || authorization.mode !== 'ATTEMPT_WORKTREE' ||
+    authorization.projectId !== input.address.projectId || authorization.sessionKey !== input.address.sessionKey ||
+    digestJson({
+      version: 2,
+      mode: 'ATTEMPT_WORKTREE',
+      projectId: authorization.projectId,
+      sessionKey: authorization.sessionKey,
+      acceptance: authorization.acceptance,
+    }) !== authorization.authorizationDigest
+  ) return null
+  return {
+    version: 2,
+    address: input.address,
+    flowId: input.flowId,
+    ...(input.targetTaskRunId ? { targetTaskRunId: input.targetTaskRunId } : {}),
+    prompt: input.prompt,
+    authorization,
+    inputDigest: digestJson({
+      version: 2,
+      address: input.address,
+      flowId: input.flowId,
+      targetTaskRunId: input.targetTaskRunId ?? null,
+      promptDigest: digestBytes(Buffer.from(input.prompt, 'utf8')),
+      authorizationDigest: authorization.authorizationDigest,
+    }),
+  }
 }
 
 function authorizationScope(grants: readonly AttemptFileGrantV1[]): TaskFileAuthorizationScopeV1 {
   const pathTokens = grants
     .map((grant) => `sha256:${hashHex(`task-file-scope-v1:${grant.relativePath.toLowerCase()}`)}` as TaskFileAuthorizationScopeV1['pathTokens'][number])
     .sort()
+  const base = { version: 1 as const, pathTokens }
+  return { ...base, scopeDigest: digestJson(base) as TaskFileAuthorizationScopeV1['scopeDigest'] }
+}
+
+function worktreeSchedulingScope(projectId: HubAddressV1['projectId']): TaskFileAuthorizationScopeV1 {
+  // Scheduling scope is only a same-project concurrency token. File authority
+  // remains the independently persisted ATTEMPT_WORKTREE authorization.
+  const pathTokens = [
+    `sha256:${hashHex(`task-worktree-scope-v2:${projectId}`)}` as TaskFileAuthorizationScopeV1['pathTokens'][number],
+  ]
   const base = { version: 1 as const, pathTokens }
   return { ...base, scopeDigest: digestJson(base) as TaskFileAuthorizationScopeV1['scopeDigest'] }
 }

@@ -16,7 +16,11 @@ import type {
   AttemptWorkspacePortV1,
   AttemptWorkspacePrepareRequestV1,
 } from "./attempt-workspace";
-import { AttemptExecutionInputStoreV1 } from "./attempt-execution-input";
+import {
+  AttemptExecutionInputStoreV1,
+  attemptWorktreeAuthorizationDigestV2,
+  type AttemptWorktreeAuthorizationV2,
+} from "./attempt-execution-input";
 import {
   PrivateRuntimePayloadVaultV1,
   digestBytes,
@@ -30,6 +34,46 @@ afterEach(() => {
 });
 
 describe("AttemptExecutionInputStoreV1", () => {
+  it("stores ATTEMPT_WORKTREE V2 explicitly and never infers it from V1 grants", () => {
+    const fixture = createFixture();
+    try {
+      const base = {
+        version: 2 as const,
+        mode: "ATTEMPT_WORKTREE" as const,
+        projectId: ADDRESS.projectId,
+        sessionKey: ADDRESS.sessionKey,
+        acceptance: {
+          requestId: "accept-request-1",
+          assignmentId: "assignment-1",
+          taskId: "task-1",
+          taskContentDigest: `sha256:${"a".repeat(64)}`,
+          targetProjectIdentity: `sha256:${"b".repeat(64)}`,
+          baselineSourceDigest: `sha256:${"c".repeat(64)}`,
+        },
+      };
+      const authorization: AttemptWorktreeAuthorizationV2 = {
+        ...base,
+        authorizationDigest: attemptWorktreeAuthorizationDigestV2(base),
+      };
+      const first = fixture.store.stageWorktree({
+        attemptId: ATTEMPT_ID, projectId: ADDRESS.projectId, sessionKey: ADDRESS.sessionKey,
+        promptBytes: "worktree task", authorization,
+      });
+      expect(first).toMatchObject({ inputVersion: 2, grants: [], authorization });
+      expect(fixture.store.bridge.isWorktreeAuthorized?.(ATTEMPT_ID)).toBe(true);
+      expect(() => fixture.store.stage({
+        attemptId: ATTEMPT_ID, projectId: ADDRESS.projectId, sessionKey: ADDRESS.sessionKey,
+        promptBytes: "worktree task", grants: [{ operation: "CREATE", relativePath: "src/a.ts" }],
+      })).toThrow(expect.objectContaining({ reasonCode: "ATTEMPT_INPUT_CONFLICT" }));
+      expect(() => fixture.store.stageWorktree({
+        attemptId: OTHER_ATTEMPT_ID, projectId: ADDRESS.projectId, sessionKey: ADDRESS.sessionKey,
+        promptBytes: "bad", authorization: { ...authorization, authorizationDigest: `sha256:${"d".repeat(64)}` },
+      })).toThrow(expect.objectContaining({ reasonCode: "ATTEMPT_INPUT_INVALID" }));
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("stages one canonical input idempotently and rejects prompt, grant, or DELETE drift", () => {
     const fixture = createFixture();
     try {

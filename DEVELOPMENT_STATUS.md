@@ -1,5 +1,44 @@
 # 小规开发阶段状态
 
+## 2026-09-15｜一次接纳 Main／工作树／真实 capture 接缝（阶段候选，待主管验收）
+
+- 接续已验收 `aaa62c69eebddf653f3c1bdc25423b0cf2515459`：本地/上游/live 远端一致，开工 clean，保护 stash 完整。HANDOFF 顶部主管确认 Standards/Spec APPROVE、P2关闭；保留全部旧切片证据，不重跑未受影响用例。
+- 已先更新 `doc/runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md` 顶部本批范围、所有权、依赖及完成判据。Astra 主任务审查/集成；三个实际 `gpt-5.6-sol` 子任务分别实施 worker 接纳持久步骤、Attempt 工作树授权/真实 V2 capture、现有 Saga/Main 接线。没有声称切换到未调用模型。
+- 本批按原方案第 1 门交剩余关键接缝候选，先以受信 Main 和合成 Git/临时 SQLite 验证，不启用默认 UI/IPC。第 2 门再同步替换生产 UI/Main、接未结算两轮修正及自动 Delivery。检查点会话登记仍未修；普通 CODING、命令/外传策略及阶段只读边界保持。
+- 增量回收：接纳层 7 项通过（初始 3、恢复新增 3、身份新增 1），输入存储 5 项通过，V2 工作树 2 项通过/27 跳过。日志集中在 `D:/CodexTemp/hub-runtime-01-single-accept-spike-20260915/next-wiring`，根任务已读取原日志。工作树两项使用真实 Git/字节和注入来源解析器；DERIVED 证明不可变 commit 字节与来源缺失拒绝，不能称完整 Main 派生缓存旅程。此为中途回收；最终组合与类型结果见下节，仍不代表完整一次接纳通过。
+- 过程偏差：Sol B 曾误启动两次超范围旧套件，分别为 input+workspace 整套（session 70649）与 workspace 整套（session 97076）；约60秒无新增输出后 Ctrl-C，工具回执确认结束，无测试结论且未留原日志。此两次不计通过、不再重跑；随后收敛为上述新 V2 定向用例。
+- 未安装、未运行外部模型/原业务、未业务 Apply、未改原 profile/数据库/项目/节点/stash。用户人工转交的15分钟增量heartbeat规范已接收；再查仍无automation接口，实际未启用且无ID，不旁路替代。主会话仅可核验系统标识GPT-6，精确型号未暴露，未声称已切换；三个子任务均实际指定gpt-5.6-sol。
+
+### 本批最终回收
+
+7个生产文件、4个测试文件、2份阶段文档；实际文件列表与行为见CLOSEOUT顶部“本批回收结果”。接纳成功结果与localPlanDraft原子同次persist；V2 Saga继续既有dispatch，不永久停PREPARED；旧V1计划/角色门仍有效。没有UI/IPC/default worker composition接线，没有新模型配置或Agent Loop。
+
+最终 `single-accept-main-seam.test.ts` 使用现有Scripted Adapter显式装配真实Main组件，1 passed（`sol-a-explicit-main-seam-final.log`，11:42:50，11.19s）；真实Attempt发生MODIFY/CREATE/DELETE+CREATE，再由真实capture交ComposerV2。QA/TaskChangeSet外壳是合成输入，不是生产验证通过，不是自动Delivery完成；无真实模型/Pi工具旅程或业务Apply。UNKNOWN注入合成Saga，重放无新Saga。
+
+接纳层初始3项、恢复新增3项、身份新增1项，最后localPlan定向2项/6跳过（其中重跑1项直接受影响已有case）；日志依次为 `sol-a-focused.log`、`sol-a-recovery-focused.log`、`sol-a-identity-focused.log`、`sol-a-plan-binding-focused.log`。最终组合已覆盖原子同次persist改动。Input 5项日志 `attempt-input-v2-focused.log`；workspace 2项/27跳过日志 `workspace-v2-focused.log`，包含PROJECT真实效果/边界与DERIVED不可变字节、来源缺失拒绝。DERIVED此项注入来源resolver，不称完整Main派生缓存恢复。
+
+Node最终 `npx tsc -p tsconfig.node.json --noEmit` exit0（14.24s）；Web `npx tsc -p tsconfig.web.json --noEmit` exit0（后续无Web变化，复用）。全部变化TS定向eslint及diff-check通过。类型与部分lint、V1两case未单独保留原日志，结果按Sol工具退出码回执登记，不补造或为日志重跑。
+
+本批必要命令（当前隔离工作树）：
+
+```powershell
+npx vitest run src/main/xiaogui/hub-task/worker-accept-execute-v2.test.ts -t "persists trusted binding|existing different local plan" --maxWorkers=1 --fileParallelism=false
+npx vitest run src/main/xiaogui/task-hub/single-accept-main-seam.test.ts --maxWorkers=1 --fileParallelism=false
+npm exec vitest -- run src/main/xiaogui/task-hub/attempt-execution-input.test.ts --maxWorkers=1 --fileParallelism=false
+npm exec vitest -- run src/main/xiaogui/task-hub/attempt-workspace.test.ts -t "ATTEMPT_WORKTREE V2|DERIVED V2" --maxWorkers=1 --fileParallelism=false
+npx vitest run src/main/xiaogui/task-hub/execution-orchestrator.test.ts -t "keeps a prepared Attempt read-only until its exact execution plan is approved|keeps an approved prepared Attempt in READY until an executable role snapshot exists" --maxWorkers=1 --fileParallelism=false
+npx tsc -p tsconfig.node.json --noEmit
+npx tsc -p tsconfig.web.json --noEmit
+npx eslint src/main/xiaogui/hub-task/worker-service.ts src/main/xiaogui/hub-task/worker-state.ts src/main/xiaogui/hub-task/worker-accept-execute-v2.test.ts src/main/xiaogui/task-hub/single-accept-main-seam.test.ts
+npx eslint src/main/xiaogui/task-hub/attempt-workspace.ts src/main/xiaogui/task-hub/attempt-execution-input.ts src/main/xiaogui/task-hub/attempt-workspace.test.ts src/main/xiaogui/task-hub/attempt-execution-input.test.ts
+npx eslint src/main/xiaogui/task-hub/application.ts src/main/xiaogui/task-hub/execution-orchestrator.ts src/main/xiaogui/task-hub/runtime-composition.ts
+git diff --check
+```
+
+早期组合配置曾错误使用固定Pi的composition，通过永久PREPARED返回绕过派发；root否决后删除，改为上述显式Scripted装配。其早期通过不算最终旅程。期间rename metadata误断言失败、UNKNOWN恢复等待后Ctrl-C中止均不算通过；未保存的早期原日志不补造。默认生产入口、Pi工具权限消费、V2完整verification/自动Delivery和两轮未结算修正仍待下一门，当前检查点缺口仍未修。
+
+本批完成后追加提交并推送当前隔离分支，交完整SHA停在桌面主管验收门；不是主线、发布、安装或业务运行批准。Heartbeat从未启用（接口不存在、无ID），子任务已回收并停止新增工作，无后台轮询。
+
 ## 2026-09-15｜首切片P2回归返修：V1有序操作（已修，待主管复验）
 
 - 主管暂不通过 `6e08e7e76db86491389b8afa8369c913a7a06bbd`：共享integration去重错误地将V2净效果规则用于V1，既有MODIFY→MODIFY与CREATE→MODIFY两case失败。此项是本切片引入的回归，不归咎旧测试；此前21项和增量2项没有覆盖这两个直接消费者。

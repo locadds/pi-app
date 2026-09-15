@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   unlinkSync,
@@ -16,6 +17,7 @@ import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 
 
 import type { AttemptId, WorkspacePreparedReceiptM2BV1, WorkspaceReceiptId } from '@shared/xiaogui-collaboration-hub'
 import type { RuntimeWorkspaceBindingV1 } from '@shared/xiaogui-agent-runtime'
+import type { AttemptWorktreeAuthorizationV2 } from './attempt-execution-input'
 
 export type AttemptFileOperationV1 = 'MODIFY' | 'CREATE' | 'DELETE'
 export type CreateBatchStateV1 = 'PENDING' | 'COMMITTED' | 'ROLLED_BACK'
@@ -83,7 +85,7 @@ export interface AttemptWorkspaceBaselineSourceBindingV1 {
 export interface AttemptWorkspaceBaselineSourceResolverV1 {
   /** Return null when Main has no exact, trusted source proof for this Attempt. */
   resolve(input: {
-    readonly request: AttemptWorkspacePrepareRequestV1
+    readonly request: AttemptWorkspacePrepareRequestV1 | AttemptWorkspacePrepareRequestV2
     readonly grants: readonly AttemptFileGrantV1[]
   }): AttemptWorkspaceBaselineSourceBindingV1 | null
 }
@@ -133,6 +135,52 @@ export interface AttemptWorkspacePreparedV1 {
   readonly handle: AttemptWorktreeHandleV1
   readonly manifest: AttemptFileManifestV1
   readonly allowedRelativePaths: readonly string[]
+}
+
+export interface AttemptWorkspacePreparedV2 {
+  readonly receipt: WorkspacePreparedReceiptM2BV1
+  readonly workspace: RuntimeWorkspaceBindingV1
+  readonly attemptWorktreeId: string
+  readonly rootPath: string
+  readonly authorization: AttemptWorkspaceAuthorizationBindingV2
+  readonly baselineLedger: AttemptBaselineLedgerV2
+}
+
+export interface AttemptWorkspacePrepareRequestV2 {
+  readonly attemptId: AttemptId | string
+  readonly compositionAttemptId: string
+  readonly requestDigest: string
+  readonly baselineBindingDigest: string
+  readonly compositionDigest: string
+  readonly projectId: string
+  readonly baseRevision: string
+  readonly baselineTreeHash: string
+  readonly authorization: AttemptWorktreeAuthorizationV2
+  readonly ownerId: string
+}
+
+export interface AttemptBaselineEntryV2 {
+  readonly relativePath: string
+  readonly gitMode: '100644' | '100755'
+  readonly contentDigest: string
+  readonly byteLength: number
+}
+
+export interface AttemptBaselineLedgerV2 {
+  readonly version: 2
+  readonly sourceBindingDigest: string
+  readonly entries: readonly AttemptBaselineEntryV2[]
+  readonly ledgerDigest: string
+}
+
+export interface AttemptWorkspaceAuthorizationBindingV2 {
+  readonly version: 2
+  readonly mode: 'ATTEMPT_WORKTREE'
+  readonly authorizationDigest: string
+  readonly sourceBindingDigest: string
+  readonly ledgerDigest: string
+  readonly targetProjectIdentity: string
+  readonly bindingDigest: string
 }
 
 export interface AttemptWorkspaceInspectionV1 {
@@ -307,6 +355,26 @@ export interface AttemptWorkspaceLeaseV1 {
   readonly attemptWorktreeId: string
   /** Main-process-only source proof frozen at first successful preparation. */
   readonly baselineSource?: AttemptWorkspaceBaselineSourceBindingV1
+  readonly worktreeAuthorization?: AttemptWorkspaceAuthorizationBindingV2
+  readonly baselineLedger?: AttemptBaselineLedgerV2
+  readonly worktreeRequest?: AttemptWorkspacePrepareRequestV2
+}
+
+export interface AttemptTaskPatchCaptureV2 {
+  readonly inputTreeHash: string
+  readonly resultTreeHash: string
+  readonly patchArtifactId: string
+  readonly patchArtifactDigest: string
+  readonly patchArtifactBytes: Uint8Array
+  readonly changedFiles: readonly TaskPatchFileSnapshotV2[]
+  readonly privateVerificationContext: {
+    readonly attemptWorktreeId: string
+    readonly worktreeRoot: string
+    readonly baseRevision: string
+    readonly baselineGitTreeOid: string
+    readonly authorizationDigest: string
+    readonly ledgerDigest: string
+  }
 }
 
 export interface AttemptWorkspaceRegistryV1 {
@@ -608,6 +676,7 @@ export class SqliteAttemptWorkspaceRegistryV1 implements AttemptWorkspaceRegistr
 
 export interface AttemptWorkspacePortV1 {
   prepare(request: AttemptWorkspacePrepareRequestV1): Promise<AttemptWorkspacePreparedV1>
+  prepareWorktree?(request: AttemptWorkspacePrepareRequestV2): Promise<AttemptWorkspacePreparedV2>
   runtimeAccess(attemptId: string): Promise<AttemptRuntimeWorkspaceAccessV1 | undefined>
   runtimeBinding(attemptId: string): Promise<RuntimeWorkspaceBindingV1 | undefined>
   manifest(attemptId: string): AttemptFileManifestV1 | undefined
@@ -630,6 +699,7 @@ export interface AttemptWorkspacePortV1 {
     attemptId: string,
     options?: { readonly allowNoApprovedChanges?: boolean },
   ): Promise<AttemptTaskPatchCaptureV1>
+  captureTaskPatchV2?(attemptId: string): Promise<AttemptTaskPatchCaptureV2>
 }
 
 export interface ProjectWorkspaceResolverV1 {
@@ -789,7 +859,70 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
     return result
   }
 
+  async prepareWorktree(request: AttemptWorkspacePrepareRequestV2): Promise<AttemptWorkspacePreparedV2> {
+    const attemptId = cleanId(request.attemptId)
+    const projectId = cleanId(request.projectId)
+    assertWorktreeAuthorizationRequest(request, attemptId, projectId)
+    assertCommitOid(request.baseRevision)
+    const repoRoot = safeRealpath(resolve(await this.resolver.resolveProjectRoot(projectId)), 'REPO_NOT_GIT')
+    assertGitRepository(repoRoot)
+    if (request.authorization.acceptance.targetProjectIdentity !== projectWorktreeIdentityV2(projectId, repoRoot)) {
+      throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    }
+    const baselineSource = await this.resolveBaselineSource(request, [])
+    if (request.authorization.acceptance.baselineSourceDigest !== `sha256:${baselineSource.source.baselineDigest}`) {
+      throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    }
+    await assertWorkspaceBaseline(repoRoot, request, baselineSource)
+    const managedRoot = this.managedRoot
+    const worktreeRoot = resolve(managedRoot, safeAttemptDirectoryName(attemptId))
+    const attemptWorktreeId = `xhbwt_${hashHex(attemptId).slice(0, 32)}`
+    if (!isInside(managedRoot, worktreeRoot)) throw new AttemptWorkspaceError('PATH_OUTSIDE_ROOT')
+    const existing = this.registry.getLease(attemptId)
+    if (existing) {
+      if (!existing.worktreeAuthorization || !existing.baselineLedger ||
+          existing.worktreeAuthorization.authorizationDigest !== request.authorization.authorizationDigest ||
+          existing.worktreeAuthorization.sourceBindingDigest !== baselineSource.bindingDigest) {
+        throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+      }
+      const realRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
+      await assertExistingWorktreeIdentity(realRoot, existing)
+      return buildPreparedWorktreeResult(request, existing, realRoot)
+    }
+    if (existsSync(worktreeRoot)) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+    const frozenBaseline = await buildAttemptBaselineLedgerV2(repoRoot, baselineSource)
+    await git(repoRoot, ['worktree', 'add', '--detach', worktreeRoot, request.baseRevision])
+    const realRoot = safeRealpath(worktreeRoot, 'WORKTREE_DRIFT')
+    await seedApprovedModifyBaselines(realRoot, request.baseRevision, frozenBaseline.baselines)
+    const baselineLedger = frozenBaseline.ledger
+    const bindingBase = {
+      version: 2 as const, mode: 'ATTEMPT_WORKTREE' as const,
+      authorizationDigest: request.authorization.authorizationDigest,
+      sourceBindingDigest: baselineSource.bindingDigest,
+      ledgerDigest: baselineLedger.ledgerDigest,
+      targetProjectIdentity: request.authorization.acceptance.targetProjectIdentity,
+    }
+    const worktreeAuthorization = { ...bindingBase, bindingDigest: digestJson(bindingBase) }
+    const lease: AttemptWorkspaceLeaseV1 = {
+      attemptId, requestConflictDigest: worktreePrepareConflictDigest(request), projectId,
+      projectRoot: repoRoot, managedRoot, worktreeRoot: realRoot,
+      baseRevision: request.baseRevision, baselineTreeHash: request.baselineTreeHash,
+      ownerId: request.ownerId, attemptWorktreeId, baselineSource,
+      worktreeAuthorization, baselineLedger, worktreeRequest: request,
+    }
+    this.registry.putLease(lease)
+    return buildPreparedWorktreeResult(request, lease, realRoot)
+  }
+
   async runtimeAccess(attemptId: string): Promise<AttemptRuntimeWorkspaceAccessV1 | undefined> {
+    const v2Lease = this.registry.getLease(attemptId)
+    if (v2Lease?.worktreeAuthorization) {
+      assertAcceptedProjectIdentityV2(v2Lease)
+      const rootPath = safeRealpath(v2Lease.worktreeRoot, 'WORKTREE_DRIFT')
+      await assertExistingWorktreeIdentity(rootPath, v2Lease)
+      assertV2LeaseIntegrity(v2Lease)
+      return { workspace: runtimeWorkspaceBinding(v2Lease), rootPath, allowedFiles: [] }
+    }
     const manifest = this.registry.getManifest(attemptId)
     if (!manifest) return undefined
     const prepared = await this.validateCurrentWorkspace(attemptId, manifest)
@@ -840,7 +973,7 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
   }
 
   private async resolveBaselineSource(
-    request: AttemptWorkspacePrepareRequestV1,
+    request: AttemptWorkspacePrepareRequestV1 | AttemptWorkspacePrepareRequestV2,
     grants: readonly AttemptFileGrantV1[],
   ): Promise<AttemptWorkspaceBaselineSourceBindingV1> {
     if (!this.baselineSourceResolver) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISSING')
@@ -988,6 +1121,19 @@ export class GitAttemptWorkspaceServiceV1 implements AttemptWorkspacePortV1, Att
         manifestVersion: manifest.version,
       },
     }
+  }
+
+  async captureTaskPatchV2(attemptId: string): Promise<AttemptTaskPatchCaptureV2> {
+    const cleanAttemptId = cleanId(attemptId)
+    const lease = this.registry.getLease(cleanAttemptId)
+    if (!lease?.worktreeRequest || !lease.baselineSource || !lease.baselineLedger) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+    assertV2LeaseIntegrity(lease)
+    const source = await this.resolveBaselineSource(lease.worktreeRequest, [])
+    if (!sameBaselineSource(source, lease.baselineSource)) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    await assertWorkspaceBaseline(lease.projectRoot, lease.worktreeRequest, source)
+    const rebuilt = await buildAttemptBaselineLedgerV2(lease.projectRoot, source)
+    if (JSON.stringify(rebuilt.ledger) !== JSON.stringify(lease.baselineLedger)) throw new AttemptWorkspaceError('BASELINE_SOURCE_MISMATCH')
+    return captureTaskPatchV2FromLease(this.registry, cleanAttemptId)
   }
 
   requestScopeExpansion(input: {
@@ -1625,7 +1771,7 @@ async function assertBaseTree(repoRoot: string, baseRevision: string, expectedTr
 
 async function assertWorkspaceBaseline(
   repoRoot: string,
-  request: AttemptWorkspacePrepareRequestV1,
+  request: AttemptWorkspacePrepareRequestV1 | AttemptWorkspacePrepareRequestV2,
   source: AttemptWorkspaceBaselineSourceBindingV1,
 ): Promise<void> {
   // Main's source checkout is authoritative even when the effective task
@@ -1639,7 +1785,7 @@ async function assertWorkspaceBaseline(
 }
 
 function assertBaselineSourceBinding(
-  request: AttemptWorkspacePrepareRequestV1,
+  request: AttemptWorkspacePrepareRequestV1 | AttemptWorkspacePrepareRequestV2,
   grants: readonly AttemptFileGrantV1[],
   source: AttemptWorkspaceBaselineSourceBindingV1,
 ): void {
@@ -1952,6 +2098,205 @@ function manifestHasCreateTarget(manifest: AttemptFileManifestV1, target: Create
 
 function pathKey(value: string): string {
   return process.platform === 'win32' ? value.toLowerCase() : value
+}
+
+function assertWorktreeAuthorizationRequest(request: AttemptWorkspacePrepareRequestV2, attemptId: string, projectId: string): void {
+  const authorization = request.authorization
+  if (authorization.version !== 2 || authorization.mode !== 'ATTEMPT_WORKTREE' ||
+      authorization.projectId !== projectId || authorization.sessionKey.trim() === '' ||
+      request.attemptId !== attemptId) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+}
+
+function worktreePrepareConflictDigest(request: AttemptWorkspacePrepareRequestV2): string {
+  return digestJson({
+    version: 2, attemptId: String(request.attemptId), compositionAttemptId: request.compositionAttemptId,
+    requestDigest: request.requestDigest, baselineBindingDigest: request.baselineBindingDigest,
+    compositionDigest: request.compositionDigest, projectId: request.projectId,
+    baseRevision: request.baseRevision, baselineTreeHash: request.baselineTreeHash,
+    authorization: request.authorization, ownerId: request.ownerId,
+  })
+}
+
+function runtimeWorkspaceBinding(lease: AttemptWorkspaceLeaseV1): RuntimeWorkspaceBindingV1 {
+  return {
+    attemptWorktreeId: lease.attemptWorktreeId,
+    worktreeRootDigest: digestString(lease.worktreeRoot),
+    baseRevisionDigest: digestString(lease.baseRevision),
+    targetProjectRootDigest: digestString(lease.projectRoot),
+    writePolicy: 'ATTEMPT_WORKTREE_ONLY',
+  }
+}
+
+function buildPreparedWorktreeResult(
+  request: AttemptWorkspacePrepareRequestV2,
+  lease: AttemptWorkspaceLeaseV1,
+  rootPath: string,
+): AttemptWorkspacePreparedV2 {
+  if (!lease.worktreeAuthorization || !lease.baselineLedger ||
+      lease.requestConflictDigest !== worktreePrepareConflictDigest(request) ||
+      lease.worktreeAuthorization.bindingDigest !== digestJson({
+        version: 2, mode: 'ATTEMPT_WORKTREE',
+        authorizationDigest: lease.worktreeAuthorization.authorizationDigest,
+        sourceBindingDigest: lease.worktreeAuthorization.sourceBindingDigest,
+        ledgerDigest: lease.worktreeAuthorization.ledgerDigest,
+        targetProjectIdentity: lease.worktreeAuthorization.targetProjectIdentity,
+      }) || lease.baselineLedger.ledgerDigest !== digestJson({
+        version: 2, sourceBindingDigest: lease.baselineLedger.sourceBindingDigest,
+        entries: lease.baselineLedger.entries,
+      })) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+  const workspace = runtimeWorkspaceBinding(lease)
+  const receiptBinding = {
+    compositionAttemptId: request.compositionAttemptId, attemptId: String(request.attemptId) as AttemptId,
+    requestDigest: request.requestDigest, baselineBindingDigest: request.baselineBindingDigest,
+    compositionDigest: request.compositionDigest,
+  }
+  return {
+    receipt: {
+      status: 'PREPARED', workspaceReceiptId: `xhbw_${hashHex(`${request.attemptId}:${lease.worktreeAuthorization.bindingDigest}`).slice(0, 32)}` as WorkspaceReceiptId,
+      receiptDigest: digestJson({ ...receiptBinding, workspace, authorizationBindingDigest: lease.worktreeAuthorization.bindingDigest }),
+      ...receiptBinding,
+    },
+    workspace, attemptWorktreeId: lease.attemptWorktreeId, rootPath,
+    authorization: lease.worktreeAuthorization, baselineLedger: lease.baselineLedger,
+  }
+}
+
+function assertV2LeaseIntegrity(lease: AttemptWorkspaceLeaseV1): void {
+  if (!lease.worktreeRequest || !lease.worktreeAuthorization || !lease.baselineLedger) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+  buildPreparedWorktreeResult(lease.worktreeRequest, lease, lease.worktreeRoot)
+  if (lease.worktreeAuthorization.authorizationDigest !== lease.worktreeRequest.authorization.authorizationDigest ||
+      lease.worktreeAuthorization.sourceBindingDigest !== lease.baselineSource?.bindingDigest ||
+      lease.worktreeAuthorization.ledgerDigest !== lease.baselineLedger.ledgerDigest) {
+    throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+  }
+}
+
+async function buildAttemptBaselineLedgerV2(
+  repoRoot: string,
+  source: AttemptWorkspaceBaselineSourceBindingV1,
+): Promise<{ ledger: AttemptBaselineLedgerV2; baselines: readonly ApprovedModifyBaselineV1[] }> {
+  const output = (await git(repoRoot, ['ls-tree', '-r', '-z', source.task.baseRevision])).stdout
+  const entries: AttemptBaselineEntryV2[] = []
+  const baselines: ApprovedModifyBaselineV1[] = []
+  for (const record of output.split('\0')) {
+    if (!record) continue
+    const match = /^(\d{6})\s+[a-z]+\s+[0-9a-f]{40}\t(.+)$/.exec(record)
+    if (!match || (match[1] !== '100644' && match[1] !== '100755')) throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+    const relativePath = normalizeRelativePath(match[2])
+    const bytes = source.kind === 'PROJECT'
+      ? readStableTaskFile(resolveManifestPath(repoRoot, relativePath).realPath).bytes
+      : await gitBytes(repoRoot, ['show', `${source.task.baseRevision}:${relativePath}`])
+    const contentDigest = digestBytes(bytes)
+    entries.push({ relativePath, gitMode: match[1], contentDigest, byteLength: bytes.length })
+    baselines.push({ relativePath, baselineDigest: contentDigest, contentDigest, bytes })
+  }
+  entries.sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+  const base = { version: 2 as const, sourceBindingDigest: source.bindingDigest, entries }
+  return { ledger: { ...base, ledgerDigest: digestJson(base) }, baselines }
+}
+
+interface ScannedAttemptFileV2 extends AttemptBaselineEntryV2 { readonly bytes: Buffer }
+
+function scanAttemptWorktreeFilesV2(rootPath: string): readonly ScannedAttemptFileV2[] {
+  const result: ScannedAttemptFileV2[] = []
+  const visit = (directory: string, prefix: string): void => {
+    for (const item of readdirSync(directory, { withFileTypes: true })) {
+      if (prefix === '' && item.name === '.git') continue
+      if (item.name === '.git') throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+      const relativePath = normalizeRelativePath(prefix ? `${prefix}/${item.name}` : item.name)
+      const lexical = resolve(directory, item.name)
+      if (item.isSymbolicLink()) throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+      if (item.isDirectory()) {
+        const info = lstatSync(lexical, { bigint: true })
+        const realDirectory = safeRealpath(lexical, 'WORKTREE_DRIFT')
+        if (!info.isDirectory() || !isInside(rootPath, realDirectory) || pathKey(realDirectory) !== pathKey(lexical)) {
+          throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+        }
+        visit(realDirectory, relativePath)
+        continue
+      }
+      if (!item.isFile()) throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+      const realPath = resolveManifestPath(rootPath, relativePath).realPath
+      const stable = readStableTaskFile(realPath)
+      const stat = lstatSync(realPath, { bigint: true })
+      result.push({ relativePath, gitMode: (Number(stat.mode) & 0o111) ? '100755' : '100644',
+        contentDigest: stable.contentDigest, byteLength: stable.bytes.length, bytes: stable.bytes })
+    }
+  }
+  visit(rootPath, '')
+  result.sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+  const keys = new Set<string>()
+  for (const entry of result) {
+    const key = pathKey(entry.relativePath)
+    if (keys.has(key)) throw new AttemptWorkspaceError('PATH_CONFLICT')
+    keys.add(key)
+  }
+  return result
+}
+
+function sameScannedFilesV2(left: readonly ScannedAttemptFileV2[], right: readonly ScannedAttemptFileV2[]): boolean {
+  return left.length === right.length && left.every((entry, index) => {
+    const other = right[index]
+    return entry.relativePath === other.relativePath && entry.gitMode === other.gitMode &&
+      entry.contentDigest === other.contentDigest && entry.byteLength === other.byteLength
+  })
+}
+
+async function captureTaskPatchV2FromLease(
+  registry: AttemptWorkspaceRegistryV1,
+  attemptId: string,
+): Promise<AttemptTaskPatchCaptureV2> {
+  const lease = registry.getLease(attemptId)
+  if (!lease?.baselineSource || !lease.worktreeAuthorization || !lease.baselineLedger) throw new AttemptWorkspaceError('MANIFEST_CONFLICT')
+  assertAcceptedProjectIdentityV2(lease)
+  const rootPath = safeRealpath(lease.worktreeRoot, 'WORKTREE_DRIFT')
+  await assertExistingWorktreeIdentity(rootPath, lease)
+  const staged = await git(rootPath, ['diff', '--cached', '--name-only'])
+  if (staged.stdout.trim() !== '') throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+  const modeSummary = await git(rootPath, ['diff', '--summary'])
+  if (/mode change/i.test(modeSummary.stdout)) throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+  const before = scanAttemptWorktreeFilesV2(rootPath)
+  const baseline = new Map(lease.baselineLedger.entries.map((entry) => [pathKey(entry.relativePath), entry]))
+  const current = new Map(before.map((entry) => [pathKey(entry.relativePath), entry]))
+  const changed: TaskPatchFileSnapshotV2[] = []
+  for (const entry of lease.baselineLedger.entries) {
+    const now = current.get(pathKey(entry.relativePath))
+    if (now && now.relativePath !== entry.relativePath) throw new AttemptWorkspaceError('PATH_CONFLICT')
+    if (!now) changed.push({ operation: 'DELETE', relativePath: entry.relativePath, baselineDigest: entry.contentDigest, contentDigest: null })
+    else if (now.contentDigest !== entry.contentDigest) changed.push({ operation: 'MODIFY', relativePath: entry.relativePath,
+      baselineDigest: entry.contentDigest, contentDigest: now.contentDigest, contentBase64: now.bytes.toString('base64') })
+    else if (now.gitMode !== entry.gitMode) throw new AttemptWorkspaceError('PATH_FORBIDDEN')
+  }
+  for (const entry of before) if (!baseline.has(pathKey(entry.relativePath))) changed.push({ operation: 'CREATE',
+    relativePath: entry.relativePath, baselineDigest: null, contentDigest: entry.contentDigest, contentBase64: entry.bytes.toString('base64') })
+  if (changed.length === 0) throw new AttemptWorkspaceError('NO_APPROVED_CHANGES')
+  const canonicalFiles = [...changed].sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+  const inputTreeHash = digestJson({ kind: 'GIT_TREE_INPUT_V2', gitTreeOid: lease.baselineTreeHash, ledgerDigest: lease.baselineLedger.ledgerDigest })
+  const resultTreeHash = digestJson({ kind: 'TASK_RESULT_TREE_V2', inputTreeHash, files: canonicalFiles })
+  const patchArtifactBytes = Buffer.from(JSON.stringify({ kind: 'TASK_PATCH_V2', version: 2, files: canonicalFiles } satisfies TaskPatchArtifactV2), 'utf8')
+  const patchArtifactDigest = digestBytes(patchArtifactBytes)
+  if (!sameScannedFilesV2(before, scanAttemptWorktreeFilesV2(rootPath))) throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+  await assertExistingWorktreeIdentity(rootPath, lease)
+  return { inputTreeHash, resultTreeHash, patchArtifactId: `xhart_${patchArtifactDigest.slice(7, 39)}`,
+    patchArtifactDigest, patchArtifactBytes, changedFiles: canonicalFiles,
+    privateVerificationContext: { attemptWorktreeId: lease.attemptWorktreeId, worktreeRoot: rootPath,
+      baseRevision: lease.baseRevision, baselineGitTreeOid: lease.baselineTreeHash,
+      authorizationDigest: lease.worktreeAuthorization.authorizationDigest, ledgerDigest: lease.baselineLedger.ledgerDigest } }
+}
+
+
+export function projectWorktreeIdentityV2(projectId: string, projectRoot: string): string {
+  const realPath = safeRealpath(resolve(projectRoot), 'REPO_NOT_GIT')
+  const stat = lstatSync(realPath, { bigint: true })
+  if (!stat.isDirectory()) throw new AttemptWorkspaceError('REPO_NOT_GIT')
+  return digestJson({ version: 2, projectId: cleanId(projectId), realPath: pathKey(realPath), dev: String(stat.dev), ino: String(stat.ino) })
+}
+
+function assertAcceptedProjectIdentityV2(lease: AttemptWorkspaceLeaseV1): void {
+  if (!lease.worktreeAuthorization ||
+      lease.worktreeAuthorization.targetProjectIdentity !== projectWorktreeIdentityV2(lease.projectId, lease.projectRoot)) {
+    throw new AttemptWorkspaceError('WORKTREE_DRIFT')
+  }
 }
 
 export function digestBytes(bytes: Uint8Array | string): string {

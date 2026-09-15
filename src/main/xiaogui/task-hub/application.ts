@@ -118,6 +118,8 @@ export interface ExecutionWorkspaceBridgeV1 {
   runtimeWorkspace(
     attemptId: AttemptId,
   ): RuntimeWorkspaceBindingV1 | undefined | Promise<RuntimeWorkspaceBindingV1 | undefined>
+  /** Main-owned proof that this Attempt uses the persisted V2 worktree authorization. */
+  isWorktreeAuthorized?(attemptId: AttemptId): boolean
 }
 
 export interface RuntimePromptVaultV1 {
@@ -1199,7 +1201,8 @@ export class SqliteCollaborationHubApplicationV1 implements CollaborationHubAppl
     if (!bridgedWorkspace || !bridgedPromptRef) {
       throw new Error('RUNTIME_PRIVATE_BINDING_MISSING')
     }
-    if (this.options.attemptRoleProvider && !codingRole) {
+    const worktreeAuthorized = this.options.workspaceBridge?.isWorktreeAuthorized?.(request.intent.attemptId) === true
+    if (this.options.attemptRoleProvider && !codingRole && !worktreeAuthorized) {
       throw new Error('RUNTIME_ROLE_BINDING_MISSING')
     }
     return {

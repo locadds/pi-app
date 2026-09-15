@@ -49,6 +49,30 @@ export interface StageAttemptExecutionInputV1 {
   readonly grants: readonly AttemptFileGrantV1[];
 }
 
+export interface AttemptWorktreeAuthorizationV2 {
+  readonly version: 2;
+  readonly mode: "ATTEMPT_WORKTREE";
+  readonly projectId: HubAddressV1["projectId"];
+  readonly sessionKey: HubAddressV1["sessionKey"];
+  readonly acceptance: {
+    readonly requestId: string;
+    readonly assignmentId: string;
+    readonly taskId: string;
+    readonly taskContentDigest: string;
+    readonly targetProjectIdentity: string;
+    readonly baselineSourceDigest: string;
+  };
+  readonly authorizationDigest: string;
+}
+
+export interface StageAttemptWorktreeExecutionInputV2 {
+  readonly attemptId: AttemptId | string;
+  readonly projectId: HubAddressV1["projectId"];
+  readonly sessionKey: HubAddressV1["sessionKey"];
+  readonly promptBytes: Uint8Array | Buffer | string;
+  readonly authorization: AttemptWorktreeAuthorizationV2;
+}
+
 export interface ResolvedAttemptExecutionInputV1 {
   readonly attemptId: string;
   readonly projectId: HubAddressV1["projectId"];
@@ -56,7 +80,25 @@ export interface ResolvedAttemptExecutionInputV1 {
   readonly promptRef: AttemptBoundPromptEnvelopeRefV1;
   readonly grants: readonly AttemptFileGrantV1[];
   readonly inputDigest: string;
+  readonly inputVersion?: 1;
+  readonly authorization?: undefined;
 }
+
+
+export interface ResolvedAttemptWorktreeExecutionInputV2 {
+  readonly attemptId: string;
+  readonly projectId: HubAddressV1["projectId"];
+  readonly sessionKey: HubAddressV1["sessionKey"];
+  readonly promptRef: AttemptBoundPromptEnvelopeRefV1;
+  readonly grants: readonly [];
+  readonly authorization: AttemptWorktreeAuthorizationV2;
+  readonly inputDigest: string;
+  readonly inputVersion: 2;
+}
+
+export type ResolvedAttemptExecutionInput =
+  | ResolvedAttemptExecutionInputV1
+  | ResolvedAttemptWorktreeExecutionInputV2;
 
 export interface AttemptExecutionInputOptionsV1 {
   readonly dbPath: string;
@@ -73,6 +115,8 @@ interface AttemptExecutionInputRowV1 {
   input_digest: string;
   prompt_ref_json: string;
   grants_json: string;
+  input_version: number | null;
+  authorization_json: string | null;
 }
 
 /**
@@ -99,6 +143,13 @@ export class AttemptExecutionInputStoreV1 implements RuntimePromptVaultV1 {
       prepare: (input) => this.prepareWorkspace(input),
       runtimeWorkspace: (attemptId) =>
         this.options.workspace.runtimeBinding(attemptId),
+      isWorktreeAuthorized: (attemptId: string) => {
+        try {
+          return this.resolve(attemptId).inputVersion === 2;
+        } catch {
+          return false;
+        }
+      },
     };
   }
 
@@ -116,7 +167,7 @@ export class AttemptExecutionInputStoreV1 implements RuntimePromptVaultV1 {
       grants,
     );
     const existing = this.row(attemptId);
-    if (existing) return assertReplay(this.resolveRow(existing), candidate);
+    if (existing) return assertReplay(assertFileListResolved(this.resolveRow(existing)), candidate);
 
     const promptRef = this.options.payloadVault.putPrompt({
       attemptId,
@@ -131,7 +182,7 @@ export class AttemptExecutionInputStoreV1 implements RuntimePromptVaultV1 {
       const raced = this.row(attemptId);
       if (raced) {
         this.db.exec("commit");
-        return assertReplay(this.resolveRow(raced), candidate);
+        return assertReplay(assertFileListResolved(this.resolveRow(raced)), candidate);
       }
       this.db
         .prepare(
@@ -151,10 +202,37 @@ export class AttemptExecutionInputStoreV1 implements RuntimePromptVaultV1 {
       rollbackQuietly(this.db);
       throw error;
     }
-    return this.resolve(attemptId);
+    return assertFileListResolved(this.resolve(attemptId));
   }
 
-  resolve(attemptId: AttemptId | string): ResolvedAttemptExecutionInputV1 {
+  stageWorktree(input: StageAttemptWorktreeExecutionInputV2): ResolvedAttemptWorktreeExecutionInputV2 {
+    const attemptId = cleanAttemptId(input.attemptId);
+    const projectId = cleanProjectId(input.projectId);
+    const sessionKey = cleanSessionKey(input.sessionKey);
+    const promptBytes = asPromptBytes(input.promptBytes);
+    const authorization = canonicalWorktreeAuthorization(input.authorization, projectId, sessionKey);
+    const promptRef: AttemptBoundPromptEnvelopeRefV1 = {
+      refId: fixedPromptRefId(attemptId),
+      digest: digestBytes(promptBytes),
+      mediaType: RUNTIME_PROMPT_MEDIA_TYPE,
+      attemptId,
+    };
+    const candidate: ResolvedAttemptWorktreeExecutionInputV2 = {
+      attemptId, projectId, sessionKey, promptRef, grants: [], authorization,
+      inputDigest: digestWorktreeInput(attemptId, projectId, sessionKey, promptRef, authorization),
+      inputVersion: 2,
+    };
+    const existing = this.row(attemptId);
+    if (existing) return assertWorktreeReplay(this.resolve(attemptId), candidate);
+    const storedPromptRef = this.options.payloadVault.putPrompt({ attemptId, payloadBytes: promptBytes, refId: promptRef.refId });
+    if (!samePromptRef(storedPromptRef, promptRef)) throw new AttemptExecutionInputError("ATTEMPT_INPUT_CORRUPT");
+    this.db.prepare(
+      "insert into attempt_execution_inputs (attempt_id, project_id, session_key, input_digest, prompt_ref_json, grants_json, input_version, authorization_json, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(attemptId, projectId, sessionKey, candidate.inputDigest, JSON.stringify(promptRef), "[]", 2, JSON.stringify(authorization), this.now());
+    return assertWorktreeResolved(this.resolve(attemptId));
+  }
+
+  resolve(attemptId: AttemptId | string): ResolvedAttemptExecutionInput {
     const cleanId = cleanAttemptId(attemptId);
     const row = this.row(cleanId);
     if (!row) throw new AttemptExecutionInputError("ATTEMPT_INPUT_MISSING");
@@ -189,6 +267,21 @@ export class AttemptExecutionInputStoreV1 implements RuntimePromptVaultV1 {
       throw new AttemptExecutionInputError("ATTEMPT_BINDING_MISMATCH");
     }
     const baseRevision = cleanBaseRevision(input.baseline.base_revision);
+    if (staged.inputVersion === 2) {
+      if (!this.options.workspace.prepareWorktree) throw new AttemptExecutionInputError("ATTEMPT_BINDING_MISMATCH");
+      return (await this.options.workspace.prepareWorktree({
+        attemptId,
+        compositionAttemptId: input.composition.compositionAttemptId,
+        requestDigest: input.composition.requestDigest,
+        baselineBindingDigest: input.composition.baselineBindingDigest,
+        compositionDigest: input.composition.compositionDigest,
+        projectId: input.address.projectId,
+        baseRevision,
+        baselineTreeHash: input.baseline.baseline_tree_hash,
+        authorization: staged.authorization,
+        ownerId: this.ownerId,
+      })).receipt;
+    }
     const request: AttemptWorkspacePrepareRequestV1 = {
       attemptId,
       compositionAttemptId: input.composition.compositionAttemptId,
@@ -206,12 +299,23 @@ export class AttemptExecutionInputStoreV1 implements RuntimePromptVaultV1 {
 
   private resolveRow(
     row: AttemptExecutionInputRowV1,
-  ): ResolvedAttemptExecutionInputV1 {
+  ): ResolvedAttemptExecutionInput {
     try {
       const attemptId = cleanAttemptId(row.attempt_id);
       const projectId = cleanProjectId(row.project_id);
       const sessionKey = cleanSessionKey(row.session_key);
       const promptRef = parsePromptRef(row.prompt_ref_json, attemptId);
+      if (row.input_version === 2) {
+        if (row.grants_json !== "[]" || !row.authorization_json) throw new AttemptExecutionInputError("ATTEMPT_INPUT_CORRUPT");
+        const authorization = parseWorktreeAuthorization(row.authorization_json, projectId, sessionKey);
+        const inputDigest = digestWorktreeInput(attemptId, projectId, sessionKey, promptRef, authorization);
+        if (row.input_digest !== inputDigest) throw new AttemptExecutionInputError("ATTEMPT_INPUT_CORRUPT");
+        const actualPromptRef = this.options.payloadVault.promptRefForAttempt(attemptId);
+        if (!samePromptRef(actualPromptRef, promptRef)) throw new AttemptExecutionInputError("ATTEMPT_INPUT_CORRUPT");
+        return { attemptId, projectId, sessionKey, promptRef, grants: [], authorization, inputDigest, inputVersion: 2 };
+      }
+      if (row.input_version !== null && row.input_version !== 1) throw new AttemptExecutionInputError("ATTEMPT_INPUT_CORRUPT");
+      if (row.authorization_json !== null) throw new AttemptExecutionInputError("ATTEMPT_INPUT_CORRUPT");
       const grants = parseCanonicalGrants(row.grants_json);
       const inputDigest = digestInput(
         attemptId,
@@ -247,7 +351,7 @@ export class AttemptExecutionInputStoreV1 implements RuntimePromptVaultV1 {
   private row(attemptId: string): AttemptExecutionInputRowV1 | undefined {
     return this.db
       .prepare(
-        "select attempt_id, project_id, session_key, input_digest, prompt_ref_json, grants_json from attempt_execution_inputs where attempt_id = ?",
+        "select attempt_id, project_id, session_key, input_digest, prompt_ref_json, grants_json, input_version, authorization_json from attempt_execution_inputs where attempt_id = ?",
       )
       .get(attemptId) as AttemptExecutionInputRowV1 | undefined;
   }
@@ -261,6 +365,8 @@ export class AttemptExecutionInputStoreV1 implements RuntimePromptVaultV1 {
         input_digest text not null,
         prompt_ref_json text not null,
         grants_json text not null,
+        input_version integer,
+        authorization_json text,
         created_at text not null
       );
     `);
@@ -281,6 +387,8 @@ export class AttemptExecutionInputStoreV1 implements RuntimePromptVaultV1 {
       this.db.exec(
         "alter table attempt_execution_inputs add column session_key text",
       );
+    if (!columns.has("input_version")) this.db.exec("alter table attempt_execution_inputs add column input_version integer");
+    if (!columns.has("authorization_json")) this.db.exec("alter table attempt_execution_inputs add column authorization_json text");
   }
 }
 
@@ -327,6 +435,107 @@ function assertReplay(
     throw new AttemptExecutionInputError("ATTEMPT_INPUT_CONFLICT");
   }
   return existing;
+}
+
+function assertWorktreeReplay(
+  existing: ResolvedAttemptExecutionInput,
+  candidate: ResolvedAttemptWorktreeExecutionInputV2,
+): ResolvedAttemptWorktreeExecutionInputV2 {
+  const resolved = assertWorktreeResolved(existing);
+  if (resolved.inputDigest !== candidate.inputDigest || !samePromptRef(resolved.promptRef, candidate.promptRef)) {
+    throw new AttemptExecutionInputError("ATTEMPT_INPUT_CONFLICT");
+  }
+  return resolved;
+}
+
+function assertWorktreeResolved(value: ResolvedAttemptExecutionInput): ResolvedAttemptWorktreeExecutionInputV2 {
+  if (value.inputVersion !== 2) throw new AttemptExecutionInputError("ATTEMPT_INPUT_CONFLICT");
+  return value;
+}
+
+function assertFileListResolved(value: ResolvedAttemptExecutionInput): ResolvedAttemptExecutionInputV1 {
+  if (value.inputVersion === 2) throw new AttemptExecutionInputError("ATTEMPT_INPUT_CONFLICT");
+  return value;
+}
+
+function canonicalWorktreeAuthorization(
+  value: AttemptWorktreeAuthorizationV2,
+  projectId: HubAddressV1["projectId"],
+  sessionKey: HubAddressV1["sessionKey"],
+): AttemptWorktreeAuthorizationV2 {
+  if (!value || value.version !== 2 || value.mode !== "ATTEMPT_WORKTREE" ||
+      value.projectId !== projectId || value.sessionKey !== sessionKey ||
+      !isExactKeySet(value as unknown as Record<string, unknown>, ["version", "mode", "projectId", "sessionKey", "acceptance", "authorizationDigest"])) {
+    throw new AttemptExecutionInputError("ATTEMPT_INPUT_INVALID");
+  }
+  const acceptance = value.acceptance;
+  if (!acceptance || !isExactKeySet(acceptance as unknown as Record<string, unknown>, [
+    "requestId", "assignmentId", "taskId", "taskContentDigest", "targetProjectIdentity", "baselineSourceDigest",
+  ])) throw new AttemptExecutionInputError("ATTEMPT_INPUT_INVALID");
+  for (const field of [acceptance.requestId, acceptance.assignmentId, acceptance.taskId, acceptance.targetProjectIdentity]) {
+    if (typeof field !== "string" || field.trim() !== field || field === "") throw new AttemptExecutionInputError("ATTEMPT_INPUT_INVALID");
+  }
+  for (const digest of [acceptance.taskContentDigest, acceptance.baselineSourceDigest, value.authorizationDigest]) {
+    if (typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(digest)) {
+      throw new AttemptExecutionInputError("ATTEMPT_INPUT_INVALID");
+    }
+  }
+  const canonical: Omit<AttemptWorktreeAuthorizationV2, "authorizationDigest"> = {
+    version: 2 as const,
+    mode: "ATTEMPT_WORKTREE" as const,
+    projectId,
+    sessionKey,
+    acceptance: {
+      requestId: acceptance.requestId,
+      assignmentId: acceptance.assignmentId,
+      taskId: acceptance.taskId,
+      taskContentDigest: acceptance.taskContentDigest,
+      targetProjectIdentity: acceptance.targetProjectIdentity,
+      baselineSourceDigest: acceptance.baselineSourceDigest,
+    },
+  };
+  if (value.authorizationDigest !== digestAuthorization(canonical)) {
+    throw new AttemptExecutionInputError("ATTEMPT_INPUT_INVALID");
+  }
+  return { ...canonical, authorizationDigest: value.authorizationDigest };
+}
+
+function parseWorktreeAuthorization(
+  value: string,
+  projectId: HubAddressV1["projectId"],
+  sessionKey: HubAddressV1["sessionKey"],
+): AttemptWorktreeAuthorizationV2 {
+  try {
+    const parsed = JSON.parse(value) as AttemptWorktreeAuthorizationV2;
+    const canonical = canonicalWorktreeAuthorization(parsed, projectId, sessionKey);
+    if (JSON.stringify(canonical) !== value) throw new AttemptExecutionInputError("ATTEMPT_INPUT_CORRUPT");
+    return canonical;
+  } catch (error) {
+    if (error instanceof AttemptExecutionInputError && error.reasonCode === "ATTEMPT_INPUT_CORRUPT") throw error;
+    throw new AttemptExecutionInputError("ATTEMPT_INPUT_CORRUPT");
+  }
+}
+
+function digestAuthorization(value: Omit<AttemptWorktreeAuthorizationV2, "authorizationDigest">): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+}
+
+export function attemptWorktreeAuthorizationDigestV2(
+  value: Omit<AttemptWorktreeAuthorizationV2, "authorizationDigest">,
+): string {
+  return digestAuthorization(value);
+}
+
+function digestWorktreeInput(
+  attemptId: string,
+  projectId: string,
+  sessionKey: string,
+  promptRef: AttemptBoundPromptEnvelopeRefV1,
+  authorization: AttemptWorktreeAuthorizationV2,
+): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify({
+    version: 2, attemptId, projectId, sessionKey, promptRef, authorization,
+  })).digest("hex")}`;
 }
 
 function parsePromptRef(

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { AttemptId } from '@shared/xiaogui-collaboration-hub'
+import type { AttemptId, HubAddressV1 } from '@shared/xiaogui-collaboration-hub'
 import {
   deliveryTargetFingerprintV1,
   type DeliveryTargetV1,
@@ -24,7 +24,9 @@ import {
   type AttemptFileManifestV1,
   type AttemptWorkspacePrepareRequestV1,
   type UserApprovedFileSelectionV1,
+  projectWorktreeIdentityV2,
 } from './attempt-workspace'
+import { attemptWorktreeAuthorizationDigestV2 } from './attempt-execution-input'
 import {
   cleanupDeliveryIntegrationWorktreeRootV1,
   MainProcessDeliveryIntegrationWorktreePortV1,
@@ -1080,6 +1082,139 @@ describe('GitAttemptWorkspaceServiceV1', () => {
     })
     renameService.registry.close()
   }, 30000)
+
+  it('freezes ATTEMPT_WORKTREE V2 baseline bytes and captures real MODIFY CREATE DELETE including ignored files', async () => {
+    const projectRoot = await gitRepo()
+    writeFileSync(join(projectRoot, '.gitignore'), 'ignored.txt\n')
+    writeFileSync(join(projectRoot, 'delete-me.txt'), 'delete me')
+    git(projectRoot, ['add', '.gitignore', 'delete-me.txt'])
+    git(projectRoot, ['commit', '-m', 'ignore fixture'])
+    projectRoots.set(PROJECT_ID, projectRoot)
+    const dbPath = join(await tempRoot('xiaogui-attempt-v2-db-'), 'workspace.sqlite')
+    const baselineDigest = 'a'.repeat(64)
+    const resolver: AttemptWorkspaceBaselineSourceResolverV1 = {
+      resolve({ request, grants }) {
+        const baseline = {
+          baselineId: `baseline-${request.baseRevision}`, baseRevision: request.baseRevision,
+          baselineTreeHash: request.baselineTreeHash, initialTargetFingerprint: 'target',
+          baselineDigest, baselineBindingDigest: request.baselineBindingDigest,
+        }
+        const source = { version: 1 as const, kind: 'PROJECT' as const, attemptId: String(request.attemptId),
+          projectId: request.projectId, sessionKey: 'test-session', flowId: 'flow', taskRunId: 'task',
+          source: baseline, task: { ...baseline, derivationDigest: 'derivation', ancestorTaskChangeSetIds: [] },
+          grantsDigest: digestJson(grants) }
+        return { ...source, bindingDigest: digestJson(source) }
+      },
+    }
+    const { workspace, registry } = service(dbPath, await tempRoot('xiaogui-attempt-v2-managed-'), resolver)
+    const attemptId = 'xhba_attempt_v2' as AttemptId
+    const authBase = {
+      version: 2 as const, mode: 'ATTEMPT_WORKTREE' as const,
+      projectId: PROJECT_ID as HubAddressV1['projectId'], sessionKey: 'test-session' as HubAddressV1['sessionKey'],
+      acceptance: { requestId: 'accept-1', assignmentId: 'assignment-1', taskId: 'task-1',
+        taskContentDigest: `sha256:${'b'.repeat(64)}`,
+        targetProjectIdentity: projectWorktreeIdentityV2(PROJECT_ID, projectRoot),
+        baselineSourceDigest: `sha256:${baselineDigest}` },
+    }
+    const baseRevision = git(projectRoot, ['rev-parse', 'HEAD'])
+    const prepared = await workspace.prepareWorktree({
+      attemptId, compositionAttemptId: 'composition-v2', requestDigest: 'request-v2',
+      baselineBindingDigest: 'binding-v2', compositionDigest: 'composition-digest-v2', projectId: PROJECT_ID,
+      baseRevision, baselineTreeHash: git(projectRoot, ['rev-parse', 'HEAD^{tree}']),
+      authorization: { ...authBase, authorizationDigest: attemptWorktreeAuthorizationDigestV2(authBase) },
+      ownerId: 'xiaogui-main-process',
+    })
+    writeFileSync(join(prepared.rootPath, 'src', 'existing.txt'), 'after')
+    writeFileSync(join(prepared.rootPath, 'created.txt'), 'created')
+    writeFileSync(join(prepared.rootPath, 'ignored.txt'), 'ignored but captured')
+    await rm(join(prepared.rootPath, 'delete-me.txt'))
+    const captured = await workspace.captureTaskPatchV2(attemptId)
+    expect(JSON.parse(Buffer.from(captured.patchArtifactBytes).toString('utf8'))).toMatchObject({ kind: 'TASK_PATCH_V2', version: 2 })
+    expect(captured.changedFiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: 'DELETE', relativePath: 'delete-me.txt', contentDigest: null }),
+      expect.objectContaining({ operation: 'MODIFY', relativePath: 'src/existing.txt', contentBase64: Buffer.from('after').toString('base64') }),
+      expect.objectContaining({ operation: 'CREATE', relativePath: 'created.txt' }),
+      expect.objectContaining({ operation: 'CREATE', relativePath: 'ignored.txt' }),
+    ]))
+
+    await mkdir(join(prepared.rootPath, 'nested', '.git'), { recursive: true })
+    await expect(workspace.captureTaskPatchV2(attemptId)).rejects.toMatchObject({ reasonCode: 'PATH_FORBIDDEN' })
+    await rm(join(prepared.rootPath, 'nested'), { recursive: true })
+    await link(join(prepared.rootPath, 'created.txt'), join(prepared.rootPath, 'created-link.txt'))
+    await expect(workspace.captureTaskPatchV2(attemptId)).rejects.toMatchObject({ reasonCode: 'TARGET_HARDLINK' })
+    await rm(join(prepared.rootPath, 'created-link.txt'))
+
+    if (process.platform === 'win32') {
+      await rename(join(prepared.rootPath, 'src', 'existing.txt'), join(prepared.rootPath, 'src', 'EXISTING.txt'))
+      await expect(workspace.captureTaskPatchV2(attemptId)).rejects.toMatchObject({ reasonCode: 'PATH_CONFLICT' })
+      await rename(join(prepared.rootPath, 'src', 'EXISTING.txt'), join(prepared.rootPath, 'src', 'existing.txt'))
+    }
+    git(prepared.rootPath, ['update-index', '--chmod=+x', 'src/existing.txt'])
+    await expect(workspace.captureTaskPatchV2(attemptId)).rejects.toMatchObject({ reasonCode: 'PATH_FORBIDDEN' })
+    git(prepared.rootPath, ['update-index', '--chmod=-x', 'src/existing.txt'])
+
+    writeFileSync(join(projectRoot, 'src', 'existing.txt'), 'source drift')
+    await expect(workspace.captureTaskPatchV2(attemptId)).rejects.toMatchObject({ reasonCode: 'REPO_NOT_CLEAN_FOR_BASELINE' })
+    writeFileSync(join(projectRoot, 'src', 'existing.txt'), 'before')
+
+    const db = new DatabaseSync(dbPath)
+    const row = db.prepare('select lease_json from attempt_workspace_leases where attempt_id = ?').get(attemptId) as { lease_json: string }
+    const damaged = JSON.parse(row.lease_json)
+    damaged.worktreeAuthorization.authorizationDigest = `sha256:${'f'.repeat(64)}`
+    db.prepare('update attempt_workspace_leases set lease_json = ? where attempt_id = ?').run(JSON.stringify(damaged), attemptId)
+    db.close()
+    await expect(workspace.captureTaskPatchV2(attemptId)).rejects.toMatchObject({ reasonCode: 'MANIFEST_CONFLICT' })
+    registry.close()
+  }, 30_000)
+
+  it('seeds DERIVED V2 from immutable commit bytes and refuses capture when the registered source disappears', async () => {
+    const projectRoot = await gitRepo()
+    const sourceRevision = git(projectRoot, ['rev-parse', 'HEAD'])
+    const sourceTree = git(projectRoot, ['rev-parse', 'HEAD^{tree}'])
+    writeFileSync(join(projectRoot, 'src', 'existing.txt'), 'derived bytes')
+    git(projectRoot, ['add', 'src/existing.txt'])
+    git(projectRoot, ['commit', '-m', 'private derived fixture'])
+    const derivedRevision = git(projectRoot, ['rev-parse', 'HEAD'])
+    const derivedTree = git(projectRoot, ['rev-parse', 'HEAD^{tree}'])
+    git(projectRoot, ['switch', '--detach', sourceRevision])
+    projectRoots.set(PROJECT_ID, projectRoot)
+    let sourceAvailable = true
+    const sourceDigest = '1'.repeat(64)
+    const resolver: AttemptWorkspaceBaselineSourceResolverV1 = {
+      resolve({ request, grants }) {
+        if (!sourceAvailable) return null
+        const sourceBaseline = { baselineId: 'source-baseline', baseRevision: sourceRevision,
+          baselineTreeHash: sourceTree, initialTargetFingerprint: 'target', baselineDigest: sourceDigest,
+          baselineBindingDigest: 'flow-binding' }
+        const taskBaseline = { baselineId: 'derived-baseline', baseRevision: derivedRevision,
+          baselineTreeHash: derivedTree, initialTargetFingerprint: 'target', baselineDigest: '2'.repeat(64),
+          baselineBindingDigest: request.baselineBindingDigest, derivationDigest: 'derived-input',
+          ancestorTaskChangeSetIds: ['ancestor-1'] }
+        const source = { version: 1 as const, kind: 'DERIVED' as const, attemptId: String(request.attemptId),
+          projectId: request.projectId, sessionKey: 'test-session', flowId: 'flow', taskRunId: 'task',
+          source: sourceBaseline, task: taskBaseline, grantsDigest: digestJson(grants),
+          derivation: { derivationInputDigest: 'derived-input', cacheDigest: `sha256:${'3'.repeat(64)}` } }
+        return { ...source, bindingDigest: digestJson(source) }
+      },
+    }
+    const { workspace, registry } = service(join(await tempRoot('xiaogui-derived-v2-db-'), 'workspace.sqlite'),
+      await tempRoot('xiaogui-derived-v2-managed-'), resolver)
+    const attemptId = 'xhba_derived_v2' as AttemptId
+    const authBase = { version: 2 as const, mode: 'ATTEMPT_WORKTREE' as const,
+      projectId: PROJECT_ID as HubAddressV1['projectId'], sessionKey: 'test-session' as HubAddressV1['sessionKey'],
+      acceptance: { requestId: 'accept-derived', assignmentId: 'assignment-derived', taskId: 'task-derived',
+        taskContentDigest: `sha256:${'4'.repeat(64)}`, targetProjectIdentity: projectWorktreeIdentityV2(PROJECT_ID, projectRoot),
+        baselineSourceDigest: `sha256:${sourceDigest}` } }
+    const prepared = await workspace.prepareWorktree({ attemptId, compositionAttemptId: 'composition-derived',
+      requestDigest: 'request-derived', baselineBindingDigest: 'task-binding', compositionDigest: 'composition-derived-digest',
+      projectId: PROJECT_ID, baseRevision: derivedRevision, baselineTreeHash: derivedTree,
+      authorization: { ...authBase, authorizationDigest: attemptWorktreeAuthorizationDigestV2(authBase) }, ownerId: 'main' })
+    expect(readFileSync(join(prepared.rootPath, 'src', 'existing.txt'), 'utf8')).toBe('derived bytes')
+    writeFileSync(join(prepared.rootPath, 'src', 'existing.txt'), 'result bytes')
+    sourceAvailable = false
+    await expect(workspace.captureTaskPatchV2(attemptId)).rejects.toMatchObject({ reasonCode: 'BASELINE_SOURCE_MISSING' })
+    registry.close()
+  }, 30_000)
 
   it('captures only actual approved changes and revalidates unchanged MODIFY baselines and single-link files', async () => {
     const projectRoot = await gitRepo()
