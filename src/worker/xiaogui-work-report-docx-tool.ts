@@ -6,7 +6,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
-import { XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 } from '@shared/xiaogui-prompt-capabilities'
+import { TASK_HUB_V2_WORK_REPORT_DOCX_TOOL, XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1 } from '@shared/xiaogui-prompt-capabilities'
 import {
   XIAOGUI_WORK_REPORT_DOCX_METHOD_V1,
   type XiaoguiWorkReportDocxResultV1,
@@ -55,10 +55,16 @@ const ActionSchema = Type.Object(
   },
   { additionalProperties: false },
 )
+const TaskHubV2ActionSchema = Type.Object({
+  action: Type.Literal('PREPARE'),
+  draft: DraftSchema,
+  targetPath: Type.String({ minLength: 1, maxLength: 4096, pattern: '\\.docx$' }),
+}, { additionalProperties: false })
 
 export interface XiaoguiWorkReportDocxToolOptionsV1 {
   getSourceSessionId: () => string | undefined
   getSourceRunId: () => string | undefined
+  taskHubWorktreeAuthorized?: boolean
 }
 
 type SafeDetails =
@@ -115,10 +121,14 @@ export function addXiaoguiWorkReportDocxTool(
     origin: 'top-level',
   })
   const definition = defineTool<typeof ActionSchema, SafeDetails>({
-    ...TOOL_PROMPT,
-    parameters: ActionSchema,
+    ...(options.taskHubWorktreeAuthorized ? TASK_HUB_V2_WORK_REPORT_DOCX_TOOL : TOOL_PROMPT),
+    parameters: (options.taskHubWorktreeAuthorized ? TaskHubV2ActionSchema : ActionSchema) as typeof ActionSchema,
     executionMode: 'sequential',
     async execute(toolCallId, params, signal) {
+      if (options.taskHubWorktreeAuthorized && (params.action !== 'PREPARE' || !params.draft || !params.targetPath)) {
+        const details: SafeDetails = { kind: 'XIAOGUI_WORK_REPORT_DOCX_FAILED', code: 'HOST_TOOL_FAILED', message: 'TaskHub报告必须提供草稿和工作树内DOCX目标路径' }
+        return { content: [{ type: 'text', text: publicText(details) }], details, isError: true }
+      }
       const sourceSessionId = options.getSourceSessionId()
       const sourceRunId = options.getSourceRunId()
       if (!sourceSessionId || !sourceRunId) {
@@ -164,6 +174,10 @@ export function addXiaoguiWorkReportDocxTool(
           details,
           isError: true,
         }
+      }
+      if (options.taskHubWorktreeAuthorized && outcome.value.kind !== 'XIAOGUI_WORK_REPORT_DOCX_ATTEMPT_ARTIFACT') {
+        const details: SafeDetails = { kind: 'XIAOGUI_WORK_REPORT_DOCX_FAILED', code: 'HOST_TOOL_FAILED', message: 'TaskHub报告未形成受控工作树产物' }
+        return { content: [{ type: 'text', text: publicText(details) }], details, isError: true }
       }
       const details = outcome.value as XiaoguiWorkReportDocxResultV1
       return { content: [{ type: 'text', text: publicText(details) }], details }

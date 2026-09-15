@@ -10,6 +10,7 @@ import type {
   XiaoguiPromptContextV1,
 } from '@shared/xiaogui-prompt-contract'
 import {
+  TASK_HUB_V2_WORK_REPORT_DOCX_TOOL,
   XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1,
   XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1,
 } from '@shared/xiaogui-prompt-capabilities'
@@ -53,6 +54,7 @@ function normalizeTool(
   name: string,
   promptSnippet?: string,
   promptGuidelines?: readonly string[],
+  taskHubV2WorktreeAuthorized = false,
 ): XiaoguiRuntimePromptToolV1 {
   const known = name in XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1
     ? XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1[
@@ -60,17 +62,20 @@ function normalizeTool(
       ]
     : undefined
   if (!known) return { name, promptSnippet, promptGuidelines }
+  const definition = taskHubV2WorktreeAuthorized && name === 'xiaogui_work_report_docx'
+    ? TASK_HUB_V2_WORK_REPORT_DOCX_TOOL
+    : known
   return {
     name,
-    promptSnippet: promptSnippet ?? known.promptSnippet,
-    promptGuidelines: known.promptGuidelines,
-    sharedRules: (known.sharedRuleIds ?? []).map((id) => XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1[id]),
-    usage: known.usage,
-    protocol: known.protocol,
+    promptSnippet: promptSnippet ?? definition.promptSnippet,
+    promptGuidelines: definition.promptGuidelines,
+    sharedRules: (definition.sharedRuleIds ?? []).map((id) => XIAOGUI_SHARED_TOOL_PROMPT_RULES_V1[id]),
+    usage: definition.usage,
+    protocol: definition.protocol,
   }
 }
 
-function normalizeToolsFromPromptOptions(options: PiToolFacts): NormalizedRuntimePromptToolsV1 {
+function normalizeToolsFromPromptOptions(options: PiToolFacts, taskHubV2WorktreeAuthorized = false): NormalizedRuntimePromptToolsV1 {
   const selected = [...new Set(options.selectedTools ?? [])]
   const knownGuidelines = new Set(selected.flatMap((name) => {
     if (!(name in XIAOGUI_WORKER_TOOL_PROMPT_DEFINITIONS_V1)) return []
@@ -79,7 +84,7 @@ function normalizeToolsFromPromptOptions(options: PiToolFacts): NormalizedRuntim
     ].promptGuidelines
   }))
   return {
-    tools: selected.map((name) => normalizeTool(name, options.toolSnippets?.[name])),
+    tools: selected.map((name) => normalizeTool(name, options.toolSnippets?.[name], undefined, taskHubV2WorktreeAuthorized)),
     // Pi 0.84.1 merges these rows and no longer exposes Tool ownership here.
     // Known small-rule rows are reconstructed above; the remainder stays in a
     // clearly labelled compatibility group instead of being assigned wrongly.
@@ -88,10 +93,10 @@ function normalizeToolsFromPromptOptions(options: PiToolFacts): NormalizedRuntim
   }
 }
 
-function normalizeToolsFromSession(session: AgentSession): XiaoguiRuntimePromptToolV1[] {
+function normalizeToolsFromSession(session: AgentSession, taskHubV2WorktreeAuthorized = false): XiaoguiRuntimePromptToolV1[] {
   return session.getActiveToolNames().map((name) => {
     const definition = session.getToolDefinition(name)
-    return normalizeTool(name, definition?.promptSnippet, definition?.promptGuidelines)
+    return normalizeTool(name, definition?.promptSnippet, definition?.promptGuidelines, taskHubV2WorktreeAuthorized)
   })
 }
 
@@ -115,6 +120,7 @@ function build(
   tools: readonly XiaoguiRuntimePromptToolV1[],
   projectTrusted: boolean,
   compatibilityGuidelines: readonly string[] = [],
+  taskHubV2WorktreeAuthorized = false,
 ): BuiltEffectiveXiaoguiPromptV1 {
   return xiaoguiPromptBuilderV1.build({
     context: withActualTools(context, tools, projectTrusted),
@@ -122,6 +128,7 @@ function build(
     piCustomSystem,
     runtimeTools: tools,
     runtimeCompatibilityGuidelines: compatibilityGuidelines,
+    taskHubV2WorktreeAuthorized,
   })
 }
 
@@ -134,6 +141,7 @@ export function createXiaoguiPromptSessionExtensionV1(
   contextSource: XiaoguiPromptContextSourceV1,
   onState: XiaoguiPromptStateSinkV1,
   onFailure: (error: unknown) => void = () => {},
+  options: { readonly taskHubV2WorktreeAuthorized?: boolean } = {},
 ): XiaoguiPromptInlineExtensionV1 {
   const readContext = (): XiaoguiPromptContextV1 => freezeXiaoguiPromptContextV1(
     typeof contextSource === 'function' ? contextSource() : contextSource,
@@ -147,7 +155,7 @@ export function createXiaoguiPromptSessionExtensionV1(
           // The Worker freezes this snapshot before it changes active tools.
           // A queued/streaming turn continues to observe the same object.
           const context = readContext()
-          const normalizedTools = normalizeToolsFromPromptOptions(event.systemPromptOptions)
+          const normalizedTools = normalizeToolsFromPromptOptions(event.systemPromptOptions, options.taskHubV2WorktreeAuthorized)
           const result = build(
             context,
             event.systemPrompt,
@@ -155,6 +163,7 @@ export function createXiaoguiPromptSessionExtensionV1(
             normalizedTools.tools,
             extensionContext.isProjectTrusted(),
             normalizedTools.compatibilityGuidelines,
+            options.taskHubV2WorktreeAuthorized,
           )
           onState({
             prompt: result.prompt,
@@ -178,6 +187,7 @@ export function buildXiaoguiPromptSessionStateV1(
   session: AgentSession,
   services: AgentSessionServices,
   rawContext: XiaoguiPromptContextV1,
+  options: { readonly taskHubV2WorktreeAuthorized?: boolean } = {},
 ): XiaoguiEffectivePromptSessionStateV1 {
   const context = freezeXiaoguiPromptContextV1(rawContext)
   const actualTrust = session.settingsManager?.isProjectTrusted?.() ?? false
@@ -185,8 +195,10 @@ export function buildXiaoguiPromptSessionStateV1(
     context,
     session.systemPrompt,
     !!services.resourceLoader.getSystemPrompt(),
-    normalizeToolsFromSession(session),
+    normalizeToolsFromSession(session, options.taskHubV2WorktreeAuthorized),
     actualTrust,
+    [],
+    options.taskHubV2WorktreeAuthorized,
   )
   return {
     prompt: result.prompt,

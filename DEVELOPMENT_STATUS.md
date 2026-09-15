@@ -1,5 +1,17 @@
 # 小规开发阶段状态
 
+## 2026-09-16｜第2门三项P2返修候选（待主管复验）
+
+- 桌面主管对 `f973fe0710c6588f1dfc7773a5392c4a74bcafa6` 给出Standards APPROVE、Spec REQUEST_CHANGES。仅修TaskHub V2 WORK工具合同/实际prompt、V1合法路径规范化、compose后首次SQLite保存失败的同批Delivery恢复。c99接纳关联恢复P2保持关闭，未受影响证据复用。
+- 已核HEAD/上游/live一致、开工clean、三stash未变；CLOSEOUT顶部已补本次文件、依赖、完成判据后交原Sol编码，root审查集成。无automation接口，heartbeat未启用，不建旁路；不开模型/Electron/旧业务/Apply/包扫描/构建，不合主线。
+- 三项实施自查完成：V2 WORK工具schema/说明/实际SDK Prompt整体选择专用合同，Main实际生成DOCX并登记，无第二次确认；V1根内绝对和./规范化后仍核原grant；真实compose成功而首次SQLite保存失败时重建消费者，验证并复用原batch目录恢复READY_FOR_REVIEW。未知目录不删除，完整变更/索引/实体/中文路径/CRLF均核验，不建第二批次。
+- 实际15文件：7生产、6测试（新增 `work-v2-tool-main-p2.test.ts`）、2文档。原Sol负责Delivery/路径；WORK初版测试只是V1 Main手设工具flag，被root排除并中断回收，独占交新Sol `work_v2_p2_finish`补真实V2证据；共享编辑保留且无同时写同模块。两子任务已停止，root审查/集成，不声称主模型精确标识已切换。
+- 证据集中原HANDOFF根 `production-wiring-p2/`：路径正反6项exit0工具回执（无实体stdout日志）；16底层含中文/空格根及中文文件/CRLF恢复1项；14未知目录拒绝保留1项；**11真实SQLite trigger回滚后重建生产composition恢复1/1、44.00s**，batch/Attempt/Worker/prompt均不增，实际Diff可读取。正常H1一次结果沿前批25证据，不重复运行。
+- **work-01真实V2 Main＋SDK报告旅程1/1、24.82s**；work-02 SDK WORK合同1项、work-03 V1旧合同对照1项。work-*是子任务工具回执整理摘要，非原始stdout。真实SDK AgentSession.prompt经before_agent_start安装的systemPrompt直接核验，底层模型prompt/auth测试替身；实际host调用Main render/audit/写DOCX/SQLite artifact，不是假成功回执。原任务或授权记录无模型自报文件清单。
+- 最终统一检查：`root-node-type-final.log`、`root-web-type.log`、`root-changed-eslint.log`及最后两个测试类型修补后的 `root-last-tests-eslint.log` 均exit0；标准diff-check通过。类型命令分别 `npx tsc -p tsconfig.node.json --noEmit` 与Web同类命令，lint仅变化TS。首轮Node两个测试类型错误在 `root-node-type.log`保留，修复后不重复功能测试。
+- 失败/证据纠偏透明保留：05初始化/EPERM、06错误私有库、08故障期H1时序、09/10 Git rename净路径误判；11已通过。12文件名虽WORK V2但实际V1 Main，不计V2通过；伪分支移除。work-00记录新WORK首轮误预期V1 permission，纠正为V2零重复权限事件；未为测试修改产品语义。早期无stdout的Sol lint没有实际15/17日志，不引用其拟定文件名；最终root日志可读。
+- 追加提交推送当前隔离分支，完整SHA/远端核对及证据写原HANDOFF，停主管定向复验。**三项是否关闭由主管判断；c99接纳恢复P2保持关闭，本轮不等于完整流程/模型/业务/整机崩溃验收。** 未动旧被拒清理残留、原profile/业务DB/安装现场/stash，无业务Apply、模型、Electron、build、包扫描、合主线或发布。
+
 ## 2026-09-15｜第2门生产接线候选（实施完成，待桌面主管定向复验）
 
 - 固定接续基线 `c99faaa97f31e09f3a75e2b6b26ff9e0758898ad`；接纳关联恢复P2已经中台 Standards/Spec APPROVE 并关闭，既有LOW不扩修。开工和提交前本地/上游/live一致，保护stash及另外两stash未变。下面旧章节保留当时状态，本节为当前结论。

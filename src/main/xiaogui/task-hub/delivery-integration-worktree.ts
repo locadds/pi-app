@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { lstat, mkdir, readFile, realpath, unlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 
 import type { DeliveryTargetV1 } from '@shared/xiaogui-delivery'
@@ -62,7 +62,7 @@ export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryInt
       ? await readApprovedModifyBaselines(repositoryRoot, files as readonly DeliveryIntegrationFileV1[])
       : await readApprovedBaselinesV2(repositoryRoot, files as readonly DeliveryIntegrationFileV2[])
     if (existsSync(worktreeRoot)) {
-      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+      return recoverExistingIntegrationWorktree(repositoryRoot, managedRoot, worktreeRoot, this.options.target, files, version)
     }
     let worktreeAdded = false
     let failed: DeliveryIntegrationWorktreeErrorV1 | null = null
@@ -115,6 +115,140 @@ export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryInt
       }
     }
   }
+}
+
+async function recoverExistingIntegrationWorktree(
+  repositoryRoot: string,
+  managedRoot: string,
+  worktreeRoot: string,
+  target: DeliveryTargetV1,
+  files: readonly DeliveryIntegrationFileV1[] | readonly DeliveryIntegrationFileV2[],
+  version: 1 | 2,
+): Promise<DeliveryIntegrationResultV1> {
+  try {
+    const info = await lstat(worktreeRoot)
+    const canonical = await realpath(worktreeRoot)
+    if (info.isSymbolicLink() || !info.isDirectory() || pathKey(canonical) !== pathKey(worktreeRoot)
+      || !isInside(managedRoot, canonical)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+
+    const listed = parseWorktreePaths(await git(repositoryRoot, ['worktree', 'list', '--porcelain', '-z'], 'DELIVERY_WORKTREE_BASELINE_DRIFT'))
+    if (listed.filter(path => pathKey(path) === pathKey(canonical)).length !== 1) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    }
+    await assertLinkedWorktreeMetadata(repositoryRoot, canonical)
+    if (exactGitOid(await git(canonical, ['rev-parse', '--verify', 'HEAD'], 'DELIVERY_WORKTREE_BASELINE_DRIFT')) !== target.baseRevision) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    }
+
+    const expectedPaths = new Set(files.map(file => normalizeRelativePath(file.relativePath)))
+    await assertRecoveredFilePoststates(canonical, files)
+    const actualPaths = new Set([
+      ...gitPathEntries(await git(canonical, ['diff', '--no-renames', '--name-only', '-z', 'HEAD', '--'], 'DELIVERY_WORKTREE_BASELINE_DRIFT')),
+      ...gitPathEntries(await git(canonical, ['ls-files', '-z', '--others', '--exclude-standard'], 'DELIVERY_WORKTREE_BASELINE_DRIFT')),
+      ...gitPathEntries(await git(canonical, ['ls-files', '-z', '--others', '--ignored', '--exclude-standard'], 'DELIVERY_WORKTREE_BASELINE_DRIFT')),
+    ])
+    if (!samePathSet(expectedPaths, actualPaths)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+
+    const actualTree = exactGitOid(await git(canonical, ['write-tree'], 'DELIVERY_WORKTREE_BASELINE_DRIFT'))
+    const expectedTree = await expectedIntegrationTree(repositoryRoot, managedRoot, target.baseRevision, files)
+    if (actualTree !== expectedTree) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    return {
+      integrationTreeHash: digestJson({ kind: `DELIVERY_INTEGRATION_TREE_V${version}`, gitTreeOid: actualTree }),
+      privateIntegrationContext: { worktreeRoot: canonical, trustedToolchainRoot: repositoryRoot },
+    }
+  } catch (error) {
+    if (error instanceof DeliveryIntegrationWorktreeErrorV1) throw error
+    throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+  }
+}
+
+async function assertLinkedWorktreeMetadata(repositoryRoot: string, worktreeRoot: string): Promise<void> {
+  const gitFile = resolve(worktreeRoot, '.git')
+  const info = await lstat(gitFile)
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+  const match = /^gitdir:\s*(.+)\s*$/i.exec(await readFile(gitFile, 'utf8'))
+  if (!match) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+  const gitDir = await realpath(resolve(worktreeRoot, match[1]))
+  const commonDir = await realpath(resolve(repositoryRoot, (await git(repositoryRoot, ['rev-parse', '--git-common-dir'], 'DELIVERY_WORKTREE_BASELINE_DRIFT')).trim()))
+  const worktreesRoot = resolve(commonDir, 'worktrees')
+  if (!isInside(worktreesRoot, gitDir) || pathKey(gitDir) === pathKey(worktreesRoot)) {
+    throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+  }
+  const commonFile = resolve(gitDir, 'commondir')
+  const commonInfo = await lstat(commonFile)
+  if (!commonInfo.isFile() || commonInfo.isSymbolicLink() || commonInfo.nlink !== 1) {
+    throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+  }
+  if (pathKey(await realpath(resolve(gitDir, (await readFile(commonFile, 'utf8')).trim()))) !== pathKey(commonDir)) {
+    throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+  }
+}
+
+async function assertRecoveredFilePoststates(
+  worktreeRoot: string,
+  files: readonly DeliveryIntegrationFileV1[] | readonly DeliveryIntegrationFileV2[],
+): Promise<void> {
+  const finalFiles = new Map<string, DeliveryIntegrationFileV1 | DeliveryIntegrationFileV2>()
+  for (const file of files) finalFiles.set(normalizeRelativePath(file.relativePath), file)
+  for (const [relativePath, file] of finalFiles) {
+    const target = resolve(worktreeRoot, relativePath.replace(/\//g, sep))
+    if (!isInside(worktreeRoot, target)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    await assertDeliveryParentChain(worktreeRoot, target)
+    if (file.operation === 'DELETE') {
+      try { await lstat(target); throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT') }
+      catch (error) {
+        if (error instanceof DeliveryIntegrationWorktreeErrorV1) throw error
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      continue
+    }
+    if (digestBytes(await readStableRegularFile(target)) !== file.contentDigest) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    }
+  }
+}
+
+async function expectedIntegrationTree(
+  repositoryRoot: string,
+  managedRoot: string,
+  baseRevision: string,
+  files: readonly DeliveryIntegrationFileV1[] | readonly DeliveryIntegrationFileV2[],
+): Promise<string> {
+  const scratch = await mkdtemp(join(managedRoot, '.delivery-recovery-index-'))
+  const indexPath = join(scratch, 'index')
+  try {
+    await gitEnv(repositoryRoot, ['read-tree', baseRevision], { GIT_INDEX_FILE: indexPath })
+    for (const file of files) {
+      const relativePath = normalizeRelativePath(file.relativePath)
+      if (file.operation === 'DELETE') {
+        await gitEnv(repositoryRoot, ['update-index', '--force-remove', '--', relativePath], { GIT_INDEX_FILE: indexPath })
+        continue
+      }
+      const contentPath = join(scratch, `content-${createHash('sha256').update(relativePath).digest('hex')}`)
+      await writeFile(contentPath, Buffer.from(file.content))
+      const oid = exactGitOid(await git(repositoryRoot, ['hash-object', `--path=${relativePath}`, contentPath], 'DELIVERY_WORKTREE_BASELINE_DRIFT'))
+      const baseEntry = (await git(repositoryRoot, ['ls-tree', baseRevision, '--', relativePath], 'DELIVERY_WORKTREE_BASELINE_DRIFT')).trim()
+      const mode = /^(100[67][45][45])\s/.exec(baseEntry)?.[1] ?? '100644'
+      await gitEnv(repositoryRoot, ['update-index', '--add', '--cacheinfo', `${mode},${oid},${relativePath}`], { GIT_INDEX_FILE: indexPath })
+    }
+    return exactGitOid(await gitEnv(repositoryRoot, ['write-tree'], { GIT_INDEX_FILE: indexPath }))
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+}
+
+function parseWorktreePaths(output: string): string[] {
+  return output.split('\0').filter(field => field.startsWith('worktree ')).map(field => resolve(field.slice('worktree '.length)))
+}
+
+function gitPathEntries(output: string): string[] {
+  return output.split('\0').filter(entry => entry.length > 0).map(normalizeRelativePath)
+}
+
+function samePathSet(expected: ReadonlySet<string>, actual: ReadonlySet<string>): boolean {
+  if (expected.size !== actual.size) return false
+  const actualKeys = new Set([...actual].map(pathKey))
+  return [...expected].every(value => actualKeys.has(pathKey(value)))
 }
 
 export type DeliveryIntegrationWorktreeSafeCodeV1 =
@@ -455,6 +589,20 @@ async function git(cwd: string, args: readonly string[], failure: DeliveryIntegr
     execFile('git', [...args], { cwd, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
       if (error) {
         reject(new DeliveryIntegrationWorktreeErrorV1(failure))
+        return
+      }
+      resolvePromise(stdout ?? '')
+    })
+  })
+}
+
+async function gitEnv(cwd: string, args: readonly string[], environment: Readonly<Record<string, string>>): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    execFile('git', [...args], {
+      cwd, env: { ...process.env, ...environment }, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 1024 * 1024,
+    }, (error, stdout) => {
+      if (error) {
+        reject(new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT'))
         return
       }
       resolvePromise(stdout ?? '')

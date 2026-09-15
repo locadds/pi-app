@@ -228,6 +228,27 @@ const WORK_REPORT_DOCX_TOOL = toolDefinition({
   },
 })
 
+export const TASK_HUB_V2_WORK_REPORT_DOCX_TOOL = toolDefinition({
+  name: 'xiaogui_work_report_docx',
+  label: '生成任务 Word 报告',
+  description: 'TaskHub V2 WORK：在当前受控Attempt工作树内直接生成新的DOCX。必须由Agent选择targetPath；Main规范化并核验目标。无需第二次用户确认。',
+  promptSnippet: '使用PREPARE提交草稿和工作树内DOCX目标相对路径，Main验证后直接生成待审阅产物',
+  sharedRuleIds: ['no-internal-runtime-details'],
+  usage: {
+    when: ['TaskHub V2 WORK任务要求生成标准Word报告时调用PREPARE，并选择工作树内新的.docx目标路径。'],
+    whenNot: ['普通WORK会话或用户指定自有模板时不得使用此TaskHub专用合同。'],
+  },
+  protocol: {
+    sequence: [
+      'PREPARE必须同时提供任务要求对应的draft和targetPath；targetPath是当前Attempt工作树内的DOCX相对路径。',
+      'Main返回成功即表示产物已写入受控工作树并等待验证与交付审阅；不得再请求用户确认或调用CONFIRM。',
+      '最小PREPARE示例：{"action":"PREPARE","targetPath":"reports/task-report.docx","draft":{"title":"项目周报","sections":[{"heading":"进展","paragraphs":["本周完成需求梳理。"],"bullets":[]}]}}。',
+    ],
+    output: ['不要重复草稿全文，不得声称已应用到原项目。'],
+  },
+})
+
+
 const WORK_DOCX_TOOL = toolDefinition({
   name: 'xiaogui_work_docx',
   label: '按模板生成文档',
@@ -439,6 +460,16 @@ export const WORK_REPORT_DOCX_CAPABILITY_V1 = {
 
 只在用户没有指定自有模板且明确要求生成 Word 时使用。PREPARE 只采用当前对话已形成的草稿，不补写未确认事实；打开预览后结束本轮，只有用户下一条消息明确确认才 CONFIRM。成品文档另存为新文件，不覆盖已有文件，不重复输出全文。`, '1.1.0'),
   toolDefinitions: { [WORK_REPORT_DOCX_TOOL.name]: WORK_REPORT_DOCX_TOOL },
+} as const satisfies XiaoguiCapabilityRegistrationV1
+
+const TASK_HUB_V2_WORK_REPORT_DOCX_CAPABILITY = {
+  ...WORK_REPORT_DOCX_CAPABILITY_V1,
+  version: '2.0.0',
+  minimumEffect: 'REVERSIBLE_DRAFT',
+  promptLayer: promptLayer('work.report-docx', `# TaskHub V2 标准 Word 报告协议
+
+仅在Main已授权的TaskHub V2 WORK Attempt中使用。调用PREPARE时必须同时提供任务要求对应的草稿和Agent选择的工作树内DOCX目标相对路径targetPath。Main核验后直接生成待验证、待交付审阅的工作树产物；无需也不得请求第二次用户确认，不调用CONFIRM。允许修正已由当前Attempt登记且摘要匹配的同一路径报告。`, '2.0.0'),
+  toolDefinitions: { [TASK_HUB_V2_WORK_REPORT_DOCX_TOOL.name]: TASK_HUB_V2_WORK_REPORT_DOCX_TOOL },
 } as const satisfies XiaoguiCapabilityRegistrationV1
 
 export const WORK_TEMPLATE_INTAKE_CAPABILITY_V1 = {
@@ -965,6 +996,7 @@ function fail(code: string): never {
 export function resolveEffectiveXiaoguiCapabilitiesV1(
   context: XiaoguiPromptContextV1,
   actualToolNames: readonly string[],
+  options: { readonly taskHubV2WorktreeAuthorized?: boolean } = {},
 ): readonly XiaoguiCapabilityRegistrationV1[] {
   const actual = new Set(actualToolNames)
   const candidateIds = requestedOrAutoActivatedCapabilityIds(context)
@@ -976,7 +1008,9 @@ export function resolveEffectiveXiaoguiCapabilitiesV1(
   }
   return [...candidateIds]
     .map((capabilityId): XiaoguiCapabilityRegistrationV1 =>
-      XIAOGUI_CAPABILITY_REGISTRY_V1[capabilityId])
+      options.taskHubV2WorktreeAuthorized && context.mode === 'WORK' && capabilityId === 'work.report-docx'
+        ? TASK_HUB_V2_WORK_REPORT_DOCX_CAPABILITY
+        : XIAOGUI_CAPABILITY_REGISTRY_V1[capabilityId])
     .filter((registration) => modeAllowsToolPolicy(registration.modes[context.mode]))
     .filter((registration) => !registration.requiresWorkspace || context.workspaceAvailable)
     .filter((registration) => phaseAllowsCapability(context.phase, registration))

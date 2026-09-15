@@ -1,5 +1,31 @@
 # HUB-RUNTIME-01 剩余工作方案
 
+## 2026-09-16｜f973fe0 第2门三项P2返修候选（待主管定向复验）
+
+- 主管 Standards APPROVE、Spec REQUEST_CHANGES；基线 `f973fe0710c6588f1dfc7773a5392c4a74bcafa6` 本地/上游/live一致、clean、三stash保持。c99接纳恢复P2不重开，已有通过证据保留。
+- P2-1：只为Main可信TaskHub V2 WORK同步报告工具schema、说明、示例和实际任务prompt：Agent自行选择工作树内targetPath，准备/生成无第二次用户批准；普通WORK/V1保留原合同。复用锁定Pi SDK及既有报告工具，不引新工具或模型配置。文件范围：worker报告工具/worker-runtime、共享prompt capabilities及必要Main pi-adapter/prompt装配；完成判据是无模型真实SDK报告工具完整调用到Main成功，实际schema和prompt均检查，旧合同保持。
+- P2-2：pi-adapter先规范化根内绝对路径和./路径，再执行既有项目/实体/链接边界及V1文件授权。完成判据：两个原合法输入通过、根外/.git/未授权仍拒绝；不以修复兼容性扩大授权。
+- P2-3：只补真实compose完成到beginDeliveryVerification首次SQLite保存之间窗口，恢复同一batch，验证受控目录归属与精确输入/目标/实际树后复用，或安全回收已证实归属目录；未知目录不删除、不替代成第二批次。文件范围：delivery-workflow、delivery-integration-worktree及必要既有私有store接缝。完成判据：真实SQLite注入首次保存失败，销毁重建消费者，同批次恢复READY_FOR_REVIEW且无新业务执行；增加未知/冲突目录拒绝覆盖检查。
+- 复用调查沿用本阶段已验证Pi SDK 0.84.1、现有专业Extension、Git worktree与SQLite组件；三个缺口均为既有适配合同/持久化窗口，使用原接口最小修补，不新增通用框架。唯一Sol编码上述接缝及相关定向测试，root维护文档、审查和集成；不动UI与旧现场。先回收最小目录恢复设计，再落其代码。
+- 验证仅上述新增/直接受影响用例、Node类型、变化TS lint、diff-check；若共享类型影响Web才补Web类型。无模型/Electron/旧P2/成熟工具全套/Apply/build/包扫描。更新原HANDOFF和开发记录，追加commit/push当前分支，固定SHA交主管；三项是否关闭由主管复验确定。automation接口仍缺失，heartbeat未启用、无ID，无旁路脚本。
+- 2026-09-16定向回收：V1路径正反6项、真实SQLite首次保存失败后重建同批恢复1项已通过。WORK初版测试却沿旧V1 Main仅把工具flag置true，不能作为V2证据；root中断并确认旧Sol停止后将WORK已有改动及其验证独占交新Sol `work_v2_p2_finish` 收口。旧Sol仅续Delivery/路径及相应测试，新Sol仅WORK/shared prompt/worker/新WORK组合测试，保留所有编辑，不并行写同一模块。此调整仅纠正验证接缝，不重做产品实现或新增验收门。
+
+### 本轮Delivery/路径回收（2026-09-16）
+
+- P2-2：`pi-adapter.ts`先resolve再计算根内相对路径，保留Windows路径段/ADS/设备名、实体链接与V1 manifest/permission核验；实际工具仍使用Main规范目标。`pi-adapter-lifecycle.test.ts`正例2项、拒绝4项通过（原工具exit0回执，无原始stdout文件，不为日志重跑）。
+- P2-3：`delivery-integration-worktree.ts`仅采用原batch受控目录，核真实路径/原repo登记、`.git`/commondir、HEAD、产物实体/摘要、净变化集合与独立临时index预期树；包含untracked/ignored，Git rename显式禁用合并显示，路径以NUL解析，Git clean规范化保持一致。没有新DB或通用恢复框架，不删除未知目录。原workflow/composer无改动，异常继续安全报错；显式业务冲突仍按原拒绝语义。
+- `production-wiring-v2.test.ts`本轮变为明确保存窗口用例：真实Hub SQLite `RAISE(ABORT)`触发首次verification写入失败并观察原异常，核目录已创建，关闭后重建composition，再由生产recover恢复原batch到READY_FOR_REVIEW。batch=1、verification记录=1，Attempt、Worker、prompt不增，实际Diff可消费。`production-wiring-p2/11-full-save-window-recovery.log`：1/1、exit0、44.00s；不是整机崩溃或真实模型旅程。原正常链路H1一次结果证据沿用前批25，不移植故障中尚未完成的H1时序假设。
+- 同目录16为最后底层中文/空格managedRoot、中文路径/CRLF/attributes恢复1项；14为未知目录内容保留拒绝1项。Sol定向lint exit0、stdout为空，拟名15/17的文件未实际生成，不作实体证据；最终使用root日志。03早期同底层证据不累计新用例。未知目录拒绝证据在integration层，同batch不增由11证明，不冒称整套未知目录workflow旅程。
+- 失败/偏差保留：05测试初始化与EPERM，06触发器/查询错用输入私有库，08故障期间套用正常H1时序，09/10因Git rename显示造成恢复路径集合不一致；11修复后通过。12虽名为WORK V2且测试通过，实际仍走V1 Main，不计V2证据；13旧V1对照通过可复用。WORK最终证据由新Sol另行补齐，不拿注册或伪成功回执代替完整调用。
+
+### 本轮WORK与最终集成回收
+
+- P2-1生产修补只涉及共享prompt capabilities、worker-runtime、原Prompt builder/session extension和报告工具。Main可信init位选择V2同名工具/能力定义及对应Prompt层；schema要求PREPARE/draft/targetPath，实际工具禁止CONFIRM且只接受Main已登记Attempt产物回执。新规则替换原合同而非追加相反指令；原普通WORK/V1定义保持。相同受信产物路径的既有修正能力不变。
+- 新 `work-v2-tool-main-p2.test.ts`经真实Hub接纳factory/Main trusted port取得V2 Attempt，断言生产传入worktreeAuthorized，再启动锁定SDK真实Session/工具；原host请求经传输替身桥到真实Main，真实DOCX渲染/安全审计/写盘及SQLite登记。目标由工具调用时选择，不在原请求/文件清单中，无第二次permission/确认，原项目没有报告写入。SDK真实AgentSession.prompt走before_agent_start，底层模型prompt/auth检查在测试替身，不调用模型；直接核session.systemPrompt等于最终Prompt，含targetPath而无旧确认与无路径示例。
+- `work-01-v2-main-sdk-final.log`：1/1、exit0，24.82s；`work-02-sdk-work-branch.log`：WORK SDK分支1/1；`work-03-v1-composition-contrast.log`：旧V1对照1/1。**这些work-*文件是子任务从工具回执整理的摘要，不是原始stdout**；work-00保留首轮误将V1 permission事件期望用于V2的失败，生产代码未因此改变。伪V2参数分支已移除，旧WORK对照改用独立系统临时目录，旧DESIGN固定目录分支未运行。
+- 本次实际7生产文件、6测试文件（含新WORK组合）和2份仓库文档。所有改动均在原隔离worktree，未新增依赖或框架。最终Node/Web类型、全部变化TS lint、diff-check按root最终日志登记；首轮Node仅两处新增测试类型错误，已补显式this类型和sessionFile缺失guard，功能用例未重复运行。
+- **三项实施自查已完成，主管P2关闭仍待新固定SHA定向复验。** 不重新打开c99，不扩大UI/自动修正/Apply行为。固定SHA与远端核对写原HANDOFF。未运行模型/Electron/原任务/业务profile或数据库/原安装现场/业务Apply/构建/包扫描，不合主线；旧被拒清理残留不处理。真实模型/完整业务/整机崩溃仍不在本轮证明范围。
+
 ## 2026-09-15｜第2门生产接线（实施回收，待桌面主管定向复验）
 
 ### 本批回收与证据边界

@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { generateKeyPairSync } from 'node:crypto'
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { DatabaseSync } from 'node:sqlite'
 
 import { createWriteToolDefinition } from '@earendil-works/pi-coding-agent'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -36,6 +37,7 @@ import { registerHubTaskWorkerHandlers } from '../hub-task/worker-ipc'
 import { createPiAttemptDeleteToolDefinitionV1, createPiAttemptRenameToolDefinitionV1, createPiAttemptToolLifecycleV1 } from '../../../worker/xiaogui-coding-extensions/attempt-tool-extension'
 import { createXiaoguiRuntimeCompositionV1, type XiaoguiRuntimeCompositionV1 } from './runtime-composition'
 import { createHubTaskExecutionLifecycleCoordinatorV1 } from './hub-execution-lifecycle'
+import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
 
 const roots: string[] = []
 const compositions: XiaoguiRuntimeCompositionV1[] = []
@@ -50,12 +52,14 @@ afterEach(async () => {
   ipcHandlers.clear()
 })
 
-it('runs the registered accept handler through default Main Pi verification, automatic Delivery, and V2 review diff', async () => {
+it('recovers the same automatic V2 Delivery after the first SQLite verification save fails', async () => {
   const projectRoot = fixtureProject()
   const userDataDir = temp('xiaogui-production-wiring-user-')
   let promptCount = 0
   let closeCount = 0
+  let workerFactoryCount = 0
   const workerFactory: NonNullable<PiRuntimeOptionsV1['workerFactory']> = input => {
+    workerFactoryCount += 1
     let sessionId = ''
     let sessionFile = ''
     let requestOrdinal = 0
@@ -91,10 +95,23 @@ it('runs the registered accept handler through default Main Pi verification, aut
     }
     return worker
   }
-  const composition = createXiaoguiRuntimeCompositionV1({ userDataDir, productionEnabled: false,
+  let composition = createXiaoguiRuntimeCompositionV1({ userDataDir, productionEnabled: false,
     lookup: { lookup: async address => ({ kind: 'FOUND', scope: { ...address, sessionMode: 'CODING' } }) },
     projectResolver: { resolveProjectRoot: () => projectRoot }, piWorkerFactory: workerFactory })
   compositions.push(composition)
+  const hubDbPath = join(userDataDir, 'xiaogui-task-hub-m2a.sqlite')
+  new CollaborationHubSqliteStoreV1(hubDbPath).close()
+  const beginFailures: unknown[] = []
+  const originalBegin = CollaborationHubSqliteStoreV1.prototype.beginDeliveryVerification
+  const beginSpy = vi.spyOn(CollaborationHubSqliteStoreV1.prototype, 'beginDeliveryVerification')
+    .mockImplementation(function (this: CollaborationHubSqliteStoreV1, ...args) {
+      try { return originalBegin.apply(this, args) }
+      catch (error) { beginFailures.push(error); throw error }
+    })
+  const faultDb = new DatabaseSync(hubDbPath)
+  try {
+    faultDb.exec("create trigger fail_first_delivery_verification before insert on delivery_verification_attempts begin select raise(abort, 'P2_FIRST_SAVE_FAILED'); end")
+  } finally { faultDb.close() }
 
   const state = createInMemoryHubTaskWorkerStateStoreV1()
   state.upsertAssignment(assignment(), { subjectId: 'subject-1', nodeId: 'node-1', keyId: 'key-1' })
@@ -138,9 +155,37 @@ it('runs the registered accept handler through default Main Pi verification, aut
       db.close()
       throw new Error(`${String(error)} PI=${JSON.stringify(rows)}`)
     }
-    await vi.waitFor(() => expect(composition.delivery.readLatestDelivery(ADDRESS, state.requireAssignment('assignment-1').acceptAndExecuteV2!.flowId as never))
-      .toMatchObject({ state: 'READY_FOR_REVIEW' }), { timeout: 30_000, interval: 100 })
     const binding = state.requireAssignment('assignment-1').acceptAndExecuteV2!
+    await vi.waitFor(() => expect(composition.delivery.readLatestDelivery(ADDRESS, binding.flowId as never))
+      .toMatchObject({ state: 'COMPOSING' }), { timeout: 30_000, interval: 100 })
+    await vi.waitFor(() => expect(beginFailures.map(String).join('\n')).toContain('P2_FIRST_SAVE_FAILED'))
+    const integrationEntries = readdirSync(join(userDataDir, 'xiaogui', 'delivery-worktrees'))
+      .filter(name => name.startsWith('delivery-'))
+    expect(integrationEntries).toHaveLength(1)
+    const beforeRecovery = new DatabaseSync(hubDbPath, { readOnly: true })
+    const batchRows = beforeRecovery.prepare('select batch_id from delivery_batches').all() as Array<{ batch_id: string }>
+    const attemptCountBefore = (beforeRecovery.prepare('select count(*) as count from attempts').get() as { count: number }).count
+    beforeRecovery.close()
+    expect(batchRows).toHaveLength(1)
+    const batchId = batchRows[0].batch_id
+    service.close()
+    await composition.close()
+    compositions.splice(compositions.indexOf(composition), 1)
+    const repairDb = new DatabaseSync(hubDbPath)
+    repairDb.exec('drop trigger fail_first_delivery_verification')
+    repairDb.close()
+    composition = createXiaoguiRuntimeCompositionV1({ userDataDir, productionEnabled: false,
+      lookup: { lookup: async address => ({ kind: 'FOUND', scope: { ...address, sessionMode: 'CODING' } }) },
+      projectResolver: { resolveProjectRoot: () => projectRoot }, piWorkerFactory: workerFactory })
+    compositions.push(composition)
+    await composition.taskExecution.recover()
+    await vi.waitFor(() => expect(composition.delivery.readLatestDelivery(ADDRESS, binding.flowId as never))
+      .toMatchObject({ batchId, state: 'READY_FOR_REVIEW' }), { timeout: 30_000, interval: 100 })
+    const afterRecovery = new DatabaseSync(hubDbPath, { readOnly: true })
+    expect((afterRecovery.prepare('select count(*) as count from delivery_batches').get() as { count: number }).count).toBe(1)
+    expect((afterRecovery.prepare('select count(*) as count from attempts').get() as { count: number }).count).toBe(attemptCountBefore)
+    expect((afterRecovery.prepare('select count(*) as count from delivery_verification_attempts').get() as { count: number }).count).toBe(1)
+    afterRecovery.close()
     const review = await composition.codingReview.read({ address: ADDRESS, attemptId: attemptId as never })
     expect(review.unifiedDiff).toContain('src/modify.ts')
     expect(review.unifiedDiff).toContain('src/created.ts')
@@ -149,12 +194,11 @@ it('runs the registered accept handler through default Main Pi verification, aut
     expect(review.unifiedDiff).toContain('src/renamed.txt')
     expect(review.bundle.unresolvedIssues).toEqual([])
     expect(composition.delivery.readLatestDelivery(ADDRESS, binding.flowId as never)).toMatchObject({ state: 'READY_FOR_REVIEW' })
-    await vi.waitFor(() => expect(state.pendingEvidence().filter(item => item.kind === 'RESULT')).toHaveLength(1))
-    await executionLifecycle.reconcile({ address: ADDRESS, flowId: binding.flowId!, attemptId: binding.attemptId })
-    expect(state.pendingEvidence().filter(item => item.kind === 'RESULT')).toHaveLength(1)
     expect(promptCount).toBe(1)
     expect(closeCount).toBe(1)
+    expect(workerFactoryCount).toBe(1)
   } finally {
+    beginSpy.mockRestore()
     service.close()
   }
 }, 60_000)

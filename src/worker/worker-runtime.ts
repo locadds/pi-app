@@ -776,6 +776,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
                 failXiaoguiPromptAssemblyV1(error)
               }
             },
+            { taskHubV2WorktreeAuthorized: Boolean(st.taskHubAttemptId && st.taskHubWorktreeAuthorized) },
           ),
           ...(promptContext.mode === 'CODING'
             ? [createXiaoguiCodingContextExtensionV1(() => st.promptCodingContext).factory]
@@ -789,6 +790,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
           const sessionToolOptions = {
             getSourceSessionId: collaborationToolOptions.getSourceSessionId,
             getSourceRunId: () => st.currentRunId || undefined,
+            taskHubWorktreeAuthorized: Boolean(st.taskHubAttemptId && st.taskHubWorktreeAuthorized && promptContext.mode === 'WORK'),
           }
           const loaded = addXiaoguiWorkerToolsV1(
             decorateQuestionnaireTools(result, cwd),
@@ -839,6 +841,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       created.session,
       services,
       initialContext,
+      { taskHubV2WorktreeAuthorized: Boolean(st.taskHubAttemptId && st.taskHubWorktreeAuthorized) },
     )
     st.promptContextCandidate = promptContext
     st.promptContext = initialState.context
@@ -848,6 +851,7 @@ function buildRuntimeFactory(): CreateAgentSessionRuntimeFactory {
       created.session,
       services,
       st.promptTurnContext ?? initialContext,
+      { taskHubV2WorktreeAuthorized: Boolean(st.taskHubAttemptId && st.taskHubWorktreeAuthorized) },
     )
     return {
       ...created,

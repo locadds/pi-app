@@ -55,6 +55,8 @@ export interface BuildEffectiveXiaoguiPromptInputV1 {
   /** Pi-only merged guidelines whose original Tool ownership is unavailable. */
   readonly runtimeCompatibilityGuidelines?: readonly string[]
   readonly generatedAt?: string
+  /** Main/Worker init proof only; never inferred from prompt text. */
+  readonly taskHubV2WorktreeAuthorized?: boolean
 }
 
 export interface BuiltEffectiveXiaoguiPromptV1 {
@@ -248,7 +250,13 @@ export function createXiaoguiPromptBuilderV1(
       )) {
         fail('XIAOGUI_PROMPT_TOOL_PHASE_MISMATCH')
       }
-      const capabilities = resolveEffectiveXiaoguiCapabilitiesV1(candidateContext, toolNames)
+      const capabilities = resolveEffectiveXiaoguiCapabilitiesV1(candidateContext, toolNames, {
+        taskHubV2WorktreeAuthorized: input.taskHubV2WorktreeAuthorized,
+      })
+      const effectiveLayerRegistry = new Map(byId)
+      if (input.taskHubV2WorktreeAuthorized) {
+        for (const capability of capabilities) effectiveLayerRegistry.set(capability.promptLayer.id, capability.promptLayer)
+      }
       const context = parseXiaoguiPromptContextV1({
         ...candidateContext,
         enabledCapabilities: capabilities.map((capability) => capability.id),
@@ -266,7 +274,7 @@ export function createXiaoguiPromptBuilderV1(
         ...requiredLayerIds(context),
         ...capabilities.map((capability) => capability.promptLayer.id),
       ].map((id) => {
-        const layer = byId.get(id)
+        const layer = effectiveLayerRegistry.get(id)
         if (!layer || !layer.required) fail('XIAOGUI_PROMPT_REQUIRED_LAYER_MISSING')
         return layer
       })

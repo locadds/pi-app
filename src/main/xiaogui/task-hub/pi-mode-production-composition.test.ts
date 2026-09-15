@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 import type {
   LoadExtensionsResult,
@@ -100,9 +101,9 @@ afterEach(async () => {
 })
 
 describe('Pi WORK/DESIGN production composition', () => {
-  it('runs a WORK report tool through the Attempt and delivers a real DOCX without tsc', async () => {
+  it('runs a WORK report tool through the V1 Attempt and delivers a real DOCX without tsc', async () => {
     const projectRoot = createFixtureProject('work')
-    const userDataDir = tempRoot('work-user-data-')
+    const userDataDir = systemTempRoot('xiaogui-work-user-data-')
     const promptDone = deferred<void>()
     const toolCalls: WorkerHostToolRequestV1[] = []
     const modelSelections: string[] = []
@@ -489,7 +490,7 @@ function createFixtureWorkerFactory(
 }
 
 function createFixtureProject(mode: 'work' | 'design'): string {
-  const root = tempRoot(`mode-project-${mode}-`)
+  const root = mode === 'work' ? systemTempRoot('xiaogui-mode-project-work-') : tempRoot(`mode-project-${mode}-`)
   writeFileSync(join(root, 'PROJECT.md'), `# ${mode.toUpperCase()} fixture\n\nA controlled ${mode} project.\n`, 'utf8')
   mkdirSync(join(root, 'reports'), { recursive: true })
   writeFileSync(join(root, 'reports', '.gitkeep'), '', 'utf8')
@@ -634,6 +635,12 @@ function track(composition: XiaoguiRuntimeCompositionV1): XiaoguiRuntimeComposit
 function tempRoot(prefix: string): string {
   mkdirSync(TEST_ROOT, { recursive: true })
   const root = mkdtempSync(join(TEST_ROOT, prefix))
+  roots.push(root)
+  return root
+}
+
+function systemTempRoot(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix))
   roots.push(root)
   return root
 }

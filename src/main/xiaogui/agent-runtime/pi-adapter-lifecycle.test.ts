@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { AppEvent } from '@shared/app-events'
@@ -353,6 +353,31 @@ it('reserves a tool call before awaiting permission, and rejects a duplicate wit
   const events: RuntimeEventV1[] = []
   for await (const event of f.adapter.stream(f.id, 0)) events.push(event)
   expect(events.filter(event => event.type === 'PERMISSION_REQUESTED')).toHaveLength(1)
+})
+
+it.each([
+  ['root absolute', (root: string) => join(root, 'a.txt')],
+  ['dot relative', () => './a.txt'],
+])('normalizes a legacy V1 %s path before the unchanged manifest and permission gates', async (_label, pathOf) => {
+  const f = await fixture()
+  const callId = `v1-${_label.replaceAll(' ', '-')}`
+  const call = f.call(callId, 'read', { path: pathOf(f.root) })
+  const event = await permission(f.adapter, f.id)
+  await f.adapter.permission({ type: 'ALLOW_ONCE', runtimeSessionId: f.id, decisionRequestId: `allow-${_label}`,
+    proofId: 'proof', proofDigest: sha('proof'), permissionRequestId: event.permissionRequestId,
+    challengeDigest: event.challengeDigest, scope: f.request.scope })
+  await expect(call).resolves.toMatchObject({ ok: true, value: { authorizedRelativePath: 'a.txt' } })
+  await expect(f.settle(callId)).resolves.toMatchObject({ ok: true })
+})
+
+it.each([
+  ['outside absolute', (root: string) => resolve(root, '..', 'outside.txt')],
+  ['git metadata', (root: string) => join(root, '.git', 'config')],
+  ['alternate data stream', (root: string) => join(root, 'a.txt:stream')],
+  ['unapproved file', (root: string) => join(root, 'other.txt')],
+])('keeps the legacy V1 boundary after normalizing a %s path', async (_label, pathOf) => {
+  const f = await fixture()
+  await expect(f.call(`v1-reject-${_label.replaceAll(' ', '-')}`, 'read', { path: pathOf(f.root) })).resolves.toMatchObject({ ok: false })
 })
 
 it('recovers unknown work without dispatching a second prompt or creating another Worker', async () => {

@@ -694,11 +694,12 @@ export class PiRuntimeAdapterV1 implements AgentRuntimeAdapterV1 {
 }
 
 function canonicalRelativePath(root: string, value: unknown): string | null {
-  if (typeof value !== 'string' || !value || value.includes('\0') || value.includes(':') || isAbsolute(value)) return null
-  const rawParts = value.replaceAll('\\', '/').split('/')
+  if (typeof value !== 'string' || !value || value.includes('\0')) return null
+  const canonicalRoot = resolve(root)
+  const target = isAbsolute(value) ? resolve(value) : resolve(canonicalRoot, value)
+  const path = relative(canonicalRoot, target).split(sep).join('/')
+  const rawParts = path.split('/')
   if (rawParts.some(part => !isSafeWindowsPathSegment(part))) return null
-  const target = resolve(root, ...rawParts)
-  const path = relative(root, target).split(sep).join('/')
   return path && !isAbsolute(path) && !path.split('/').some(part => !part || part === '..' || part.toLowerCase() === '.git')
     ? path
     : null
@@ -706,7 +707,7 @@ function canonicalRelativePath(root: string, value: unknown): string | null {
 
 function isSafeWindowsPathSegment(part: string): boolean {
   if (!part || part === '.' || part === '..' || part.toLowerCase() === '.git'
-    || /[\u0000-\u001f<>"|?*]/.test(part) || /[. ]$/.test(part)) return false
+    || /[\u0000-\u001f<>:"|?*]/.test(part) || /[. ]$/.test(part)) return false
   const base = part.split('.')[0].toUpperCase()
   return !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(base)
 }

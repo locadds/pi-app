@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -113,12 +113,14 @@ describe('MainProcessDeliveryIntegrationWorktreePortV1', () => {
   it('rejects a repeat integration without overwriting an existing result root', async () => {
     const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-integration-repeat-'))
     const repo = join(root, 'repo')
-    const managedRoot = join(root, 'managed')
+    const managedRoot = join(root, '交付 工作树')
     let integrationWorktreeRoot: string | undefined
     try {
       await git(root, ['init', 'repo'])
-      await writeFile(join(repo, 'a.txt'), 'old')
-      await git(repo, ['add', 'a.txt'])
+      const relativePath = '报告 空间.txt'
+      await writeFile(join(repo, '.gitattributes'), '*.txt text eol=lf\n')
+      await writeFile(join(repo, relativePath), 'old\r\n')
+      await git(repo, ['add', '.gitattributes', relativePath])
       await git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'])
       const baseRevision = (await git(repo, ['rev-parse', '--verify', 'HEAD'])).trim()
       const baselineTreeHash = (await git(repo, ['rev-parse', '--verify', 'HEAD^{tree}'])).trim()
@@ -135,42 +137,73 @@ describe('MainProcessDeliveryIntegrationWorktreePortV1', () => {
         target,
         batchId: 'xhbd_repeat_result',
       })
-      const firstContent = Buffer.from('first result')
+      const firstContent = Buffer.from('first result\r\n')
       const first = await port.integrate([
         {
           operation: 'MODIFY',
-          relativePath: 'a.txt',
-          baselineDigest: digest('old'),
-          contentDigest: digest('first result'),
+          relativePath,
+          baselineDigest: digest('old\r\n'),
+          contentDigest: digest('first result\r\n'),
           contentArtifactId: 'artifact-first' as never,
           content: firstContent,
           sourceTaskChangeSetId: 'xhbcs_repeat' as never,
         },
       ])
       integrationWorktreeRoot = first.privateIntegrationContext.worktreeRoot
-      await expect(readFile(join(integrationWorktreeRoot, 'a.txt'), 'utf8')).resolves.toBe('first result')
+      await expect(readFile(join(integrationWorktreeRoot, relativePath), 'utf8')).resolves.toBe('first result\r\n')
+
+      await expect(port.integrate([{
+        operation: 'MODIFY', relativePath, baselineDigest: digest('old\r\n'), contentDigest: digest('first result\r\n'),
+        contentArtifactId: 'artifact-first' as never, content: firstContent, sourceTaskChangeSetId: 'xhbcs_repeat' as never,
+      }])).resolves.toEqual(first)
 
       await expect(
         port.integrate([
           {
             operation: 'MODIFY',
-            relativePath: 'a.txt',
-            baselineDigest: digest('old'),
-            contentDigest: digest('second result'),
+            relativePath,
+            baselineDigest: digest('old\r\n'),
+            contentDigest: digest('second result\r\n'),
             contentArtifactId: 'artifact-second' as never,
-            content: Buffer.from('second result'),
+            content: Buffer.from('second result\r\n'),
             sourceTaskChangeSetId: 'xhbcs_repeat' as never,
           },
         ]),
       ).rejects.toMatchObject({ reasonCode: 'DELIVERY_WORKTREE_BASELINE_DRIFT' })
-      await expect(readFile(join(integrationWorktreeRoot, 'a.txt'), 'utf8')).resolves.toBe('first result')
-      await expect(readFile(join(repo, 'a.txt'), 'utf8')).resolves.toBe('old')
+      await expect(readFile(join(integrationWorktreeRoot, relativePath), 'utf8')).resolves.toBe('first result\r\n')
+      await expect(readFile(join(repo, relativePath), 'utf8')).resolves.toBe('old\r\n')
     } finally {
       if (integrationWorktreeRoot) {
         await cleanupDeliveryIntegrationWorktreeRootV1(repo, integrationWorktreeRoot)
       }
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  it('leaves an unknown colliding delivery directory untouched', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'xiaogui-delivery-integration-unknown-'))
+    const repo = join(root, 'repo')
+    const managedRoot = join(root, 'managed')
+    const batchId = 'xhbd_unknown_collision'
+    const unknownRoot = join(managedRoot, `delivery-${createHash('sha256').update(batchId).digest('hex').slice(0, 32)}`)
+    try {
+      await git(root, ['init', 'repo'])
+      await writeFile(join(repo, 'a.txt'), 'old')
+      await git(repo, ['add', 'a.txt'])
+      await git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'])
+      await mkdir(unknownRoot, { recursive: true })
+      await writeFile(join(unknownRoot, 'owner.txt'), 'not a delivery worktree')
+      const baseRevision = (await git(repo, ['rev-parse', '--verify', 'HEAD'])).trim()
+      const baselineTreeHash = (await git(repo, ['rev-parse', '--verify', 'HEAD^{tree}'])).trim()
+      const projectId = `xgp1_${'8'.repeat(64)}`
+      const port = new MainProcessDeliveryIntegrationWorktreePortV1({ projectResolver: { resolveProjectRoot: () => repo },
+        managedRoot, batchId, target: { projectId, baseRevision, baselineTreeHash,
+          initialTargetFingerprint: deliveryTargetFingerprintV1({ projectId, baseRevision, baselineTreeHash }) } })
+      await expect(port.integrate([{ operation: 'MODIFY', relativePath: 'a.txt', baselineDigest: digest('old'),
+        contentDigest: digest('new'), contentArtifactId: 'artifact-unknown' as never, content: Buffer.from('new'),
+        sourceTaskChangeSetId: 'xhbcs_unknown' as never }])).rejects.toMatchObject({ reasonCode: 'DELIVERY_WORKTREE_BASELINE_DRIFT' })
+      await expect(readFile(join(unknownRoot, 'owner.txt'), 'utf8')).resolves.toBe('not a delivery worktree')
+    } finally { await rm(root, { recursive: true, force: true }) }
   })
 })
 

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import * as sdk from '@earendil-works/pi-coding-agent'
 import { Value } from 'typebox/value'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -22,6 +23,7 @@ afterEach(async () => {
   st.taskHubAttemptId = undefined
   st.taskHubDesignExtensionPath = undefined
   st.taskHubWorktreeAuthorized = undefined
+  st.currentRunId = ''
   st.uiBridge = null
   st.widgetHost?.dispose()
   st.widgetHost = null
@@ -32,7 +34,9 @@ afterEach(async () => {
 // Real locked SDK and the production Worker factory. No prompt/model request,
 // Electron window, user profile, native runtime replacement or TaskHub fake.
 it.each(['WORK', 'DESIGN', 'CODING'] as const)('boots the existing %s Pi harness with only the Attempt tools', async mode => {
-  const root = mkdtempSync('E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/sdk-bootstrap-')
+  const root = mode === 'DESIGN'
+    ? mkdtempSync('E:/XiaoguiInternalCandidate/hub-runtime-01-pi-20260910/sdk-bootstrap-')
+    : mkdtempSync(join(tmpdir(), 'xiaogui-taskhub-sdk-bootstrap-'))
   roots.push(root)
   const project = join(root, 'project')
   const agentDir = join(root, 'agent')
@@ -64,6 +68,34 @@ it.each(['WORK', 'DESIGN', 'CODING'] as const)('boots the existing %s Pi harness
   expect(st.session?.getActiveToolNames().sort()).toEqual(expected)
   for (const tool of expected) expect(st.session?.getToolDefinition(tool)).toBeDefined()
   expect(st.session?.getAllTools().some(tool => tool.name === 'bash')).toBe(false)
+  if (mode === 'WORK') {
+    st.currentRunId = 'run-sdk-bootstrap'
+    const definition = st.session?.getToolDefinition('xiaogui_work_report_docx')
+    if (!definition) throw new Error('WORK_REPORT_DEFINITION_MISSING')
+    expect(Value.Check(definition.parameters, { action: 'PREPARE', targetPath: 'reports/final.docx',
+      draft: { title: '报告', sections: [{ heading: '结论', paragraphs: ['正文'], bullets: [] }] } })).toBe(true)
+    expect(Value.Check(definition.parameters, { action: 'PREPARE',
+      draft: { title: '报告', sections: [{ heading: '结论', paragraphs: ['正文'], bullets: [] }] } })).toBe(false)
+    expect(st.effectivePrompt).toContain('targetPath')
+    expect(st.effectivePrompt).not.toContain('用户下一条消息明确确认才调用 CONFIRM')
+    expect(definition.description).toContain('无需第二次用户确认')
+
+    sendToMainMock.mockClear()
+    const execution = definition.execute('work-report-sdk', { action: 'PREPARE', targetPath: 'reports/final.docx',
+      draft: { title: '报告', sections: [{ heading: '结论', paragraphs: ['正文'], bullets: [] }] } } as never,
+    undefined, undefined, undefined as never)
+    await vi.waitFor(() => expect(sendToMainMock).toHaveBeenCalledOnce())
+    const request = sendToMainMock.mock.calls[0]?.[0] as { requestId: string; method: string; payload: Record<string, unknown> }
+    expect(request).toMatchObject({ method: 'xiaogui.work.report-docx.v1', payload: {
+      action: 'PREPARE', targetPath: 'reports/final.docx', toolCallId: 'work-report-sdk',
+    } })
+    receiveWorkerHostToolResponse({ type: 'host-tool-response', requestId: request.requestId, outcome: { ok: true, value: {
+      kind: 'XIAOGUI_WORK_REPORT_DOCX_ATTEMPT_ARTIFACT', relativePath: 'reports/final.docx', sha256: `sha256:${'5'.repeat(64)}`,
+    } } })
+    await expect(execution).resolves.toMatchObject({ details: {
+      kind: 'XIAOGUI_WORK_REPORT_DOCX_ATTEMPT_ARTIFACT', relativePath: 'reports/final.docx',
+    } })
+  }
   if (mode === 'DESIGN') {
     const definition = st.session?.getToolDefinition('design_project')
     expect(definition).toBeDefined()
