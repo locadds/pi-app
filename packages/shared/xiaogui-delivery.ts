@@ -81,6 +81,79 @@ export interface DeliveryFileChangeSummaryV1 {
 /** Compatibility name for the public, byte-free file summary. */
 export type DeliveryFileChangeV1 = DeliveryFileChangeSummaryV1
 
+/**
+ * Versioned file effects for the first DELETE/CREATE delivery seam.
+ *
+ * V1 intentionally remains CREATE/MODIFY-only. A DELETE has no result bytes
+ * or content artifact; its baseline bytes are retained privately by Apply for
+ * rollback. `rename` is display/validation metadata, not a second transaction
+ * type: a rename is still represented as one DELETE and one CREATE effect.
+ */
+export type DeliveryRenameRoleV2 = 'SOURCE' | 'TARGET'
+
+export interface DeliveryRenameLinkV2 {
+  readonly groupId: string
+  readonly counterpartPath: string
+  readonly role: DeliveryRenameRoleV2
+}
+
+interface DeliveryFileChangeSummaryV2Base {
+  readonly relativePath: string
+  readonly sourceTaskChangeSetIds: readonly TaskChangeSetId[]
+  readonly rename?: DeliveryRenameLinkV2
+}
+
+export type DeliveryFileChangeSummaryV2 =
+  | (DeliveryFileChangeSummaryV2Base & {
+      readonly operation: 'MODIFY'
+      readonly baselineDigest: Sha256Digest
+      readonly contentDigest: Sha256Digest
+      readonly contentArtifactId: ArtifactId
+    })
+  | (DeliveryFileChangeSummaryV2Base & {
+      readonly operation: 'CREATE'
+      readonly baselineDigest: null
+      readonly contentDigest: Sha256Digest
+      readonly contentArtifactId: ArtifactId
+    })
+  | (DeliveryFileChangeSummaryV2Base & {
+      readonly operation: 'DELETE'
+      readonly baselineDigest: Sha256Digest
+      readonly contentDigest: null
+      readonly contentArtifactId?: never
+    })
+
+export interface DeliveryChangeSetV2 extends Omit<DeliveryChangeSetV1, 'version' | 'fileChanges' | 'digest'> {
+  readonly version: 2
+  readonly fileChanges: readonly DeliveryFileChangeSummaryV2[]
+  readonly digest: Sha256Digest
+}
+
+export interface DeliveryGateSubjectV2 {
+  readonly deliveryChangeSetId: DeliveryChangeSetId
+  readonly version: 2
+  readonly digest: Sha256Digest
+}
+
+interface DeliveryApplyReceiptBaseV2 {
+  readonly applyAttemptId: DeliveryApplyAttemptId
+  readonly deliveryChangeSetId: DeliveryChangeSetId
+  readonly changedRelativePaths: readonly string[]
+  readonly receiptDigest: Sha256Digest
+}
+
+export type DeliveryApplyReceiptV2 =
+  | (DeliveryApplyReceiptBaseV2 & {
+      readonly verdict: 'SUCCEEDED'
+      readonly targetFingerprint: Sha256Digest
+      readonly safeCode?: never
+    })
+  | (DeliveryApplyReceiptBaseV2 & {
+      readonly verdict: 'FAILED_ROLLED_BACK' | 'OUTCOME_UNKNOWN'
+      readonly safeCode: DeliveryApplySafeCodeV1
+      readonly targetFingerprint?: never
+    })
+
 export interface DeliveryRecoveryLineageV1 {
   readonly sourceBatchId: DeliveryBatchId
   readonly sourceDeliveryChangeSetId: DeliveryChangeSetId
@@ -298,6 +371,31 @@ export function deliveryChangeSetDigestV1(
   })
 }
 
+export function deliveryChangeSetDigestV2(
+  value: Omit<DeliveryChangeSetV2, 'digest'> | DeliveryChangeSetV2,
+): Sha256Digest {
+  return digest({
+    domain: 'XIAOGUI_DELIVERY_CHANGESET_V2',
+    kind: value.kind,
+    version: value.version,
+    deliveryChangeSetId: value.deliveryChangeSetId,
+    batchId: value.batchId,
+    selectionDraftId: value.selectionDraftId,
+    flowId: value.flowId,
+    selectionDigest: value.selectionDigest,
+    taskChangeSetIds: value.taskChangeSetIds,
+    taskChangeSets: value.taskChangeSets,
+    dependencyOrder: value.dependencyOrder,
+    fileChanges: value.fileChanges,
+    target: value.target,
+    integrationTreeHash: value.integrationTreeHash,
+    ...('recoveryLineage' in value && value.recoveryLineage ? { recoveryLineage: value.recoveryLineage } : {}),
+    evidenceArtifactIds: value.evidenceArtifactIds,
+    qaConfigVersion: value.qaConfigVersion,
+    createdAt: value.createdAt,
+  })
+}
+
 export function deliveryVerificationRequestDigestV1(
   value: Omit<DeliveryVerificationRequestV1, 'requestDigest'> | DeliveryVerificationRequestV1,
 ): Sha256Digest {
@@ -400,7 +498,29 @@ export function deliveryApplyReceiptDigestV1(
   })
 }
 
+export function deliveryApplyReceiptDigestV2(
+  value: Omit<DeliveryApplyReceiptV2, 'receiptDigest'> | DeliveryApplyReceiptV2,
+): Sha256Digest {
+  return digest({
+    domain: 'XIAOGUI_DELIVERY_APPLY_RECEIPT_V2',
+    applyAttemptId: value.applyAttemptId,
+    deliveryChangeSetId: value.deliveryChangeSetId,
+    verdict: value.verdict,
+    changedRelativePaths: value.changedRelativePaths,
+    targetFingerprint: 'targetFingerprint' in value ? value.targetFingerprint : null,
+    safeCode: 'safeCode' in value ? value.safeCode : null,
+  })
+}
+
 export function deliveryGateSubjectV1(changeSet: DeliveryChangeSetV1): DeliveryGateSubjectV1 {
+  return {
+    deliveryChangeSetId: changeSet.deliveryChangeSetId,
+    version: changeSet.version,
+    digest: changeSet.digest,
+  }
+}
+
+export function deliveryGateSubjectV2(changeSet: DeliveryChangeSetV2): DeliveryGateSubjectV2 {
   return {
     deliveryChangeSetId: changeSet.deliveryChangeSetId,
     version: changeSet.version,

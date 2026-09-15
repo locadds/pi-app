@@ -156,6 +156,44 @@ export interface TaskPatchArtifactV1 {
   readonly files: readonly TaskPatchFileSnapshotV1[]
 }
 
+/** Versioned patch shape reserved for the DELETE/CREATE seam spike. */
+export interface TaskPatchRenameLinkV2 {
+  readonly groupId: string
+  readonly counterpartPath: string
+  readonly role: 'SOURCE' | 'TARGET'
+}
+
+export type TaskPatchFileSnapshotV2 =
+  | {
+      readonly operation: 'MODIFY'
+      readonly relativePath: string
+      readonly baselineDigest: string
+      readonly contentDigest: string
+      readonly contentBase64: string
+      readonly rename?: TaskPatchRenameLinkV2
+    }
+  | {
+      readonly operation: 'CREATE'
+      readonly relativePath: string
+      readonly baselineDigest: null
+      readonly contentDigest: string
+      readonly contentBase64: string
+      readonly rename?: TaskPatchRenameLinkV2
+    }
+  | {
+      readonly operation: 'DELETE'
+      readonly relativePath: string
+      readonly baselineDigest: string
+      readonly contentDigest: null
+      readonly rename?: TaskPatchRenameLinkV2
+    }
+
+export interface TaskPatchArtifactV2 {
+  readonly kind: 'TASK_PATCH_V2'
+  readonly version: 2
+  readonly files: readonly TaskPatchFileSnapshotV2[]
+}
+
 /**
  * Main-process-only capture. `privateVerificationContext.worktreeRoot` must
  * never be copied into a shared projection or renderer DTO.

@@ -1,5 +1,147 @@
 # HUB-RUNTIME-01 剩余工作方案
 
+## 2026-09-14｜TaskHub 一次“接受并执行”整改方案（2026-09-15已批准，先做关键接缝验证）
+
+### 2026-09-15 首批执行口径
+
+- 主管已确认本方案：一次接纳覆盖正常主链；不恢复角色/逐文件/中间批准，不新增整套项目快照；rename按DELETE+CREATE，最多两轮未结算修正；检查点缺口单列不扩修。
+- 当前HEAD仍133d1a5、原两份方案改动保留，stash未变。先交Luna/max编码合成验证所需的最小契约与既有Module增量；根owner同时审查调用图和整理证据。生产UI、Hub/网页、默认接纳入口及原业务均不改。
+- 本批验证重点：工作树授权与真实捕获、DELETE+CREATE双端的Delivery/Apply预检和失败恢复、现有未结算执行/验证接缝的适用性。必须区分真实调用和测试替身，未接生产的部分不能宣称一次点击已完成。
+- 测试仅用全新合成Git/SQLite/目标目录。原失败Attempt、工作树、profile、DB、节点和stash不动；不跑外部模型/Electron，不安装/发布，不业务Apply。只运行新接缝必要用例与受影响检查，不复测成熟工具本体。
+- 本批完成提交阶段证据后停下交主管核对，再推进生产接线。若现有Seam仍有具体缺口，明确报告，不用大规模重构或假结果补齐。
+
+### 首个可回收切片：Delivery／Apply文件效果（不等于首批全部完成）
+
+- Luna完成V2文件效果合同与初始合成case；Sol按新分工接续跨模块收口。V1/V2保留不同合同/digest，Apply共用审批/基线门、写事务、inspect及rollback收据流程，Delivery integration共用同一个Git工作树构建过程，Composer复用既有依赖校验。未新建表、工作区管理器或事务框架，生产默认仍为V1。
+- 实际只新增DELETE无后像、CREATE有后像及rename双端关联；DELETE不是空文件。合成TASK_PATCH_V2是夹具输入，**不是生产captureTaskPatch产生**。本切片尚无Main工作树级授权、接受按钮、角色门取消、两轮修正、自动Delivery或原业务证据。
+- 初始Luna3项结果保留；Sol补为5类实际Git/SQLite场景：rename组合和人工授权后应用成功、源字节漂移拒绝、目标被占用拒绝、删除后创建前注错恢复、两效果完成后注错恢复。最后一项再打开SQLite只证明已保存receipt回放，不冒称在途崩溃恢复。两项文件前置冲突测试注入clean Git snapshot，以单独验证逐文件前像/目标不存在检查；成功及回滚case使用真实Git snapshot。
+- 21项共享实现组合通过，Node/Web类型与定向lint通过，准确命令、最终增量及版本隔离结果见DEVELOPMENT_STATUS。原始日志在 `D:/CodexTemp/hub-runtime-01-single-accept-spike-20260915`，早期失败不覆盖。未经主管核对不进入生产接线，不能以此结果代替整个新产品流程验收。
+- 下一切片仍在原方案内：受信Main一次接纳和工作树授权→真实capture的合成链、结算前验证反馈与两轮上限、自动Delivery的精确Attempt/幂等恢复。case-only rename和真正写入中断的恢复尚未覆盖；检查点登记缺口仍单列。本切片不安装、不模型/Electron、不操作原现场、不业务Apply。
+
+### 0. 新产品定义与固定现场
+
+本节是用户最新决定，取代下文历史方案中强制角色绑定、逐文件预授权、反复批准计划和手动发起Delivery的产品要求；历史记录保留，不作为新流程的施工指令。
+
+**实施约束补充：非必要不重构，优先现有轮子。** 下列接口名称用于解释必须改变的行为，不是要求另建同名系统。直接复用已有Pi Loop/工具扩展、TaskHub Saga、Main权限核验、Git工作树、验证、Delivery与Apply实现；只对本次真实不兼容字段做版本化，不全仓改名/搬目录/抽通用层，不为本轮LOW重复代码做重构。不批量重写V1；可复用的函数、持久化与事务原地接续。新文件操作仅补现有工具缺的delete/rename动作，不能扩成文件管理平台；修正预算保存在既有记录，不能建设通用重试框架。若现有接口已经能表达某步骤，直接调用，不为方案中一个名词新增Module。
+
+查看任务与明确的目标项目 → 用户一次“接受并执行” → 小规准备独立Attempt工作树、按任务修改、验证并自动生成Delivery → 用户审阅真实Diff和验证结果 → 人工确认Apply。
+
+- 实查HEAD仍为 `133d1a5cd0f8dce736b280f87b08f9e2f5a40d23`，分支 `codex/hub-runtime-01-pi-default-v1`，开工检查工作树干净；最近源码/运行包为 `d8ff33029ab0c123aad956630ba401579b7bac2f`。本轮只有方案文档改动，不提交产品代码。
+- stash仍为 `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61`，其他保护stash不动。本次不读取或修改业务profile/数据库，不重试既有失败Attempt，不Apply、不合主线、不发布。
+- 对WORK/DESIGN/CODING采用相同任务接纳与交付流程；继续使用各模式原有能力，不借此扩大DESIGN功能、解除阶段只读、放开Bash或外传。普通CODING直接修改用户项目的另一条产品链不变。
+
+### 1. 当前生产链实查与复用依据
+
+| 现有Module / 文件 | 已确认的事实 | 必须调整的Seam |
+| --- | --- | --- |
+| `src/main/xiaogui/hub-task/worker-service.ts` | `decideAssignment`与`createPlanDraft`分开；后者核验当前身份、已接受assignment、下载内容摘要，以assignment生成确定性requestId和本地flow绑定；`toPlanDraft`已能沿用任务说明/验收要求 | 复用该可信入口组合一次接纳，不让Renderer提供替代任务正文或伪造授权 |
+| `task-hub/execution-orchestrator.ts` | `startOnce`先解析逐文件授权，Saga保存prompt/grants；WORKSPACE_READY等待Attempt plan批准及角色可执行；已有恢复、未知结果、派发幂等处理 | 同一一次授权驱动内部计划和执行；替换逐文件输入与角色前置，不旁挂第二套执行器 |
+| `coding-extensions/attempt-ipc.ts`、`runtime-composition.ts` | approve路径直接返回ROLE_BINDING_REQUIRED；角色还供执行gate、Runtime request和verification读取 | 新流程UI、IPC、Main执行/验证均不再要求角色；不是仅隐藏CodingRoleCard |
+| `agent-runtime/pi-adapter.ts`及`pi-worker-port.ts` | 当前工具前置逐条匹配manifest grants；只放行read/edit/write；固定WORK报告还要求恰好一个预授权CREATE目标；终态持久化后回收Worker | 以Attempt工作树授权替换路径清单；工具结果保持精确记录，不能由模型声称成功 |
+| `attempt-workspace.ts`、`attempt-execution-input.ts` | manifest按文件冻结；capture拒绝删除/重命名；d8ff330已完成Main来源、原始字节/derived blob、恢复绑定 | 来源权威保留，逐文件授权与基线完整性分离；扩展真实变更捕获 |
+| `delivery-composer.ts`、`delivery-integration-worktree.ts`、`change-apply.ts` | 当前只支持CREATE/MODIFY，删除被拒；Apply已有前镜像、冲突、回滚/恢复路径 | DELETE及重命名的两端变化要贯通Artifact、Delivery、人工Apply与恢复，不能只扩工具 |
+| `delivery-workflow.ts` | `selectTasks`已组合结果和验证；`approveGate`关联最终人工应用；已有稳定请求与结果恢复 | 自动调用既有选择/生成Seam，不能自动调用approveGate/Apply |
+
+以上task-hub / coding-extensions / agent-runtime相对路径均在 `src/main/xiaogui/` 下。Renderer对应 `src/renderer/src/xiaogui/components/CollaborationHubPanel.tsx`、`CodingRoleCard.tsx`、`CodingAttemptPlanCard.tsx`，及现有Hub inbox接纳入口。
+
+复用顺序：Pi固定0.84.1原生Agent Loop、ResourceLoader、read/edit/write及工具生命周期继续使用；本地 `dist/core/tools/index.d.ts` 已实查，没有原生delete/rename文件工具。原生bash不能作为免确认删除/重命名的通道。既有第一方Tool Adapter必须补最小受控文件操作，走同一Main/Worker窄通道与文件操作串行队列，不复制Loop或建立通用文件平台。
+
+Pi Skill/插件调查沿用本文件既有固定来源和验证记录：第一方工作文档Skill、internal-comms，以及已审pi-package-manager0.2.1/pi-sandbox0.6.6。它们不持有Main assignment/授权/Delivery权威；不重新安装、升级或重复已过探针。本轮没有新插件选型，只复用既有TaskHub并变更已获用户确认的授权语义。最小文件操作接缝在首批合成Spike验证后才替换生产工具路径。
+
+### 2. 用户确认的取消、合并与保留
+
+| 环节 | 新行为 |
+| --- | --- |
+| 看任务、选目标项目 | 保留；按钮旁明确项目和“改动只在任务工作树，Apply前不改原项目” |
+| 接受任务、批准草稿、重复任务输入、填写新增/修改文件清单、确认执行批次、批准执行计划 | 合并成一次“接受并执行”；已有计划成为只读进度/审计，不再逐步阻塞用户 |
+| 研究/实现/审阅分类、“使用此角色” | 从TaskHub新执行必经链移除；不创建隐形默认角色冒充已绑定 |
+| 正常工作树文件读写、新建、删除、重命名 | 在任务工作树授权内自动执行并审计，不逐文件弹框 |
+| Bash、外传、需要更换目标项目/扩大授权 | 沿用已有权限规则；不能因一次接纳变成任意命令自动通过 |
+| 手动选择任务发起Delivery | 当前任务结果验证合格后自动生成，仅选本次精确Attempt/ChangeSet |
+| 审阅Diff/验证、Apply | 保留人工最终确认及原项目冲突检查；绝不自动调用Apply |
+
+用户点击时目标未明确、任务内容版本已变或接纳身份失效：不启动执行，提示具体原因；不是增加一轮常规确认。取消仅停止尚未执行的操作，已发生副作用按已有语义记录，不声称一键回滚所有命令。
+
+### 3. 一次授权与Main契约调整
+
+在现有Hub worker-service/IPC与execution-orchestrator扩展一个版本化接纳请求（暂名 `acceptAndExecute V2`），不是新增审批Module。Renderer只送assignment标识、Main已解析的目标项目引用、看到的任务版本摘要和幂等requestId；Main重新下载/核验任务身份、内容、当前接纳状态，沿用统一模型配置并冻结执行选择。
+
+复用现有assignment→flow绑定、task_execution_sagas、Attempt工作区lease及私有输入记录，增加必要的版本化授权字段：授权方式、assignment/任务内容摘要、目标项目身份、基线来源绑定、操作范围、初始接纳requestId。不得把原grants数组换成无约束 `*`，不得由Renderer/模型生成受信工作树根或授权摘要。
+
+一次用户接纳签发 `ATTEMPT_WORKTREE` 文件授权；旧记录仍为 `FILE_LIST_V1`。新契约使用明确的判别类型，不给V1字段改义或将缺字段默认为全项目。Main每一步验证绑定仍一致，后续计划/工作树/验证/Delivery只能消费该授权，不能因按钮文案产生权限。
+
+计划创建/内部批准须绑定同一接纳授权及任务版本，不伪造多次人工批准历史。替换新流程的draft/Attempt plan待批条件为内部准备完成状态；ASK/PLAN的工具只读限制保持。开始执行时由已授权任务推进到EXECUTE，不要求用户手动改阶段。老界面保留历史只读记录，不混用旧approve接口静默扩大权限。
+
+消费点必须一起迁移：worker-service/worker-ipc、任务执行共享契约及IPC validator、execution-orchestrator/Saga、attempt-execution-input、runtime-composition的角色provider/gate与权限策略、attempt-ipc、Pi request校验/工具门、verification角色前置、Renderer角色/计划/范围/交付按钮。仅删除旧角色门而留下其中任一路径不算完成。
+
+不新增Hub服务端审批状态。默认复用现有ACCEPT、downloadAssignment及执行/结果回执协议；若任务版本摘要或一次接纳回执在现有Hub契约无法表达，必须将最小字段差异交桌面主管与中台主管对接，未经确认不改Hub/网页。Hub ACCEPT与本机启动不是一个分布式事务：现有私有绑定持久记录已完成步骤；故障恢复只对确定未执行步骤做幂等续接，不重复ACCEPT、建flow或派发。
+
+### 4. 从逐文件授权到工作树内授权
+
+授权对象是Main创建并登记的**当前Attempt工作树实体**，绑定task/Attempt、commit/tree、来源记录、项目身份和策略摘要。原项目仅用于基线读取和最后Apply，不成为Agent文件工具写入目录。来源继续执行d8ff330规则：PROJECT取已核验原始字节；DERIVED取登记不可变输入，不按HEAD/parent猜、不在失败时换来源。
+
+取消用户填写文件清单，但不取消Main基线账本：准备时从受信Git树自动建立原始字节/存在状态的私有基线清单与摘要，属于完整性证据，不是让用户或模型预报将改哪些文件。明确只包含当前基线受控普通文件；未跟踪/忽略文件不自动复制，所需缺失材料按任务明确报缺，不把用户机器其他内容搬进工作树。原项目dirty时沿用现有基线冲突规则，不擅自清理或换HEAD。
+
+工具允许工作树内任意合法相对路径；仍拒绝根外路径、任意层级.git、symlink/junction穿越、硬链接多实体写入及子模块穿透。创建检查最近真实父目录；delete/rename核验源与目标，两端都在同一受信工作树，目标已存在默认冲突而不是覆盖。调用前后核验实体/前摘要，按既有toolCallId/requestDigest幂等与修改串行执行，未知结果不重放。
+
+Pi原生read/edit/write不更换；delete/rename通过同一第一方文件工具Adapter增加窄操作，不经shell偷渡，也不新增文件管理框架。目录操作限定为逐项受控普通文件；不支持的链接/特殊文件/子模块变化必须失败列明，不悄悄遗漏。命令执行仍服从现有规则；当前TaskHub不支持的命令继续拒绝，工作树cwd本身不是OS沙箱。
+
+captureTaskPatch扫描整个受信工作树实际净变化（含新建未跟踪文件），与Main基线账本比对，不依赖模型列举。空diff不伪造成果。对非授权实体变化、Git元数据或无法可靠表述的变化拒绝形成可Apply交付。
+
+### 5. 删除／重命名到Diff、Delivery、Apply
+
+- 在现有TaskPatch/ChangeSet/Delivery文件Artifact引入版本化的存在状态：CREATE无前像、MODIFY有前后像、DELETE有前像且后态不存在。相应摘要、parser、校验器和Renderer一起迁移，旧V1内容继续可读，禁止把DELETE变成空文件。
+- 重命名的权威文件效果采用**DELETE旧路径＋CREATE新路径**同一变更组（带源/目标关系展示）；避免单独建一套重命名事务。工具操作回执给出rename关系，实际两端字节与存在状态必须验证。Git相似度检测只影响显示标签，不能授权或决定文件操作。rename后编辑仍按真实新内容生成Diff。
+- `delivery-composer`、`delivery-integration-worktree`从同一基线按有序结果应用三种净文件效果；两个路径碰撞、大小写歧义或缺少必要祖先输入时报冲突。依赖任务只消费已验证登记的派生基线，不将失败修复产物冒充已验证祖先。
+- `change-apply`复用既有预检/日志/恢复结构：修改及删除前必须匹配原项目当前前摘要，新建/rename目标必须不存在；任何冲突停止且保留用户改动。执行失败时按现有事务语义恢复已改文件，删除恢复原字节；结果无法确认则UNKNOWN，不自动重试。跨文件恢复不得丢弃rename任一端；case-only rename的Windows执行顺序必须单独Spike验证。
+- Apply批准绑定精确Delivery摘要、验证receipt及本次Attempt；批次变化后原批准失效。新流程自动生成Delivery不等于批准Apply。
+
+### 6. 自动执行 → 验证 → Delivery与停点
+
+复用execution-orchestrator、原Pi Adapter/Loop、task-verification-coordinator、runtime outcome monitor、delivery-workflow及hub-execution-lifecycle。Main根据一次接纳沿用任务正文/验收要求，内部生成计划、按既有DAG调度，工作树准备成功后自动执行；并行仍服从当前槽位/依赖约束，不新建调度器。
+
+验证必须调用原有按模式verification port，记录真实命令/工具结果、退出状态及候选摘要。模型完成陈述不触发成功。WORK/DESIGN产物路径由Agent在受信工作树内决定，原固定“用户预报唯一CREATE路径”适配改为Main核验实际产物并登记；不扩大原有文档/设计能力。删除/重命名不能被现有“每路径必须有新文件artifact”检查误判或漏验。
+
+**有限修正方案，待主管批准：** Pi执行未结算前，通过同一工具接缝返回既有verification port的失败诊断给原Pi Loop，自主修正后再验证；建议最多2轮修正，计数持久在现有Attempt私有runtime记录，不新增重试状态机/配置UI。每次验证绑定实际候选摘要。最后TaskHub仍独立核验确切成果；摘要未变的同一次验证可复用真实receipt，修改后必须重新验证。当前Pi Adapter终态会关闭Worker，故不能先写SUCCEEDED再复活同一Attempt来修。已结算失败/UNKNOWN不在本自动修正窗口内。
+
+最终真实验证PASS且无未解决阻断时，由Main以稳定键（任务/精确Attempt集合＋候选摘要）调用现有Delivery选择/生成Seam，自动生成一次Delivery及Delivery验证。不得扫描同flow历史所有成功Attempt充数，不把部分任务成功伪装为整任务完成。正常流走到READY_FOR_REVIEW后停止写入，用户只看Diff和结果，再决定Apply。
+
+失败停点：任务身份/项目/基线/链接冲突在执行前停止；权限超出、必需信息缺失时才询问；有限修正耗尽或最终verification失败保留失败证据；Delivery构造/验证失败不给成功/Apply入口；中断及OUTCOME_UNKNOWN只对账，不自动重发prompt或原任务。已确定完成的捕获/验证/Delivery步骤可依既有幂等记录恢复，不等同重新执行模型。
+
+### 7. 旧任务及检查点缺口
+
+旧任务、角色配置/快照、FILE_LIST_V1授权、失败Attempt及日志原样保留。旧授权不能升级成新工作树授权；没有V2一次接纳记录就不自动恢复执行。用户日后主动执行旧任务时需一次明确的新接纳、创建新Attempt并关联历史，而非改写旧FAILED/UNKNOWN状态；当前两条失败业务Attempt不作为施工试验对象。旧角色数据只作历史兼容，不再决定新TaskHub能否执行或使用哪个模型。
+
+检查点会话地址登记缺口**仍未修复**：此前诊断显示新会话canonical scope已存在而检查点私有地址记录缺失，角色预检借该登记找Worker。目前新TaskHub运行已有专属Pi Attempt Worker及其SQLite恢复，不应为执行绕回普通聊天Worker。
+
+本次不要求修整套检查点登记/恢复：新流程不再通过角色预检冷装载聊天Worker，人工检查点也不是一次接纳→Delivery→Apply的前置。必要修改仅为移除该执行依赖并如实保留/显示历史检查点不可用状态，不能写“问题已修复”；结果恢复使用既有精确Attempt运行时记录。若首批调用图核对发现自动执行或结果恢复仍真实依赖该地址表，应在原可信Main登记Seam补最小接线并先报主管，不能旁建登记表或借隐藏错误解决。
+
+### 8. 最小验证与分段交付
+
+本轮只读实查并出方案，未跑测试、模型或新复现。批准后代码和脚本统一交 `gpt-5.6-luna/max`，根owner审查、必要验证、固定提交与交付；不复跑未受影响的原代码验收门。
+
+1. **契约/合成Spike候选**：使用同一生产Seam、全新合成Git/SQLite验证V2接纳与来源、工作树授权、DELETE/rename到capture/Delivery/Apply（含冲突/恢复）。确认Pi文件操作/验证反馈接缝可实现；生产默认未替换。固定证据后交主管，不以只有类型/按钮算通过。
+2. **生产接线候选**：同步替换UI与Main确认/角色/文件门，接自动验证与Delivery；一条无外部模型的Scripted Runtime真实工作树组合旅程覆盖一次点击到READY_FOR_REVIEW，Apply仅在测试夹具中显式确认。工作流应覆盖WORK/DESIGN/CODING既有能力的受影响门，不重复各成熟工具本体套件。
+3. **主管批准后的真实用户门**：新合成业务、统一用户模型、真实Electron单次接纳→修改/新增/删除/rename→验证→自动Delivery；Apply由用户决定，现有失败现场不重试。安装包、真实模型、Hub联合旅程本轮均未覆盖，后续须单独授权。
+
+必测集合按变化选最小场景，不按新增文件全跑：
+
+- 新任务一次点击贯通、重复点击/进程重启不多建flow/Attempt或重复派发；旧缺授权不自动启动。
+- 无角色记录、无预填文件、未发聊天消息的新会话仍能进入授权执行；ASK/PLAN写入拒绝，命令/外传原策略不放宽。
+- Main原始任务与目标绑定，Renderer伪造任务正文/授权范围或项目切换拒绝；LF/autocrlf及DERIVED来源门仅复跑受新授权账本影响的原项。
+- 同一实际旅程新增/修改/删除/重命名均进入精确Diff；escape/.git/symlink/junction/hardlink、目标碰撞拒绝；原项目Apply前不变。
+- capture→Delivery→人工Apply的前后字节/存在状态、rename双端、原项目冲突及中途中断恢复；V1历史可读但不变权限。
+- 失败验证回馈修正、预算用尽停止、未知结果不重放；自动Delivery精确Attempt/receipt绑定且重复完成事件不多生成、不自动Apply。
+- 只对变化TS执行类型/定向lint/diff-check，必要构建；不跑无关全量测试，不复测Pi/Office成熟本体。
+
+各候选更新本方案和DEVELOPMENT_STATUS的实际文件、命令/结果、风险/未覆盖项，提交当前隔离分支后等待主管验收。Hub/网页必要契约差异只由桌面主管对接中台，不越级派发。
+
+### 9. 送审结论与待定事项
+
+用户产品选择已明确，无需再次确认角色、文件清单或确认次数。需要桌面主管确认的是本方案的实施口径：V2授权与旧记录隔离、rename以DELETE+CREATE贯通、最多2轮未结算修正预算、检查点缺口暂不扩修及分段证据门。它们是本次方案门，不要求用户日常操作增加按钮。
+
+目前未证明Pi验证反馈/文件操作与全链V2契约的运行结果；不能写成已完成。若Spike暴露现有Seam不足，应具体报告差距，不能偷偷降为“只支持CREATE/MODIFY”或恢复逐文件审批。计划审查前不编码、不安装、不业务执行。
+
 ## 2026-09-14｜已批准源码 d8ff330 的安装候选交付
 
 - 桌面与中台已批准源码 `d8ff33029ab0c123aad956630ba401579b7bac2f`，Standards/Spec 无阻断，既有 LOW 不扩修。开工核对该 HEAD、当前隔离分支、干净工作树和保护 stash `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61` 不变。

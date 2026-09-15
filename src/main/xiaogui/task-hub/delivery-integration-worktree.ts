@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, realpath, unlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 
 import type { DeliveryTargetV1 } from '@shared/xiaogui-delivery'
@@ -10,8 +10,10 @@ import type { Sha256Digest } from '@shared/xiaogui-task-verification'
 import type { ProjectWorkspaceResolverV1 } from './attempt-workspace'
 import type {
   DeliveryIntegrationFileV1,
+  DeliveryIntegrationFileV2,
   DeliveryIntegrationResultV1,
   DeliveryIntegrationWorktreePortV1,
+  DeliveryIntegrationWorktreePortV2,
 } from './delivery-composer'
 
 export interface MainProcessDeliveryIntegrationWorktreeOptionsV1 {
@@ -21,21 +23,43 @@ export interface MainProcessDeliveryIntegrationWorktreeOptionsV1 {
   readonly batchId: string
 }
 
-export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryIntegrationWorktreePortV1 {
+export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryIntegrationWorktreePortV1, DeliveryIntegrationWorktreePortV2 {
   constructor(private readonly options: MainProcessDeliveryIntegrationWorktreeOptionsV1) {}
 
   async integrate(files: readonly DeliveryIntegrationFileV1[]): Promise<DeliveryIntegrationResultV1> {
+    return this.integrateFiles(files, 1)
+  }
+
+  /**
+   * Versioned DELETE/CREATE seam. V1 deliberately remains CREATE/MODIFY-only;
+   * this method reuses the same Main-owned Git worktree and baseline guards.
+   */
+  async integrateV2(files: readonly DeliveryIntegrationFileV2[]): Promise<DeliveryIntegrationResultV1> {
+    return this.integrateFiles(files, 2)
+  }
+
+  private async integrateFiles(
+    files: readonly DeliveryIntegrationFileV1[] | readonly DeliveryIntegrationFileV2[],
+    version: 1 | 2,
+  ): Promise<DeliveryIntegrationResultV1> {
+    if (files.length === 0) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    const seen = new Set<string>()
+    for (const file of files) {
+      const relativePath = normalizeRelativePath(file.relativePath)
+      const key = pathKey(relativePath)
+      if (seen.has(key)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+      seen.add(key)
+    }
     const managedRoot = await ensureManagedRoot(this.options.managedRoot)
     const repositoryRoot = await realpath(resolve(await this.options.projectResolver.resolveProjectRoot(this.options.target.projectId)))
     const worktreeRoot = resolve(managedRoot, safeDirectoryName(this.options.batchId))
     if (!isInside(managedRoot, worktreeRoot)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_OUTSIDE_ROOT')
 
     await assertGitBaseline(repositoryRoot, this.options.target)
-    const approvedBaselines = await readApprovedModifyBaselines(repositoryRoot, files)
+    const approvedBaselines = version === 1
+      ? await readApprovedModifyBaselines(repositoryRoot, files as readonly DeliveryIntegrationFileV1[])
+      : await readApprovedBaselinesV2(repositoryRoot, files as readonly DeliveryIntegrationFileV2[])
     if (existsSync(worktreeRoot)) {
-      // A delivery root may contain a prior integration result. Never remove
-      // it merely to make a retry convenient; the caller must choose a fresh
-      // batch/root after resolving the conflict.
       throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
     }
     let worktreeAdded = false
@@ -54,15 +78,23 @@ export class MainProcessDeliveryIntegrationWorktreePortV1 implements DeliveryInt
         const target = resolve(realWorktreeRoot, relativePath.replace(/\//g, sep))
         if (!isInside(realWorktreeRoot, target)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
         await assertDeliveryParentChain(realWorktreeRoot, target)
-        await assertFilePrecondition(target, file)
-        await mkdir(dirname(target), { recursive: true })
-        await assertDeliveryParentChain(realWorktreeRoot, target)
-        await writeFile(target, Buffer.from(file.content))
+        if (version === 1) {
+          await assertFilePrecondition(target, file as DeliveryIntegrationFileV1)
+        } else {
+          await assertFilePreconditionV2(target, file as DeliveryIntegrationFileV2)
+        }
+        if (file.operation === 'DELETE') {
+          await unlink(target)
+        } else {
+          await mkdir(dirname(target), { recursive: true })
+          await assertDeliveryParentChain(realWorktreeRoot, target)
+          await writeFile(target, Buffer.from(file.content))
+        }
       }
       await git(realWorktreeRoot, ['add', '--', ...files.map((file) => normalizeRelativePath(file.relativePath))], 'DELIVERY_WORKTREE_WRITE_FAILED')
       const treeHash = exactGitOid(await git(realWorktreeRoot, ['write-tree'], 'DELIVERY_WORKTREE_WRITE_FAILED'))
       return {
-        integrationTreeHash: digestJson({ kind: 'DELIVERY_INTEGRATION_TREE_V1', gitTreeOid: treeHash }),
+        integrationTreeHash: digestJson({ kind: `DELIVERY_INTEGRATION_TREE_V${version}`, gitTreeOid: treeHash }),
         privateIntegrationContext: {
           worktreeRoot: realWorktreeRoot,
           trustedToolchainRoot: repositoryRoot,
@@ -178,6 +210,45 @@ async function assertFilePrecondition(realPath: string, file: DeliveryIntegratio
   }
 }
 
+async function assertFilePreconditionV2(realPath: string, file: DeliveryIntegrationFileV2): Promise<void> {
+  if (file.operation === 'CREATE') {
+    if (file.baselineDigest !== null || digestBytes(Buffer.from(file.content)) !== file.contentDigest) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    }
+    try {
+      await lstat(realPath)
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    } catch (error) {
+      if (error instanceof DeliveryIntegrationWorktreeErrorV1) throw error
+      if ((error as { code?: unknown }).code === 'ENOENT') return
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    }
+  }
+
+  if (typeof file.baselineDigest !== 'string' || file.baselineDigest.length === 0) {
+    throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+  }
+  if (file.operation === 'DELETE' && file.contentDigest !== null) {
+    throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+  }
+  if (file.operation === 'MODIFY' && digestBytes(Buffer.from(file.content)) !== file.contentDigest) {
+    throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+  }
+  try {
+    const info = await lstat(realPath)
+    if (info.isSymbolicLink() || !info.isFile() || info.nlink !== 1) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    }
+    const current = await readFile(realPath)
+    if (digestBytes(current) !== file.baselineDigest) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    }
+  } catch (error) {
+    if (error instanceof DeliveryIntegrationWorktreeErrorV1) throw error
+    throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+  }
+}
+
 interface ApprovedModifyBaselineV1 {
   readonly relativePath: string
   readonly baselineDigest: Sha256Digest
@@ -206,6 +277,30 @@ async function readApprovedModifyBaselines(
     await assertDeliveryParentChain(repositoryRoot, target)
     const bytes = await readStableRegularFile(target)
     if (digestBytes(bytes) !== file.baselineDigest) {
+      throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
+    }
+    baselines.push({ relativePath, baselineDigest: file.baselineDigest, bytes })
+  }
+  return baselines
+}
+
+async function readApprovedBaselinesV2(
+  repositoryRoot: string,
+  files: readonly DeliveryIntegrationFileV2[],
+): Promise<readonly ApprovedModifyBaselineV1[]> {
+  const baselines: ApprovedModifyBaselineV1[] = []
+  const seen = new Set<string>()
+  for (const file of files) {
+    if (file.operation === 'CREATE') continue
+    const relativePath = normalizeRelativePath(file.relativePath)
+    const key = pathKey(relativePath)
+    if (seen.has(key)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    seen.add(key)
+    const target = resolve(repositoryRoot, relativePath.replace(/\\/g, sep))
+    if (!isInside(repositoryRoot, target)) throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_FILE_INVALID')
+    await assertDeliveryParentChain(repositoryRoot, target)
+    const bytes = await readStableRegularFile(target)
+    if (file.baselineDigest === null || digestBytes(bytes) !== file.baselineDigest) {
       throw new DeliveryIntegrationWorktreeErrorV1('DELIVERY_WORKTREE_BASELINE_DRIFT')
     }
     baselines.push({ relativePath, baselineDigest: file.baselineDigest, bytes })

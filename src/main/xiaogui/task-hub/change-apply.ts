@@ -8,15 +8,21 @@ import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 
 import type {
   DeliveryApplyAttemptIdV1,
   DeliveryApplyReceiptV1,
+  DeliveryApplyReceiptV2,
   DeliveryApplySafeCodeV1,
   DeliveryApprovalSubjectV1,
   DeliveryChangeSetV1,
+  DeliveryChangeSetV2,
   DeliveryFileChangeSummaryV1,
+  DeliveryFileChangeSummaryV2,
+  DeliveryGateSubjectV2,
   DeliveryTargetV1,
 } from '@shared/xiaogui-delivery'
 import {
   deliveryApplyReceiptDigestV1,
+  deliveryApplyReceiptDigestV2,
   deliveryChangeSetDigestV1,
+  deliveryChangeSetDigestV2,
   deliveryTargetFingerprintV1,
 } from '@shared/xiaogui-delivery'
 import type { Sha256Digest } from '@shared/xiaogui-task-verification'
@@ -30,6 +36,22 @@ export interface DeliveryApplyRequestV1 {
   readonly fileContents: readonly DeliveryApplyFileContentV1[]
   /** Test seam only. Production callers must omit this. */
   readonly faultInjection?: DeliveryApplyFaultInjectionV1
+}
+
+export interface DeliveryApplyRequestV2 {
+  readonly applyAttemptId: DeliveryApplyAttemptIdV1
+  readonly approval: DeliveryGateSubjectV2
+  readonly changeSet: DeliveryChangeSetV2
+  readonly fileContents: readonly DeliveryApplyFileContentV2[]
+  /** Test seam only. Production callers must omit this. */
+  readonly faultInjection?: DeliveryApplyFaultInjectionV1
+}
+
+export interface DeliveryApplyFileContentV2 {
+  readonly relativePath: string
+  readonly contentArtifactId: string
+  readonly content: Uint8Array
+  readonly contentDigest: Sha256Digest
 }
 
 export interface DeliveryApplyFileContentV1 {
@@ -47,6 +69,11 @@ export interface DeliveryApplyFaultInjectionV1 {
 export interface DeliveryApplyPortV1 {
   apply(request: DeliveryApplyRequestV1): Promise<DeliveryApplyReceiptV1>
   inspect(applyAttemptId: DeliveryApplyAttemptIdV1): Promise<DeliveryApplyReceiptV1>
+}
+
+export interface DeliveryApplyPortV2 {
+  apply(request: DeliveryApplyRequestV2): Promise<DeliveryApplyReceiptV2>
+  inspect(applyAttemptId: DeliveryApplyAttemptIdV1): Promise<DeliveryApplyReceiptV2>
 }
 
 export interface DeliveryGitSnapshotV1 {
@@ -185,6 +212,44 @@ export class SqliteDeliveryApplyAttemptRegistryV1 implements DeliveryApplyAttemp
   }
 }
 
+type PrivateApplyStatusV2 = 'STARTED' | 'SUCCEEDED' | 'FAILED_ROLLED_BACK' | 'OUTCOME_UNKNOWN'
+
+interface PrivateRollbackFileV2 {
+  readonly operation: 'MODIFY' | 'CREATE' | 'DELETE'
+  readonly relativePath: string
+  readonly realPath: string
+  readonly beforeBytesBase64?: string
+}
+
+interface PrivateApplyAttemptV2 {
+  readonly applyAttemptId: DeliveryApplyAttemptIdV1
+  readonly requestDigest: Sha256Digest
+  readonly projectRoot: string
+  readonly changeSet: DeliveryChangeSetV2
+  readonly plannedFiles: readonly PrivateRollbackFileV2[]
+  readonly writtenRelativePaths: readonly string[]
+  readonly status: PrivateApplyStatusV2
+  readonly receipt?: DeliveryApplyReceiptV2
+}
+
+export interface DeliveryApplyAttemptRegistryV2 {
+  get(applyAttemptId: DeliveryApplyAttemptIdV1): PrivateApplyAttemptV2 | undefined
+  put(attempt: PrivateApplyAttemptV2): void
+  update(attempt: PrivateApplyAttemptV2): void
+}
+
+function asV2ApplyRegistry(registry: DeliveryApplyAttemptRegistryV1): DeliveryApplyAttemptRegistryV2 {
+  return {
+    get: (applyAttemptId) => {
+      const attempt = registry.get(applyAttemptId)
+      if (attempt) assertApplyAttemptVersion(attempt, 2)
+      return attempt as unknown as PrivateApplyAttemptV2 | undefined
+    },
+    put: (attempt) => registry.put(attempt as unknown as PrivateApplyAttemptV1),
+    update: (attempt) => registry.update(attempt as unknown as PrivateApplyAttemptV1),
+  }
+}
+
 export class ChangeApplyErrorV1 extends Error {
   constructor(readonly reasonCode: DeliveryApplySafeCodeV1) {
     super(reasonCode)
@@ -194,6 +259,13 @@ export class ChangeApplyErrorV1 extends Error {
 
 export interface MainProcessChangeApplyPortOptionsV1 {
   readonly projectResolver: ProjectWorkspaceResolverV1
+  readonly registry?: DeliveryApplyAttemptRegistryV1
+  readonly gitSnapshotReader?: DeliveryGitSnapshotReaderV1
+}
+
+export interface MainProcessChangeApplyPortOptionsV2 {
+  readonly projectResolver: ProjectWorkspaceResolverV1
+  /** Reuses the existing V1 registry/table; rows carry a versioned V2 JSON payload. */
   readonly registry?: DeliveryApplyAttemptRegistryV1
   readonly gitSnapshotReader?: DeliveryGitSnapshotReaderV1
 }
@@ -220,6 +292,7 @@ export class MainProcessChangeApplyPortV1 implements DeliveryApplyPortV1 {
     })
     const existing = this.registry.get(request.applyAttemptId)
     if (existing) {
+      assertApplyAttemptVersion(existing, 1)
       if (existing.requestDigest !== requestDigest) throw new ChangeApplyErrorV1('APPLY_ATTEMPT_CONFLICT')
       return this.inspect(request.applyAttemptId)
     }
@@ -284,48 +357,23 @@ export class MainProcessChangeApplyPortV1 implements DeliveryApplyPortV1 {
   async inspect(applyAttemptId: DeliveryApplyAttemptIdV1): Promise<DeliveryApplyReceiptV1> {
     const attempt = this.registry.get(applyAttemptId)
     if (!attempt) throw new ChangeApplyErrorV1('APPLY_ATTEMPT_NOT_FOUND')
-    if (attempt.receipt && attempt.receipt.verdict !== 'OUTCOME_UNKNOWN') return attempt.receipt
-    const inspection = await inspectApplyFileState(attempt)
-    if (inspection.kind === 'ALL_DESIRED') {
-      const receipt = succeededReceipt(attempt, currentTargetFingerprint(deliveryTarget(attempt.changeSet)))
-      this.registry.update({ ...attempt, status: 'SUCCEEDED', receipt })
-      return receipt
-    }
-    if (inspection.kind === 'HAS_UNKNOWN') {
-      const receipt = failedReceipt(attempt, 'OUTCOME_UNKNOWN', 'ROLLBACK_INCOMPLETE')
-      this.registry.update({ ...attempt, status: 'OUTCOME_UNKNOWN', receipt })
-      return receipt
-    }
-    return this.rollbackAsReceipt({
-      ...attempt,
-      writtenRelativePaths: mergeRelativePaths(attempt.writtenRelativePaths, inspection.desiredRelativePaths),
-    }, 'TARGET_WRITE_FAILED')
+    assertApplyAttemptVersion(attempt, 1)
+    return inspectApplyAttempt(attempt, {
+      inspect: inspectApplyFileState,
+      succeeded: (value) => succeededReceipt(value, currentTargetFingerprint(deliveryTarget(value.changeSet))),
+      failed: failedReceipt,
+      update: (value) => this.registry.update(value),
+      rollback: (value, reason) => this.rollbackAsReceipt(value, reason),
+    })
   }
 
   private assertApproved(request: DeliveryApplyRequestV1): void {
-    if (
-      request.approval.deliveryChangeSetId !== request.changeSet.deliveryChangeSetId ||
-      request.approval.version !== request.changeSet.version ||
-      request.approval.digest !== request.changeSet.digest
-    ) {
-      throw new ChangeApplyErrorV1('APPROVAL_SUBJECT_MISMATCH')
-    }
     const { digest: _digest, ...changeSetForDigest } = request.changeSet
-    const expected = deliveryChangeSetDigestV1(changeSetForDigest)
-    if (expected !== request.changeSet.digest) throw new ChangeApplyErrorV1('DELIVERY_CHANGESET_DIGEST_MISMATCH')
+    assertApprovedChangeSet(request.approval, request.changeSet, deliveryChangeSetDigestV1(changeSetForDigest))
   }
 
   private async assertTargetBaseline(projectRoot: string, changeSet: DeliveryChangeSetV1): Promise<void> {
-    const snapshot = await this.gitSnapshotReader.read(projectRoot)
-    const target = deliveryTarget(changeSet)
-    if (snapshot.porcelainStatus.length > 0) throw new ChangeApplyErrorV1('TARGET_STATUS_DIRTY')
-    if (
-      snapshot.headRevision !== target.baseRevision ||
-      snapshot.treeHash !== target.baselineTreeHash ||
-      currentTargetFingerprint(target) !== target.initialTargetFingerprint
-    ) {
-      throw new ChangeApplyErrorV1('TARGET_BASELINE_DRIFT')
-    }
+    await assertTargetBaseline(this.gitSnapshotReader, projectRoot, deliveryTarget(changeSet))
   }
 
   private async writeAll(
@@ -333,32 +381,13 @@ export class MainProcessChangeApplyPortV1 implements DeliveryApplyPortV1 {
     writes: readonly PreparedWriteV1[],
     faultInjection?: DeliveryApplyFaultInjectionV1,
   ): Promise<DeliveryApplyReceiptV1> {
-    const writtenRelativePaths: string[] = []
-    try {
-      for (const write of writes) {
-        if (write.operation === 'CREATE') {
-          await writeFile(write.realPath, write.nextBytes, { flag: 'wx' })
-        } else {
-          await writeFile(write.realPath, write.nextBytes)
-        }
-        writtenRelativePaths.push(write.relativePath)
-        this.registry.update({ ...attempt, writtenRelativePaths: [...writtenRelativePaths] })
-        if (faultInjection?.failAfterWrites === writtenRelativePaths.length) {
-          throw new ChangeApplyErrorV1('TARGET_WRITE_FAILED')
-        }
-      }
-      if (!(await allDesiredFilesPresent(attempt.projectRoot, deliveryFiles(attempt.changeSet)))) {
-        throw new ChangeApplyErrorV1('TARGET_WRITE_FAILED')
-      }
-      const receipt = succeededReceipt(
-        { ...attempt, writtenRelativePaths },
-        currentTargetFingerprint(deliveryTarget(attempt.changeSet)),
-      )
-      this.registry.update({ ...attempt, writtenRelativePaths, status: 'SUCCEEDED', receipt })
-      return receipt
-    } catch (error) {
-      return this.rollbackAsReceipt({ ...attempt, writtenRelativePaths }, safeCode(error, 'TARGET_WRITE_FAILED'), faultInjection)
-    }
+    return writeApplyTransaction(attempt, writes, faultInjection, {
+      write: async (write) => writeFile(write.realPath, write.nextBytes, write.operation === 'CREATE' ? { flag: 'wx' } : undefined),
+      allDesired: (value) => allDesiredFilesPresent(value.projectRoot, deliveryFiles(value.changeSet)),
+      succeeded: (value) => succeededReceipt(value, currentTargetFingerprint(deliveryTarget(value.changeSet))),
+      update: (value) => this.registry.update(value),
+      rollback: (value, reason, fault) => this.rollbackAsReceipt(value, reason, fault),
+    })
   }
 
   private async rollbackAsReceipt(
@@ -366,12 +395,533 @@ export class MainProcessChangeApplyPortV1 implements DeliveryApplyPortV1 {
     reason: DeliveryApplySafeCodeV1,
     faultInjection?: DeliveryApplyFaultInjectionV1,
   ): Promise<DeliveryApplyReceiptV1> {
-    const rollbackOk = await rollback(attempt, faultInjection)
-    const verdict = rollbackOk ? 'FAILED_ROLLED_BACK' : 'OUTCOME_UNKNOWN'
-    const receipt = failedReceipt(attempt, verdict, rollbackOk ? reason : 'ROLLBACK_INCOMPLETE')
-    this.registry.update({ ...attempt, status: verdict, receipt })
+    return rollbackApplyTransaction(attempt, reason, faultInjection, rollback, failedReceipt, (value) => this.registry.update(value))
+  }
+}
+
+/**
+ * Explicit Apply seam for the versioned DELETE/CREATE file effects. It shares
+ * Main path/baseline validation and the existing SQLite attempt table while
+ * leaving the V1 port's accepted operation set untouched.
+ */
+export class MainProcessChangeApplyPortV2 implements DeliveryApplyPortV2 {
+  private readonly registry: DeliveryApplyAttemptRegistryV2
+  private readonly gitSnapshotReader: DeliveryGitSnapshotReaderV1
+
+  constructor(private readonly options: MainProcessChangeApplyPortOptionsV2) {
+    this.registry = asV2ApplyRegistry(options.registry ?? new InMemoryDeliveryApplyAttemptRegistryV1())
+    this.gitSnapshotReader = options.gitSnapshotReader ?? nodeGitSnapshotReaderV1
+  }
+
+  async apply(request: DeliveryApplyRequestV2): Promise<DeliveryApplyReceiptV2> {
+    const requestDigest = digestJson({
+      applyAttemptId: request.applyAttemptId,
+      approval: request.approval,
+      changeSetDigest: request.changeSet.digest,
+      fileContents: request.fileContents.map((file) => ({
+        relativePath: normalizeRelativePath(file.relativePath),
+        contentArtifactId: file.contentArtifactId,
+        contentDigest: file.contentDigest,
+      })).sort((left, right) => left.relativePath.localeCompare(right.relativePath)),
+    })
+    const existing = this.registry.get(request.applyAttemptId)
+    if (existing) {
+      assertApplyAttemptVersion(existing, 2)
+      if (existing.requestDigest !== requestDigest) throw new ChangeApplyErrorV1('APPLY_ATTEMPT_CONFLICT')
+      return this.inspect(request.applyAttemptId)
+    }
+
+    let projectRoot = ''
+    let plannedFiles: readonly PrivateRollbackFileV2[] = []
+    try {
+      this.assertApproved(request)
+      projectRoot = await this.options.projectResolver.resolveProjectRoot(request.changeSet.target.projectId)
+      await this.assertTargetBaseline(projectRoot, request.changeSet)
+      const prepared = await prepareFilesV2(projectRoot, request.changeSet.fileChanges, request.fileContents)
+      plannedFiles = prepared.plannedFiles
+      const started: PrivateApplyAttemptV2 = {
+        applyAttemptId: request.applyAttemptId,
+        requestDigest,
+        projectRoot,
+        changeSet: request.changeSet,
+        plannedFiles,
+        writtenRelativePaths: [],
+        status: 'STARTED',
+      }
+      this.registry.put(started)
+      return await this.writeAllV2(started, prepared.writes, request.faultInjection)
+    } catch (error) {
+      if (isPreStartChangeApplyErrorV2(error)) throw error
+      const receipt = await this.rollbackAsReceiptV2({
+        applyAttemptId: request.applyAttemptId,
+        requestDigest,
+        projectRoot,
+        changeSet: request.changeSet,
+        plannedFiles,
+        writtenRelativePaths: [],
+        status: 'STARTED',
+      }, safeCode(error, 'TARGET_WRITE_FAILED'), request.faultInjection)
+      try {
+        this.registry.put({
+          applyAttemptId: request.applyAttemptId,
+          requestDigest,
+          projectRoot,
+          changeSet: request.changeSet,
+          plannedFiles,
+          writtenRelativePaths: receipt.changedRelativePaths,
+          status: receipt.verdict,
+          receipt,
+        })
+      } catch {
+        this.registry.update({
+          applyAttemptId: request.applyAttemptId,
+          requestDigest,
+          projectRoot,
+          changeSet: request.changeSet,
+          plannedFiles,
+          writtenRelativePaths: receipt.changedRelativePaths,
+          status: receipt.verdict,
+          receipt,
+        })
+      }
+      return receipt
+    }
+  }
+
+  async inspect(applyAttemptId: DeliveryApplyAttemptIdV1): Promise<DeliveryApplyReceiptV2> {
+    const attempt = this.registry.get(applyAttemptId)
+    if (!attempt) throw new ChangeApplyErrorV1('APPLY_ATTEMPT_NOT_FOUND')
+    assertApplyAttemptVersion(attempt, 2)
+    return inspectApplyAttempt(attempt, {
+      inspect: inspectApplyFileStateV2,
+      succeeded: (value) => succeededReceiptV2(value, currentTargetFingerprint(value.changeSet.target)),
+      failed: failedReceiptV2,
+      update: (value) => this.registry.update(value),
+      rollback: (value, reason) => this.rollbackAsReceiptV2(value, reason),
+    })
+  }
+
+  private assertApproved(request: DeliveryApplyRequestV2): void {
+    const { digest: _digest, ...changeSetForDigest } = request.changeSet
+    assertApprovedChangeSet(request.approval, request.changeSet, deliveryChangeSetDigestV2(changeSetForDigest))
+  }
+
+  private async assertTargetBaseline(projectRoot: string, changeSet: DeliveryChangeSetV2): Promise<void> {
+    await assertTargetBaseline(this.gitSnapshotReader, projectRoot, changeSet.target)
+  }
+
+  private async writeAllV2(
+    attempt: PrivateApplyAttemptV2,
+    writes: readonly PreparedWriteV2[],
+    faultInjection?: DeliveryApplyFaultInjectionV1,
+  ): Promise<DeliveryApplyReceiptV2> {
+    return writeApplyTransaction(attempt, writes, faultInjection, {
+      write: async (write) => {
+        await assertWritePreconditionV2(write)
+        if (write.operation === 'DELETE') {
+          await unlink(write.realPath)
+        } else if (write.operation === 'CREATE') {
+          if (!write.nextBytes) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+          await writeFile(write.realPath, write.nextBytes, { flag: 'wx' })
+        } else {
+          if (!write.nextBytes) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+          await writeFile(write.realPath, write.nextBytes)
+        }
+      },
+      allDesired: (value) => allDesiredFilesPresentV2(value.projectRoot, value.changeSet.fileChanges),
+      succeeded: (value) => succeededReceiptV2(value, currentTargetFingerprint(value.changeSet.target)),
+      update: (value) => this.registry.update(value),
+      rollback: (value, reason, fault) => this.rollbackAsReceiptV2(value, reason, fault),
+    })
+  }
+
+  private async rollbackAsReceiptV2(
+    attempt: PrivateApplyAttemptV2,
+    reason: DeliveryApplySafeCodeV1,
+    faultInjection?: DeliveryApplyFaultInjectionV1,
+  ): Promise<DeliveryApplyReceiptV2> {
+    return rollbackApplyTransaction(attempt, reason, faultInjection, rollbackV2, failedReceiptV2, (value) => this.registry.update(value))
+  }
+}
+
+type ApplyInspection = {
+  readonly kind: 'ALL_DESIRED' | 'SAFE_MIXED' | 'HAS_UNKNOWN'
+  readonly desiredRelativePaths: readonly string[]
+}
+
+type ApplyAttemptShape<R> = {
+  readonly writtenRelativePaths: readonly string[]
+  readonly status: PrivateApplyStatusV1
+  readonly receipt?: R
+}
+
+async function inspectApplyAttempt<A extends ApplyAttemptShape<R>, R>(
+  attempt: A,
+  operations: {
+    readonly inspect: (attempt: A) => Promise<ApplyInspection>
+    readonly succeeded: (attempt: A) => R
+    readonly failed: (attempt: A, verdict: 'FAILED_ROLLED_BACK' | 'OUTCOME_UNKNOWN', safeCode: DeliveryApplySafeCodeV1) => R
+    readonly update: (attempt: A) => void
+    readonly rollback: (attempt: A, reason: DeliveryApplySafeCodeV1) => Promise<R>
+  },
+): Promise<R> {
+  if (attempt.receipt && (attempt.receipt as { verdict?: string }).verdict !== 'OUTCOME_UNKNOWN') return attempt.receipt
+  const inspection = await operations.inspect(attempt)
+  if (inspection.kind === 'ALL_DESIRED') {
+    const receipt = operations.succeeded(attempt)
+    operations.update({ ...attempt, status: 'SUCCEEDED', receipt })
     return receipt
   }
+  if (inspection.kind === 'HAS_UNKNOWN') {
+    const receipt = operations.failed(attempt, 'OUTCOME_UNKNOWN', 'ROLLBACK_INCOMPLETE')
+    operations.update({ ...attempt, status: 'OUTCOME_UNKNOWN', receipt })
+    return receipt
+  }
+  return operations.rollback({
+    ...attempt,
+    writtenRelativePaths: mergeRelativePaths(attempt.writtenRelativePaths, inspection.desiredRelativePaths),
+  }, 'TARGET_WRITE_FAILED')
+}
+
+async function writeApplyTransaction<
+  A extends ApplyAttemptShape<R>,
+  R,
+  W extends { readonly relativePath: string },
+>(
+  attempt: A,
+  writes: readonly W[],
+  faultInjection: DeliveryApplyFaultInjectionV1 | undefined,
+  operations: {
+    readonly write: (write: W) => Promise<unknown>
+    readonly allDesired: (attempt: A) => Promise<boolean>
+    readonly succeeded: (attempt: A) => R
+    readonly update: (attempt: A) => void
+    readonly rollback: (attempt: A, reason: DeliveryApplySafeCodeV1, fault?: DeliveryApplyFaultInjectionV1) => Promise<R>
+  },
+): Promise<R> {
+  const writtenRelativePaths: string[] = []
+  try {
+    for (const write of writes) {
+      await operations.write(write)
+      writtenRelativePaths.push(write.relativePath)
+      operations.update({ ...attempt, writtenRelativePaths: [...writtenRelativePaths] })
+      if (faultInjection?.failAfterWrites === writtenRelativePaths.length) {
+        throw new ChangeApplyErrorV1('TARGET_WRITE_FAILED')
+      }
+    }
+    const completed = { ...attempt, writtenRelativePaths }
+    if (!(await operations.allDesired(completed))) throw new ChangeApplyErrorV1('TARGET_WRITE_FAILED')
+    const receipt = operations.succeeded(completed)
+    operations.update({ ...completed, status: 'SUCCEEDED', receipt })
+    return receipt
+  } catch (error) {
+    return operations.rollback(
+      { ...attempt, writtenRelativePaths },
+      safeCode(error, 'TARGET_WRITE_FAILED'),
+      faultInjection,
+    )
+  }
+}
+
+async function rollbackApplyTransaction<A extends ApplyAttemptShape<R>, R>(
+  attempt: A,
+  reason: DeliveryApplySafeCodeV1,
+  faultInjection: DeliveryApplyFaultInjectionV1 | undefined,
+  rollbackFiles: (attempt: A, fault?: DeliveryApplyFaultInjectionV1) => Promise<boolean>,
+  failed: (attempt: A, verdict: 'FAILED_ROLLED_BACK' | 'OUTCOME_UNKNOWN', safeCode: DeliveryApplySafeCodeV1) => R,
+  update: (attempt: A) => void,
+): Promise<R> {
+  const rollbackOk = await rollbackFiles(attempt, faultInjection)
+  const verdict = rollbackOk ? 'FAILED_ROLLED_BACK' : 'OUTCOME_UNKNOWN'
+  const receipt = failed(attempt, verdict, rollbackOk ? reason : 'ROLLBACK_INCOMPLETE')
+  update({ ...attempt, status: verdict, receipt })
+  return receipt
+}
+
+function assertApprovedChangeSet(
+  approval: { readonly deliveryChangeSetId: string; readonly version: number; readonly digest: Sha256Digest },
+  changeSet: { readonly deliveryChangeSetId: string; readonly version: number; readonly digest: Sha256Digest },
+  expectedDigest: Sha256Digest,
+): void {
+  if (
+    approval.deliveryChangeSetId !== changeSet.deliveryChangeSetId ||
+    approval.version !== changeSet.version ||
+    approval.digest !== changeSet.digest
+  ) {
+    throw new ChangeApplyErrorV1('APPROVAL_SUBJECT_MISMATCH')
+  }
+  if (expectedDigest !== changeSet.digest) throw new ChangeApplyErrorV1('DELIVERY_CHANGESET_DIGEST_MISMATCH')
+}
+
+function assertApplyAttemptVersion(
+  attempt: { readonly changeSet?: { readonly version?: unknown } },
+  expectedVersion: 1 | 2,
+): void {
+  if (attempt.changeSet?.version !== expectedVersion) {
+    throw new ChangeApplyErrorV1('APPLY_ATTEMPT_CONFLICT')
+  }
+}
+
+async function assertTargetBaseline(
+  reader: DeliveryGitSnapshotReaderV1,
+  projectRoot: string,
+  target: DeliveryTargetV1,
+): Promise<void> {
+  const snapshot = await reader.read(projectRoot)
+  if (snapshot.porcelainStatus.length > 0) throw new ChangeApplyErrorV1('TARGET_STATUS_DIRTY')
+  if (
+    snapshot.headRevision !== target.baseRevision ||
+    snapshot.treeHash !== target.baselineTreeHash ||
+    currentTargetFingerprint(target) !== target.initialTargetFingerprint
+  ) {
+    throw new ChangeApplyErrorV1('TARGET_BASELINE_DRIFT')
+  }
+}
+
+interface PreparedWriteV2 {
+  readonly operation: 'MODIFY' | 'CREATE' | 'DELETE'
+  readonly relativePath: string
+  readonly realPath: string
+  readonly nextBytes?: Buffer
+  readonly beforeBytesBase64?: string
+}
+
+async function prepareFilesV2(
+  projectRoot: string,
+  files: readonly DeliveryFileChangeSummaryV2[],
+  fileContents: readonly DeliveryApplyFileContentV2[],
+): Promise<{ plannedFiles: readonly PrivateRollbackFileV2[]; writes: readonly PreparedWriteV2[] }> {
+  if (!Array.isArray(files) || files.length === 0) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+  const contentByPath = normalizedFileContentMapV2(fileContents)
+  const seen = new Set<string>()
+  const plannedFiles: PrivateRollbackFileV2[] = []
+  const writes: PreparedWriteV2[] = []
+  let contentFileCount = 0
+  for (const file of files) {
+    if (file.operation !== 'MODIFY' && file.operation !== 'CREATE' && file.operation !== 'DELETE') {
+      throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+    }
+    const relativePath = normalizeRelativePath(file.relativePath)
+    const key = pathKey(relativePath)
+    if (seen.has(key)) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+    seen.add(key)
+    const target = await resolveDeliveryPath(projectRoot, relativePath)
+    if (file.operation === 'DELETE') {
+      if (file.baselineDigest === null || file.contentDigest !== null || contentByPath.has(key)) {
+        throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+      }
+      const before = await readStableFile(target.realPath)
+      if (before.contentDigest !== file.baselineDigest) throw new ChangeApplyErrorV1('TARGET_FILE_DRIFT')
+      plannedFiles.push({ operation: 'DELETE', relativePath, realPath: target.realPath, beforeBytesBase64: before.bytes.toString('base64') })
+      writes.push({ operation: 'DELETE', relativePath, realPath: target.realPath, beforeBytesBase64: before.bytes.toString('base64') })
+      continue
+    }
+
+    const privateContent = contentByPath.get(key)
+    if (
+      !privateContent ||
+      privateContent.relativePath !== relativePath ||
+      privateContent.contentDigest !== file.contentDigest ||
+      privateContent.contentArtifactId !== file.contentArtifactId
+    ) {
+      throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+    }
+    const nextBytes = Buffer.from(privateContent.content)
+    if (digestBytes(nextBytes) !== file.contentDigest) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+    contentFileCount += 1
+    if (file.operation === 'MODIFY') {
+      if (file.baselineDigest === null) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+      const before = await readStableFile(target.realPath)
+      if (before.contentDigest !== file.baselineDigest) throw new ChangeApplyErrorV1('TARGET_FILE_DRIFT')
+      plannedFiles.push({ operation: 'MODIFY', relativePath, realPath: target.realPath, beforeBytesBase64: before.bytes.toString('base64') })
+      writes.push({
+        operation: 'MODIFY',
+        relativePath,
+        realPath: target.realPath,
+        nextBytes,
+        beforeBytesBase64: before.bytes.toString('base64'),
+      })
+    } else {
+      if (file.baselineDigest !== null) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+      await assertMissing(target.realPath)
+      plannedFiles.push({ operation: 'CREATE', relativePath, realPath: target.realPath })
+      writes.push({ operation: 'CREATE', relativePath, realPath: target.realPath, nextBytes })
+    }
+  }
+  if (contentByPath.size !== contentFileCount) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+  return { plannedFiles, writes }
+}
+
+function normalizedFileContentMapV2(fileContents: readonly DeliveryApplyFileContentV2[]): Map<string, DeliveryApplyFileContentV2> {
+  if (!Array.isArray(fileContents)) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+  const contentByPath = new Map<string, DeliveryApplyFileContentV2>()
+  for (const file of fileContents) {
+    const relativePath = normalizeRelativePath(file.relativePath)
+    const key = pathKey(relativePath)
+    if (contentByPath.has(key)) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+    contentByPath.set(key, { ...file, relativePath })
+  }
+  return contentByPath
+}
+
+async function assertWritePreconditionV2(write: PreparedWriteV2): Promise<void> {
+  if (write.operation === 'CREATE') {
+    await assertMissing(write.realPath)
+    return
+  }
+  const current = await readStableFile(write.realPath)
+  if (current.bytes.toString('base64') !== write.beforeBytesBase64) throw new ChangeApplyErrorV1('TARGET_FILE_DRIFT')
+}
+
+async function rollbackV2(attempt: PrivateApplyAttemptV2, faultInjection?: DeliveryApplyFaultInjectionV1): Promise<boolean> {
+  let ok = true
+  const written = new Set(attempt.writtenRelativePaths.map(pathKey))
+  for (const file of [...attempt.plannedFiles].reverse()) {
+    if (!written.has(pathKey(file.relativePath))) continue
+    try {
+      if (file.operation === 'CREATE') {
+        if (!(await fileMatchesDesiredV2(attempt, file))) {
+          ok = false
+          continue
+        }
+        await unlink(file.realPath)
+      } else {
+        const state = await plannedFileStateV2(attempt, file)
+        if (state === 'BEFORE') continue
+        if (state !== 'DESIRED') {
+          ok = false
+          continue
+        }
+        await writeFile(file.realPath, Buffer.from(file.beforeBytesBase64 ?? '', 'base64'))
+      }
+      if (faultInjection?.corruptRollbackForRelativePath === file.relativePath) {
+        await writeFile(file.realPath, Buffer.from('rollback-corrupted-by-test', 'utf8'))
+      }
+    } catch {
+      ok = false
+    }
+  }
+  for (const file of attempt.plannedFiles) {
+    if (!written.has(pathKey(file.relativePath))) continue
+    try {
+      if (file.operation === 'CREATE') {
+        await access(file.realPath, constants.F_OK)
+        ok = false
+      } else {
+        const restored = await readStableFile(file.realPath)
+        if (restored.bytes.toString('base64') !== file.beforeBytesBase64) ok = false
+      }
+    } catch {
+      if (file.operation !== 'CREATE') ok = false
+    }
+  }
+  return ok
+}
+
+async function allDesiredFilesPresentV2(projectRoot: string, files: readonly DeliveryFileChangeSummaryV2[]): Promise<boolean> {
+  for (const file of files) {
+    const target = await resolveDeliveryPath(projectRoot, normalizeRelativePath(file.relativePath))
+    try {
+      if (file.operation === 'DELETE') {
+        await assertMissing(target.realPath)
+      } else {
+        const current = await readStableFile(target.realPath)
+        if (current.contentDigest !== file.contentDigest) return false
+      }
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
+interface ApplyFileInspectionV2 {
+  readonly kind: 'ALL_DESIRED' | 'SAFE_MIXED' | 'HAS_UNKNOWN'
+  readonly desiredRelativePaths: readonly string[]
+}
+
+async function inspectApplyFileStateV2(attempt: PrivateApplyAttemptV2): Promise<ApplyFileInspectionV2> {
+  let allDesired = true
+  const desiredRelativePaths: string[] = []
+  for (const file of attempt.plannedFiles) {
+    const state = await plannedFileStateV2(attempt, file)
+    if (state === 'UNKNOWN') return { kind: 'HAS_UNKNOWN', desiredRelativePaths: [] }
+    if (state === 'DESIRED') desiredRelativePaths.push(file.relativePath)
+    if (state !== 'DESIRED') allDesired = false
+  }
+  return { kind: allDesired ? 'ALL_DESIRED' : 'SAFE_MIXED', desiredRelativePaths }
+}
+
+async function plannedFileStateV2(
+  attempt: PrivateApplyAttemptV2,
+  file: PrivateRollbackFileV2,
+): Promise<'BEFORE' | 'DESIRED' | 'UNKNOWN'> {
+  try {
+    const current = await readStableFile(file.realPath)
+    if (file.operation === 'DELETE' && current.bytes.toString('base64') === file.beforeBytesBase64) return 'BEFORE'
+    if (current.contentDigest === desiredDigestForV2(attempt, file.relativePath)) return 'DESIRED'
+    if (file.operation === 'MODIFY' && current.bytes.toString('base64') === file.beforeBytesBase64) return 'BEFORE'
+    return 'UNKNOWN'
+  } catch (error) {
+    if (
+      (file.operation === 'CREATE' || file.operation === 'DELETE') &&
+      typeof error === 'object' &&
+      error !== null &&
+      (error as { code?: unknown }).code === 'ENOENT'
+    ) {
+      return file.operation === 'DELETE' ? 'DESIRED' : 'BEFORE'
+    }
+    return 'UNKNOWN'
+  }
+}
+
+async function fileMatchesDesiredV2(attempt: PrivateApplyAttemptV2, file: PrivateRollbackFileV2): Promise<boolean> {
+  if (file.operation === 'DELETE') {
+    try {
+      await lstat(file.realPath)
+      return false
+    } catch (error) {
+      return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT'
+    }
+  }
+  try {
+    const current = await readStableFile(file.realPath)
+    return current.contentDigest === desiredDigestForV2(attempt, file.relativePath)
+  } catch {
+    return false
+  }
+}
+
+function desiredDigestForV2(attempt: PrivateApplyAttemptV2, relativePath: string): Sha256Digest {
+  const file = attempt.changeSet.fileChanges.find((candidate) => pathKey(normalizeRelativePath(candidate.relativePath)) === pathKey(relativePath))
+  if (!file || file.contentDigest === null) throw new ChangeApplyErrorV1('DELIVERY_FILE_INVALID')
+  return file.contentDigest
+}
+
+function succeededReceiptV2(attempt: PrivateApplyAttemptV2, targetFingerprint: Sha256Digest): DeliveryApplyReceiptV2 {
+  const withoutDigest = {
+    applyAttemptId: attempt.applyAttemptId,
+    deliveryChangeSetId: attempt.changeSet.deliveryChangeSetId,
+    verdict: 'SUCCEEDED' as const,
+    changedRelativePaths: attempt.changeSet.fileChanges.map((file) => normalizeRelativePath(file.relativePath)).sort(),
+    targetFingerprint,
+  }
+  return { ...withoutDigest, receiptDigest: deliveryApplyReceiptDigestV2(withoutDigest) }
+}
+
+function failedReceiptV2(
+  attempt: PrivateApplyAttemptV2,
+  verdict: 'FAILED_ROLLED_BACK' | 'OUTCOME_UNKNOWN',
+  safeCode: DeliveryApplySafeCodeV1,
+): DeliveryApplyReceiptV2 {
+  const withoutDigest = {
+    applyAttemptId: attempt.applyAttemptId,
+    deliveryChangeSetId: attempt.changeSet.deliveryChangeSetId,
+    verdict,
+    changedRelativePaths: [...attempt.writtenRelativePaths].sort(),
+    safeCode,
+  }
+  return { ...withoutDigest, receiptDigest: deliveryApplyReceiptDigestV2(withoutDigest) }
 }
 
 interface PreparedWriteV1 {
@@ -671,6 +1221,17 @@ function failedReceipt(
 }
 
 export function isPreStartChangeApplyErrorV1(error: unknown): error is ChangeApplyErrorV1 {
+  return error instanceof ChangeApplyErrorV1 && [
+    'APPROVAL_SUBJECT_MISMATCH',
+    'DELIVERY_CHANGESET_DIGEST_MISMATCH',
+    'DELIVERY_FILE_INVALID',
+    'TARGET_BASELINE_DRIFT',
+    'TARGET_STATUS_DIRTY',
+    'TARGET_FILE_DRIFT',
+  ].includes(error.reasonCode)
+}
+
+export function isPreStartChangeApplyErrorV2(error: unknown): error is ChangeApplyErrorV1 {
   return error instanceof ChangeApplyErrorV1 && [
     'APPROVAL_SUBJECT_MISMATCH',
     'DELIVERY_CHANGESET_DIGEST_MISMATCH',

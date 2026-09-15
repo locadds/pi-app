@@ -1,5 +1,50 @@
 # 小规开发阶段状态
 
+## 2026-09-15｜首个合成切片可送审：DELETE＋CREATE → Delivery／Apply
+
+- 固定起点 `133d1a5cd0f8dce736b280f87b08f9e2f5a40d23`，同一隔离分支。Luna完成初版，Sol按新分工完成共享实现及版本隔离收口；根owner更新方案、审查并交付，不代写源码/脚本。下文“验证中/未放行”是过程记录，以本条作为当前切片状态。
+- **实际8文件**：两份既有阶段文档；`packages/shared/xiaogui-delivery.ts`；`src/main/xiaogui/task-hub/attempt-workspace.ts`（仅新增V2 patch类型）；同目录 `delivery-composer.ts`、`delivery-integration-worktree.ts`、`change-apply.ts`、新增 `single-accept-seam-spike.test.ts`。没有UI/Hub/生产装配/模型改动。
+- V2的DELETE明确没有结果文件内容，rename为关联DELETE＋CREATE。V1/V2 Apply共享审批/基线门、写事务、inspect判定和rollback收据生命周期；Git integration共用既有工作树创建/错误清理流程，Composer共用依赖校验。没有新表/数据库、项目快照或事务框架。V1操作范围/digest保持；同一SQLite表跨版本apply/inspect现在明确拒绝，不靠类型断言互转授权。
+- **最终运行证据分层**：4文件21项（新增5场景及受共享实现影响V1用例）通过；随后只对新增版本守卫运行双向跨版本inspect拒绝及原receipt回放，2 passed/4 skipped，不重复21项。Node/Web类型检查均exit0；最后守卫仅影响Main，增量Node类型/2文件lint通过，Web沿用此前通过结果。原始日志在 `D:/CodexTemp/hub-runtime-01-single-accept-spike-20260915`。
+- 新场景使用真实合成Git工作树、磁盘内容和原SQLite Apply registry。验证成功rename；源字节漂移、目标占用时双端保持；删源后创建前注错可恢复；两效果完成后注错可恢复；同表跨版本inspect拒绝。两项文件冲突case注入clean Git snapshot以单独验证文件前置门，**不是完整Git外层冲突旅程**；其余成功/回滚case使用真实Git snapshot。冷inspect只验证已保存receipt回放，未覆盖真正进程中断。
+- **尚未完成**：Main工作树级授权、真实captureTaskPatch生成V2、一次接纳、取消生产角色/文件清单门、未结算两轮修正、自动Delivery、case-only rename和真实崩溃恢复。TASK_PATCH_V2输入由测试夹具生成；不能称为完整一次点击主链或首批全部完成。既有检查点地址登记缺口仍未修。下一门先由桌面主管核对此可独立切片，再继续原方案其他关键接缝；不提前铺开生产UI。
+- **失败/偏差保留**：初版曾重复较多V1流程，现已在同文件共享核心算法；相关改动后的必要回归已跑。Luna曾额外跑attempt-workspace整文件，46项组合45通过/1失败（`affected-regression.log`）：既有case主动弄脏源库再期待prepare恢复，而本批该文件只有类型增量；不改旧断言/基线门求绿，不声称该失败已解决。此次额外回归超出最小slice，后续未重跑。早期失败及各次通过日志均保留。
+- **自查**：Standards无当前切片阻断，保留版本适配仍有相似代码的LOW维护观察，不扩重构。Spec：本切片的文件效果/版本隔离验证通过；整体批准方案及首批其他接缝未完成，不能放行整个新流程。无外部模型/Electron/真实业务/打包证据。只在合成夹具执行显式授权Apply，原失败任务、项目、profile、DB、节点和stash未动。
+
+准确命令（工作目录为当前隔离工作树，已执行项不需再次运行）：
+
+```powershell
+npx vitest run src/main/xiaogui/task-hub/single-accept-seam-spike.test.ts src/main/xiaogui/task-hub/change-apply.test.ts src/main/xiaogui/task-hub/delivery-composer.test.ts src/main/xiaogui/task-hub/delivery-integration-worktree.test.ts --maxWorkers=1 --fileParallelism=false
+# 当时4文件21项，日志delivery-apply-shared-core-sol.log；后续只加版本隔离用例，未重跑21项。
+npx vitest run src/main/xiaogui/task-hub/single-accept-seam-spike.test.ts -t 'cross-version inspect|replays the persisted receipt' --maxWorkers=1 --fileParallelism=false
+# 2 passed/4 skipped，version-isolation-sol.log。
+npx tsc -p tsconfig.node.json --noEmit
+npx tsc -p tsconfig.web.json --noEmit
+npx eslint src/main/xiaogui/task-hub/change-apply.ts src/main/xiaogui/task-hub/delivery-composer.ts src/main/xiaogui/task-hub/delivery-integration-worktree.ts src/main/xiaogui/task-hub/single-accept-seam-spike.test.ts packages/shared/xiaogui-delivery.ts src/main/xiaogui/task-hub/attempt-workspace.ts
+# 最后版本守卫后只再检查两个变动文件：
+npx eslint src/main/xiaogui/task-hub/change-apply.ts src/main/xiaogui/task-hub/single-accept-seam-spike.test.ts
+git diff --check 133d1a5cd0f8dce736b280f87b08f9e2f5a40d23
+```
+
+Node/Web初次类型日志为 `node-typecheck-sol.log` / `web-typecheck-sol.log`（空输出，exit0来自工具回执）；最后增量Node/lint及diff-check按Sol实际工具回执记录，不补造原始日志。阶段SHA由追加提交固定，提交推送后只交桌面主管，不合主线、不发布、不进入原业务。
+
+## 2026-09-15｜一次接纳关键接缝首批（主管已批准，合成验证中）
+
+- 用户已批准2026-09-14方案及两轮未结算修正、rename按DELETE+CREATE、检查点单列口径。HEAD仍 `133d1a5cd0f8dce736b280f87b08f9e2f5a40d23`，两份未提交方案保留，保护stash未变；本次不操作原失败现场。
+- 先更新既有CLOSEOUT首批口径，再委派 `gpt-5.6-luna/max` 编码工作树授权、实际捕获及删除/重命名交付恢复的最小合成接缝。根owner核对现有Pi生命周期：idle settled当前会捕获并结算关闭Worker，修正必须在此前；不把终态后重新发prompt当自动修正。
+- 使用karpathy-guidelines/codebase-design限定最小现有Module改动，不采用HTML状态演示替代真实Git/SQLite验证，不额外复制项目快照。首批结果尚未回收；不宣称一次点击、自动验证/Delivery生产接线完成。完成后先交主管阶段证据，不铺开UI/Hub或全部生产改造。
+- 增量回收：Luna已写DELETE+CREATE的V2契约与合成Delivery/Apply切片，初始3项通过；相关V1组合22项通过，日志在 `D:/CodexTemp/hub-runtime-01-single-accept-spike-20260915`。这不包含工作树项目授权/真实capture、一次接纳、两轮修正或自动Delivery的生产接线。初次另跑attempt-workspace出现1项旧hardlink用例失败，正在核对关联，不能丢弃该失败。
+- 根owner审查尚未放行：新增V2 Apply/Composer有较多复制V1生命周期的实现，要求复用同一既有内部流程；冲突case需明确源/目标双端，回滚和冷恢复证据不得混称。待收口后只复跑受改动影响项。无Heartbeat按用户批准继续，未建立替代轮询脚本，原现场不动。
+- 按用户更新的实施分工，跨模块去重与证据收口交 `gpt-5.6-sol` 接续，原Luna任务已停止写入，既有实现/日志全部保留。根owner不代写代码。旧hardlink用例在1330行主动弄脏源库再期待prepare恢复；本批attempt-workspace只有类型增量，未改该执行逻辑，按既有测试/严格基线口径差异登记，不改断言求绿、不扩修。
+
+## 2026-09-14｜TaskHub 一次“接受并执行”方案待审（未编码）
+
+- 用户最新冻结：一次接纳任务和目标项目后，Agent在独立Attempt工作树自动修改、验证、生成Delivery；只在最终Apply保留人工确认。取消强制角色、预填文件清单、重复输入任务及中间多次批准，UI和Main必须同步；命令/外传、阶段只读、项目/链接范围、未知结果不重放及Apply冲突门保留。
+- 实查HEAD `133d1a5cd0f8dce736b280f87b08f9e2f5a40d23`，最近交付源码 `d8ff33029ab0c123aad956630ba401579b7bac2f`；检查开始工作树干净、stash未变。本轮仅更新本文件和 [现有收口方案](doc/runtime-r4/HUB-RUNTIME-01-CLOSEOUT.md) 顶部“TaskHub 一次接受并执行”，不修改代码或业务现场。
+- 实查worker-service接纳/草稿、execution-orchestrator计划/角色/文件门、Pi Adapter工具授权、capture/Delivery/Apply的CREATE/MODIFY限制；方案覆盖删除/rename双端效果、自动Delivery精确Attempt及有限修正停点。取消角色不代表检查点可信会话地址缺口修复，该缺口单列，不扩改整个检查点。
+- 按用户补充：非必要不重构；复用固定Pi 0.84.1、已有Saga/工作树/权限/验证/交付/Apply，不建平行框架，不扩修LOW。codebase-design用于梳理真实Seam而非推动抽象重写。必要版本化仅限旧清单授权与新工作树授权、删除效果等确实不兼容契约。
+- 本轮无测试/模型/Electron/Apply、无代码或脚本任务委派、无提交推送；方案等待桌面主管确认后再交Luna/max编码。Hub/网页契约如需变化由桌面主管与中台对接。未改变原任务/profile/DB/节点/stash，也未重复已过测试。
+
 ## 2026-09-14｜已批准 d8ff330 的独立安装候选
 
 - 桌面与中台已批准源码 `d8ff33029ab0c123aad956630ba401579b7bac2f`，Standards/Spec 无阻断；既有 LOW 本轮不扩修。当前只制作绑定该源码的 NSIS x64 候选。开工 HEAD 精确匹配、工作树干净，保护 stash `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61` 未变。
