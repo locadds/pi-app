@@ -1,5 +1,20 @@
 # 小规开发阶段状态
 
+## 2026-09-15｜接纳关联恢复P2（返修候选，待桌面主管定向复验）
+
+- 方案及NOT_DISPATCHED补充已获Standards/Spec方案层面APPROVE；开工本地/上游/live远端固定64553cff62c5542303326cd0d25a7c9306b174ff、clean、保护stash未变。先更新既有CLOSEOUT再交唯一gpt-5.6-sol子任务acceptance_recovery_p2，主任务审查/纠偏/交付。
+- 已实现只读精确关联查询、ASSOCIATED私有阶段、接纳关联与localPlanDraft同次写成功后发布内存、V2不走global recover。Main复用原draft/activate/schedule幂等回执、授权摘要及Saga/Attempt/dispatch记录，数据库初始化前固定完整性/实体证据；读失败、证据冲突不按未执行放行。UNKNOWN可补关联但保持未知。
+- 正常空权威库早期接纳可续接；实际schedule提交后、Saga未advance时继续原Attempt。DISPATCHING及已有派发证据只恢复关联，执行前再次核验。先前通过删派发回执把已执行fixture回退READY的正例构造已被主任务拒绝，改用真实schedule提交窗口；SQLite精确Attempt派发journal保留为禁止重放证据，不使用JSONL猜目录。
+- 本轮5个生产文件、3个测试文件（含新增P2文件）及2份仓库文档。四个P2顶层测试通过：末次保存失败重建+运行/成功/失败/取消/UNKNOWN、正常续接与DISPATCHING竞态、完整空库BOUND续接、旧记录/身份正文授权冲突/二次保存失败/缺表缺库全Main重建拒绝。`20-four-groups-pass.log`：4 passed。`08-focused-final.log`的受影响worker服务8项通过复用；其早期P2单项不冒充最终矩阵。
+- 命令：`npx vitest run src/main/xiaogui/task-hub/acceptance-association-recovery-p2.test.ts --reporter=verbose`；`npx tsc -p tsconfig.node.json --noEmit`；`npx eslint`仅本批8个变化TS文件；`git diff --check`。Node及lint退出码0，成功无stdout的调用没有实体日志，采用Sol工具退出码回执，不虚构21/22/24/25日志。23/26 diff-check日志仅CRLF提示，exit0。
+- 主任务最终审查修正已有EXECUTION_REQUESTED恢复ASSOCIATED被阶段倒退门吞掉的问题：先检查关联冲突，再允许经核验的关联更新，清除旧STARTED语义。27日志为 `-t 'recovers the exact terminal|fails closed'`：2 passed、2 skipped。33/34日志为 `-t 'recovers the exact terminal'`：1 passed、3 skipped，验证现有reportExecutionOutcome归属原assignment/task、重复调用不新增结果，并补核心fixture的finally释放。无变化的正常续接两组复用20日志；最终检查退出码及固定交付SHA见原HANDOFF。
+- 31/32结果入口试跑失败仅因测试期望不符合既有EXECUTION_FAILED投影，已纠正测试，不修改产品投影；32名称含pass但实际failed，不计通过。失败时SQLite资源未释放造成EPERM，随后补finally。所有失败/中止原日志保留，不以日志文件名判断通过。
+- 日志集中D:/CodexTemp/hub-runtime-01-single-accept-spike-20260915/acceptance-recovery-p2。过程偏差：子任务曾误将原single-accept-main-seam.test.ts纳入一次组合命令，已Ctrl-C退出(session50762)，01日志仅有启动/旧worker两失败，无该Delivery文件完成证据，不计通过，后续禁止再跑。两个失败合成临时目录的PowerShell清理请求被工具返回blocked by policy拒绝，未给更具体原因；未绕过，目录保留，详情交接补列。
+- 不操作原任务/profile/业务DB/安装现场/stash，不模型/Electron/build/包扫描、业务Apply、合主线或发布。automation接口不可用，15分钟heartbeat未实际启用、无ID，不建旁路轮询。完成本P2后只交桌面主管定向复验，不扩大一次接纳生产接线。
+- 本次证据使用合成Git项目、独立状态文件/SQLite和Scripted Runtime，运行时createOrResume次数不增不等于真实Pi Worker或模型旅程。实现自查返修完成，主管代码验收未进行，P2正式关闭待定向复验。默认UI/IPC/worker装配、Pi工具工作树授权消费、V2验证/Delivery消费、最多两轮未结算修正、自动Delivery和检查点可信会话登记仍未完成。
+- 下一门装配注意：trusted port尚未挂默认worker；其Main factory的authorityDatabaseIdentity provider需绑定同一hubDbPath，显式合成装配已传入。生产composition已在DB构造前捕获不可变完整性/文件identity；不以测试装配冒称默认产品入口完成。34之后Node类型与最终worker-state/P2测试lint退出码0；此前完整8文件lint退出码0。
+
+
 ## 2026-09-15｜一次接纳 Main／工作树／真实 capture 接缝（阶段候选，待主管验收）
 
 - 接续已验收 `aaa62c69eebddf653f3c1bdc25423b0cf2515459`：本地/上游/live 远端一致，开工 clean，保护 stash 完整。HANDOFF 顶部主管确认 Standards/Spec APPROVE、P2关闭；保留全部旧切片证据，不重跑未受影响用例。

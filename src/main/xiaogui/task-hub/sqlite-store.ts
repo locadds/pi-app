@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
+import { existsSync, statSync } from 'node:fs'
 
 import {
   deliveryApplyReceiptDigestV1,
@@ -61,6 +62,7 @@ import type {
   WorkspacePreparedReceiptM2BV1,
   WorkspaceReceiptBindingM2BV1,
   WorkspaceReceiptId,
+  InitialPlanDraftInputV1,
 } from '@shared/xiaogui-collaboration-hub'
 import type { RuntimeAdapterSelectionV1 } from '@shared/xiaogui-agent-runtime'
 import type {
@@ -82,7 +84,7 @@ import type {
   TaskVerificationRequestV1,
   VerificationAttemptV1,
 } from '@shared/xiaogui-task-verification'
-import type { CanonicalPlanDraftV1 } from './digest'
+import { canonicalizePlanDraft, payloadDigest, type CanonicalPlanDraftV1 } from './digest'
 import {
   ACTIVE_ATTEMPT_STATUSES_V1,
   type SchedulerAttemptV1,
@@ -103,7 +105,7 @@ interface RevisionRecord {
   draft_json: string
 }
 
-interface IdempotencyRecord {
+export interface IdempotencyRecord {
   command_type: string
   payload_hash: string
   receipt_json: string
@@ -158,6 +160,196 @@ interface AgentDispatchOutboxRecord {
   runtime_request_digest: string | null
   runtime_request_json: string | null
   selection_digest: string | null
+}
+
+export interface HubAcceptanceRecoveryEvidenceV1 {
+  readonly status: 'OK' | 'UNRESOLVED'
+  readonly draft: IdempotencyRecord | null
+  readonly activate: IdempotencyRecord | null
+  readonly saga: null | {
+    operationId: string
+    flowId: string
+    inputDigest: string
+    authorizationJson: string | null
+    phase: string
+    taskRunId: string | null
+    attemptId: string | null
+    lastSafeCode: string | null
+  }
+  readonly schedule: IdempotencyRecord | null
+  readonly attempt: null | {
+    attemptId: string
+    flowId: string
+    taskRunId: string
+    status: string
+    runtimeSessionId: string | null
+    outcomeReceiptDigest: string | null
+  }
+  readonly hasDispatchOutbox: boolean
+  readonly hasRuntimeBinding: boolean
+  readonly hasDispatchJournal: boolean
+  readonly conflictingAssociation: boolean
+  readonly flowHasAttemptWithoutSaga: boolean
+}
+
+export function hubTaskExecutionStageRequestIdV1(operationId: string, stage: string): string {
+  return `xhber_${createHash('sha256').update(`${operationId}:${stage}`).digest('hex').slice(0, 48)}`
+}
+
+export function hasHubAcceptanceRecoverySchemaV1(dbPath: string): boolean {
+  if (!existsSync(dbPath)) return false
+  let db: DatabaseSync | undefined
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true })
+    const integrity = db.prepare('pragma integrity_check').get() as { integrity_check?: string } | undefined
+    const required = ['idempotency_keys', 'journal_events', 'flows', 'plan_revisions', 'task_execution_sagas', 'attempts', 'agent_dispatch_outbox', 'runtime_session_bindings']
+    const tables = new Set((db.prepare("select name from sqlite_master where type = 'table'").all() as unknown as Array<{ name: string }>).map(({ name }) => name))
+    return integrity?.integrity_check === 'ok' && required.every((name) => tables.has(name))
+  } catch { return false } finally { db?.close() }
+}
+
+export function hubAuthorityDatabaseIdentityV1(dbPath: string): string | null {
+  try {
+    const stat = statSync(dbPath, { bigint: true })
+    return `xhdb_${createHash('sha256').update(`${stat.dev}:${stat.ino}:${stat.birthtimeMs}`).digest('hex')}`
+  } catch { return null }
+}
+
+/** Read-only, exact-key recovery probe. It never creates or migrates a database. */
+export function readHubAcceptanceRecoveryEvidenceV1(input: {
+  readonly dbPath: string
+  readonly address: HubAddressV1
+  readonly draftRequestId: string
+  readonly activateRequestId: string
+  readonly expectedDraftCommandType: string
+  readonly expectedDraftPayloadHash: string
+  readonly expectedActivateCommandType: string
+  readonly promptDigest: string
+  readonly authorizationDigest: string
+  readonly draft: InitialPlanDraftInputV1
+}): HubAcceptanceRecoveryEvidenceV1 {
+  const unresolved: HubAcceptanceRecoveryEvidenceV1 = {
+    status: 'UNRESOLVED', draft: null, activate: null, saga: null, schedule: null,
+    attempt: null, hasDispatchOutbox: false, hasRuntimeBinding: false, hasDispatchJournal: false,
+    conflictingAssociation: false, flowHasAttemptWithoutSaga: false,
+  }
+  if (!existsSync(input.dbPath)) return unresolved
+  let db: DatabaseSync | undefined
+  try {
+    db = new DatabaseSync(input.dbPath, { readOnly: true })
+    const integrity = db.prepare('pragma integrity_check').get() as { integrity_check?: string } | undefined
+    if (integrity?.integrity_check !== 'ok') return unresolved
+    const required = ['idempotency_keys', 'journal_events', 'flows', 'plan_revisions', 'task_execution_sagas', 'attempts', 'agent_dispatch_outbox', 'runtime_session_bindings']
+    const tables = new Set((db.prepare("select name from sqlite_master where type = 'table'").all() as unknown as Array<{ name: string }>).map(({ name }) => name))
+    if (required.some((name) => !tables.has(name))) return unresolved
+    db.exec('begin')
+    const exactIdempotency = (requestId: string): IdempotencyRecord | null => (db!
+      .prepare('select command_type, payload_hash, receipt_json from idempotency_keys where scope_key = ? and request_id = ?')
+      .get(scopeKey(input.address), requestId) as IdempotencyRecord | undefined) ?? null
+    const draft = exactIdempotency(input.draftRequestId)
+    const activate = exactIdempotency(input.activateRequestId)
+    if (draft && (draft.command_type !== input.expectedDraftCommandType || draft.payload_hash !== input.expectedDraftPayloadHash)) return unresolved
+    let flowId: string | undefined
+    let revisionId: string | undefined
+    if (draft) {
+      const receipt = JSON.parse(draft.receipt_json) as { flowId?: string; revisionId?: string }
+      if (!receipt.flowId || !receipt.revisionId) return unresolved
+      flowId = receipt.flowId
+      revisionId = receipt.revisionId
+      const flow = db.prepare('select project_id, session_key from flows where flow_id = ?').get(flowId) as { project_id: string; session_key: string } | undefined
+      const revision = db.prepare('select flow_id, digest from plan_revisions where revision_id = ?').get(revisionId) as { flow_id: string; digest: string } | undefined
+      const canonical = canonicalizePlanDraft(input.draft)
+      if (!flow || flow.project_id !== input.address.projectId || flow.session_key !== input.address.sessionKey
+        || !revision || revision.flow_id !== flowId || !canonical.ok || revision.digest !== canonical.digest) return unresolved
+    }
+    if (activate) {
+      if (!flowId || !revisionId || activate.command_type !== input.expectedActivateCommandType) return unresolved
+      const expectedActivatePayloadHash = payloadDigest({ expectedSessionVersion: null, intent: {
+        type: 'plan.revision.submit', flowId, baseRevisionId: revisionId,
+        draft: input.draft,
+      } })
+      if (activate.payload_hash !== expectedActivatePayloadHash) return unresolved
+    }
+    const inputDigest = flowId ? `sha256:${payloadDigest({
+      version: 2, address: input.address, flowId, targetTaskRunId: null,
+      promptDigest: input.promptDigest, authorizationDigest: input.authorizationDigest,
+    })}` : undefined
+    const sagaRows = flowId && inputDigest
+      ? db.prepare(`select operation_id, flow_id, input_digest, authorization_json, phase, task_run_id, attempt_id, last_safe_code
+          from task_execution_sagas where project_id = ? and session_key = ? and flow_id = ? and input_digest = ?`)
+        .all(input.address.projectId, input.address.sessionKey, flowId, inputDigest) as unknown as Array<{
+          operation_id: string; flow_id: string; input_digest: string; authorization_json: string | null; phase: string
+          task_run_id: string | null; attempt_id: string | null; last_safe_code: string | null
+        }>
+      : []
+    if (sagaRows.length > 1) return unresolved
+    const saga = sagaRows[0]
+    const associatedRows = db.prepare(`select flow_id, input_digest, authorization_json from task_execution_sagas
+      where project_id = ? and session_key = ? and authorization_json is not null`).all(
+      input.address.projectId, input.address.sessionKey,
+    ) as unknown as Array<{ flow_id: string; input_digest: string; authorization_json: string }>
+    const conflictingAssociation = associatedRows.some((row) => {
+      try {
+        const value = JSON.parse(row.authorization_json) as { authorizationDigest?: string }
+        return value.authorizationDigest === input.authorizationDigest
+          && (row.flow_id !== flowId || row.input_digest !== inputDigest)
+      } catch { return true }
+    })
+    const flowHasAttemptWithoutSaga = Boolean(flowId && !saga
+      && db.prepare('select 1 as present from attempts where project_id = ? and session_key = ? and flow_id = ? limit 1')
+        .get(input.address.projectId, input.address.sessionKey, flowId))
+    const schedule = saga ? exactIdempotency(hubTaskExecutionStageRequestIdV1(saga.operation_id, 'schedule')) : null
+    const scheduleReceipt = schedule ? JSON.parse(schedule.receipt_json) as { attemptId?: string; flowId?: string; taskRunId?: string } : null
+    if (schedule && saga) {
+      const token = `sha256:${createHash('sha256').update(`task-worktree-scope-v2:${input.address.projectId}`).digest('hex')}`
+      const scope = { version: 1, pathTokens: [token] }
+      const authorizationScope = { ...scope, scopeDigest: `sha256:${payloadDigest(scope)}` }
+      const expectedScheduleHash = payloadDigest({ expectedSessionVersion: null, intent: {
+        type: 'system.schedule', flowId: saga.flow_id, authorizationScope, executionInputDigest: saga.input_digest,
+      } })
+      if (schedule.command_type !== 'system.schedule' || schedule.payload_hash !== expectedScheduleHash) return unresolved
+    }
+    const attemptId = saga?.attempt_id ?? scheduleReceipt?.attemptId ?? null
+    const attempt = attemptId ? db.prepare(`select attempt_id, project_id, session_key, flow_id, task_run_id, status, runtime_session_id, outcome_receipt_digest
+        from attempts where attempt_id = ?`).get(attemptId) as {
+          attempt_id: string; project_id: string; session_key: string; flow_id: string; task_run_id: string; status: string
+          runtime_session_id: string | null; outcome_receipt_digest: string | null
+        } | undefined : undefined
+    if (scheduleReceipt?.attemptId && saga?.attempt_id && scheduleReceipt.attemptId !== saga.attempt_id) return unresolved
+    if (attempt && (attempt.project_id !== input.address.projectId || attempt.session_key !== input.address.sessionKey)) return unresolved
+    if (schedule && (!scheduleReceipt?.attemptId || !scheduleReceipt.taskRunId || scheduleReceipt.flowId !== saga?.flow_id
+      || !attempt || attempt.flow_id !== saga?.flow_id || attempt.task_run_id !== scheduleReceipt.taskRunId
+      || (saga?.task_run_id && saga.task_run_id !== scheduleReceipt.taskRunId))) return unresolved
+    const hasDispatchJournal = Boolean(attemptId && (db.prepare(`select event_json from journal_events
+      where project_id = ? and session_key = ? and event_type = 'system.agent.report.record'`).all(
+      input.address.projectId, input.address.sessionKey,
+    ) as unknown as Array<{ event_json: string }>).some(({ event_json }) => {
+      try {
+        const event = JSON.parse(event_json) as { attemptId?: string; taskRunId?: string; phase?: string }
+        return event.attemptId === attemptId && event.taskRunId === attempt?.task_run_id
+          && event.phase === 'dispatch.outbox_persisted'
+      } catch { return true }
+    }))
+    return {
+      status: 'OK', draft, activate,
+      saga: saga ? { operationId: saga.operation_id, flowId: saga.flow_id, inputDigest: saga.input_digest,
+        authorizationJson: saga.authorization_json, phase: saga.phase, taskRunId: saga.task_run_id,
+        attemptId, lastSafeCode: saga.last_safe_code } : null,
+      schedule,
+      attempt: attempt ? { attemptId: attempt.attempt_id, flowId: attempt.flow_id, taskRunId: attempt.task_run_id,
+        status: attempt.status, runtimeSessionId: attempt.runtime_session_id,
+        outcomeReceiptDigest: attempt.outcome_receipt_digest } : null,
+      hasDispatchOutbox: Boolean(attemptId && db.prepare('select 1 as present from agent_dispatch_outbox where attempt_id = ? limit 1').get(attemptId)),
+      hasRuntimeBinding: Boolean(attemptId && db.prepare('select 1 as present from runtime_session_bindings where attempt_id = ? limit 1').get(attemptId)),
+      hasDispatchJournal,
+      conflictingAssociation,
+      flowHasAttemptWithoutSaga,
+    }
+  } catch {
+    return unresolved
+  } finally {
+    db?.close()
+  }
 }
 
 interface FlowExecutionBaselineRecord {

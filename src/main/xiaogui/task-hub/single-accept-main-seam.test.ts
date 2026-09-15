@@ -128,6 +128,7 @@ describe('single accept Main V2 seam', () => {
       }) as never,
       acceptAndExecuteV2: {
         resolveTarget: trustedPort.resolveTarget,
+        recoverAssociation: trustedPort.recoverAssociation,
         execute: (request) => { trustedRequest = request; return trustedPort.execute(request) },
       },
       signReceipt: (receipt) => ({ ...receipt, signature: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }),

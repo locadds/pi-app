@@ -42,7 +42,7 @@ describe('Hub Task acceptAndExecute V2 Main seam', () => {
       ok: true, value: { flowId: 'flow-1', revisionId: 'revision-1', executionState: 'PREPARED' },
     })
     await expect(service.acceptAndExecuteV2(request)).resolves.toEqual({
-      ok: true, value: { flowId: 'flow-1', revisionId: 'revision-1', executionState: 'PREPARED' },
+      ok: true, value: { flowId: 'flow-1', revisionId: 'revision-1', executionState: 'ASSOCIATION_RECOVERED' },
     })
     expect(submitDecision).toHaveBeenCalledOnce()
     expect(execute).toHaveBeenCalledOnce()
@@ -124,7 +124,7 @@ describe('Hub Task acceptAndExecute V2 Main seam', () => {
     const service = createHubTaskWorkerServiceV1({
       state, credentials: credentialStore(), application: { perform: vi.fn() } as never,
       createPort: () => ({ downloadAssignment: vi.fn(async () => downloaded), submitDecision }) as never,
-      acceptAndExecuteV2: { resolveTarget, execute: vi.fn() },
+      acceptAndExecuteV2: { resolveTarget, recoverAssociation: vi.fn(async () => ({ status: 'NOT_DISPATCHED' as const })), execute: vi.fn() },
     })
 
     await expect(service.acceptAndExecuteV2(requestV2())).resolves.toEqual({
@@ -234,9 +234,17 @@ describe('Hub Task acceptAndExecute V2 Main seam', () => {
 })
 
 function trustedPort(execute: HubTaskAcceptAndExecuteTrustedPortV2['execute']): HubTaskAcceptAndExecuteTrustedPortV2 {
+  let association: { flowId: string; revisionId: string } | undefined
   return {
     resolveTarget: vi.fn(async () => ({ ok: true as const, targetProjectIdentity: 'project-main-1', baselineSourceDigest: BASELINE })),
-    execute,
+    recoverAssociation: vi.fn(async () => association
+      ? { status: 'ASSOCIATED' as const, ...association, executionState: 'ASSOCIATION_RECOVERED' as const }
+      : { status: 'NOT_DISPATCHED' as const }),
+    execute: async (request) => {
+      const result = await execute(request)
+      if (result.ok) association = { flowId: result.flowId, revisionId: result.revisionId }
+      return result
+    },
   }
 }
 

@@ -1,5 +1,26 @@
 # HUB-RUNTIME-01 剩余工作方案
 
+## 2026-09-15｜接纳关联恢复 P2（方案 Standards/Spec APPROVE，返修候选待复验）
+
+- 固定基线 `64553cff62c5542303326cd0d25a7c9306b174ff`；开工本地/上游/live远端一致、clean，保护stash未变。仅修派发后最后接纳保存失败造成的关联丢失；不扩大默认UI、Pi工具、自动修正或自动Delivery，不操作原任务/profile/数据库/安装现场/stash。
+- 可信Main接纳Interface新增只读recoverAssociation：按原acceptanceKey、draft/activate幂等回执、精确Saga/Attempt/dispatch记录查关联，核身份/项目/会话/内容/原基线；不能按active flow、最近记录或当前HEAD猜。复用同一数据库，只读证据查询不得调用perform/execute/start/global recover、Worker或prompt。
+- NOT_DISPATCHED冻结规则：原接纳证据、完整可读的原权威库和对应阶段记录共同证明未派发。正常早期可尚无draft/activate/Saga，成功的精确空查询须与已保存接纳阶段一致，不因后续记录按顺序尚未产生而一律UNRESOLVED；不可创建空库替代丢失库。已有Attempt且前置证据明确未派发时返回原关联并只续接该Attempt。已进入DISPATCHING或有运行时/派发/终态证据，或无法确认时，只恢复已证实关联，保持实际状态或UNKNOWN，不重派；READY或缺dispatch回执单独均不足。进入续接前再次核验精确阶段，防止使用过期结论。
+- 接纳服务对已有同一请求先核身份与正文再恢复，Hub RUNNING/终态不提前拦截只读恢复。找到已执行关联不再execute；关联恢复成功与任务成功分开表达。证据冲突、读取失败、不能证明未派发时停止。
+- 私有接纳记录与localPlanDraft同次持久写入，独立表达关联已保存，不伪造STARTED；旧64553cf记录按需兼容，不批迁移。先写候选状态成功，再替换内存；保存失败不返回成功、不留下内存假关联。现有绑定/结果关联查询能消费已核验恢复关联，公共UI/Hub协议/结果投影不改，恢复不产生结果发送副作用。
+- 一个gpt-5.6-sol子任务拥有worker-service/state、runtime-composition/execution-orchestrator/sqlite-store及本P2聚焦测试；主任务维护方案、审查、文档和提交推送。优先已有接口与存储，不建平行系统。代码所有权之外的改动先报告；保留其他人编辑。
+- 验证同一组参数化覆盖：ACCEPT已成功响应丢失且无后续记录、已有未派发Attempt、DISPATCHING、运行中/成功/失败/取消/UNKNOWN、证据读取失败。核心场景注入最后保存失败，销毁重建服务、独立状态文件和SQLite，恢复同flow/revision/Attempt，Worker/prompt次数不增；恢复关联可由既有查询消费，重复恢复不增记录；身份/内容/关联冲突及再次保存失败拒绝。只跑这组受影响测试、Node类型、变更TS lint和diff-check，不重跑DESIGN/Delivery/Apply/模型/Electron/build/包扫描。
+- 交付追加commit/push当前隔离分支，更新本方案、DEVELOPMENT_STATUS及原HANDOFF，交固定SHA与证据停在桌面主管定向复验门。本轮通过仅表示接纳关联可恢复且不重派发，不等于完整一次接纳通过。automation接口仍不可用，15分钟heartbeat未启用/无ID，不旁路替代。
+
+### 本 P2 实施回收
+
+- 实际生产文件5个：`hub-task/worker-service.ts`、`worker-state.ts`、`task-hub/runtime-composition.ts`、`execution-orchestrator.ts`、`sqlite-store.ts`。新增 `acceptance-association-recovery-p2.test.ts`；更新接纳服务测试和 Main seam 测试接口，后者未纳入最终运行。没有新增数据库、依赖或恢复框架。
+- 只读查询按原 draft/activate/schedule 回执和授权摘要核对精确 flow/revision/Saga/Attempt；完整性与文件实体证据在数据库初始化之前固定。旧无 stamp 记录须有完整原库证据且文件实体未变。已有 SQLite 派发 journal 作为补充禁止重放证据，未读取 JSONL。
+- 关联使用 `ASSOCIATED` 私有阶段及 `ASSOCIATION_RECOVERED` 返回，携带实际 Attempt 状态；UNKNOWN 保持未知。私有关联和 localPlanDraft 一次写入后才发布内存；现有绑定查询可消费恢复的终态关联。首次执行与现有未派发 Attempt 续接复用原路径，执行前再次核验。
+- 四组新增回归已通过，覆盖末次保存失败冷恢复、状态矩阵、正常早期/同 Attempt 续接、派发竞态、关联消费、旧记录兼容、冲突及坏库/缺库重建拒绝。最终审查另补已保存 EXECUTION_REQUESTED 到 ASSOCIATED 的终态恢复与冲突回归；精确命令和最终回执见 DEVELOPMENT_STATUS 顶部及包外 HANDOFF。
+- 证据为合成 Git 项目、独立状态文件/SQLite和现有 Scripted Runtime。`createOrResume` 计数是合成运行时派发边界，不能称真实 Pi Worker/模型旅程。未重跑成熟 DESIGN、Delivery/Apply；过程误启动后中止与清理拒绝如实保留在交接。
+- **关闭状态：实施返修候选，尚待桌面主管代码定向复验，不能声明主管 P2 已关闭。** 默认 UI/IPC/worker 装配、Pi 工具授权消费、V2 verification/Delivery 消费链、最多两轮未结算修正和自动 Delivery 仍未接；检查点可信会话登记缺口仍未修。下一步仅主管定向复验，不自动进入下一门。
+
+
 ## 2026-09-15｜接续批：Main 接纳与真实 capture 候选（待桌面主管验收）
 
 - 接续基线：本地、上游与 live 远端均为 `aaa62c69eebddf653f3c1bdc25423b0cf2515459`；隔离工作树 clean，保护 stash `a6ba3bb91fa5fc68aeb42d7f64897e4b1e862c61` 保留。交接 HANDOFF 顶部主管 P2 复验已 APPROVE；原实施记录明确停在交接门，本任务接替所有权。旧待复验措辞为历史记录。

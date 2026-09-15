@@ -1,4 +1,5 @@
-import { lstatSync, mkdirSync, realpathSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 
 import type {
@@ -55,7 +56,7 @@ import { GitExecutionBaselineProviderV1 } from './git-execution-baseline'
 import { GitDerivedExecutionBaselineProviderV1 } from './git-derived-execution-baseline'
 import { PrivateRuntimePayloadVaultV1 } from './private-payload-vault'
 import { MainProjectWorkspaceResolverV1 } from './project-workspace-resolver'
-import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import { CollaborationHubSqliteStoreV1, hasHubAcceptanceRecoverySchemaV1 } from './sqlite-store'
 import { XiaoguiTaskExecutionOrchestratorV1 } from './execution-orchestrator'
 import { TaskCandidateAuditServiceV1 } from './task-candidate-audit'
 import { FixedTypecheckVerificationPortV1, ModeTaskVerificationPortV1 } from './verification-port'
@@ -149,6 +150,8 @@ export function createXiaoguiRuntimeCompositionV1(
   const xiaoguiDir = join(userDataDir, 'xiaogui')
   const taskHubDir = join(xiaoguiDir, 'task-hub')
   const hubDbPath = join(userDataDir, 'xiaogui-task-hub-m2a.sqlite')
+  const recoveryDatabaseWasAuthoritative = hasHubAcceptanceRecoverySchemaV1(hubDbPath)
+  const recoveryDatabaseIdentity = databaseIdentity(hubDbPath)
   mkdirSync(taskHubDir, { recursive: true })
 
   let workspaceRegistry: SqliteAttemptWorkspaceRegistryV1 | undefined
@@ -333,6 +336,8 @@ export function createXiaoguiRuntimeCompositionV1(
     })
     taskExecution = new XiaoguiTaskExecutionOrchestratorV1({
       dbPath: hubDbPath,
+      recoveryDatabaseWasAuthoritative,
+      recoveryDatabaseIdentity,
       application,
       inputStage: {
         stageAttemptInput: (input) => inputStore!.stage(input),
@@ -508,6 +513,7 @@ export function createHubTaskAcceptAndExecuteTrustedPortV2(input: {
   readonly application: CollaborationHubApplicationV1
   readonly taskExecution: XiaoguiTaskExecutionOrchestratorV1
   readonly projectResolver: ProjectWorkspaceResolverV1
+  readonly authorityDatabaseIdentity?: () => string | null
 }): HubTaskAcceptAndExecuteTrustedPortV2 {
   const baselineProvider = new GitExecutionBaselineProviderV1(input.projectResolver)
   const resolveTarget = async (request: Parameters<HubTaskAcceptAndExecuteTrustedPortV2['resolveTarget']>[0]) => {
@@ -531,17 +537,54 @@ export function createHubTaskAcceptAndExecuteTrustedPortV2(input: {
         flowId: 'xhbf_accept_target_probe' as FlowId,
         planRevisionId: null,
       })
+      const authorityDatabaseIdentity = input.authorityDatabaseIdentity?.()
       return {
         ok: true as const,
         targetProjectIdentity,
         baselineSourceDigest: `sha256:${baseline.baselineDigest}`,
+        ...(authorityDatabaseIdentity ? { authorityDatabaseIdentity } : {}),
       }
     } catch {
       return { ok: false as const, code: 'BASELINE_SOURCE_INVALID' as const }
     }
   }
+  const associationParts = (request: Parameters<HubTaskAcceptAndExecuteTrustedPortV2['execute']>[0]) => {
+    const acceptanceKey = payloadDigest({
+      version: 2, address: request.address, assignmentId: request.assignmentId,
+      taskId: request.taskId, packageSha256: request.packageSha256, requestId: request.requestId,
+    })
+    const draftRequestId = `hub-accept-v2:${acceptanceKey}:draft`
+    const activateRequestId = `hub-accept-v2:${acceptanceKey}:activate`
+    const draftIntent = { type: 'flow.start.with_draft' as const, draft: request.draft }
+    const baseAuthorization = {
+      version: 2 as const, mode: 'ATTEMPT_WORKTREE' as const,
+      projectId: request.address.projectId, sessionKey: request.address.sessionKey,
+      acceptance: { requestId: request.requestId, assignmentId: request.assignmentId, taskId: request.taskId,
+        taskContentDigest: request.packageSha256, targetProjectIdentity: request.targetProjectIdentity,
+        baselineSourceDigest: request.baselineSourceDigest },
+    }
+    return { acceptanceKey, draftRequestId, activateRequestId, draftIntent,
+      authorization: { ...baseAuthorization, authorizationDigest: attemptWorktreeAuthorizationDigestV2(baseAuthorization) } }
+  }
+  const recoverAssociation = async (request: Parameters<HubTaskAcceptAndExecuteTrustedPortV2['execute']>[0]) => {
+    const parts = associationParts(request)
+    const exact = input.taskExecution.recoverAcceptedWorktreeAssociationV2({
+      address: request.address, draftRequestId: parts.draftRequestId, activateRequestId: parts.activateRequestId,
+      expectedDraftCommandType: parts.draftIntent.type,
+      expectedDraftPayloadHash: payloadDigest({ expectedSessionVersion: null, intent: parts.draftIntent }),
+      expectedActivateCommandType: 'plan.revision.submit', prompt: '执行已由 Main 核验并冻结的当前任务正文与验收要求。',
+      authorization: parts.authorization, draft: request.draft,
+      requiresExistingAuthority: request.requiresExistingAuthority,
+      authorityDatabaseIdentity: request.authorityDatabaseIdentity,
+    })
+    if (exact.status === 'ASSOCIATED') return { status: 'ASSOCIATED' as const, flowId: exact.flowId!, revisionId: exact.revisionId!, attemptId: exact.attemptId, attemptStatus: exact.attemptStatus, executionState: 'ASSOCIATION_RECOVERED' as const }
+    if (exact.status === 'UNKNOWN') return { status: 'UNKNOWN' as const, flowId: exact.flowId, revisionId: exact.revisionId, attemptId: exact.attemptId, attemptStatus: exact.attemptStatus }
+    if (exact.status === 'NOT_DISPATCHED') return { status: 'NOT_DISPATCHED' as const, flowId: exact.flowId, revisionId: exact.revisionId, attemptId: exact.attemptId, attemptStatus: exact.attemptStatus }
+    return { status: 'UNRESOLVED' as const }
+  }
   return {
     resolveTarget,
+    recoverAssociation,
     async execute(request) {
       if (`sha256:${payloadDigest(request.draft)}` !== request.draftDigest) {
         return { ok: false, code: 'EXECUTION_NOT_STARTED' }
@@ -553,14 +596,11 @@ export function createHubTaskAcceptAndExecuteTrustedPortV2(input: {
       if (target.baselineSourceDigest !== request.baselineSourceDigest) {
         return { ok: false, code: 'EXECUTION_NOT_STARTED' }
       }
-      const acceptanceKey = payloadDigest({
-        version: 2,
-        address: request.address,
-        assignmentId: request.assignmentId,
-        taskId: request.taskId,
-        packageSha256: request.packageSha256,
-        requestId: request.requestId,
-      })
+      const recovery = await recoverAssociation(request)
+      if (recovery.status === 'ASSOCIATED') return { ok: true, flowId: recovery.flowId, revisionId: recovery.revisionId,
+        attemptId: recovery.attemptId, attemptStatus: recovery.attemptStatus, executionState: recovery.executionState }
+      if (recovery.status === 'UNKNOWN' || recovery.status === 'UNRESOLVED') return { ok: false, code: 'EXECUTION_OUTCOME_UNKNOWN' }
+      const { acceptanceKey } = associationParts(request)
       const started = await input.application.perform(request.address, {
         requestId: `hub-accept-v2:${acceptanceKey}:draft`,
         intent: { type: 'flow.start.with_draft', draft: request.draft },
@@ -592,6 +632,13 @@ export function createHubTaskAcceptAndExecuteTrustedPortV2(input: {
           baselineSourceDigest: request.baselineSourceDigest,
         },
       }
+      const finalRecovery = await recoverAssociation(request)
+      if (finalRecovery.status === 'ASSOCIATED') {
+        return { ok: true, flowId: finalRecovery.flowId, revisionId: finalRecovery.revisionId,
+          attemptId: finalRecovery.attemptId, attemptStatus: finalRecovery.attemptStatus,
+          executionState: finalRecovery.executionState }
+      }
+      if (finalRecovery.status !== 'NOT_DISPATCHED') return { ok: false, code: 'EXECUTION_OUTCOME_UNKNOWN' }
       const execution = await input.taskExecution.startAcceptedWorktreeV2({
         address: request.address,
         flowId: started.value.flowId,
@@ -616,10 +663,18 @@ export function createHubTaskAcceptAndExecuteTrustedPortV2(input: {
         ok: true,
         flowId: started.value.flowId,
         revisionId: started.value.revisionId,
+        attemptId: execution.value.attempt.attemptId,
         executionState: ['STARTING', 'RUNNING', 'VERIFYING'].includes(status) ? 'STARTED' : 'PREPARED',
       }
     },
   }
+}
+
+function databaseIdentity(dbPath: string): string | null {
+  try {
+    const stat = statSync(dbPath, { bigint: true })
+    return `xhdb_${createHash('sha256').update(`${stat.dev}:${stat.ino}:${stat.birthtimeMs}`).digest('hex')}`
+  } catch { return null }
 }
 
 export function createMainAttemptWorkspaceBaselineSourceResolverV1(

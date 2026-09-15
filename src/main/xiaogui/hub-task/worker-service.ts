@@ -143,7 +143,23 @@ export interface HubTaskAcceptAndExecuteRequestV2 {
 export interface HubTaskAcceptAndExecuteResultV2 {
   flowId: string
   revisionId: string
-  executionState: 'PREPARED' | 'STARTED' | 'ALREADY_STARTED'
+  attemptId?: string
+  actualAttemptStatus?: string
+  executionState: 'PREPARED' | 'STARTED' | 'ALREADY_STARTED' | 'ASSOCIATION_RECOVERED'
+}
+
+export interface HubTaskAcceptAndExecuteTrustedRequestV2 {
+  address: HubAddressV1
+  assignmentId: string
+  taskId: string
+  packageSha256: string
+  requestId: string
+  targetProjectIdentity: string
+  baselineSourceDigest: string
+  draftDigest: string
+  draft: InitialPlanDraftInputV1
+  requiresExistingAuthority: boolean
+  authorityDatabaseIdentity?: string
 }
 
 export interface HubTaskAcceptAndExecuteTrustedPortV2 {
@@ -153,21 +169,17 @@ export interface HubTaskAcceptAndExecuteTrustedPortV2 {
     taskId: string
     packageSha256: string
   }): Promise<
-    | { ok: true; targetProjectIdentity: string; baselineSourceDigest: string }
+    | { ok: true; targetProjectIdentity: string; baselineSourceDigest: string; authorityDatabaseIdentity?: string }
     | { ok: false; code: 'TARGET_PROJECT_INVALID' | 'BASELINE_SOURCE_INVALID' }
   >
-  execute(input: {
-    address: HubAddressV1
-    assignmentId: string
-    taskId: string
-    packageSha256: string
-    requestId: string
-    targetProjectIdentity: string
-    baselineSourceDigest: string
-    draftDigest: string
-    draft: InitialPlanDraftInputV1
-  }): Promise<
-    | { ok: true; flowId: string; revisionId: string; executionState: 'PREPARED' | 'STARTED' | 'ALREADY_STARTED' }
+  recoverAssociation(input: HubTaskAcceptAndExecuteTrustedRequestV2): Promise<
+    | { status: 'ASSOCIATED'; flowId: string; revisionId: string; attemptId?: string; attemptStatus?: string; executionState: 'ASSOCIATION_RECOVERED' }
+    | { status: 'NOT_DISPATCHED'; flowId?: string; revisionId?: string; attemptId?: string; attemptStatus?: string }
+    | { status: 'UNKNOWN'; flowId?: string; revisionId?: string; attemptId?: string; attemptStatus?: string }
+    | { status: 'UNRESOLVED' }
+  >
+  execute(input: HubTaskAcceptAndExecuteTrustedRequestV2): Promise<
+    | { ok: true; flowId: string; revisionId: string; attemptId?: string; attemptStatus?: string; executionState: 'PREPARED' | 'STARTED' | 'ALREADY_STARTED' | 'ASSOCIATION_RECOVERED' }
     | { ok: false; code: 'EXECUTION_NOT_STARTED' | 'EXECUTION_OUTCOME_UNKNOWN' | 'EXECUTION_ALREADY_SETTLED' }
   >
 }
@@ -486,8 +498,6 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       || current.offer.taskId !== cached.offer.taskId
       || current.offer.packageSha256 !== input.observedPackageSha256
     ) return { ok: false, code: 'HUB_ACCEPT_AND_EXECUTE_CONFLICT' }
-    if (current.assignment.executionState === 'OUTCOME_UNKNOWN') return { ok: false, code: 'HUB_EXECUTION_OUTCOME_UNKNOWN' }
-    if (current.assignment.executionState !== 'NOT_STARTED') return { ok: false, code: 'HUB_EXECUTION_ALREADY_SETTLED' }
     if (!['PENDING', 'ACCEPTED'].includes(current.assignment.decisionState)) {
       return { ok: false, code: 'HUB_ASSIGNMENT_NOT_READY' }
     }
@@ -497,13 +507,14 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     const draft = toPlanDraft({ ...cached, assignment: current.assignment, offer: current.offer })
     const draftDigest = sha256Json(draft)
     if (cachedDraftDigest !== draftDigest) return { ok: false, code: 'HUB_ACCEPT_AND_EXECUTE_CONFLICT' }
+    if (current.assignment.decisionState === 'ACCEPTED' && cached.assignment.decisionState !== 'ACCEPTED') {
+      this.storeAssignment(current, credentials)
+      cached = this.options.state.requireAssignment(input.assignmentId)
+    }
     if (existing) {
       if (!sameAcceptRequest(existing, input)) return { ok: false, code: 'HUB_ACCEPT_AND_EXECUTE_CONFLICT' }
       if (!sameIdentity({ node: existing }, credentials)) return { ok: false, code: 'HUB_ACCEPT_AND_EXECUTE_CONFLICT' }
       if (existing.draftDigest !== draftDigest) return { ok: false, code: 'HUB_ACCEPT_AND_EXECUTE_CONFLICT' }
-      if (existing.phase === 'EXECUTION_REQUESTED' && existing.flowId && existing.revisionId && existing.executionState) {
-        return { ok: true, value: { flowId: existing.flowId, revisionId: existing.revisionId, executionState: existing.executionState } }
-      }
     }
     if (cached.localPlanDraft && (
       !existing?.flowId
@@ -513,7 +524,8 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       || cached.localPlanDraft.revisionId !== existing.revisionId
     )) return { ok: false, code: 'HUB_ACCEPT_AND_EXECUTE_CONFLICT' }
     const target = existing
-      ? { ok: true as const, targetProjectIdentity: existing.targetProjectIdentity, baselineSourceDigest: existing.baselineSourceDigest }
+      ? { ok: true as const, targetProjectIdentity: existing.targetProjectIdentity, baselineSourceDigest: existing.baselineSourceDigest,
+          ...(existing.authorityDatabaseIdentity ? { authorityDatabaseIdentity: existing.authorityDatabaseIdentity } : {}) }
       : await trustedPort.resolveTarget({
           address: input.address,
           assignmentId: input.assignmentId,
@@ -523,6 +535,55 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
     if (!this.isCurrentIdentity(credentials)) return { ok: false, code: 'HUB_WORKER_STATE_CONFLICT' }
     if (!target.ok) return { ok: false, code: target.code === 'TARGET_PROJECT_INVALID' ? 'HUB_TARGET_PROJECT_INVALID' : 'HUB_BASELINE_SOURCE_INVALID' }
     const now = this.now()
+    const trustedRequest = {
+      address: input.address, assignmentId: input.assignmentId, taskId: current.assignment.taskId,
+      packageSha256: current.offer.packageSha256, requestId: input.requestId,
+      targetProjectIdentity: target.targetProjectIdentity, baselineSourceDigest: target.baselineSourceDigest,
+      draftDigest, draft, requiresExistingAuthority: Boolean(existing),
+      ...(target.authorityDatabaseIdentity ? { authorityDatabaseIdentity: target.authorityDatabaseIdentity } : {}),
+    }
+    const recovered = await trustedPort.recoverAssociation(trustedRequest)
+    if (recovered.status === 'UNKNOWN' && recovered.flowId && recovered.revisionId) {
+      try {
+        this.options.state.bindAcceptAndExecuteV2(input.assignmentId, {
+          contractVersion: 'hub.accept-execute.v2', assignmentId: input.assignmentId,
+          taskId: current.assignment.taskId, packageSha256: current.offer.packageSha256,
+          requestId: input.requestId, subjectId: credentials.node.subjectId, nodeId: credentials.node.nodeId,
+          keyId: credentials.node.keyId, ...input.address, targetProjectIdentity: target.targetProjectIdentity,
+          baselineSourceDigest: target.baselineSourceDigest, draftDigest, phase: 'ASSOCIATED',
+          ...(target.authorityDatabaseIdentity ? { authorityDatabaseIdentity: target.authorityDatabaseIdentity } : {}),
+          flowId: recovered.flowId, revisionId: recovered.revisionId, attemptId: recovered.attemptId,
+          createdAt: existing?.createdAt ?? now, updatedAt: now,
+        })
+      } catch { return { ok: false, code: 'HUB_ACCEPT_AND_EXECUTE_CONFLICT' } }
+    }
+    if (recovered.status === 'UNKNOWN' || recovered.status === 'UNRESOLVED') {
+      return { ok: false, code: 'HUB_EXECUTION_OUTCOME_UNKNOWN' }
+    }
+    if (recovered.status === 'ASSOCIATED') {
+      try {
+        this.options.state.bindAcceptAndExecuteV2(input.assignmentId, {
+          contractVersion: 'hub.accept-execute.v2', assignmentId: input.assignmentId,
+          taskId: current.assignment.taskId, packageSha256: current.offer.packageSha256,
+          requestId: input.requestId, subjectId: credentials.node.subjectId,
+          nodeId: credentials.node.nodeId, keyId: credentials.node.keyId, ...input.address,
+          targetProjectIdentity: target.targetProjectIdentity, baselineSourceDigest: target.baselineSourceDigest,
+          ...(target.authorityDatabaseIdentity ? { authorityDatabaseIdentity: target.authorityDatabaseIdentity } : {}),
+          draftDigest, phase: 'ASSOCIATED', flowId: recovered.flowId,
+          revisionId: recovered.revisionId, attemptId: recovered.attemptId,
+          createdAt: existing?.createdAt ?? now, updatedAt: now,
+        })
+      } catch { return { ok: false, code: 'HUB_ACCEPT_AND_EXECUTE_CONFLICT' } }
+      if (current.assignment.executionState === 'OUTCOME_UNKNOWN') {
+        return { ok: false, code: 'HUB_EXECUTION_OUTCOME_UNKNOWN' }
+      }
+      return { ok: true, value: { flowId: recovered.flowId, revisionId: recovered.revisionId,
+        ...(recovered.attemptId ? { attemptId: recovered.attemptId } : {}),
+        ...(recovered.attemptStatus ? { actualAttemptStatus: recovered.attemptStatus } : {}), executionState: recovered.executionState } }
+    }
+    if (current.assignment.executionState !== 'NOT_STARTED') {
+      return { ok: false, code: 'HUB_EXECUTION_OUTCOME_UNKNOWN' }
+    }
     try {
       this.options.state.bindAcceptAndExecuteV2(input.assignmentId, {
         contractVersion: 'hub.accept-execute.v2', assignmentId: input.assignmentId,
@@ -531,6 +592,7 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         nodeId: credentials.node.nodeId, keyId: credentials.node.keyId, ...input.address,
         targetProjectIdentity: target.targetProjectIdentity,
         baselineSourceDigest: target.baselineSourceDigest,
+        ...(target.authorityDatabaseIdentity ? { authorityDatabaseIdentity: target.authorityDatabaseIdentity } : {}),
         draftDigest,
         phase: existing?.phase ?? 'BOUND', createdAt: existing?.createdAt ?? now, updatedAt: now,
       })
@@ -565,17 +627,13 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
       requestId: input.requestId, subjectId: credentials.node.subjectId,
       nodeId: credentials.node.nodeId, keyId: credentials.node.keyId, ...input.address,
       targetProjectIdentity: target.targetProjectIdentity, baselineSourceDigest: target.baselineSourceDigest,
+      ...(target.authorityDatabaseIdentity ? { authorityDatabaseIdentity: target.authorityDatabaseIdentity } : {}),
       draftDigest,
       phase: 'HUB_ACCEPTED', createdAt: existing?.createdAt ?? now, updatedAt: this.now(),
     })
     let executed: Awaited<ReturnType<HubTaskAcceptAndExecuteTrustedPortV2['execute']>>
     try {
-      executed = await trustedPort.execute({
-        address: input.address, assignmentId: input.assignmentId, taskId: current.assignment.taskId,
-        packageSha256: current.offer.packageSha256, requestId: input.requestId,
-        targetProjectIdentity: target.targetProjectIdentity, baselineSourceDigest: target.baselineSourceDigest,
-        draftDigest, draft,
-      })
+      executed = await trustedPort.execute(trustedRequest)
     } catch {
       return { ok: false, code: 'HUB_EXECUTION_OUTCOME_UNKNOWN' }
     }
@@ -585,7 +643,9 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
           : 'HUB_EXECUTION_NOT_STARTED'
       return { ok: false, code }
     }
-    const result = { flowId: executed.flowId, revisionId: executed.revisionId, executionState: executed.executionState }
+    const result = { flowId: executed.flowId, revisionId: executed.revisionId,
+      ...(executed.attemptId ? { attemptId: executed.attemptId } : {}),
+      ...(executed.attemptStatus ? { actualAttemptStatus: executed.attemptStatus } : {}), executionState: executed.executionState }
     try {
       this.options.state.bindAcceptAndExecuteV2(input.assignmentId, {
         contractVersion: 'hub.accept-execute.v2', assignmentId: input.assignmentId,
@@ -593,8 +653,13 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         requestId: input.requestId, subjectId: credentials.node.subjectId,
         nodeId: credentials.node.nodeId, keyId: credentials.node.keyId, ...input.address,
         targetProjectIdentity: target.targetProjectIdentity, baselineSourceDigest: target.baselineSourceDigest,
+        ...(target.authorityDatabaseIdentity ? { authorityDatabaseIdentity: target.authorityDatabaseIdentity } : {}),
         draftDigest,
-        phase: 'EXECUTION_REQUESTED', ...result, createdAt: existing?.createdAt ?? now, updatedAt: this.now(),
+        phase: result.executionState === 'ASSOCIATION_RECOVERED' ? 'ASSOCIATED' : 'EXECUTION_REQUESTED',
+        flowId: result.flowId, revisionId: result.revisionId,
+        ...(result.attemptId ? { attemptId: result.attemptId } : {}),
+        ...(result.executionState === 'ASSOCIATION_RECOVERED' ? {} : { executionState: result.executionState }),
+        createdAt: existing?.createdAt ?? now, updatedAt: this.now(),
       })
     } catch {
       return { ok: false, code: 'HUB_ACCEPT_AND_EXECUTE_CONFLICT' }
@@ -707,7 +772,8 @@ class HubTaskWorkerServiceImpl implements HubTaskWorkerServiceV1 {
         !binding
         || !entry.openedAt
         || entry.assignment.decisionState !== 'ACCEPTED'
-        || !['NOT_STARTED', 'RUNNING'].includes(entry.assignment.executionState)
+        || (entry.acceptAndExecuteV2?.phase !== 'ASSOCIATED'
+          && !['NOT_STARTED', 'RUNNING'].includes(entry.assignment.executionState))
       ) return []
       return [{
         address: {

@@ -49,7 +49,7 @@ import type {
   RuntimePermissionDecisionFactoryV1,
   RuntimePermissionRequestEventV1,
 } from './runtime-outcome-monitor'
-import { CollaborationHubSqliteStoreV1 } from './sqlite-store'
+import { CollaborationHubSqliteStoreV1, hubAuthorityDatabaseIdentityV1, readHubAcceptanceRecoveryEvidenceV1 } from './sqlite-store'
 import type { TaskVerificationCoordinatorV1 } from './task-verification-coordinator'
 import type { HubTaskExecutionLifecycleReconcilerV1, HubTaskExecutionLifecycleTriggerV1 } from './hub-execution-lifecycle'
 
@@ -167,6 +167,9 @@ export interface XiaoguiTaskExecutionOrchestratorOptionsV1 {
   readonly attemptPermissionModeGate?: TaskExecutionAttemptPermissionModeGateV1
   readonly now?: () => string
   readonly idFactory?: (prefix: string) => string
+  /** Captured before any runtime component is allowed to create/migrate dbPath. */
+  readonly recoveryDatabaseWasAuthoritative?: boolean
+  readonly recoveryDatabaseIdentity?: string | null
 }
 
 /**
@@ -196,6 +199,103 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
 
   setExecutionLifecycle(lifecycle: HubTaskExecutionLifecycleReconcilerV1 | null): void {
     this.executionLifecycle = lifecycle
+  }
+
+  /** Exact, read-only acceptance association recovery. It never runs a Saga. */
+  recoverAcceptedWorktreeAssociationV2(input: {
+    readonly address: HubAddressV1
+    readonly draftRequestId: string
+    readonly activateRequestId: string
+    readonly expectedDraftCommandType: string
+    readonly expectedDraftPayloadHash: string
+    readonly expectedActivateCommandType: string
+    readonly prompt: string
+    readonly draft: import('@shared/xiaogui-collaboration-hub').InitialPlanDraftInputV1
+    readonly requiresExistingAuthority: boolean
+    readonly authorityDatabaseIdentity?: string
+    readonly authorization: AttemptWorktreeAuthorizationV2
+  }): {
+    status: 'ASSOCIATED' | 'NOT_DISPATCHED' | 'UNKNOWN' | 'UNRESOLVED'
+    flowId?: string
+    revisionId?: string
+    attemptId?: string
+    attemptStatus?: string
+  } {
+    if (input.requiresExistingAuthority) {
+      if (input.authorityDatabaseIdentity) {
+        if (hubAuthorityDatabaseIdentityV1(this.options.dbPath) !== input.authorityDatabaseIdentity) return { status: 'UNRESOLVED' }
+        if (this.options.recoveryDatabaseIdentity === undefined) return { status: 'UNRESOLVED' }
+        if (this.options.recoveryDatabaseIdentity !== null
+          && this.options.recoveryDatabaseWasAuthoritative !== true) return { status: 'UNRESOLVED' }
+      } else if (this.options.recoveryDatabaseWasAuthoritative !== true
+        || !this.options.recoveryDatabaseIdentity
+        || hubAuthorityDatabaseIdentityV1(this.options.dbPath) !== this.options.recoveryDatabaseIdentity) {
+        return { status: 'UNRESOLVED' }
+      }
+    }
+    const evidence = readHubAcceptanceRecoveryEvidenceV1({
+      dbPath: this.options.dbPath, address: input.address,
+      draftRequestId: input.draftRequestId, activateRequestId: input.activateRequestId,
+      expectedDraftCommandType: input.expectedDraftCommandType,
+      expectedDraftPayloadHash: input.expectedDraftPayloadHash,
+      expectedActivateCommandType: input.expectedActivateCommandType,
+      promptDigest: digestBytes(Buffer.from(input.prompt, 'utf8')),
+      authorizationDigest: input.authorization.authorizationDigest,
+      draft: input.draft,
+    })
+    if (evidence.status !== 'OK') return { status: 'UNRESOLVED' }
+    let recoveredFlowId: string | undefined
+    let recoveredRevisionId: string | undefined
+    if (evidence.draft) {
+      try {
+        const receipt = JSON.parse(evidence.draft.receipt_json) as { flowId?: string; revisionId?: string }
+        if (!receipt.flowId || !receipt.revisionId) return { status: 'UNRESOLVED' }
+        if ((recoveredFlowId && recoveredFlowId !== receipt.flowId) || (recoveredRevisionId && recoveredRevisionId !== receipt.revisionId)) {
+          return { status: 'UNRESOLVED' }
+        }
+        recoveredFlowId = receipt.flowId as FlowId
+        recoveredRevisionId = receipt.revisionId
+      } catch { return { status: 'UNRESOLVED' } }
+    }
+    if (evidence.conflictingAssociation) return { status: 'UNRESOLVED' }
+    if (!evidence.saga) {
+      if (evidence.flowHasAttemptWithoutSaga) return { status: 'UNRESOLVED' }
+      return evidence.activate && (!recoveredFlowId || !recoveredRevisionId)
+        ? { status: 'UNRESOLVED' }
+        : { status: 'NOT_DISPATCHED', ...(recoveredFlowId ? { flowId: recoveredFlowId, revisionId: recoveredRevisionId } : {}) }
+    }
+    if (!evidence.activate) return { status: 'UNRESOLVED' }
+    let authorization: AttemptWorktreeAuthorizationV2
+    try { authorization = JSON.parse(evidence.saga.authorizationJson ?? '') as AttemptWorktreeAuthorizationV2 } catch { return { status: 'UNRESOLVED' } }
+    if (JSON.stringify(authorization) !== JSON.stringify(input.authorization) || evidence.saga.flowId !== recoveredFlowId) {
+      return { status: 'UNRESOLVED' }
+    }
+    const attempt = evidence.attempt
+    if (attempt && (attempt.flowId !== evidence.saga.flowId || (evidence.saga.taskRunId && attempt.taskRunId !== evidence.saga.taskRunId))) {
+      return { status: 'UNRESOLVED' }
+    }
+    const dispatched = evidence.saga.phase === 'DISPATCHING'
+      || ['RUNTIME_ACTIVE', 'SETTLED', 'OUTCOME_UNKNOWN'].includes(evidence.saga.phase)
+      || evidence.hasDispatchOutbox || evidence.hasRuntimeBinding || evidence.hasDispatchJournal
+      || Boolean(attempt?.runtimeSessionId || attempt?.outcomeReceiptDigest)
+      || Boolean(evidence.saga.lastSafeCode)
+      || Boolean(attempt && ['STARTING', 'RUNNING', 'VERIFYING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED', 'CANCELLED', 'OUTCOME_UNKNOWN'].includes(attempt.status))
+    if (dispatched) return { status: attempt?.status === 'OUTCOME_UNKNOWN' || evidence.saga.phase === 'OUTCOME_UNKNOWN' ? 'UNKNOWN' : 'ASSOCIATED',
+      flowId: evidence.saga.flowId, revisionId: recoveredRevisionId, attemptId: evidence.saga.attemptId ?? undefined,
+      attemptStatus: attempt?.status }
+    if (evidence.saga.attemptId && !attempt) return { status: 'UNRESOLVED' }
+    const resumablePhases = ['ACCEPTED', 'SCHEDULED', 'INPUT_STAGED', 'WORKSPACE_READY']
+    if (!resumablePhases.includes(evidence.saga.phase)) {
+      if (evidence.saga.phase === 'FAILED') return { status: 'ASSOCIATED', flowId: evidence.saga.flowId,
+        revisionId: recoveredRevisionId, attemptId: evidence.saga.attemptId ?? undefined, attemptStatus: attempt?.status }
+      return { status: 'UNRESOLVED' }
+    }
+    if (evidence.saga.phase !== 'ACCEPTED' && (!evidence.schedule || !evidence.saga.attemptId || !attempt)) {
+      return { status: 'UNRESOLVED' }
+    }
+    if (attempt && !evidence.schedule) return { status: 'UNRESOLVED' }
+    return { status: 'NOT_DISPATCHED', flowId: evidence.saga.flowId, revisionId: recoveredRevisionId,
+      attemptId: evidence.saga.attemptId ?? undefined, attemptStatus: attempt?.status }
   }
 
   hasDispatchEvidence(trigger: HubTaskExecutionLifecycleTriggerV1): boolean {
@@ -252,7 +352,6 @@ export class XiaoguiTaskExecutionOrchestratorV1 {
       const authority = await this.authority(exact)
       return authority.ok ? { ok: true, value: authority.result } : authority.outcome
     }
-    await this.recover()
     const key = operationKey(canonical)
     const running = this.inFlight.get(key)
     if (running) return running.inputDigest === canonical.inputDigest

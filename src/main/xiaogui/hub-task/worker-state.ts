@@ -50,7 +50,7 @@ export interface HubTaskWorkerPlanDraftBindingV1 extends HubAddressV1 {
   createdAt: string
 }
 
-export type HubTaskAcceptAndExecutePhaseV2 = 'BOUND' | 'HUB_ACCEPTED' | 'EXECUTION_REQUESTED'
+export type HubTaskAcceptAndExecutePhaseV2 = 'BOUND' | 'HUB_ACCEPTED' | 'ASSOCIATED' | 'EXECUTION_REQUESTED'
 
 export interface HubTaskAcceptAndExecuteBindingV2 extends HubAddressV1 {
   contractVersion: 'hub.accept-execute.v2'
@@ -63,10 +63,12 @@ export interface HubTaskAcceptAndExecuteBindingV2 extends HubAddressV1 {
   keyId: string
   targetProjectIdentity: string
   baselineSourceDigest: string
+  authorityDatabaseIdentity?: string
   draftDigest: string
   phase: HubTaskAcceptAndExecutePhaseV2
   flowId?: string
   revisionId?: string
+  attemptId?: string
   executionState?: 'PREPARED' | 'STARTED' | 'ALREADY_STARTED'
   createdAt: string
   updatedAt: string
@@ -245,11 +247,12 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
       acceptAndExecuteV2: previous?.acceptAndExecuteV2,
       deliveryIdentity: projectDeliveryIdentity(identity ?? previous?.deliveryIdentity),
     }
-    this.state = {
+    const nextState = {
       ...this.state,
       assignments: { ...this.state.assignments, [assignmentId]: next },
     }
-    this.persist()
+    this.persistence.write(cloneState(nextState))
+    this.state = nextState
     return !previous || replacedDelivery
   }
 
@@ -485,16 +488,21 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
     if (current && !sameAcceptAndExecuteIdentity(current, binding)) {
       throw new Error('HUB_ACCEPT_AND_EXECUTE_BINDING_CONFLICT')
     }
-    if (current && acceptPhaseOrdinal(binding.phase) < acceptPhaseOrdinal(current.phase)) return { ...current }
     if (current?.flowId && (
       current.flowId !== binding.flowId
       || current.revisionId !== binding.revisionId
-      || current.executionState !== binding.executionState
+      || (current.attemptId !== undefined && binding.attemptId !== undefined && current.attemptId !== binding.attemptId)
+      || (current.executionState !== undefined && binding.executionState !== undefined
+        && current.executionState !== binding.executionState)
     )) throw new Error('HUB_ACCEPT_AND_EXECUTE_RESULT_CONFLICT')
-    const nextBinding = current
+    let nextBinding = current
       ? { ...current, ...binding, createdAt: current.createdAt }
       : { ...binding }
-    const executionPlan = binding.phase === 'EXECUTION_REQUESTED'
+    if (binding.phase === 'ASSOCIATED') {
+      const { executionState: _executionState, ...association } = nextBinding
+      nextBinding = association
+    }
+    const executionPlan = ['ASSOCIATED', 'EXECUTION_REQUESTED'].includes(binding.phase)
       ? {
           projectId: binding.projectId,
           sessionKey: binding.sessionKey,
@@ -509,13 +517,18 @@ class HubTaskWorkerStateStoreImpl implements HubTaskWorkerStateStoreV1 {
       || existing.localPlanDraft.flowId !== executionPlan.flowId
       || existing.localPlanDraft.revisionId !== executionPlan.revisionId
     )) throw new Error('HUB_ACCEPT_AND_EXECUTE_RESULT_CONFLICT')
+    const isVerifiedAssociationRecovery = current?.phase === 'EXECUTION_REQUESTED'
+      && binding.phase === 'ASSOCIATED'
+    if (current && acceptPhaseOrdinal(binding.phase) < acceptPhaseOrdinal(current.phase)
+      && !isVerifiedAssociationRecovery) return { ...current }
     const next: HubTaskWorkerInboxEntryV1 = {
       ...existing,
       acceptAndExecuteV2: nextBinding,
       localPlanDraft: executionPlan ? { ...executionPlan } : null,
     }
-    this.state = { ...this.state, assignments: { ...this.state.assignments, [assignmentId]: next } }
-    this.persist()
+    const nextState = { ...this.state, assignments: { ...this.state.assignments, [assignmentId]: next } }
+    this.persistence.write(cloneState(nextState))
+    this.state = nextState
     return { ...nextBinding }
   }
 
@@ -701,11 +714,12 @@ function sameAcceptAndExecuteIdentity(
     && left.sessionKey === right.sessionKey
     && left.targetProjectIdentity === right.targetProjectIdentity
     && left.baselineSourceDigest === right.baselineSourceDigest
+    && left.authorityDatabaseIdentity === right.authorityDatabaseIdentity
     && left.draftDigest === right.draftDigest
 }
 
 function acceptPhaseOrdinal(value: HubTaskAcceptAndExecutePhaseV2): number {
-  return ['BOUND', 'HUB_ACCEPTED', 'EXECUTION_REQUESTED'].indexOf(value)
+  return ['BOUND', 'HUB_ACCEPTED', 'ASSOCIATED', 'EXECUTION_REQUESTED'].indexOf(value)
 }
 
 function isStoredAcceptAndExecuteV2(value: unknown, assignmentId: string): value is HubTaskAcceptAndExecuteBindingV2 {
@@ -722,15 +736,21 @@ function isStoredAcceptAndExecuteV2(value: unknown, assignmentId: string): value
     && typeof value.sessionKey === 'string' && /^xgs1_[0-9a-f]{64}$/.test(value.sessionKey)
     && isOpaqueId(value.targetProjectIdentity)
     && isSha256(value.baselineSourceDigest)
+    && (value.authorityDatabaseIdentity === undefined || isOpaqueId(value.authorityDatabaseIdentity))
     && isSha256(value.draftDigest)
-    && isOneOf(value.phase, ['BOUND', 'HUB_ACCEPTED', 'EXECUTION_REQUESTED'])
+    && isOneOf(value.phase, ['BOUND', 'HUB_ACCEPTED', 'ASSOCIATED', 'EXECUTION_REQUESTED'])
     && (value.flowId === undefined || isOpaqueId(value.flowId))
     && (value.revisionId === undefined || isOpaqueId(value.revisionId))
+    && (value.attemptId === undefined || isOpaqueId(value.attemptId))
     && (value.executionState === undefined || isOneOf(value.executionState, ['PREPARED', 'STARTED', 'ALREADY_STARTED']))
     && (value.phase !== 'EXECUTION_REQUESTED' || (
       isOpaqueId(value.flowId)
       && isOpaqueId(value.revisionId)
       && isOneOf(value.executionState, ['PREPARED', 'STARTED', 'ALREADY_STARTED'])
+    ))
+    && (value.phase !== 'ASSOCIATED' || (
+      isOpaqueId(value.flowId)
+      && isOpaqueId(value.revisionId)
     ))
     && isTimestamp(value.createdAt) && isTimestamp(value.updatedAt)
 }
